@@ -85,12 +85,41 @@ function resolveDiscoveredPriceE6(oc: DiscoveredMarket): bigint {
  *  real time instead of freezing at the discovery/stats snapshot. Falls back
  *  to the static snapshot price until the first tick arrives — markets the
  *  feed doesn't stream (or no WS configured) keep the previous behavior.
- *  Isolated as a component so ticks re-render only this cell, not the list. */
+ *  Isolated as a component so ticks re-render only this cell, not the list.
+ *
+ *  Each tick briefly tints the number long-green (up) / short-red (down),
+ *  easing back to neutral over ~300ms — the same micro-interaction as the
+ *  trade page's MarkPrice, so price movement pops in the list too. */
 const LiveRowPrice: FC<{ slab: string; fallback: number | null }> = ({ slab, fallback }) => {
   const subscribe = useCallback((cb: () => void) => subscribeSlab(slab, cb), [slab]);
   const getSnap = useCallback(() => getSnapshot(slab).priceUsd, [slab]);
   const live = useSyncExternalStore(subscribe, getSnap, () => null);
-  return <>{formatUsdFromNumber(live ?? fallback)}</>;
+
+  const prevRef = useRef<number | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [flash, setFlash] = useState<"up" | "down" | null>(null);
+
+  useEffect(() => {
+    if (live == null) return;
+    const prev = prevRef.current;
+    if (prev != null && live !== prev) {
+      setFlash(live > prev ? "up" : "down");
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setFlash(null), 300);
+    }
+    prevRef.current = live;
+  }, [live]);
+
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+
+  const flashColor =
+    flash === "up" ? "text-[var(--long)]" : flash === "down" ? "text-[var(--short)]" : "";
+
+  return (
+    <span className={`transition-colors duration-300 ease-out ${flashColor}`}>
+      {formatUsdFromNumber(live ?? fallback)}
+    </span>
+  );
 };
 
 function isPlaceholderMarketSymbol(sym: string | null | undefined, addresses: Array<string | null | undefined>): boolean {
