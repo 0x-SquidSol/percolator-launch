@@ -31,9 +31,10 @@
  *
  * Authentication (H1v2): two accepted paths —
  *   a) Wallet-signed STATELESS deployer proof — no server-stored nonce:
- *        1. Sign the UTF-8 message `keeper-register:<slabAddress>:<unix-minute>`
+ *        1. Sign the UTF-8 message `keeper-register:<slabAddress>:<dexPoolAddress>:<unix-minute>`
  *           (unix-minute = Math.floor(Date.now()/60000), computed client-side) with
- *           the deployer keypair → base64 signature.
+ *           the deployer keypair → base64 signature. Binding the pool prevents a
+ *           captured signature being replayed with a different pool (SEC).
  *        2. POST here with { ...body, deployer, signature }.
  *      The route independently reconstructs that message for a small window of
  *      minutes around its OWN clock (tolerates clock skew + wallet-sign latency,
@@ -101,6 +102,7 @@ import type { RegisteredMarket } from "@/lib/playground-registered-markets";
 import { upsertRegisteredMarket } from "@/lib/playground-registered-markets";
 import { normalizeDexType, KEEPER_DEX_TYPES, type KeeperDexType } from "@/lib/dex-type";
 import { getConfig, getAllProgramIds } from "@/lib/config";
+import { buildKeeperProofMessage } from "@/lib/keeper-proof";
 
 export const dynamic = "force-dynamic";
 
@@ -119,30 +121,30 @@ function isAdminBypass(req: NextRequest): boolean {
  *  for why this replaced the nonce+claim scheme. No server-stored state: the
  *  message is fully determined by (slabAddress, unix-minute), so any lambda
  *  instance can verify it without having "seen" an issuance step. */
-const STATELESS_PROOF_PREFIX = "keeper-register";
 /** Tolerance window: candidate minutes tried are [now - BACK, now + FWD]. Generous
  *  enough to absorb clock skew and wallet-approval latency without meaningfully
- *  weakening the check — a signature is still scoped to one specific slab and only
- *  useful if the signer also holds that slab's on-chain admin key (checked below). */
+ *  weakening the check — a signature is scoped to one specific slab AND pool and
+ *  only useful if the signer also holds that slab's on-chain admin key (below). */
 const STATELESS_PROOF_WINDOW_BACK_MIN = 5;
 const STATELESS_PROOF_WINDOW_FWD_MIN = 1;
 
-function statelessProofMessage(slabAddress: string, unixMinute: number): Uint8Array {
-  return new TextEncoder().encode(`${STATELESS_PROOF_PREFIX}:${slabAddress}:${unixMinute}`);
-}
-
-/** Verify `signatureBytes` is a valid ed25519 signature by `deployerPubkeyBytes` over
- *  `keeper-register:<slabAddress>:<unix-minute>` for some minute within the tolerance
- *  window of the server's own clock. Stateless — no nonce store, no shared memory
- *  needed between the "issuing" and "verifying" request (there is no issuing request). */
+/** Verify `signatureBytes` is a valid ed25519 signature by `deployerPubkeyBytes`
+ *  over the shared keeper-proof message (buildKeeperProofMessage — binds slab,
+ *  POOL, and minute) for some minute within the tolerance window of the
+ *  server's own clock. SEC: binding dexPoolAddress means a captured signature
+ *  can't be replayed with a different pool to repoint the keeper's price
+ *  source. Stateless — no nonce store, no shared memory needed. */
 function verifyStatelessDeployerProof(
   slabAddress: string,
+  dexPoolAddress: string,
   deployerPubkeyBytes: Uint8Array,
   signatureBytes: Uint8Array,
 ): boolean {
   const nowMinute = Math.floor(Date.now() / 60_000);
   for (let d = -STATELESS_PROOF_WINDOW_BACK_MIN; d <= STATELESS_PROOF_WINDOW_FWD_MIN; d++) {
-    const msg = statelessProofMessage(slabAddress, nowMinute + d);
+    const msg = new TextEncoder().encode(
+      buildKeeperProofMessage(slabAddress, dexPoolAddress, nowMinute + d),
+    );
     try {
       if (nacl.sign.detached.verify(msg, signatureBytes, deployerPubkeyBytes)) return true;
     } catch {
@@ -254,7 +256,7 @@ export async function POST(req: NextRequest) {
         {
           error:
             "Missing required fields: deployer, signature. " +
-            'Sign the message "keeper-register:<slabAddress>:<unix-minute>" (UTF-8, ' +
+            'Sign the message "keeper-register:<slabAddress>:<dexPoolAddress>:<unix-minute>" (UTF-8, ' +
             "unix-minute = Math.floor(Date.now()/60000)) with the deployer keypair and " +
             "include the base64 signature. No separate challenge call needed.",
         },
@@ -283,7 +285,7 @@ export async function POST(req: NextRequest) {
     // H1v2: stateless deployer proof — no nonce to claim, so no server-stored state to
     // race across serverless lambda instances (see file header for why this replaced
     // the nonce+claim scheme).
-    const sigValid = verifyStatelessDeployerProof(slabAddress, deployerPubkeyBytes, signatureBytes);
+    const sigValid = verifyStatelessDeployerProof(slabAddress, dexPoolAddress, deployerPubkeyBytes, signatureBytes);
     if (!sigValid) {
       Sentry.captureMessage("[playground/keeper-register] Deployer signature verification failed", {
         level: "warning",
@@ -293,7 +295,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error:
-            'Signature verification failed. Ensure you signed "keeper-register:<slabAddress>:<unix-minute>" ' +
+            'Signature verification failed. Ensure you signed "keeper-register:<slabAddress>:<dexPoolAddress>:<unix-minute>" ' +
             "with the deployer keypair within the last few minutes.",
         },
         { status: 401 },

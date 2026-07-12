@@ -78,11 +78,14 @@ describe("useCreateMarket — retryKeeperRegistration", () => {
     });
 
     expect(signMessage).toHaveBeenCalledOnce();
-    // The signed message must be the exact H1v2 stateless proof format the server
-    // reconstructs and verifies — see route.ts's statelessProofMessage().
+    // The signed message must be the exact H1v2 stateless proof format the
+    // server reconstructs and verifies — buildKeeperProofMessage: it binds the
+    // slab, the dexPoolAddress (SEC: pool binding prevents replay-repoint), and
+    // the unix-minute.
     const signedBytes = signMessage.mock.calls[0][0] as Uint8Array;
     const signedText = new TextDecoder().decode(signedBytes);
-    expect(signedText).toMatch(new RegExp(`^keeper-register:${SLAB}:\\d+$`));
+    const POOL = "FnzKY6x7entQ1eR3D225dQyT7ybfka4PskBMQhb8L3CC";
+    expect(signedText).toMatch(new RegExp(`^keeper-register:${SLAB}:${POOL}:\\d+$`));
 
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/playground/keeper-register",

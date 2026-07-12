@@ -72,6 +72,7 @@ import { PERCOLATOR_NFT_PROGRAM_ID } from "@/lib/nft-program";
 import { sendTx } from "@/lib/tx";
 import { getConfig, getNetwork } from "@/lib/config";
 import { normalizeDexType } from "@/lib/dex-type";
+import { buildKeeperProofMessage } from "@/lib/keeper-proof";
 import { parseMarketCreationError } from "@/lib/parseMarketError";
 import {
   saveInFlightMarket,
@@ -312,12 +313,15 @@ async function registerMarketWithKeeper(
   let keeperSignature: string;
   try {
     // H1v2 auth: keeper-register verifies slab ownership via a STATELESS
-    // deployer-signed proof — sign `keeper-register:<slabAddress>:<unix-minute>`
-    // and the route independently reconstructs + verifies it against a small
-    // window around its own clock. No server-stored nonce (see route.ts header).
+    // deployer-signed proof. SEC: the message now binds the dexPoolAddress
+    // (via buildKeeperProofMessage) as well as the slab + minute, so a
+    // captured signature can't be replayed within the tolerance window with a
+    // different pool to repoint the keeper's price source. The route
+    // reconstructs the same message from the request's dexPoolAddress and
+    // verifies against a small window around its own clock (no server nonce).
     const unixMinute = Math.floor(Date.now() / 60_000);
     const proofMsg = new TextEncoder().encode(
-      `keeper-register:${params.slabAddress}:${unixMinute}`,
+      buildKeeperProofMessage(params.slabAddress, params.dexPoolAddress, unixMinute),
     );
     const sig = await wallet.signMessage(proofMsg);
     keeperSignature = Buffer.from(sig).toString("base64");
