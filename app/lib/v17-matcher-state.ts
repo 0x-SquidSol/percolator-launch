@@ -1,16 +1,24 @@
 import { PublicKey } from '@solana/web3.js';
-import { CTX_VAMM_OFFSET, MATCHER_CONTEXT_LEN } from '@percolatorct/sdk';
+import {
+  CTX_VAMM_OFFSET,
+  MATCHER_CONTEXT_LEN,
+  V17_PORTFOLIO_IDENTITY_TRAILER_LEN,
+  decodePortfolioMatcherControl,
+} from '@percolatorct/sdk';
 
 const PUBLIC_KEY_LEN = 32;
 
 /**
- * PortfolioMatcherConfigV16 is appended to the end of each v17
- * portfolio account:
+ * PortfolioMatcherConfigV16 sits near the end of each v17/v18 portfolio account:
  *
  * matcher_program[32]
  * matcher_context[32]
  * matcher_delegate[32]
- * enabled[u64]
+ * control[u64]           (v18: packed — bit 0 = enabled, plus epoch/fee-cap)
+ *
+ * In v18 a `V17_PORTFOLIO_IDENTITY_TRAILER_LEN`-byte identity trailer follows
+ * this config, so it is NO LONGER the final 104 bytes — the offset below
+ * subtracts the trailer, and the enabled bit is decoded via the SDK.
  */
 export const V17_PORTFOLIO_MATCHER_CONFIG_LEN = 104;
 
@@ -36,22 +44,24 @@ export type V17MatcherContextState = 'initialized' | 'uninitialized' | 'invalid'
  * can distinguish a recoverable incomplete setup from malformed data.
  */
 export function readV17PortfolioMatcherConfig(data: Uint8Array): V17PortfolioMatcherConfig {
-  if (data.byteLength < V17_PORTFOLIO_MATCHER_CONFIG_LEN) {
+  const trailerLen = V17_PORTFOLIO_IDENTITY_TRAILER_LEN;
+  if (data.byteLength < V17_PORTFOLIO_MATCHER_CONFIG_LEN + trailerLen) {
     throw new Error(
       `Invalid v17 portfolio length: expected at least ` +
-        `${V17_PORTFOLIO_MATCHER_CONFIG_LEN} bytes, received ` +
+        `${V17_PORTFOLIO_MATCHER_CONFIG_LEN + trailerLen} bytes, received ` +
         `${data.byteLength}`,
     );
   }
 
-  const offset = data.byteLength - V17_PORTFOLIO_MATCHER_CONFIG_LEN;
+  // v18: the config is followed by the identity trailer, so anchor off the end
+  // minus BOTH the trailer and the config length.
+  const offset = data.byteLength - V17_PORTFOLIO_MATCHER_CONFIG_LEN - trailerLen;
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
 
-  const enabledRaw = view.getBigUint64(offset + MATCHER_ENABLED_RELATIVE_OFFSET, true);
-
-  if (enabledRaw !== 0n && enabledRaw !== 1n) {
-    throw new Error(`Invalid v17 matcher enabled value: ${enabledRaw.toString()}`);
-  }
+  // v18: the trailing u64 is a packed control word (bit 0 = enabled). Decode via
+  // the SDK rather than comparing to 0/1 — the upper bits carry epoch/fee-cap.
+  const control = view.getBigUint64(offset + MATCHER_ENABLED_RELATIVE_OFFSET, true);
+  const enabled = decodePortfolioMatcherControl(control).enabled;
 
   return {
     matcherProgram: new PublicKey(
@@ -72,7 +82,7 @@ export function readV17PortfolioMatcherConfig(data: Uint8Array): V17PortfolioMat
         offset + MATCHER_DELEGATE_RELATIVE_OFFSET + PUBLIC_KEY_LEN,
       ),
     ),
-    enabled: enabledRaw === 1n,
+    enabled,
   };
 }
 

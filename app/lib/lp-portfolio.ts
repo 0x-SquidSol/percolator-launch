@@ -1,6 +1,11 @@
 import { Buffer } from "node:buffer";
 import { Connection, PublicKey } from "@solana/web3.js";
-import { parsePortfolioV17 } from "@percolatorct/sdk";
+import {
+  parsePortfolioV17,
+  V17_PORTFOLIO_ACCOUNT_LEN,
+  V17_PORTFOLIO_IDENTITY_TRAILER_LEN,
+  decodePortfolioMatcherControl,
+} from "@percolatorct/sdk";
 import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
 import { getMultipleAccountsInfoChunked } from "@/lib/rpc-chunk";
 
@@ -26,27 +31,29 @@ import { getMultipleAccountsInfoChunked } from "@/lib/rpc-chunk";
 const V17_PORTFOLIO_MAGIC = Buffer.from([0x00, 0x36, 0x31, 0x56, 0x43, 0x52, 0x45, 0x50]);
 /** Provenance header offset: HEADER_LEN(16) + provenance.market_group_id(0) */
 const PORTFOLIO_PROVENANCE_MARKET_GROUP_OFF = 16;
-/** sizeof(PortfolioMatcherConfigV16), appended at the end of the account. */
+/** sizeof(PortfolioMatcherConfigV16). */
 const PORTFOLIO_MATCHER_CONFIG_LEN = 104;
 /**
- * Fixed byte-length of every v17 portfolio account (SDK's
- * V17_PORTFOLIO_ACCOUNT_LEN = HEADER_LEN(16) + PortfolioAccountV16Account(9227)
- * + PORTFOLIO_MATCHER_CONFIG_LEN(104) = 9347). Every portfolio account on the
- * wrapper program — LP or trader — is this exact size, so it doubles as a
- * cheap `dataSize` filter for the all-markets scan below.
+ * Fixed byte-length of every v18 portfolio account (SDK V17_PORTFOLIO_ACCOUNT_LEN
+ * = 9563; was 9347 in v17). Every portfolio account on the wrapper program — LP or
+ * trader — is this exact size, so it doubles as a cheap `dataSize` filter for the
+ * all-markets scan below. Imported from the SDK so it tracks the layout.
  */
-const V17_PORTFOLIO_ACCOUNT_LEN = 9347;
-/** Absolute byte offset of PortfolioMatcherConfigV16.enabled (u64) within a full-length portfolio account. */
-const PORTFOLIO_ENABLED_ABS_OFFSET = V17_PORTFOLIO_ACCOUNT_LEN - PORTFOLIO_MATCHER_CONFIG_LEN + 96;
-/** u64 LE bytes for `enabled == 1`, base64-encoded — used as a memcmp filter value. */
-const ENABLED_TRUE_B64 = Buffer.from([1, 0, 0, 0, 0, 0, 0, 0]).toString("base64");
 
-/** True if the account's trailing PortfolioMatcherConfigV16.enabled == 1. */
+/**
+ * True if the account's PortfolioMatcherConfigV16 is enabled.
+ *
+ * v18: the matcher config is followed by a
+ * `V17_PORTFOLIO_IDENTITY_TRAILER_LEN`-byte identity trailer (so it is no longer
+ * the final 104 bytes), and its trailing u64 is a packed control word (bit 0 =
+ * enabled) rather than a bare 0/1 flag — decoded via the SDK.
+ */
 function isMatcherEnabled(data: Buffer): boolean {
-  if (data.length < PORTFOLIO_MATCHER_CONFIG_LEN) return false;
-  const off = data.length - PORTFOLIO_MATCHER_CONFIG_LEN;
+  const trailerLen = V17_PORTFOLIO_IDENTITY_TRAILER_LEN;
+  if (data.length < PORTFOLIO_MATCHER_CONFIG_LEN + trailerLen) return false;
+  const off = data.length - PORTFOLIO_MATCHER_CONFIG_LEN - trailerLen;
   const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  return dv.getBigUint64(off + 96, true) === 1n;
+  return decodePortfolioMatcherControl(dv.getBigUint64(off + 96, true)).enabled;
 }
 
 /** Parse `capital` (collateral atoms, u128) from a v17 portfolio account. Null on any parse failure. */
@@ -105,11 +112,12 @@ export async function getKnownMarketLpCapitals(
  * Batched real Market-LP lookup for EVERY market on the wrapper program,
  * including wizard-launched markets that have no hardcoded
  * `lp_portfolio_address` in PLAYGROUND_SLAB_META (getKnownMarketLpCapitals
- * only covers the curated seeds). One getProgramAccounts scan, filtered
- * server-side to exactly the *enabled* LP-matcher portfolio accounts (magic +
- * fixed account length + matcher-enabled memcmp — see
- * PORTFOLIO_ENABLED_ABS_OFFSET), grouped by `marketGroupId` (== the market's
- * slab address). Unlike discoverMarketLpCapital (one getProgramAccounts call
+ * only covers the curated seeds). One getProgramAccounts scan filtered
+ * server-side to portfolio accounts (magic + fixed account length), then the
+ * *enabled* LP-matcher ones are selected in-code via `parsePortfolioV17(...)
+ * .matcherEnabled` — v18 packs `enabled` into a control bitfield a memcmp can't
+ * express — and grouped by `marketGroupId` (== the market's slab address).
+ * Unlike discoverMarketLpCapital (one getProgramAccounts call
  * per market), this is a single call that covers all markets at once — safe
  * to call once per /api/markets request.
  */
@@ -119,17 +127,22 @@ export async function scanEnabledMarketLpCapitals(
 ): Promise<Map<string, bigint>> {
   const result = new Map<string, bigint>();
   try {
+    // v18: the matcher `enabled` flag is now bit 0 of a packed control word, which
+    // a memcmp filter can't express (the other bits vary per portfolio). Filter on
+    // magic + the fixed account length only, then check `matcherEnabled` per row
+    // from the SDK parse below.
     const accounts = await connection.getProgramAccounts(programId, {
       filters: [
         { memcmp: { offset: 0, bytes: V17_PORTFOLIO_MAGIC.toString("base64"), encoding: "base64" } },
         { dataSize: V17_PORTFOLIO_ACCOUNT_LEN },
-        { memcmp: { offset: PORTFOLIO_ENABLED_ABS_OFFSET, bytes: ENABLED_TRUE_B64, encoding: "base64" } },
       ],
     });
     for (const { account } of accounts) {
       const data = Buffer.from(account.data);
       try {
         const parsed = parsePortfolioV17(new Uint8Array(data));
+        // Only the LP (matcher-enabled) portfolio counts as the market's backing.
+        if (!parsed.matcherEnabled) continue;
         const slab = parsed.marketGroupId.toBase58();
         // Guard against a theoretical duplicate-enabled-portfolio-per-market
         // case — never regress an already-found value.

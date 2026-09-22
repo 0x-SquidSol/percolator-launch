@@ -11,6 +11,7 @@ import {
   V17_MARKET_GROUP_OFF,
   V17_MARKET_GROUP_LEN,
   V17_MARKET_ASSET_SLOT_LEN,
+  V17_ASSET_SLOT_WRAPPER_LEN,
 } from "@percolatorct/sdk";
 
 /**
@@ -31,9 +32,10 @@ import {
  * `a` floors at MIN_A_SIDE = ADL_ONE/10.
  */
 
-/** Layout constants mirrored from lib/v17-adl.ts (see its doc comment). */
+/** Layout constants mirrored from lib/v17-adl.ts (see its doc comment).
+ *  v18: the asset-slot wrapper grew 512 → 1024 (V17_ASSET_SLOT_WRAPPER_LEN). */
 const SLOTS_BASE = V17_MARKET_GROUP_OFF + V17_MARKET_GROUP_LEN;
-const WRAPPER = 512;
+const WRAPPER = V17_ASSET_SLOT_WRAPPER_LEN;
 const A_LONG_REL = 49;
 const A_SHORT_REL = 65;
 const OI_LONG_REL = 273;

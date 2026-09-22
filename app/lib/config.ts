@@ -120,12 +120,11 @@ const CONFIGS = {
   },
   devnet: {
     get rpcUrl() { return getRpcEndpoint(); },
-    // v17 deployed devnet programs — FRESH triple, deployed + upgraded 2026-07-17,
-    // hash-verified on-chain (SDK PROGRAM_IDS_V17). Supersedes the 2026-06-26 wrapper
-    // (69VUZ7a2..., vault 51CeUNpb..., nft 5TnritLt...), which stays live with ~152 old
-    // markets but is no longer targeted. This is the fee-split-capable wrapper: the
-    // 576-byte WrapperConfigV16 with creator/LP/insurance split (tag 86) only exists here.
-    programId: "DhSkE7uTb8HBUYYWF1xkxMYBGtLYJEoDq1tfBD7SnHcj",
+    // v18 deployed devnet wrapper — FRESH re-deploy 2026-09-22 (@percolatorct/sdk@6.0.0
+    // wire + layout: EXPECTED_SLAB_VERSION 18). Supersedes the v17 fee-split wrapper
+    // (DhSkE7uTb8HBUYYWF1xkxMYBGtLYJEoDq1tfBD7SnHcj) and its abandoned markets. The
+    // matcher/nft/stake siblings were upgraded in place and keep the SAME addresses.
+    programId: "GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ",
     // Matcher was already live and upgraded in place at the same address (unchanged).
     matcherProgramId: "4seJWjv3R5qfXY8R5ntuPHWsoqcVvaxvfFSnU2AnGMhT",
     nftProgramId: "CNGBPZRALk9Xu8BdgWNyrLJ7daQ9eJYFf1GnEEC7YCU3",
@@ -135,9 +134,9 @@ const CONFIGS = {
     // v17 uses a single unified wrapper — no slab-tier program splits.
     // All tiers use the same program ID.
     programsBySlabTier: {
-      small:  "DhSkE7uTb8HBUYYWF1xkxMYBGtLYJEoDq1tfBD7SnHcj",
-      medium: "DhSkE7uTb8HBUYYWF1xkxMYBGtLYJEoDq1tfBD7SnHcj",
-      large:  "DhSkE7uTb8HBUYYWF1xkxMYBGtLYJEoDq1tfBD7SnHcj",
+      small:  "GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ",
+      medium: "GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ",
+      large:  "GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ",
     } satisfies Record<string, string>,
     // Playground: canonical Sim-USDC mint (6 decimals).
     // Overridable via NEXT_PUBLIC_TEST_USDC_MINT env var.
@@ -211,10 +210,10 @@ export function getConfig() {
 // lineage the app now targets; the 2026-06-26 IDs are intentionally NOT listed here
 // so the allowlist gate treats old-wrapper markets as untrusted after the cutover.
 const V17_PROGRAM_ID_PLACEHOLDERS = [
-  "DhSkE7uTb8HBUYYWF1xkxMYBGtLYJEoDq1tfBD7SnHcj",  // v17 wrapper (fresh)
-  "4seJWjv3R5qfXY8R5ntuPHWsoqcVvaxvfFSnU2AnGMhT",  // v17 matcher (same address, upgraded in place)
-  "CNGBPZRALk9Xu8BdgWNyrLJ7daQ9eJYFf1GnEEC7YCU3",  // v17 nft (fresh)
-  "GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3",  // v17 stake/vault (fresh)
+  "GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ",  // v18 wrapper (fresh 2026-09-22)
+  "4seJWjv3R5qfXY8R5ntuPHWsoqcVvaxvfFSnU2AnGMhT",  // matcher (same address, upgraded in place)
+  "CNGBPZRALk9Xu8BdgWNyrLJ7daQ9eJYFf1GnEEC7YCU3",  // nft (same address, upgraded in place)
+  "GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3",  // stake/vault (same address, upgraded in place)
 ] as const;
 
 /**

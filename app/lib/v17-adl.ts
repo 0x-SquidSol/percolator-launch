@@ -72,6 +72,7 @@ import {
   V17_MARKET_GROUP_OFF,
   V17_MARKET_GROUP_LEN,
   V17_MARKET_ASSET_SLOT_LEN,
+  V17_ASSET_SLOT_WRAPPER_LEN,
 } from "@percolatorct/sdk";
 import { formatTokenAmount } from "@/lib/format";
 
@@ -79,11 +80,13 @@ import { formatTokenAmount } from "@/lib/format";
 export const ADL_ONE = 1_000_000_000_000_000n;
 
 /**
- * Wrapper `T` bytes preceding `EngineAssetSlotV16Account` inside each market
- * slot (AssetOracleProfileV16Account=400 + 112 more). Mirrors the SDK's own
- * `V17_ASSET_SLOT_WRAPPER_SIZE`, which it does not export.
+ * Wrapper bytes preceding `EngineAssetSlotV16Account` inside each market slot.
+ * Imported from the SDK (`V17_ASSET_SLOT_WRAPPER_LEN`) so it tracks the layout:
+ * this grew 512 → 1024 in v18 (the AssetOracleProfileV16 region expanded 400 →
+ * 512 and the new AssetControlSequencesV16 region was added). Reading a_long at
+ * the stale 512 offset returned 0 on live v18 slabs — verified on-chain.
  */
-const ASSET_SLOT_WRAPPER_SIZE = 512;
+const ASSET_SLOT_WRAPPER_SIZE = V17_ASSET_SLOT_WRAPPER_LEN;
 
 /** Byte offsets of `a_long` / `a_short` within `AssetStateV16Account`. */
 const A_LONG_REL = 49;

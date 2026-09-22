@@ -1,5 +1,10 @@
 import { PublicKey } from '@solana/web3.js';
-import { CTX_VAMM_OFFSET, MATCHER_CONTEXT_LEN, V17_PORTFOLIO_ACCOUNT_LEN } from '@percolatorct/sdk';
+import {
+  CTX_VAMM_OFFSET,
+  MATCHER_CONTEXT_LEN,
+  V17_PORTFOLIO_ACCOUNT_LEN,
+  V17_PORTFOLIO_IDENTITY_TRAILER_LEN,
+} from '@percolatorct/sdk';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -11,6 +16,13 @@ import {
 
 function publicKey(fill: number): PublicKey {
   return new PublicKey(new Uint8Array(32).fill(fill));
+}
+
+// v18: the matcher config is followed by the identity trailer, so it starts
+// `V17_PORTFOLIO_MATCHER_CONFIG_LEN + V17_PORTFOLIO_IDENTITY_TRAILER_LEN` bytes
+// before the account end (not the final 104 bytes).
+function matcherConfigOffset(byteLength: number): number {
+  return byteLength - V17_PORTFOLIO_MATCHER_CONFIG_LEN - V17_PORTFOLIO_IDENTITY_TRAILER_LEN;
 }
 
 describe('v17 matcher-state helpers', () => {
@@ -25,9 +37,9 @@ describe('v17 matcher-state helpers', () => {
     expect(config.matcherDelegate.equals(PublicKey.default)).toBe(true);
   });
 
-  it('parses an enabled portfolio matcher config', () => {
+  it('parses an enabled portfolio matcher config (v18 packed control word)', () => {
     const data = new Uint8Array(V17_PORTFOLIO_ACCOUNT_LEN);
-    const offset = data.byteLength - V17_PORTFOLIO_MATCHER_CONFIG_LEN;
+    const offset = matcherConfigOffset(data.byteLength);
 
     const matcherProgram = publicKey(11);
     const matcherContext = publicKey(12);
@@ -37,7 +49,15 @@ describe('v17 matcher-state helpers', () => {
     data.set(matcherContext.toBytes(), offset + 32);
     data.set(matcherDelegate.toBytes(), offset + 64);
 
-    new DataView(data.buffer, data.byteOffset, data.byteLength).setBigUint64(offset + 96, 1n, true);
+    // v18: the trailing u64 is a packed control word, not a bare 0/1 flag —
+    // bit 0 is `enabled`, the upper bits carry position-epoch / fee-cap. Set a
+    // realistic packed value (0x9c40…0001) so the test proves the SDK decode
+    // reads bit 0 and ignores the rest (this is the exact shape seen on-chain).
+    new DataView(data.buffer, data.byteOffset, data.byteLength).setBigUint64(
+      offset + 96,
+      0x9c40000000000001n,
+      true,
+    );
 
     const config = readV17PortfolioMatcherConfig(data);
 
@@ -47,13 +67,20 @@ describe('v17 matcher-state helpers', () => {
     expect(config.matcherDelegate.equals(matcherDelegate)).toBe(true);
   });
 
-  it('rejects a non-boolean matcher enabled value', () => {
+  it('reads enabled=false when the control word bit 0 is clear (v18)', () => {
     const data = new Uint8Array(V17_PORTFOLIO_ACCOUNT_LEN);
-    const offset = data.byteLength - V17_PORTFOLIO_MATCHER_CONFIG_LEN;
+    const offset = matcherConfigOffset(data.byteLength);
 
-    new DataView(data.buffer, data.byteOffset, data.byteLength).setBigUint64(offset + 96, 2n, true);
+    // Upper bits set (epoch/fee-cap) but bit 0 clear → disabled. Must not throw
+    // (v18 dropped the old 0/1-only assertion — the field is now a bitfield).
+    new DataView(data.buffer, data.byteOffset, data.byteLength).setBigUint64(
+      offset + 96,
+      0x9c40000000000000n,
+      true,
+    );
 
-    expect(() => readV17PortfolioMatcherConfig(data)).toThrow(/invalid v17 matcher enabled value/i);
+    const config = readV17PortfolioMatcherConfig(data);
+    expect(config.enabled).toBe(false);
   });
 
   it('classifies a zeroed matcher context as uninitialized', () => {
@@ -97,7 +124,7 @@ describe('v17 matcher-state helpers', () => {
 
     expect(isEmptyV17PortfolioMatcherConfig(emptyConfig)).toBe(true);
 
-    const offset = data.byteLength - V17_PORTFOLIO_MATCHER_CONFIG_LEN;
+    const offset = matcherConfigOffset(data.byteLength);
 
     data.set(publicKey(31).toBytes(), offset);
 

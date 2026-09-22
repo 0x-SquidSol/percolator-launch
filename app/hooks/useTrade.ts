@@ -17,6 +17,8 @@ import {
   deriveMatcherDelegate,
   isV17Account,
   parsePortfolioV17,
+  V17_PORTFOLIO_IDENTITY_TRAILER_LEN,
+  decodePortfolioMatcherControl,
 } from "@percolatorct/sdk";
 // TODO(oracle-migration): encodePushOraclePrice/ACCOUNTS_PUSH_ORACLE_PRICE removed in beta.29.
 // The DEX oracle inline push path needs to migrate to /api/oracle/advance-phase.
@@ -84,14 +86,17 @@ function readPortfolioMatcherConfig(data: Buffer): {
   matcherContext: PublicKey;
   matcherDelegate: PublicKey;
 } | null {
-  if (data.length < PORTFOLIO_MATCHER_CONFIG_LEN) return null;
-  const off = data.length - PORTFOLIO_MATCHER_CONFIG_LEN;
+  // v18: the matcher config is followed by a `V17_PORTFOLIO_IDENTITY_TRAILER_LEN`-byte
+  // identity trailer, so anchor off the end minus BOTH the trailer and the config.
+  const trailerLen = V17_PORTFOLIO_IDENTITY_TRAILER_LEN;
+  if (data.length < PORTFOLIO_MATCHER_CONFIG_LEN + trailerLen) return null;
+  const off = data.length - PORTFOLIO_MATCHER_CONFIG_LEN - trailerLen;
   // `data` is a Uint8Array in the browser (web3.js) — it has no Buffer.readBigUInt64LE,
   // and Next's Buffer polyfill is missing the BigInt read methods. Use DataView (works
   // for both Buffer and Uint8Array). LE = true.
   const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  const enabled = dv.getBigUint64(off + 96, true);
-  if (enabled !== 1n) return null;
+  // v18: the trailing u64 is a packed control word (bit 0 = enabled).
+  if (!decodePortfolioMatcherControl(dv.getBigUint64(off + 96, true)).enabled) return null;
   return {
     matcherProgram: new PublicKey(data.subarray(off, off + 32)),
     matcherContext: new PublicKey(data.subarray(off + 32, off + 64)),

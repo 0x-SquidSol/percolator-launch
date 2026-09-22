@@ -17,6 +17,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import type { Connection } from "@solana/web3.js";
 import {
+  V17_PORTFOLIO_ACCOUNT_LEN,
+  V17_PORTFOLIO_IDENTITY_TRAILER_LEN,
+} from "@percolatorct/sdk";
+import {
   getMatcherCaps,
   getMatcherInventory,
   invalidateMatcherCaps,
@@ -26,13 +30,14 @@ import {
 
 const PROGRAM = Keypair.generate().publicKey;
 
-/** A v17-shaped LP portfolio: magic at 0, enabled matcher config at the tail. */
+/** A v18-shaped LP portfolio: magic at 0, enabled matcher config before the
+ *  24-byte identity trailer, and the trailing u64 as a packed control word. */
 function makeLpPortfolio(matcherCtx: PublicKey): Buffer {
-  const buf = Buffer.alloc(9347);
+  const buf = Buffer.alloc(V17_PORTFOLIO_ACCOUNT_LEN);
   Buffer.from([0x00, 0x36, 0x31, 0x56, 0x43, 0x52, 0x45, 0x50]).copy(buf, 0);
-  const off = buf.length - 104;
+  const off = buf.length - 104 - V17_PORTFOLIO_IDENTITY_TRAILER_LEN;
   matcherCtx.toBuffer().copy(buf, off + 32); // matcher_context
-  buf.writeBigUInt64LE(1n, off + 96); // enabled = 1
+  buf.writeBigUInt64LE(1n, off + 96); // control: bit 0 (enabled) = 1
   return buf;
 }
 

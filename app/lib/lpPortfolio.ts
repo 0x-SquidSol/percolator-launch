@@ -45,18 +45,29 @@
  * that LP portfolio's owner is the durable creator marker (see that route's
  * header comment for why marketauth can't be used post-launch).
  */
+import {
+  V17_PORTFOLIO_IDENTITY_TRAILER_LEN,
+  decodePortfolioMatcherControl,
+} from "@percolatorct/sdk";
+
 export const PORTFOLIO_MATCHER_CONFIG_LEN = 104; // sizeof(PortfolioMatcherConfigV16)
 
 /**
- * True if `data` is a v17 portfolio account acting as a market's LP (its
- * trailing PortfolioMatcherConfigV16.enabled == 1). See the module comment
- * above for why every "this is MY trading account" scan must exclude these.
+ * True if `data` is a v17/v18 portfolio account acting as a market's LP (its
+ * PortfolioMatcherConfigV16 has enabled == 1). See the module comment above for
+ * why every "this is MY trading account" scan must exclude these.
+ *
+ * v18: a `V17_PORTFOLIO_IDENTITY_TRAILER_LEN`-byte identity trailer follows the
+ * matcher config, so it is no longer the final 104 bytes; and its trailing u64
+ * is a packed control word (bit 0 = enabled), decoded via the SDK.
  */
 export function isLpPortfolio(data: Buffer | Uint8Array): boolean {
-  if (data.length < PORTFOLIO_MATCHER_CONFIG_LEN) return false;
-  const off = data.length - PORTFOLIO_MATCHER_CONFIG_LEN;
+  const trailerLen = V17_PORTFOLIO_IDENTITY_TRAILER_LEN;
+  if (data.length < PORTFOLIO_MATCHER_CONFIG_LEN + trailerLen) return false;
+  const off = data.length - PORTFOLIO_MATCHER_CONFIG_LEN - trailerLen;
   const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  // enabled (u64 LE) sits at the last 8 bytes of the 104-byte trailing config
-  // (matcher_program[32] | matcher_context[32] | matcher_delegate[32] | enabled[8]).
-  return dv.getBigUint64(off + 96, true) === 1n;
+  // control (u64 LE) sits at the last 8 bytes of the 104-byte config
+  // (matcher_program[32] | matcher_context[32] | matcher_delegate[32] | control[8]).
+  const control = dv.getBigUint64(off + 96, true);
+  return decodePortfolioMatcherControl(control).enabled;
 }

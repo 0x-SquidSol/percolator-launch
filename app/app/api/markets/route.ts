@@ -94,17 +94,17 @@ const MAINNET_MARKET_DIRECTORY_FALLBACK: Record<string, unknown>[] = [
   },
 ];
 
-// v17 devnet static fallback — used only when Supabase AND on-chain discovery both fail.
-// Program: DhSkE7uTb8HBUYYWF1xkxMYBGtLYJEoDq1tfBD7SnHcj (fresh fee-split wrapper, 2026-07-17).
-// Points at the one real market currently live on the fresh wrapper. On-chain discovery
-// (getProgramAccounts on the fresh wrapper) normally supersedes this list; it exists only
-// so the markets page is never fully empty if both Supabase and discovery are down.
+// v18 devnet static fallback — used only when Supabase AND on-chain discovery both fail.
+// Program: GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ (fresh v18 wrapper, 2026-09-22).
+// Points at the live v18 SOL market. On-chain discovery (getProgramAccounts on the fresh
+// wrapper) normally supersedes this list; it exists only so the markets page is never
+// fully empty if both Supabase and discovery are down.
 const DEVNET_MARKET_DIRECTORY_FALLBACK: Record<string, unknown>[] = [
   {
-    // First real market on the fresh fee-split wrapper (fresh 6dp collateral mint).
-    slab_address: "BPgSUbDsxZ9bkauWgd6eQ8oLHVx6pSsvfAjPGsS2Sso8",
-    program_id: "DhSkE7uTb8HBUYYWF1xkxMYBGtLYJEoDq1tfBD7SnHcj",
-    mint_address: "94jhyh8ZwoGpGxvPw1WAxstB6WUrm3d4KjQQCTo1GGCz",
+    // Live v18 SOL market (shared sim-USDC collateral mint).
+    slab_address: "BxSzmN1ZjmjwLgZyX7djctDa4bsr1wH82Ms8BWfeRaZ1",
+    program_id: "GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ",
+    mint_address: "DJ54k4wH92NTtNP8RuHAwG8si1bevXEknzctDdqYN8eC",
     symbol: "SOL-PERP",
     name: "SOL/USD Perpetual (Devnet)",
     decimals: 6,

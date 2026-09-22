@@ -5,12 +5,11 @@
  *  - app/api/markets/route.ts     (discoveredToApiRow → bulk list)
  *  - app/api/markets/[slab]/route.ts  (on-chain fallback for individual slab)
  *
- * BRAND-NEW born-immortal markets (2026-07-10 full re-seed): all marketauth=FbTbD,
- * each with nft_registry + stake pool + matcher + LP — every one proven
- * trade+NFT+stake. Fixes the backing-bucket-freshness deadlock (engine line-776
- * trap): both backing-bucket domains (asset 0) are seeded to a non-lapsing
- * expiry (u64::MAX/2 = 9223372036854775807) via TopUpBackingBucket at creation,
- * verified Fresh@MAX on-chain for all 6 markets before this file was wired up.
+ * v18 markets (2026-09-22 fresh wrapper GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ):
+ * all marketauth=FbTbD, each with nft_registry + stake pool + matcher + LP — every
+ * one proven trade+stake. Both backing-bucket domains (asset 0) are seeded to a
+ * non-lapsing expiry (u64::MAX/2 = 9223372036854775807) via TopUpBackingBucket at
+ * creation. The 2026-07-10 v17 markets on the old wrapper are ABANDONED.
  */
 export const PLAYGROUND_SLAB_META: Record<string, {
   symbol: string;
@@ -28,52 +27,44 @@ export const PLAYGROUND_SLAB_META: Record<string, {
    */
   lp_portfolio_address: string;
 }> = {
-  // SOL/USDC — raydium-clmm — 2026-07-10 born-immortal re-seed
-  "7RXTVmGcJMDqqTCFu5ADQRyLDvVZBi3r5U5WXzoULHJV": {
+  // SOL/USDC — raydium-clmm — v18 2026-09-22
+  "BxSzmN1ZjmjwLgZyX7djctDa4bsr1wH82Ms8BWfeRaZ1": {
     symbol: "SOL-PERP",
     name: "SOL/USDC Perpetual",
     mainnet_ca: "So11111111111111111111111111111111111111112",
     dex_pool_address: "8sLbNZoA1cfnvMJLPfp98ZLAnFSYCFApfJKMbiXNLwxj",
-    lp_portfolio_address: "AwUkest7xDGmfBSpqJTNXj431F1MCihNpsdPN3gM52Rv",
+    lp_portfolio_address: "H33XTYC4WKSpSspA4gVaRPjeLMYf9qKQgFf5ueYxcyRW",
   },
-  // JUP/USDC — meteora-dlmm — 2026-07-10 born-immortal re-seed
-  "B22quVNFuuEYwx4dQigwn41BMBuk9ZcTdMik4UH7PshY": {
+  // JUP/USDC — meteora-dlmm — v18 2026-09-22
+  "3idZvebuXmaMCcwXZET6AFHhQYpdC77z2XGM9fyfzCTp": {
     symbol: "JUP-PERP",
     name: "JUP/USDC Perpetual",
     mainnet_ca: "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",
     dex_pool_address: "HfgjZDmexhFVD28Vkb1NbQwWeXP3uDcVTLPjSGHmRHhL",
-    lp_portfolio_address: "6BE6Wc6Z1qBpLfMmeTuVZNLg8TcBepv1XHpnMcPSPWh3",
+    lp_portfolio_address: "Ho3j17hybJiwhGSneAaN4GD7LRr6Uugwn4PL8jK2em95",
   },
-  // TRUMP/USDC — meteora-dlmm — 2026-07-10 born-immortal re-seed
-  "6Hqn4VoMHjvCb1XWQkpnJ1UE3xAverJezVdk3czvgQxh": {
-    symbol: "TRUMP-PERP",
-    name: "TRUMP/USDC Perpetual",
-    mainnet_ca: "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN",
-    dex_pool_address: "9d9mb8kooFfaD3SctgZtkxQypkshx6ezhbKio89ixyy2",
-    lp_portfolio_address: "8XXyvRJrrUgkSa2PKfBPhjLabYEEhjAUVSFaxJfS9kD6",
-  },
-  // PENGU/USDC — meteora-dlmm — 2026-07-10 born-immortal re-seed
-  "Gbpuam5UYV4MpC1DmGeTVZWtT4UGDmahMW2vo4p1MBAf": {
+  // PENGU/USDC — meteora-dlmm — v18 2026-09-22
+  "4dcgGXtXQo25Jzkc64d7aUFSmrz298nJorm7PnfTUs7p": {
     symbol: "PENGU-PERP",
     name: "PENGU/USDC Perpetual",
     mainnet_ca: "2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv",
     dex_pool_address: "DdMA1cHcHEqYfttc1z1sJEY978CcU1pyjNuTWTNmdvzU",
-    lp_portfolio_address: "AzMTFzZWoygPkxDSYdQm1Adq2e3AVqo2JfuZtsZ54pFp",
+    lp_portfolio_address: "7JBxotpPVCUgGeLRgF5fcXeUMQu5QyaNpMHNw32gA6Z6",
   },
-  // BURNIE/USDC — pumpswap — 2026-07-10 born-immortal re-seed
-  "GPpyVaHAEJ8u6W9UAyCPp6tuQB2Chm1Z6uLUKA9ePJBC": {
+  // BURNIE/USDC — pumpswap — v18 2026-09-22
+  "D1bHqCaoAFtgXfyJmwi726dJyubZ4Uu51b8DDEhcV4bh": {
     symbol: "BURNIE-PERP",
     name: "BURNIE/USDC Perpetual",
     mainnet_ca: "CGEDT9QZDvvH5GmVkWJH2BXiMJqMJySC9ihWyr7Spump",
     dex_pool_address: "5tYFviFWQRKV9BJSTHGitbdqEYC1BGUgRUDnSADUXqJP",
-    lp_portfolio_address: "D4uksp3XnqiTz4bbe3Lo9RRYmo19ePv7g253Q7YKf9WX",
+    lp_portfolio_address: "4dtoJQwhLzdnmx4ZwJrzaJr4fSu3yj9GuFVbvaduNsFM",
   },
-  // Percolator/USDC — pumpswap — 2026-07-10 born-immortal re-seed
-  "FGaUkXepxCggbmpbgXDWUZ3V2CGSh6MeDCU6KLTLShbH": {
+  // Percolator/USDC — pumpswap — v18 2026-09-22
+  "7zZKbmQv1CKcvZz9B6PnTEBfzVz2r1zroUJGEsGwCmev": {
     symbol: "PERCOLATOR-PERP",
     name: "Percolator/USDC Perpetual",
     mainnet_ca: "8PzFWyLpCVEmbZmVJcaRTU5r69XKJx1rd7YGpWvnpump",
     dex_pool_address: "Ebs3mXAzqZfzHfsdinTNw7gPy4uNyEAywcCiJxzLRrBW",
-    lp_portfolio_address: "F9qDosJk7EixJ79w8EADT3Rc5giVxF83tG3P3xPCNTvc",
+    lp_portfolio_address: "HGdqorMTaCmgpjWmF5bDmoYTvd7TjZQBmJEtnmBxHaiE",
   },
 };

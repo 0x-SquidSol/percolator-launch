@@ -8,11 +8,15 @@
  * context.
  */
 import { describe, it, expect } from "vitest";
+import { V17_PORTFOLIO_IDENTITY_TRAILER_LEN } from "@percolatorct/sdk";
 import { isLpPortfolio, PORTFOLIO_MATCHER_CONFIG_LEN } from "@/lib/lpPortfolio";
 
+// v18: the matcher config is followed by the identity trailer, and its trailing
+// u64 is a packed control word (bit 0 = enabled).
 function makePortfolioBuffer(enabled: boolean, totalLen = 200): Buffer {
   const buf = Buffer.alloc(totalLen);
-  const matcherConfigOffset = buf.length - PORTFOLIO_MATCHER_CONFIG_LEN;
+  const matcherConfigOffset =
+    buf.length - PORTFOLIO_MATCHER_CONFIG_LEN - V17_PORTFOLIO_IDENTITY_TRAILER_LEN;
   buf.writeBigUInt64LE(enabled ? 1n : 0n, matcherConfigOffset + 96);
   return buf;
 }

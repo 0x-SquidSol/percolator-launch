@@ -101,17 +101,24 @@ function validateNetworkOverride(
  * PERC-469: Supports optional ?network=mainnet|devnet query param so Privy can
  * configure both chains through the same proxy without exposing any API key.
  *
- * Priority for API key resolution:
+ * Priority for URL resolution:
+ *   DEVNET_RPC_URL / MAINNET_RPC_URL (full-URL override — lets the operator point
+ *     the devnet upstream at the padre RPC without a code change; the key never
+ *     leaves the server) →
  *   HELIUS_MAINNET_API_KEY / HELIUS_DEVNET_API_KEY (network-specific) →
  *   HELIUS_API_KEY (generic fallback) → public Solana RPC (rate-limited, no key)
  */
 function buildHeliusUrl(network: "mainnet" | "devnet"): string {
   if (network === "mainnet") {
+    const override = (process.env.MAINNET_RPC_URL ?? "").trim();
+    if (override) return override;
     const key = (process.env.HELIUS_MAINNET_API_KEY ?? process.env.HELIUS_API_KEY ?? "").trim();
     return key
       ? `https://mainnet.helius-rpc.com/?api-key=${key}`
       : "https://api.mainnet-beta.solana.com";
   }
+  const override = (process.env.DEVNET_RPC_URL ?? "").trim();
+  if (override) return override;
   const key = (process.env.HELIUS_DEVNET_API_KEY ?? process.env.HELIUS_API_KEY ?? "").trim();
   return key
     ? `https://devnet.helius-rpc.com/?api-key=${key}`
@@ -119,23 +126,55 @@ function buildHeliusUrl(network: "mainnet" | "devnet"): string {
 }
 
 /**
- * Lazy per-network RPC URL cache — avoids rebuilding on every request.
- * One entry per network ("mainnet" | "devnet" | "default").
+ * Extra headers to send to the UPSTREAM RPC (not to the client).
+ *
+ * The devnet RPC (padre) gates reads on `Origin: https://trade.padre.gg`, which a
+ * browser cannot set on a cross-origin request — but this proxy runs server-side,
+ * so it sets the Origin here. Harmless for upstreams that ignore Origin (Helius,
+ * public Solana RPC). Override the value via RPC_UPSTREAM_ORIGIN if the devnet RPC
+ * provider ever changes. Mainnet upstreams get no injected Origin.
  */
-const _rpcUrlCache: Partial<Record<string, string>> = {};
+function upstreamOriginHeaders(network: "mainnet" | "devnet"): Record<string, string> {
+  if (network !== "devnet") return {};
+  const origin = (process.env.RPC_UPSTREAM_ORIGIN ?? "").trim() || "https://trade.padre.gg";
+  return { Origin: origin };
+}
 
-function getRpcUrl(networkOverride?: "mainnet" | "devnet"): string {
+/**
+ * Lazy per-network upstream cache — avoids rebuilding on every request.
+ * One entry per key ("mainnet" | "devnet" | "default"). Each entry carries the
+ * upstream URL AND the headers to send with it (the devnet Origin injection).
+ */
+interface Upstream {
+  url: string;
+  headers: Record<string, string>;
+}
+const _upstreamCache: Partial<Record<string, Upstream>> = {};
+
+function resolveUpstream(networkOverride?: "mainnet" | "devnet"): Upstream {
+  const cacheKey = networkOverride ?? "default";
+  const cached = _upstreamCache[cacheKey];
+  if (cached) return cached;
+
+  const network = networkOverride ?? getDeploymentNetwork();
+  let url: string;
   if (networkOverride) {
-    if (!_rpcUrlCache[networkOverride]) {
-      _rpcUrlCache[networkOverride] = buildHeliusUrl(networkOverride);
-    }
-    return _rpcUrlCache[networkOverride]!;
+    url = buildHeliusUrl(networkOverride);
+  } else {
+    // Default path: honour a full-URL override (e.g. the padre DEVNET_RPC_URL)
+    // first, else fall back to the existing env-driven resolution.
+    const fullOverride = (
+      network === "devnet" ? process.env.DEVNET_RPC_URL : process.env.MAINNET_RPC_URL
+    )?.trim();
+    url = fullOverride || getRpcEndpoint();
   }
-  // No override — fall back to existing env-driven behaviour
-  if (!_rpcUrlCache["default"]) {
-    _rpcUrlCache["default"] = getRpcEndpoint();
-  }
-  return _rpcUrlCache["default"]!;
+
+  const upstream: Upstream = {
+    url,
+    headers: { "Content-Type": "application/json", ...upstreamOriginHeaders(network) },
+  };
+  _upstreamCache[cacheKey] = upstream;
+  return upstream;
 }
 
 /**
@@ -393,9 +432,10 @@ async function processSingleRequest(
     // read-only requests are DEDUPLICATED on `cacheKey`, so every later caller
     // for the same method awaits the SAME hung promise (`:335-337`) rather than
     // issuing its own — one slow upstream call stalls all of them together.
-    const response = await fetch(getRpcUrl(networkOverride), {
+    const upstream = resolveUpstream(networkOverride);
+    const response = await fetch(upstream.url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: upstream.headers,
       body: JSON.stringify(req),
       signal: AbortSignal.timeout(RPC_UPSTREAM_TIMEOUT_MS),
     });

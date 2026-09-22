@@ -35,6 +35,10 @@
  * SOL-denominated price saw its $1,000 cap read as $9.57.
  */
 import { Connection, PublicKey } from "@solana/web3.js";
+import {
+  V17_PORTFOLIO_IDENTITY_TRAILER_LEN,
+  decodePortfolioMatcherControl,
+} from "@percolatorct/sdk";
 import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
 
 /** v17 portfolio account magic (first 8 bytes, little-endian): PERCV16\0 */
@@ -105,12 +109,15 @@ export function parseMatcherCaps(data: Buffer): MatcherCaps | null {
   };
 }
 
-/** Read the trailing PortfolioMatcherConfigV16.matcher_context, or null when disabled. */
+/** Read the PortfolioMatcherConfigV16.matcher_context, or null when disabled.
+ *  v18: an identity trailer follows the config, so anchor off the end minus BOTH
+ *  the trailer and the config; the trailing u64 is a packed control word. */
 function readMatcherContext(data: Buffer): PublicKey | null {
-  if (data.length < PORTFOLIO_MATCHER_CONFIG_LEN) return null;
-  const off = data.length - PORTFOLIO_MATCHER_CONFIG_LEN;
+  const trailerLen = V17_PORTFOLIO_IDENTITY_TRAILER_LEN;
+  if (data.length < PORTFOLIO_MATCHER_CONFIG_LEN + trailerLen) return null;
+  const off = data.length - PORTFOLIO_MATCHER_CONFIG_LEN - trailerLen;
   const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  if (dv.getBigUint64(off + 96, true) !== 1n) return null; // enabled != 1
+  if (!decodePortfolioMatcherControl(dv.getBigUint64(off + 96, true)).enabled) return null;
   return new PublicKey(data.subarray(off + 32, off + 64));
 }
 
