@@ -92,17 +92,19 @@ if (!MAINNET_RPC_URL) {
 
 /** Pyth mainnet crypto price-feed IDs, keyed by the CURRENT devnet slab. */
 const PYTH_FEED: Record<string, string> = {
-  "BxSzmN1ZjmjwLgZyX7djctDa4bsr1wH82Ms8BWfeRaZ1": "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d", // SOL (v18 GnwdeQr)
-  "3idZvebuXmaMCcwXZET6AFHhQYpdC77z2XGM9fyfzCTp": "0a0408d619e9380abad35060f9192039ed5042fa6f82301d0e48bb52be830996", // JUP (v18)
-  "4dcgGXtXQo25Jzkc64d7aUFSmrz298nJorm7PnfTUs7p": "bed3097008b9b5e3c93bec20be79cb43986b85a996475589351a21e67bae9b61", // PENGU (v18)
+  "3t2iZ8GbRiiLDGfdtFZLfSWx8v7tfWFbaEpW9Qsq22cG": "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d", // SOL (v18 GnwdeQr fresh)
+  "8JHSgJXFKdrsW8ksknQYMyrckfzkux2SkSDQZKXnSBVY": "0a0408d619e9380abad35060f9192039ed5042fa6f82301d0e48bb52be830996", // JUP (v18 fresh)
+  "C8xgG7Y51pq86Avo6KGLvVbnTTEi6J1vVZxBP6xV18hL": "879551021853eec7a7dc827578e8e69da7e4fa8148339aa0d3d5296405be4b1a", // TRUMP (v18 fresh)
+  "DutyL6caGodQ486y4LBd22PHNJmKQSmP1HLPdVgeso9a": "bed3097008b9b5e3c93bec20be79cb43986b85a996475589351a21e67bae9b61", // PENGU (v18 fresh)
 };
 const idToSlab = new Map(Object.entries(PYTH_FEED).map(([slab, id]) => [id.toLowerCase(), slab]));
 const PYTH_LABELS: Record<string, string> = {
-  "BxSzmN1ZjmjwLgZyX7djctDa4bsr1wH82Ms8BWfeRaZ1": "SOL/USDC",
-  "3idZvebuXmaMCcwXZET6AFHhQYpdC77z2XGM9fyfzCTp": "JUP/USDC",
-  "4dcgGXtXQo25Jzkc64d7aUFSmrz298nJorm7PnfTUs7p": "PENGU/USDC",
+  "3t2iZ8GbRiiLDGfdtFZLfSWx8v7tfWFbaEpW9Qsq22cG": "SOL/USDC",
+  "8JHSgJXFKdrsW8ksknQYMyrckfzkux2SkSDQZKXnSBVY": "JUP/USDC",
+  "C8xgG7Y51pq86Avo6KGLvVbnTTEi6J1vVZxBP6xV18hL": "TRUMP/USDC",
+  "DutyL6caGodQ486y4LBd22PHNJmKQSmP1HLPdVgeso9a": "PENGU/USDC",
 };
-const SOL_SLAB = "BxSzmN1ZjmjwLgZyX7djctDa4bsr1wH82Ms8BWfeRaZ1";
+const SOL_SLAB = "3t2iZ8GbRiiLDGfdtFZLfSWx8v7tfWFbaEpW9Qsq22cG";
 
 // ── DEX poll: the 2 pump.fun markets with no Pyth feed ──────────────────────
 
@@ -122,8 +124,8 @@ interface DexMarketEntry extends PoolReadEntry {
  * on-chain — indistinguishable from a broken price feed.
  */
 const SEED_DEX_MARKETS: DexMarketEntry[] = [
-  { slab: "D1bHqCaoAFtgXfyJmwi726dJyubZ4Uu51b8DDEhcV4bh", poolAddress: "5tYFviFWQRKV9BJSTHGitbdqEYC1BGUgRUDnSADUXqJP", dexType: "pumpswap", label: "BURNIE/WSOL" },
-  { slab: "7zZKbmQv1CKcvZz9B6PnTEBfzVz2r1zroUJGEsGwCmev", poolAddress: "Ebs3mXAzqZfzHfsdinTNw7gPy4uNyEAywcCiJxzLRrBW", dexType: "pumpswap", label: "PERC/WSOL" },
+  { slab: "8kynWczSwQUuwu9Pcj2DgGNWuZ6UH57L4Ungx5CJUrTs", poolAddress: "5tYFviFWQRKV9BJSTHGitbdqEYC1BGUgRUDnSADUXqJP", dexType: "pumpswap", label: "BURNIE/WSOL" },
+  { slab: "7iP6v2Am2yHBJy9ymWRdf6hEhYccuBMEXSJj7x5CAPDP", poolAddress: "Ebs3mXAzqZfzHfsdinTNw7gPy4uNyEAywcCiJxzLRrBW", dexType: "pumpswap", label: "PERC/WSOL" },
 ];
 
 /**
