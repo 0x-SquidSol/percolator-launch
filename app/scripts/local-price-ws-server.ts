@@ -92,19 +92,17 @@ if (!MAINNET_RPC_URL) {
 
 /** Pyth mainnet crypto price-feed IDs, keyed by the CURRENT devnet slab. */
 const PYTH_FEED: Record<string, string> = {
-  "7RXTVmGcJMDqqTCFu5ADQRyLDvVZBi3r5U5WXzoULHJV": "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d", // SOL
-  "B22quVNFuuEYwx4dQigwn41BMBuk9ZcTdMik4UH7PshY": "0a0408d619e9380abad35060f9192039ed5042fa6f82301d0e48bb52be830996", // JUP
-  "6Hqn4VoMHjvCb1XWQkpnJ1UE3xAverJezVdk3czvgQxh": "879551021853eec7a7dc827578e8e69da7e4fa8148339aa0d3d5296405be4b1a", // TRUMP
-  "Gbpuam5UYV4MpC1DmGeTVZWtT4UGDmahMW2vo4p1MBAf": "bed3097008b9b5e3c93bec20be79cb43986b85a996475589351a21e67bae9b61", // PENGU
+  "BxSzmN1ZjmjwLgZyX7djctDa4bsr1wH82Ms8BWfeRaZ1": "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d", // SOL (v18 GnwdeQr)
+  "3idZvebuXmaMCcwXZET6AFHhQYpdC77z2XGM9fyfzCTp": "0a0408d619e9380abad35060f9192039ed5042fa6f82301d0e48bb52be830996", // JUP (v18)
+  "4dcgGXtXQo25Jzkc64d7aUFSmrz298nJorm7PnfTUs7p": "bed3097008b9b5e3c93bec20be79cb43986b85a996475589351a21e67bae9b61", // PENGU (v18)
 };
 const idToSlab = new Map(Object.entries(PYTH_FEED).map(([slab, id]) => [id.toLowerCase(), slab]));
 const PYTH_LABELS: Record<string, string> = {
-  "7RXTVmGcJMDqqTCFu5ADQRyLDvVZBi3r5U5WXzoULHJV": "SOL/USDC",
-  "B22quVNFuuEYwx4dQigwn41BMBuk9ZcTdMik4UH7PshY": "JUP/USDC",
-  "6Hqn4VoMHjvCb1XWQkpnJ1UE3xAverJezVdk3czvgQxh": "TRUMP/USDC",
-  "Gbpuam5UYV4MpC1DmGeTVZWtT4UGDmahMW2vo4p1MBAf": "PENGU/USDC",
+  "BxSzmN1ZjmjwLgZyX7djctDa4bsr1wH82Ms8BWfeRaZ1": "SOL/USDC",
+  "3idZvebuXmaMCcwXZET6AFHhQYpdC77z2XGM9fyfzCTp": "JUP/USDC",
+  "4dcgGXtXQo25Jzkc64d7aUFSmrz298nJorm7PnfTUs7p": "PENGU/USDC",
 };
-const SOL_SLAB = "7RXTVmGcJMDqqTCFu5ADQRyLDvVZBi3r5U5WXzoULHJV";
+const SOL_SLAB = "BxSzmN1ZjmjwLgZyX7djctDa4bsr1wH82Ms8BWfeRaZ1";
 
 // ── DEX poll: the 2 pump.fun markets with no Pyth feed ──────────────────────
 
@@ -124,8 +122,8 @@ interface DexMarketEntry extends PoolReadEntry {
  * on-chain — indistinguishable from a broken price feed.
  */
 const SEED_DEX_MARKETS: DexMarketEntry[] = [
-  { slab: "GPpyVaHAEJ8u6W9UAyCPp6tuQB2Chm1Z6uLUKA9ePJBC", poolAddress: "5tYFviFWQRKV9BJSTHGitbdqEYC1BGUgRUDnSADUXqJP", dexType: "pumpswap", label: "BURNIE/WSOL" },
-  { slab: "FGaUkXepxCggbmpbgXDWUZ3V2CGSh6MeDCU6KLTLShbH", poolAddress: "Ebs3mXAzqZfzHfsdinTNw7gPy4uNyEAywcCiJxzLRrBW", dexType: "pumpswap", label: "PERC/WSOL" },
+  { slab: "D1bHqCaoAFtgXfyJmwi726dJyubZ4Uu51b8DDEhcV4bh", poolAddress: "5tYFviFWQRKV9BJSTHGitbdqEYC1BGUgRUDnSADUXqJP", dexType: "pumpswap", label: "BURNIE/WSOL" },
+  { slab: "7zZKbmQv1CKcvZz9B6PnTEBfzVz2r1zroUJGEsGwCmev", poolAddress: "Ebs3mXAzqZfzHfsdinTNw7gPy4uNyEAywcCiJxzLRrBW", dexType: "pumpswap", label: "PERC/WSOL" },
 ];
 
 /**
