@@ -55,6 +55,7 @@ import {
   buildAccountMetas,
 } from "@percolatorct/sdk";
 import { getRpcEndpoint, getConfig } from "@/lib/config";
+import { readAssetMarketId, readAssetControlSeqs } from "@/lib/v18-wire";
 import { MAX_PRICE_E6 } from "@/lib/oraclePrice";
 import { requirePlaygroundKeeperSigner } from "@/lib/playground-keeper-signer";
 
@@ -178,6 +179,19 @@ export async function POST(req: NextRequest) {
     const cfg = getConfig();
     const programId = new PublicKey(cfg.programId);
 
+    // v18: ConfigureAuthMark and UpdateAssetAuthority bind the asset's market_id and
+    // their replay lanes — live-read from the market. observation_sequence is the
+    // oracle-observation nonce + 1 (strictly-increasing); authority_epoch is the CAS
+    // CURRENT value (not +1). ConfigureAuthMark advances the oracle-observation lane
+    // but NOT the authority-epoch lane, so both reads come from one pre-tx snapshot.
+    const slabInfo = await connection.getAccountInfo(slabPk, "confirmed");
+    if (!slabInfo?.data) {
+      return NextResponse.json({ error: "market account not found" }, { status: 404 });
+    }
+    const slabData = new Uint8Array(slabInfo.data);
+    const cosignMarketId = readAssetMarketId(slabData, assetIdx);
+    const cosignSeqs = readAssetControlSeqs(slabData, assetIdx);
+
     // ── Instruction 1: ConfigureAuthMark ──────────────────────────────────────
     // Sets oracle to AUTH_MARK mode (mode=3) and records initial mark price.
     // oracle_authority at this point is `deployer` (the market admin set in InitMarket).
@@ -189,8 +203,10 @@ export async function POST(req: NextRequest) {
       }),
       data: encodeConfigureAuthMark({
         assetIndex: assetIdx,
+        marketId: cosignMarketId,
         nowSlot,
         initialMarkE6: priceE6,
+        observationSequence: cosignSeqs.oracleObservation + 1n,
       }),
     });
 
@@ -206,8 +222,10 @@ export async function POST(req: NextRequest) {
       }),
       data: encodeUpdateAssetAuthority({
         assetIndex: assetIdx,
+        marketId: cosignMarketId,
         kind: ASSET_AUTH_KIND.Oracle,
         newPubkey: keeperPk,
+        authorityEpoch: cosignSeqs.authorityEpoch,
       }),
     });
 

@@ -44,7 +44,6 @@ import {
   encodeMatcherInitPassive,
   encodeSetMatcherConfig,
   encodeInitUser,
-  CrankAction,
   ACCOUNTS_INIT_MARKET,
   ACCOUNTS_DEPOSIT_COLLATERAL,
   ACCOUNTS_TOPUP_INSURANCE,
@@ -57,11 +56,13 @@ import {
   deriveVaultAuthority,
   deriveMatcherDelegate,
   MATCHER_CONTEXT_LEN,
+  MAX_BACKING_BUCKET_EXPIRY_SLOT,
   v17MarketAccountLen,
   V17_PORTFOLIO_ACCOUNT_LEN,
   type SlabTierKey,
 } from "@percolatorct/sdk";
 import { getConfig, getRpcEndpoint } from "@/lib/config";
+import { defaultCrankObservations } from "@/lib/v18-wire";
 import { getClientIp } from "@/lib/get-client-ip";
 import {
   checkCreateMarketRateLimit,
@@ -429,7 +430,9 @@ export async function POST(req: NextRequest) {
         { pubkey: matcherCtxPk, isSigner: false, isWritable: true },
       ],
       // Bounded fill, sized to LP capital — NOT u128::MAX (see derivedParams above).
-      data: Buffer.from(encodeMatcherInitPassive({ maxFillAbs: derivedParams.maxFillAbs })),
+      // v18: MatcherInitPassive binds the LP account id (must be non-zero). On this
+      // brand-new market the LP is the first portfolio, so its portfolioId is 1.
+      data: Buffer.from(encodeMatcherInitPassive({ maxFillAbs: derivedParams.maxFillAbs, lpAccountId: 1n })),
     });
 
     // SetMatcherConfig (tag 68) on the LP portfolio
@@ -444,7 +447,17 @@ export async function POST(req: NextRequest) {
         matcherCtxPk,
         delegatePk,
       ]),
-      data: encodeSetMatcherConfig({ enabled: 1 }),
+      // v18 fresh-market: LP is the first portfolio (portfolioId 1), matcher-seq 0
+      // (InitUser just ran in TX1). assetGenerationFrontier = maxPortfolioAssets(14)
+      // + 1 = 15; tradeFeeCapBps 10000 = no practical cap; expirySlot born-immortal.
+      data: encodeSetMatcherConfig({
+        portfolioId: 1n,
+        expectedSequence: 0n,
+        assetGenerationFrontier: 15n,
+        enabled: 1,
+        tradeFeeCapBps: 10_000,
+        expirySlot: MAX_BACKING_BUCKET_EXPIRY_SLOT,
+      }),
     });
 
     const tx2 = new Transaction({ recentBlockhash: blockhash, feePayer: deployerPk });
@@ -476,7 +489,13 @@ export async function POST(req: NextRequest) {
     const depositIx = buildIx({
       programId,
       keys: depositKeys,
-      data: encodeDepositCollateral({ amount: DEFAULT_LP_COLLATERAL.toString() }),
+      // v18 fresh-market: LP portfolioId 1; matcher-seq is now 1 (SetMatcherConfig
+      // in TX2 advanced it 0->1).
+      data: encodeDepositCollateral({
+        portfolioId: 1n,
+        expectedSequence: 1n,
+        amount: DEFAULT_LP_COLLATERAL.toString(),
+      }),
     });
 
     const topupKeys = buildAccountMetas(ACCOUNTS_TOPUP_INSURANCE, [
@@ -489,7 +508,15 @@ export async function POST(req: NextRequest) {
     const topupIx = buildIx({
       programId,
       keys: topupKeys,
-      data: encodeTopUpInsurance({ amount: DEFAULT_INSURANCE.toString() }),
+      // v18 fresh-market: asset-0 market_id = 1; authority_epoch = 0; this flow
+      // seeds no backing, so insurance is the first consumer of the shared one-shot
+      // lane (intentId 1).
+      data: encodeTopUpInsurance({
+        marketId: 1n,
+        intentId: 1n,
+        authorityEpoch: 0n,
+        amount: DEFAULT_INSURANCE.toString(),
+      }),
     });
 
     // v17 PermissionlessCrank: [owner(s,w), market(w), portfolio(w)] (no oracle tail for admin oracle)
@@ -501,7 +528,7 @@ export async function POST(req: NextRequest) {
     const crankIx3 = buildIx({
       programId,
       keys: crankKeys3,
-      data: encodePermissionlessCrank({ action: CrankAction.FeeSweep, assetIndex: 0, nowSlot: 0n, recoveryReason: 0 }),
+      data: encodePermissionlessCrank({ nowSlot: 0n, observations: defaultCrankObservations(0) }),
     });
 
     const tx3 = new Transaction({ recentBlockhash: blockhash, feePayer: deployerPk });

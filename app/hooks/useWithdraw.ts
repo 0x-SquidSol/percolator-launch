@@ -6,7 +6,6 @@ import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
 import {
   encodeWithdrawCollateral,
   encodePermissionlessCrank,
-  CrankAction,
   ACCOUNTS_WITHDRAW_COLLATERAL,
   ACCOUNTS_KEEPER_CRANK,
   buildAccountMetas,
@@ -30,6 +29,7 @@ import { useSlabState } from "@/components/providers/SlabProvider";
 import { detectOracleMode, sanitizePriceE6, applyInvert } from "@/lib/oraclePrice";
 import { assertKnownProgram } from "@/lib/programAllowlist";
 import { humanizeError } from "@/lib/errorMessages";
+import { fetchPortfolioIdentity, defaultCrankObservations } from "@/lib/v18-wire";
 import { computePositionInitialMargin, estimateEntryFromPnl } from "@/lib/trading";
 import { getEntryPrice } from "@/lib/entry-price";
 import { isSentinelValue } from "@/lib/health";
@@ -334,12 +334,20 @@ export function useWithdraw(slabAddress: string) {
           // reverts Custom 19 while a leg is open). So a position withdraw is now
           // blocked up front (see OPEN_POSITION_WITHDRAW_MESSAGE above) and we never
           // reach here with an open position — no crank to prepend for v17.
+          // v18 WithdrawCollateral binds portfolioId + the matcher-sequence CAS
+          // watermark, read live off the portfolio (no open position here — the
+          // engine blocks withdraw with active legs, guarded above).
+          const wdId = await fetchPortfolioIdentity(connection, portfolioPk);
           instructions.push(buildIx({
             programId,
             keys: buildAccountMetas(ACCOUNTS_WITHDRAW_COLLATERAL, [
               wallet.publicKey, slabPk, portfolioPk, userAta, vaultTokenAta, vaultPda, WELL_KNOWN.tokenProgram,
             ]),
-            data: encodeWithdrawCollateral({ amount: params.amount.toString() }),
+            data: encodeWithdrawCollateral({
+              portfolioId: wdId.portfolioId,
+              expectedSequence: wdId.matcherSequence,
+              amount: params.amount.toString(),
+            }),
           }));
         } else {
           // ── v12 legacy withdraw path ─────────────────────────────────────
@@ -348,7 +356,7 @@ export function useWithdraw(slabAddress: string) {
           instructions.push(buildIx({
             programId,
             keys: buildAccountMetas(ACCOUNTS_KEEPER_CRANK, [wallet.publicKey, slabPk, WELL_KNOWN.clock, oracleAccount]),
-            data: encodePermissionlessCrank({ action: CrankAction.FeeSweep, assetIndex: 0, nowSlot: 0n, recoveryReason: 0 }),
+            data: encodePermissionlessCrank({ nowSlot: 0n, observations: defaultCrankObservations(0) }),
           }));
 
           // v12 withdraw: [owner(signer,w), market(w), vault(w), destToken(w), vaultAuthority, tokenProgram, clock, oracle]
@@ -366,7 +374,9 @@ export function useWithdraw(slabAddress: string) {
               { pubkey: WELL_KNOWN.clock, isSigner: false, isWritable: false },
               { pubkey: oracleAccount, isSigner: false, isWritable: false },
             ],
-            data: encodeWithdrawCollateral({ userIdx: params.userIdx, amount: params.amount.toString() }),
+            // v12 legacy (abandoned slabs) — no v18 portfolio; 0n placeholders so
+            // the old wire type-checks. Unreachable on the v18 playground.
+            data: encodeWithdrawCollateral({ userIdx: params.userIdx, portfolioId: 0n, expectedSequence: 0n, amount: params.amount.toString() }),
           }));
         }
 

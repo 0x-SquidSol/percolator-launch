@@ -31,6 +31,7 @@ import {
 } from "@percolatorct/sdk";
 import { sendTx } from "@/lib/tx";
 import { assertKnownProgram } from "@/lib/programAllowlist";
+import { readAssetMarketId, readAssetControlSeqs } from "@/lib/v18-wire";
 
 export { ASSET_AUTH_KIND };
 export type { AssetAuthKind };
@@ -72,10 +73,18 @@ export function useUpdateAssetAuthority() {
         }
 
         const slabPk = new PublicKey(params.slabAddress);
+        // v18: UpdateAssetAuthority (tag 65) binds the asset's market_id and is
+        // CAS-bound to that asset's authority_epoch lane — both live-read from the
+        // market account, authority_epoch passed as the CURRENT value (not +1).
+        const slabInfo = await connection.getAccountInfo(slabPk, "confirmed");
+        if (!slabInfo?.data) throw new Error("Market account not found");
+        const slabData = new Uint8Array(slabInfo.data);
         const data = encodeUpdateAssetAuthority({
           assetIndex: params.assetIndex,
+          marketId: readAssetMarketId(slabData, params.assetIndex),
           kind: params.kind,
           newPubkey,
+          authorityEpoch: readAssetControlSeqs(slabData, params.assetIndex).authorityEpoch,
         });
         // v17: UpdateAssetAuthority (tag 65) uses the 3-account shape of ACCOUNTS_UPDATE_AUTHORITY:
         // [0] currentAuthority (signer) — asset_admin or current holder of the authority

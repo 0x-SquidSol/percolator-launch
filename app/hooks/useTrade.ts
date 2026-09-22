@@ -7,7 +7,6 @@ import {
   encodeTradeCpi,
   encodeBatchTradeCpi,
   encodePermissionlessCrank,
-  CrankAction,
   ACCOUNTS_TRADE_CPI,
   ACCOUNTS_PERMISSIONLESS_CRANK_BASE,
   buildAccountMetas,
@@ -35,6 +34,7 @@ import { assertKnownProgram, assertCanonicalMatcher } from "@/lib/programAllowli
 import { invalidateMatcherCaps } from "@/lib/matcherCaps";
 import { getLivePriceSnapshot } from "@/lib/priceStore/priceStore";
 import { computeLimitPriceE6, assertFeedAgreesWithChain } from "@/lib/slippage";
+import { fetchPortfolioIdentity, fetchAssetMarketId, defaultCrankObservations } from "@/lib/v18-wire";
 
 const INLINE_ORACLE_PUSH_REMOVED_ERROR =
   "Inline oracle price push was removed on-chain in beta.29. Migrate this flow to /api/oracle/advance-phase or another server-side oracle publisher before trading as the oracle authority.";
@@ -563,6 +563,17 @@ export function useTrade(slabAddress: string) {
           throw new Error("Multi-leg trades are only supported on v17 markets");
         }
 
+        // v18 wire: live-read BOTH portfolios' identity + the asset marketId right
+        // before building the trade — these anti-replay/CAS fields are rejected
+        // on-chain if stale. accountA = taker, accountB = LP maker. TradeCpi reads
+        // accountB's matcher-sequence but does NOT advance it (gate test/03).
+        // Ported from newmarkets.ts buildTradeCpiIx.
+        const [takerId, lpId, tradeMarketId] = await Promise.all([
+          fetchPortfolioIdentity(connection, accountA),
+          fetchPortfolioIdentity(connection, accountB),
+          fetchAssetMarketId(connection, slabPk, 0),
+        ]);
+
         const tradeIx = buildIx({
           programId,
           keys: buildAccountMetas(ACCOUNTS_TRADE_CPI, [
@@ -574,21 +585,44 @@ export function useTrade(slabAddress: string) {
             matcherCtx,         // [5] matcherCtx
             matcherDelegate,    // [6] matcherDelegate
           ]),
-          // v17: TradeCpi wire changed — assetIndex (u16) replaces lpIdx; sizeQ+feeBps+limitPrice.
-          // feeBps=0n → program applies the market's configured tradingFeeBps.
-          // >1 leg: BatchTradeCpi — same 7 accounts, several matcher fills in
-          // one instruction, so an over-cap close lands with ONE signature.
+          // v18: TradeCpi/BatchTradeCpi bind the two portfolios' identity
+          // (portfolioId + positionEpoch) + accountB's matcher-sequence + the
+          // asset marketId. feeBps=0n → program applies the market's configured
+          // tradingFeeBps. >1 leg: BatchTradeCpi — same 7 accounts, several matcher
+          // fills in one instruction, so an over-cap close lands with ONE signature.
+          // (maxSlippage/maxFeeAtoms=0 = no aggregate cap; the per-leg limitPrice
+          // is the real bound — matches the gate's encodeBatchTradeCpi.)
           data:
             legs.length > 1
               ? encodeBatchTradeCpi({
                   legs: legs.map((legSize) => ({
                     assetIndex: 0,
+                    marketId: tradeMarketId,
                     sizeQ: legSize.toString(),
                     feeBps: 0n,
                     limitPrice: effectiveLimitPriceE6.toString(),
                   })),
+                  maxSlippageAtoms: 0n,
+                  maxFeeAtoms: 0n,
+                  accountAPortfolioId: takerId.portfolioId,
+                  accountAPositionEpoch: takerId.positionEpoch,
+                  accountBPortfolioId: lpId.portfolioId,
+                  accountBPositionEpoch: lpId.positionEpoch,
+                  accountBMatcherSequence: lpId.matcherSequence,
                 })
-              : encodeTradeCpi({ assetIndex: 0, sizeQ: params.size.toString(), feeBps: 0n, limitPrice: effectiveLimitPriceE6.toString() }),
+              : encodeTradeCpi({
+                  accountAPortfolioId: takerId.portfolioId,
+                  accountAPositionEpoch: takerId.positionEpoch,
+                  accountBPortfolioId: lpId.portfolioId,
+                  accountBPositionEpoch: lpId.positionEpoch,
+                  accountBMatcherSequence: lpId.matcherSequence,
+                  assetIndex: 0,
+                  marketId: tradeMarketId,
+                  sizeQ: params.size.toString(),
+                  feeBps: 0n,
+                  limitPrice: effectiveLimitPriceE6.toString(),
+                  backingFeeCapBps: 0,
+                }),
         });
         // v17 PermissionlessCrank (tag 5): [owner(s,w), market(w), portfolio(w)] + oracle tail.
         // Build after accountA is resolved — portfolio = accountA (taker's portfolio).
@@ -624,7 +658,10 @@ export function useTrade(slabAddress: string) {
           const crankIx = buildIx({
             programId,
             keys: crankKeys,
-            data: encodePermissionlessCrank({ action: CrankAction.FeeSweep, assetIndex: 0, nowSlot: 0n, recoveryReason: 0 }),
+            // v18: PermissionlessCrank payload is now { nowSlot, observations }.
+            // A plain maintenance/fee-sweep crank passes one asset-0 hint with no
+            // oracle-account push (gate market.ts default).
+            data: encodePermissionlessCrank({ nowSlot: 0n, observations: defaultCrankObservations(0) }),
           });
           instructions.unshift(crankIx);
         }

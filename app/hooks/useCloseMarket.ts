@@ -16,6 +16,7 @@ import {
   deriveVaultAuthority,
 } from "@percolatorct/sdk";
 import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
+import { readAssetControlSeqs } from "@/lib/v18-wire";
 
 /**
  * CloseSlab (IX_TAG.CloseSlab = 13) instruction in percolator-prog.
@@ -148,7 +149,9 @@ export function useCloseMarket() {
             destAta,
             tokenProgram: TOKEN_PROGRAM_ID,
           }),
-          data: encodeCloseSlab(),
+          // v18: CloseSlab is CAS-bound to asset 0's authority_epoch lane — pass
+          // the LIVE current value (not +1). v12 slabs have no such lane (0n).
+          data: encodeCloseSlab(isV17Account(data) ? readAssetControlSeqs(data, 0).authorityEpoch : 0n),
         });
 
         const { blockhash } = await connection.getLatestBlockhash("confirmed");

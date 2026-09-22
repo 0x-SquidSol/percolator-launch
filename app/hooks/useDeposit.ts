@@ -29,6 +29,7 @@ import { getPortfolioRawSnapshot, isLpPortfolio, makePortfolioScanKey } from "@/
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { assertKnownProgram } from "@/lib/programAllowlist";
 import { humanizeError } from "@/lib/errorMessages";
+import { fetchPortfolioIdentity } from "@/lib/v18-wire";
 
 // v17 portfolio account size = SDK V17_PORTFOLIO_ACCOUNT_LEN (9347). MUST be the full length:
 // InitPortfolio reallocs up to 9347 and adds NO lamports, so funding rent for a smaller size
@@ -278,7 +279,10 @@ export function useDeposit(slabAddress: string) {
             throw new Error("v17: Could not find or create portfolio account. Please try again.");
           }
 
-          // v17 Deposit (tag 3): [owner(signer,w), market(w), portfolio(w), sourceToken(w), vaultToken(w), tokenProgram]
+          // v18 Deposit (tag 3): binds the portfolio's live portfolioId + the
+          // per-portfolio matcher-sequence CAS watermark (`expectedSequence`),
+          // read live off the (just-initialized or existing) portfolio account.
+          const depId = await fetchPortfolioIdentity(connection, portfolioPk);
           instructions.push(
             buildIx({
               programId,
@@ -290,7 +294,11 @@ export function useDeposit(slabAddress: string) {
                 vaultTokenAta,
                 WELL_KNOWN.tokenProgram,
               ]),
-              data: encodeDepositCollateral({ amount: params.amount.toString() }),
+              data: encodeDepositCollateral({
+                portfolioId: depId.portfolioId,
+                expectedSequence: depId.matcherSequence,
+                amount: params.amount.toString(),
+              }),
             }),
           );
         } else {
@@ -348,7 +356,11 @@ export function useDeposit(slabAddress: string) {
             }
           }
 
-          // v12 DepositCollateral (tag 3)
+          // v12 DepositCollateral (tag 3) — LEGACY path for the abandoned v12
+          // slabs (no v18 portfolio account exists, so portfolioId/expectedSequence
+          // don't apply). Unreachable on the v18 playground; kept only so the old
+          // wire still type-checks. 0n placeholders — a v12 slab would reject this,
+          // which is correct (those markets are abandoned).
           instructions.push(
             buildIx({
               programId,
@@ -362,6 +374,8 @@ export function useDeposit(slabAddress: string) {
               ]),
               data: encodeDepositCollateral({
                 userIdx: resolvedUserIdx,
+                portfolioId: 0n,
+                expectedSequence: 0n,
                 amount: params.amount.toString(),
               }),
             }),

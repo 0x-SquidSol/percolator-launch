@@ -28,6 +28,7 @@ import { isLpPortfolio } from "@/lib/userAccountScan";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { assertKnownProgram } from "@/lib/programAllowlist";
 import { humanizeError } from "@/lib/errorMessages";
+import { fetchPortfolioIdentity } from "@/lib/v18-wire";
 
 // ---------------------------------------------------------------------------
 // v17 portfolio discovery helper — mirrors useDeposit's findV17Portfolio.
@@ -184,7 +185,12 @@ export function useInitUser(slabAddress: string) {
           // list/encoder (ACCOUNTS_DEPOSIT_COLLATERAL / encodeDepositCollateral
           // / deriveVaultAuthority) — not hand-rolled.
           const requestedDeposit = feePayment != null && feePayment > 0n ? feePayment : 0n;
-          let depositIx: TransactionInstruction | null = null;
+          // v18: DepositCollateral binds the portfolio's live portfolioId +
+          // matcher-sequence, which are only known AFTER the account is created
+          // (the id is program-assigned at InitUser). So we can NOT bundle Deposit
+          // into the same tx as init — capture the deposit accounts here and build
+          // the Deposit ix in a SECOND tx once the identity can be read live.
+          let depositAccounts: { userAta: PublicKey; vaultTokenAta: PublicKey } | null = null;
           let clampedDeposit = 0n;
           if (requestedDeposit > 0n) {
             try {
@@ -200,26 +206,39 @@ export function useInitUser(slabAddress: string) {
               if (clampedDeposit > 0n) {
                 const [vaultPda] = deriveVaultAuthority(programId, slabPk);
                 const vaultTokenAta = await getAta(vaultPda, mktConfig.collateralMint, true);
-                depositIx = buildIx({
-                  programId,
-                  keys: buildAccountMetas(ACCOUNTS_DEPOSIT_COLLATERAL, [
-                    wallet.publicKey,
-                    slabPk,
-                    portfolioPk,
-                    userAta,
-                    vaultTokenAta,
-                    WELL_KNOWN.tokenProgram,
-                  ]),
-                  data: encodeDepositCollateral({ amount: clampedDeposit.toString() }),
-                });
+                depositAccounts = { userAta, vaultTokenAta };
               }
             } catch {
               // Best-effort: fall through to init-only. The account still
               // gets created; the user can deposit manually afterward.
-              depositIx = null;
+              depositAccounts = null;
               clampedDeposit = 0n;
             }
           }
+
+          /** Build the v18 Deposit ix, live-reading the portfolio's identity CAS
+           *  fields (only valid AFTER the init tx has confirmed the account). */
+          const ownerPk = wallet.publicKey; // narrowed non-null here; captured for the closure
+          const buildDepositIx = async (): Promise<TransactionInstruction> => {
+            const acc = depositAccounts!;
+            const depId = await fetchPortfolioIdentity(connection, portfolioPk);
+            return buildIx({
+              programId,
+              keys: buildAccountMetas(ACCOUNTS_DEPOSIT_COLLATERAL, [
+                ownerPk,
+                slabPk,
+                portfolioPk,
+                acc.userAta,
+                acc.vaultTokenAta,
+                WELL_KNOWN.tokenProgram,
+              ]),
+              data: encodeDepositCollateral({
+                portfolioId: depId.portfolioId,
+                expectedSequence: depId.matcherSequence,
+                amount: clampedDeposit.toString(),
+              }),
+            });
+          };
 
           const baseInstructions: TransactionInstruction[] = [createPortfolioIx, initPortfolioIx];
 
@@ -244,43 +263,27 @@ export function useInitUser(slabAddress: string) {
             }
           };
 
-          let sig: string;
+          // v18: init and deposit are ALWAYS two txs. The portfolio's
+          // program-assigned portfolioId (bound into DepositCollateral) is only
+          // known once the InitUser tx has landed, so Deposit cannot ride in the
+          // same atomic tx. Account creation must succeed on its own merits; the
+          // deposit leg is best-effort on top of it (from the caller's POV this is
+          // still one "Setting up your account…" action).
+          let sig = await sendV17(baseInstructions, [portfolioKp]);
           let depositedAmount = 0n;
-          if (depositIx) {
+          if (depositAccounts && clampedDeposit > 0n) {
             try {
-              // FIRST try: InitPortfolio + Deposit in ONE transaction — the
-              // portfolio's address is already known (client-generated
-              // keypair) before the tx lands, so Deposit can reference it
-              // in the same atomic tx.
-              sig = await sendV17([...baseInstructions, depositIx], [portfolioKp]);
+              const depositIx = await buildDepositIx();
+              sig = await sendV17([depositIx]);
               depositedAmount = clampedDeposit;
-            } catch (combinedErr) {
-              // One-tx failed (compute/size limits, wallet simulation, or the
-              // program rejecting a same-tx Deposit against a portfolio
-              // initialized earlier in that same tx). Fall back to two
-              // transactions chained back-to-back — from the caller's POV
-              // this is still one "Setting up your account…" action. Account
-              // creation must succeed on its own merits; the deposit leg is
-              // best-effort on top of it.
+            } catch (depositErr) {
+              // Account exists; auto-deposit just didn't land. Not fatal —
+              // depositedAmount stays 0n on the resolved result so the caller can
+              // still prompt a manual deposit, not a scary top-level error.
               if (process.env.NODE_ENV === "development") {
-                console.warn("[useInitUser] combined init+deposit tx failed, falling back to two-step:", combinedErr);
-              }
-              sig = await sendV17(baseInstructions, [portfolioKp]);
-              try {
-                sig = await sendV17([depositIx]);
-                depositedAmount = clampedDeposit;
-              } catch (depositErr) {
-                // Account exists; auto-deposit just didn't land. Not fatal —
-                // depositedAmount stays 0n on the resolved result so the
-                // caller can still prompt a manual deposit, not a scary
-                // top-level error.
-                if (process.env.NODE_ENV === "development") {
-                  console.warn("[useInitUser] follow-up deposit tx failed:", depositErr);
-                }
+                console.warn("[useInitUser] follow-up deposit tx failed:", depositErr);
               }
             }
-          } else {
-            sig = await sendV17(baseInstructions, [portfolioKp]);
           }
 
           if (process.env.NODE_ENV === "development") {

@@ -21,6 +21,7 @@ import {
 // UnpauseMarket (tag 58) do not exist in v17. Admin rotation uses UpdateAuthority (tag 32).
 import { sendTx } from "@/lib/tx";
 import type { DiscoveredMarket } from "@percolatorct/sdk";
+import { readAssetMarketId, readAssetControlSeqs } from "@/lib/v18-wire";
 
 const INLINE_ORACLE_ADMIN_REMOVED_ERROR =
   "Admin oracle update instructions were removed on-chain in beta.29. Migrate this action to the server-side oracle flow before using it.";
@@ -151,7 +152,21 @@ export function useAdminActions() {
         }
 
         const userAta = await getAssociatedTokenAddress(collateralMint, wallet.publicKey);
-        const data = encodeTopUpInsurance({ amount: amount.toString() });
+        // v18: TopUpInsurance (tag 55) binds asset 0's market_id + authority_epoch
+        // (CAS, current value) + a strictly-increasing one-shot intentId on the
+        // shared insurance_top_up lane. The lane watermark is not exposed by the
+        // SDK parsers, so on an EXISTING market we use the current slot as a
+        // monotonic one-shot nonce (strictly-increasing across calls). NOTE: this
+        // admin top-up path is not on-chain-verified in this migration.
+        const tuiInfo = await connection.getAccountInfo(market.slabAddress, "confirmed");
+        if (!tuiInfo?.data) throw new Error("Market account not found");
+        const tuiData = new Uint8Array(tuiInfo.data);
+        const data = encodeTopUpInsurance({
+          marketId: readAssetMarketId(tuiData, 0),
+          intentId: BigInt(await connection.getSlot("confirmed")),
+          authorityEpoch: readAssetControlSeqs(tuiData, 0).authorityEpoch,
+          amount: amount.toString(),
+        });
         const keys = buildAccountMetas(ACCOUNTS_TOPUP_INSURANCE, [
           wallet.publicKey,
           market.slabAddress,
@@ -190,7 +205,12 @@ export function useAdminActions() {
         // to effectively burn the admin key. Requires 3 accounts:
         // [currentAuthority(signer), newAuthority, slab(w)]
         const zeroPk = new PublicKey(new Uint8Array(32));
-        const data = encodeUpdateAuthority({ newPubkey: zeroPk });
+        // v18: UpdateAuthority (tag 32) is CAS-bound to asset 0's authority_epoch
+        // lane — pass the LIVE current value (not +1), read from the market.
+        const uaInfo = await connection.getAccountInfo(market.slabAddress, "confirmed");
+        if (!uaInfo?.data) throw new Error("Market account not found");
+        const uaAuthorityEpoch = readAssetControlSeqs(new Uint8Array(uaInfo.data), 0).authorityEpoch;
+        const data = encodeUpdateAuthority({ newPubkey: zeroPk, authorityEpoch: uaAuthorityEpoch });
         const keys = buildAccountMetas(ACCOUNTS_UPDATE_AUTHORITY, [
           wallet.publicKey,
           zeroPk,

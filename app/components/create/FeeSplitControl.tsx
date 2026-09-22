@@ -53,7 +53,11 @@ interface FeeSplitControlProps {
  * 20% protocol leg so the four numbers visibly add up to 100%.
  */
 export const FeeSplitControl: FC<FeeSplitControlProps> = ({ value, onChange }) => {
-  const error = useMemo(() => validateFeeSplit(value), [value]);
+  // validateFeeSplit only checks the share fields (sum + ranges); v18 widened its
+  // arg type to UpdateFeeSplitArgs, so pass a placeholder authorityEpoch — this UI
+  // control validates shares only and never builds/sends the instruction (the real
+  // CAS authority_epoch is live-read at send time in useCreateMarket).
+  const error = useMemo(() => validateFeeSplit({ ...value, authorityEpoch: 0n }), [value]);
   const sumBps =
     value.creatorShareBps + value.lpShareBps + value.insuranceShareBps;
   const protocolPct = FEE_SPLIT.PROTOCOL_FEE_BPS / 100; // 20

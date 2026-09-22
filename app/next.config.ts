@@ -18,11 +18,14 @@ if (!API_URL && process.env.NODE_ENV === "production") {
 // `eslint`/`typescript` are valid next.config runtime keys, but this @types/next
 // version omits them from the NextConfig type — hence the `as NextConfig` cast below.
 const nextConfig = {
-  // Playground is a fast-moving devnet contributor app: don't let a lint warning or a
-  // stray type error in an unrelated file block `next build` (Vercel already builds this
-  // way). Type-safety is still enforced separately by the `tsc --noEmit` CI gate.
+  // Playground is a fast-moving devnet contributor app: don't let a lint warning block
+  // `next build` (Vercel already builds this way).
   eslint: { ignoreDuringBuilds: true },
-  typescript: { ignoreBuildErrors: true },
+  // v18 migration (2026-09-22): type errors now FAIL the build so it honestly reflects
+  // the write path — the whole app is tsc-clean under @percolatorct/sdk@6.0.0. If a
+  // future SDK bump breaks types, the build should surface it rather than ship broken
+  // instruction wires. (Was `ignoreBuildErrors: true` while the v18 write wire was WIP.)
+  typescript: { ignoreBuildErrors: false },
   // Allow loading the dev server from the LAN IP (e.g. phone on the same WiFi).
   // Next 16 blocks /_next/* dev resources from non-localhost origins by default,
   // which makes the page render blank when accessed via an IP. Dev-only setting.

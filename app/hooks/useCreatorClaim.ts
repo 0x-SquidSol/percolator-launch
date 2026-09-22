@@ -17,6 +17,7 @@ import { sendTx } from "@/lib/tx";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { useTokenMeta } from "@/hooks/useTokenMeta";
 import { assertKnownProgram } from "@/lib/programAllowlist";
+import { readAssetControlSeqs } from "@/lib/v18-wire";
 import {
   isCreatorFeeClaimAuthority,
   readCreatorFeeClaimable,
@@ -189,7 +190,11 @@ export function useCreatorClaim() {
         const destToken = await getAssociatedTokenAddress(collateralMint, wallet.publicKey);
         const vaultToken = await getAssociatedTokenAddress(collateralMint, vaultPda, true);
 
-        const data90 = encodeWithdrawCreatorFee({ amount });
+        // v18: WithdrawCreatorFee (tag 90) is CAS-bound to asset 0's authority_epoch
+        // lane — pass the LIVE current value (not +1). Read from the same market
+        // bytes the claimable amount was read from.
+        const authorityEpoch = readAssetControlSeqs(raw, 0).authorityEpoch;
+        const data90 = encodeWithdrawCreatorFee({ amount, assetIndex: 0, authorityEpoch });
         const keys = buildAccountMetas(ACCOUNTS_WITHDRAW_CREATOR_FEE, [
           wallet.publicKey, // authority — asset 0's asset_admin
           marketPk, // market

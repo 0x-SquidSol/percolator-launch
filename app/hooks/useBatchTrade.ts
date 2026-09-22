@@ -32,6 +32,7 @@ import {
 } from "@percolatorct/sdk";
 import { sendTx } from "@/lib/tx";
 import { assertKnownProgram, assertCanonicalMatcher } from "@/lib/programAllowlist";
+import { fetchPortfolioIdentity } from "@/lib/v18-wire";
 
 export type { BatchTradeCpiLeg };
 
@@ -112,7 +113,23 @@ export function useBatchTrade() {
           { pubkey: matcherDelegatePk, isSigner: false, isWritable: false },
         ];
 
-        const data = encodeBatchTradeCpi({ legs: params.legs });
+        // v18: BatchTradeCpi binds both portfolios' identity + accountB's
+        // matcher-sequence, live-read before building the tx. (maxSlippage/
+        // maxFeeAtoms=0 = no aggregate cap; per-leg limitPrice is the real bound.)
+        const [takerId, makerId] = await Promise.all([
+          fetchPortfolioIdentity(connection, takerPortfolioPk),
+          fetchPortfolioIdentity(connection, makerPortfolioPk),
+        ]);
+        const data = encodeBatchTradeCpi({
+          legs: params.legs,
+          maxSlippageAtoms: 0n,
+          maxFeeAtoms: 0n,
+          accountAPortfolioId: takerId.portfolioId,
+          accountAPositionEpoch: takerId.positionEpoch,
+          accountBPortfolioId: makerId.portfolioId,
+          accountBPositionEpoch: makerId.positionEpoch,
+          accountBMatcherSequence: makerId.matcherSequence,
+        });
         const ix = buildIx({ programId: params.programId, keys, data });
         return await sendTx({ connection, wallet, instructions: [ix], computeUnits: 800_000 });
       } catch (e) {

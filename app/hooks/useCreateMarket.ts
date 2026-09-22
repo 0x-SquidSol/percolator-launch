@@ -36,7 +36,6 @@ import {
   validateFeeSplit,
   encodeTopUpBackingBucket,
   MAX_BACKING_BUCKET_EXPIRY_SLOT,
-  CrankAction,
   detectDexType,
   parseDexPool,
   ACCOUNTS_INIT_MARKET,
@@ -75,6 +74,7 @@ import { PERCOLATOR_NFT_PROGRAM_ID } from "@/lib/nft-program";
 import { toE6 } from "@/lib/format";
 import { buildKeeperRegisterProofMessage } from "@/lib/keeper-register-proof";
 import { deriveMarketParams, MIN_LEVERAGE_X, backingSeedPerDomain, leverageFromMarginBps } from "@/lib/market-params";
+import { defaultCrankObservations, readPortfolioIdentity, readAssetMarketId, readAssetControlSeqs } from "@/lib/v18-wire";
 // v17: SetOracleAuthority (tag 17), PushOraclePrice (tag 16), SetOraclePriceCap (tag 16),
 // and UpdateConfig (tag 14) do not exist in v17. All oracle + risk params are embedded
 // in InitMarket (extended tail). The sdk-compat stubs throw at runtime if called.
@@ -1021,7 +1021,20 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       keys: buildAccountMetas(ACCOUNTS_SET_MATCHER_CONFIG, [
         walletPk, slabPk, lpPortfolioKp.publicKey, matcherProgramId, matcherCtxKp.publicKey, matcherDelegatePk,
       ]),
-      data: encodeSetMatcherConfig({ enabled: 1 }),
+      // v18 fresh-market bootstrap: the LP is the FIRST portfolio created on this
+      // brand-new market, so its program-assigned portfolioId is 1 and its
+      // matcher-sequence is 0 (InitUser just ran in this same tx, no prior ops).
+      // assetGenerationFrontier = header.next_market_id = max_market_slots + 1
+      // (V17_MAX_PORTFOLIO_ASSETS + 1); tradeFeeCapBps 10000 = no practical LP cap;
+      // expirySlot = born-immortal non-lapsing grant.
+      data: encodeSetMatcherConfig({
+        portfolioId: 1n,
+        expectedSequence: 0n,
+        assetGenerationFrontier: BigInt(V17_MAX_PORTFOLIO_ASSETS) + 1n,
+        enabled: 1,
+        tradeFeeCapBps: 10_000,
+        expirySlot: MAX_BACKING_BUCKET_EXPIRY_SLOT,
+      }),
     });
     const initMatcherCtxIx = buildIx({
       programId,
@@ -1051,7 +1064,14 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       keys: buildAccountMetas(ACCOUNTS_DEPOSIT_COLLATERAL, [
         walletPk, slabPk, lpPortfolioKp.publicKey, userAta, vaultAta, WELL_KNOWN.tokenProgram,
       ]),
-      data: encodeDepositCollateral({ amount: params.lpCollateral.toString() }),
+      // v18 fresh-market: LP portfolioId 1; matcher-sequence is now 1 because
+      // SetMatcherConfig (M2, above) advanced it 0->1 (Deposit/Withdraw/SetMatcher
+      // all bump the per-portfolio matcher-sequence).
+      data: encodeDepositCollateral({
+        portfolioId: 1n,
+        expectedSequence: 1n,
+        amount: params.lpCollateral.toString(),
+      }),
     });
     const backingIxs: TransactionInstruction[] = [0, 1].map((domain) =>
       buildIx({
@@ -1062,7 +1082,15 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
         data: encodeTopUpBackingBucket({
           // Real seed, not dust: the SHORT domain can never be topped up again
           // once CreateLpVault runs. See backingSeedPerDomain in lib/market-params.ts.
-          domain, amount: backingSeed.toString(), expirySlot: MAX_BACKING_BUCKET_EXPIRY_SLOT.toString(),
+          // v18 fresh-market: asset-0 market_id = 1; authority_epoch = 0 (fresh CAS);
+          // intentId is the strictly-increasing one-shot lane — long(domain 0)=1,
+          // short(domain 1)=2 (matches the newmarkets.ts seed).
+          domain,
+          marketId: 1n,
+          intentId: BigInt(domain) + 1n,
+          authorityEpoch: 0n,
+          amount: backingSeed.toString(),
+          expirySlot: MAX_BACKING_BUCKET_EXPIRY_SLOT.toString(),
         }),
       }),
     );
@@ -1079,7 +1107,15 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     const topupIx = buildIx({
       programId,
       keys: buildAccountMetas(ACCOUNTS_TOPUP_INSURANCE, [walletPk, slabPk, userAta, vaultAta, WELL_KNOWN.tokenProgram]),
-      data: encodeTopUpInsurance({ amount: params.insuranceAmount.toString() }),
+      // v18 fresh-market: asset-0 market_id = 1; authority_epoch = 0; intentId is
+      // the NEXT value on the shared insurance/backing one-shot lane — backing
+      // consumed 1 and 2 above, so insurance takes 3.
+      data: encodeTopUpInsurance({
+        marketId: 1n,
+        intentId: 3n,
+        authorityEpoch: 0n,
+        amount: params.insuranceAmount.toString(),
+      }),
     });
     const crankKeys = buildAccountMetas(ACCOUNTS_PERMISSIONLESS_CRANK_BASE, [walletPk, slabPk, lpPortfolioKp.publicKey]);
     // ONLY a pyth market carries a Pyth push-oracle account on the crank.
@@ -1095,7 +1131,8 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     }
     const crankIx = buildIx({
       programId, keys: crankKeys,
-      data: encodePermissionlessCrank({ action: CrankAction.FeeSweep, assetIndex: 0, nowSlot: 0n, recoveryReason: 0 }),
+      // v18: PermissionlessCrank payload is { nowSlot, observations }.
+      data: encodePermissionlessCrank({ nowSlot: 0n, observations: defaultCrankObservations(0) }),
     });
     const m3bDescriptor: TailTxDescriptor = {
       label: "Seeding the insurance fund",
@@ -1137,12 +1174,17 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     const feeSplitArgs = params.feeSplit;
     const updateFeeSplitIx = feeSplitArgs
       ? (() => {
-          const reason = validateFeeSplit(feeSplitArgs);
+          // v18 fresh-market: UpdateFeeSplit (tag 86) is CAS-bound to asset-0's
+          // authority_epoch lane; on a brand-new market that lane is 0. This runs
+          // BEFORE StakeInitPool rotates marketauth, so the creator is still the
+          // gating authority.
+          const feeSplitV18 = { ...feeSplitArgs, authorityEpoch: 0n };
+          const reason = validateFeeSplit(feeSplitV18);
           if (reason) throw new Error(`Invalid fee split: ${reason}`);
           return buildIx({
             programId,
             keys: buildAccountMetas(ACCOUNTS_UPDATE_FEE_SPLIT, { admin: walletPk, market: slabPk }),
-            data: encodeUpdateFeeSplit(feeSplitArgs),
+            data: encodeUpdateFeeSplit(feeSplitV18),
           });
         })()
       : null;
@@ -2282,7 +2324,7 @@ export function useCreateMarket() {
             console.warn("[useCreateMarket] v12 hyperp oracle mode not supported on v17 binary; skipping pre-LP crank");
           } else if (!isV17Slab) {
             // v12 legacy: KeeperCrank for Pyth and admin modes
-            const crankData = encodePermissionlessCrank({ action: CrankAction.FeeSweep, assetIndex: 0, nowSlot: 0n, recoveryReason: 0 });
+            const crankData = encodePermissionlessCrank({ nowSlot: 0n, observations: defaultCrankObservations(0) });
             const oracleAccount = isAdminOracle ? slabPk : derivePythPushOraclePDA(params.oracleFeed)[0];
             const crankKeys = buildAccountMetas(ACCOUNTS_PERMISSIONLESS_CRANK_BASE, [
               wallet.publicKey, slabPk, slabPk,
@@ -2596,6 +2638,12 @@ export function useCreateMarket() {
               }));
 
               // TX C: commit the context and delegate to the LP portfolio.
+              // v18: live-read the LP portfolio identity (recovery path — the
+              // matcher-sequence reflects any prior InitUser/Deposit). assetGenFrontier
+              // = max_market_slots + 1 (V17_MAX_PORTFOLIO_ASSETS + 1).
+              const smInfo = await connection.getAccountInfo(lpPortfolioPk);
+              if (!smInfo?.data) throw new Error("LP portfolio not found for SetMatcherConfig");
+              const smId = readPortfolioIdentity(new Uint8Array(smInfo.data));
               const setMatcherConfigIx = buildIx({
                 programId,
                 keys: buildAccountMetas(ACCOUNTS_SET_MATCHER_CONFIG, [
@@ -2606,7 +2654,14 @@ export function useCreateMarket() {
                   matcherCtxPk,
                   delegatePk,
                 ]),
-                data: encodeSetMatcherConfig({ enabled: 1 }),
+                data: encodeSetMatcherConfig({
+                  portfolioId: smId.portfolioId,
+                  expectedSequence: smId.matcherSequence,
+                  assetGenerationFrontier: BigInt(V17_MAX_PORTFOLIO_ASSETS) + 1n,
+                  enabled: 1,
+                  tradeFeeCapBps: 10_000,
+                  expirySlot: MAX_BACKING_BUCKET_EXPIRY_SLOT,
+                }),
               });
 
               const configSignature = await sendTx({
@@ -2866,7 +2921,19 @@ export function useCreateMarket() {
             depositPortfolioPk = vaultAta; // kept for legacy compatibility
           }
 
+          // v18: live-read the LP portfolio's identity CAS fields (recovery path —
+          // the market may be partially set up, so fresh literals can't be assumed).
+          // v12 fallback has no v18 portfolio (0n placeholders; abandoned).
+          let depLpId = { portfolioId: 0n, matcherSequence: 0n };
+          if (isV17SlabDeposit) {
+            const lpInfo = await connection.getAccountInfo(depositPortfolioPk);
+            if (!lpInfo?.data) throw new Error("LP portfolio not found for deposit");
+            const pid = readPortfolioIdentity(new Uint8Array(lpInfo.data));
+            depLpId = { portfolioId: pid.portfolioId, matcherSequence: pid.matcherSequence };
+          }
           const depositData = encodeDepositCollateral({
+            portfolioId: depLpId.portfolioId,
+            expectedSequence: depLpId.matcherSequence,
             amount: params.lpCollateral.toString(),
           });
           const depositKeys = isV17SlabDeposit
@@ -2879,7 +2946,18 @@ export function useCreateMarket() {
                 WELL_KNOWN.tokenProgram, WELL_KNOWN.clock,
               ]);
 
-          const topupData = encodeTopUpInsurance({ amount: params.insuranceAmount.toString() });
+          // v18: TopUpInsurance binds asset-0 market_id + authority_epoch (CAS,
+          // current) + a strictly-increasing one-shot intentId on the shared lane.
+          // Live-read the identity/epoch off the market; the lane watermark is not
+          // exposed, so use the current slot as a monotonic one-shot nonce.
+          const insSlabData = isV17SlabDeposit && slabInfoForDeposit?.data
+            ? new Uint8Array(slabInfoForDeposit.data) : null;
+          const topupData = encodeTopUpInsurance({
+            marketId: insSlabData ? readAssetMarketId(insSlabData, 0) : 0n,
+            intentId: BigInt(await connection.getSlot("confirmed")),
+            authorityEpoch: insSlabData ? readAssetControlSeqs(insSlabData, 0).authorityEpoch : 0n,
+            amount: params.insuranceAmount.toString(),
+          });
           // ACCOUNTS_TOPUP_INSURANCE has 6 entries — clock was added in v12.19.
           // Earlier code passed only 5 pubkeys, which silently broke TX3 on
           // the deployed binary. SDK 2.0.9 has the right shape; we just need
@@ -2970,6 +3048,14 @@ export function useCreateMarket() {
               const backingVaultToken = vaultTokenAta;
               const LONG_DOMAIN = 0; // 2*assetIndex, assetIndex=0
               const SHORT_DOMAIN = 1; // 2*assetIndex+1
+              // v18: TopUpBackingBucket binds asset-0 market_id + authority_epoch
+              // (CAS, current) + a strictly-increasing one-shot intentId per domain.
+              // Live-read the market; intentId long(0)=1, short(1)=2 on a fresh lane.
+              const bbSlabInfo = await connection.getAccountInfo(slabPk);
+              if (!bbSlabInfo?.data) throw new Error("Market account not found for backing seed");
+              const bbSlabData = new Uint8Array(bbSlabInfo.data);
+              const bbMarketId = readAssetMarketId(bbSlabData, 0);
+              const bbAuthorityEpoch = readAssetControlSeqs(bbSlabData, 0).authorityEpoch;
               const backingIxs: TransactionInstruction[] = [];
               for (const domain of [LONG_DOMAIN, SHORT_DOMAIN]) {
                 backingIxs.push(
@@ -2980,6 +3066,9 @@ export function useCreateMarket() {
                     ]),
                     data: encodeTopUpBackingBucket({
                       domain,
+                      marketId: bbMarketId,
+                      intentId: BigInt(domain) + 1n,
+                      authorityEpoch: bbAuthorityEpoch,
                       amount: backingSeed.toString(),
                       expirySlot: MAX_BACKING_BUCKET_EXPIRY_SLOT.toString(),
                     }),
@@ -3084,7 +3173,7 @@ export function useCreateMarket() {
             // Final crank uses PermissionlessCrank for all oracle modes.
             // v17 PermissionlessCrank: [owner(s,w), market(w), portfolio(w)] + optional oracle tail.
             {
-              const crankData = encodePermissionlessCrank({ action: CrankAction.FeeSweep, assetIndex: 0, nowSlot: 0n, recoveryReason: 0 });
+              const crankData = encodePermissionlessCrank({ nowSlot: 0n, observations: defaultCrankObservations(0) });
               const crankPortfolioPk = isV17SlabDeposit ? depositPortfolioPk : slabPk;
               const crankKeys = buildAccountMetas(ACCOUNTS_PERMISSIONLESS_CRANK_BASE, [
                 wallet.publicKey, slabPk, crankPortfolioPk,
@@ -3358,9 +3447,17 @@ export function useCreateMarket() {
             // BEFORE initPoolIx (which rotates cfg.marketauth to the pool PDA). Only
             // for a non-default split; validated with the wrapper's own rule.
             const feeSplitArgs = params.feeSplit;
+            // v18: UpdateFeeSplit (tag 86) is CAS-bound to asset-0's authority_epoch
+            // lane — live-read the current value off the market (this still runs
+            // before StakeInitPool rotates marketauth, so the creator gates it).
+            const fsSlabInfo = feeSplitArgs ? await connection.getAccountInfo(slabPk) : null;
+            const fsAuthorityEpoch = fsSlabInfo?.data
+              ? readAssetControlSeqs(new Uint8Array(fsSlabInfo.data), 0).authorityEpoch
+              : 0n;
             const updateFeeSplitIx = feeSplitArgs
               ? (() => {
-                  const reason = validateFeeSplit(feeSplitArgs);
+                  const feeSplitV18 = { ...feeSplitArgs, authorityEpoch: fsAuthorityEpoch };
+                  const reason = validateFeeSplit(feeSplitV18);
                   if (reason) throw new Error(`Invalid fee split: ${reason}`);
                   return buildIx({
                     programId,
@@ -3368,7 +3465,7 @@ export function useCreateMarket() {
                       admin: wallet.publicKey,
                       market: slabPk,
                     }),
-                    data: encodeUpdateFeeSplit(feeSplitArgs),
+                    data: encodeUpdateFeeSplit(feeSplitV18),
                   });
                 })()
               : null;
