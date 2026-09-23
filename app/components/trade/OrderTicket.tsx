@@ -685,8 +685,14 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // unit the size/margin inputs are denominated in.
   const exceedsFillCap =
     !mockMode && fillCaps != null && positionSize > 0n && positionSize > fillCaps.maxFillAbs;
+  // maxFillAbs at the i128::MAX sentinel (or 0) means "no practical per-trade cap"
+  // — the newmarkets.ts seed sets it to i128::MAX. Rendering i128::MAX × price is an
+  // astronomical, meaningless number, so treat it as unlimited (null) and let the
+  // "Max per trade" row hide instead of showing ~1.9e37 USDC.
+  const fillCapUnlimited =
+    fillCaps != null && (fillCaps.maxFillAbs <= 0n || fillCaps.maxFillAbs >= UNLIMITED_CAPACITY);
   const fillCapNotional =
-    fillCaps != null && livePriceE6 && livePriceE6 > 0n
+    fillCaps != null && !fillCapUnlimited && livePriceE6 && livePriceE6 > 0n
       ? (fillCaps.maxFillAbs * livePriceE6) / 1_000_000n
       : null;
   const fillCapLabel =

@@ -63,9 +63,6 @@ const ENGINE_STALE_WITHDRAW_MESSAGE =
 const OPEN_POSITION_WITHDRAW_MESSAGE =
   "You have an open position on this market. Close it (fully) before withdrawing — this market can't release collateral while a position is open.";
 
-const INLINE_ORACLE_PUSH_REMOVED_ERROR =
-  "Inline oracle price push was removed on-chain in beta.29. Migrate this flow to /api/oracle/advance-phase or another server-side oracle publisher before withdrawing as the oracle authority.";
-
 export function useWithdraw(slabAddress: string) {
   const { connection } = useConnectionCompat();
   const wallet = useWalletCompat();
@@ -117,14 +114,11 @@ export function useWithdraw(slabAddress: string) {
 
         const instructions = [];
 
-        // If user is oracle authority, push price first.
-        // PERC-8328 / GH#1966: NEVER fall back to a hardcoded price — if we can't get
-        // a valid, fresh price from the backend, abort the withdrawal entirely. Pushing a
-        // fabricated oracle price (e.g. $1) would cause catastrophic mispricing.
-        const userIsOracleAuth = useAdminOracle && mktConfig.oracleAuthority.equals(wallet.publicKey);
-        if (userIsOracleAuth) {
-          throw new Error(INLINE_ORACLE_PUSH_REMOVED_ERROR);
-        }
+        // v18: AUTH_MARK markets are priced by the off-chain keeper (which holds the
+        // oracle authority). Inline oracle-price push was removed on-chain in beta.29;
+        // throwing here blocked the authority wallet from withdrawing at all. Nothing
+        // to push inline — the keeper keeps the mark fresh, so withdraw proceeds like
+        // any other wallet's; a genuinely stale mark surfaces as OracleStale(27).
 
         // M9: Prefer the already-loaded SlabProvider state (`wrapperConfigV17`)
         // over re-detecting the layout from a fresh, fragile refetch — a

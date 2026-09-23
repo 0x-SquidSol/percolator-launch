@@ -48,7 +48,11 @@ export function remainingSideCapacityQ(
   side: TradeSide,
 ): bigint {
   if (maxInventoryAbs < 0n) return 0n;
-  if (maxInventoryAbs === 0n) return UNLIMITED_CAPACITY;
+  // Both 0 AND the i128::MAX sentinel mean "no practical inventory cap" — the
+  // newmarkets.ts seed sets maxInventoryAbs to i128::MAX. Collapse both to the
+  // sentinel so callers render "unlimited"; otherwise maxInventoryAbs ± inventoryBase
+  // is a huge number that slips past a downstream exact `=== UNLIMITED_CAPACITY` check.
+  if (maxInventoryAbs === 0n || maxInventoryAbs >= UNLIMITED_CAPACITY) return UNLIMITED_CAPACITY;
   const cap = side === "long" ? maxInventoryAbs + inventoryBase : maxInventoryAbs - inventoryBase;
   return cap > 0n ? cap : 0n;
 }

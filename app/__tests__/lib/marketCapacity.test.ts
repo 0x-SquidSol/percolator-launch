@@ -47,6 +47,16 @@ describe("remainingSideCapacityQ", () => {
     expect(wouldExceedInventoryCap(-800n, 0n, "long", 10n ** 30n)).toBe(false);
   });
 
+  it("maxInventoryAbs at the i128::MAX sentinel is also UNLIMITED (newmarkets seed)", () => {
+    // The newmarkets.ts seed sets maxInventoryAbs to i128::MAX (== UNLIMITED_CAPACITY)
+    // as "no practical cap". Without collapsing it, the raw i128::MAX ± inventoryBase
+    // is a huge number that slips past a downstream exact === UNLIMITED_CAPACITY check
+    // and renders ~1.9e37 USDC in the order ticket. Must return the sentinel.
+    expect(remainingSideCapacityQ(0n, UNLIMITED_CAPACITY, "long")).toBe(UNLIMITED_CAPACITY);
+    expect(remainingSideCapacityQ(-800n, UNLIMITED_CAPACITY, "short")).toBe(UNLIMITED_CAPACITY);
+    expect(wouldExceedInventoryCap(-800n, UNLIMITED_CAPACITY, "long", 10n ** 30n)).toBe(false);
+  });
+
   it("the CATE numbers: LP short 202.5B of an 821.5B cap", () => {
     const inv = -202_520_251_800n;
     const cap = 821_523_926_884n;

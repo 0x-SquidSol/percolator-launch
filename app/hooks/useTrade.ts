@@ -36,9 +36,6 @@ import { getLivePriceSnapshot } from "@/lib/priceStore/priceStore";
 import { computeLimitPriceE6, assertFeedAgreesWithChain } from "@/lib/slippage";
 import { fetchPortfolioIdentity, fetchAssetMarketId, defaultCrankObservations } from "@/lib/v18-wire";
 
-const INLINE_ORACLE_PUSH_REMOVED_ERROR =
-  "Inline oracle price push was removed on-chain in beta.29. Migrate this flow to /api/oracle/advance-phase or another server-side oracle publisher before trading as the oracle authority.";
-
 // ---------------------------------------------------------------------------
 // v17 portfolio account layout constants
 // (mirrored from v16_program.rs state module — update if the program layout changes)
@@ -440,18 +437,15 @@ export function useTrade(slabAddress: string) {
 
         const instructions = [];
 
-        // If user is oracle authority, push price first.
-        // B-2: Check that oracleAuthority actually matches wallet before attempting
-        // inline push.
-        // B-3: In beta.29 on-chain wrapper removed inline advance-phase support, so
-        // push a fresh price before cranking (crank needs fresh oracle data).
-        // PERC-8328 / GH#1966: NEVER fall back to a hardcoded price — if we can't get
-        // a valid, fresh price from the backend, abort the trade entirely. Pushing a
-        // fabricated oracle price (e.g. $1) would cause catastrophic mispricing.
-        const userIsOracleAuth = useAdminOracle && mktConfig.oracleAuthority.equals(wallet.publicKey);
-        if (userIsOracleAuth) {
-          throw new Error(INLINE_ORACLE_PUSH_REMOVED_ERROR);
-        }
+        // v18 AUTH_MARK markets are priced by the off-chain keeper (which holds the
+        // oracle authority and pushes a fresh mark every few seconds). The old flow
+        // pushed the oracle price INLINE before trading whenever the connected wallet
+        // WAS the oracle authority — but that instruction was removed on-chain in
+        // beta.29, and throwing here blocked the authority wallet from trading at all
+        // (which is exactly the wallet a market creator / operator tests with). There
+        // is nothing to push inline: the keeper keeps the mark fresh, so the trade
+        // proceeds like any other wallet's. If the mark is genuinely stale (keeper
+        // down), the program returns OracleStale(27), surfaced as a "try again" hint.
 
         // GH#2525 (item 1): the binding on-chain slippage limit is derived from
         // the OFF-CHAIN feed, so check that feed against the ON-CHAIN oracle —
