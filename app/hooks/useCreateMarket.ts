@@ -58,6 +58,7 @@ import {
   deriveInsuranceLpMint,
   deriveStakePool,
   deriveStakeVaultAuth,
+  deriveLpBackingLedger,
   initPoolAccounts,
   parseHeader,
   isV17Account,
@@ -978,11 +979,16 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     const createAtaIx = createAssociatedTokenAccountInstruction(walletPk, vaultAta, vaultPda, params.mint);
     const initMarketIx = buildIx({
       programId,
-      keys: buildAccountMetas(ACCOUNTS_INIT_MARKET, [
-        walletPk, slabPk, params.mint, vaultAta,
-        WELL_KNOWN.tokenProgram, WELL_KNOWN.clock, WELL_KNOWN.rent,
-        vaultPda, WELL_KNOWN.systemProgram,
-      ]),
+      // v18 InitMarket takes exactly 3 accounts [admin, slab, mint] — the vault
+      // ATA, token program, clock, rent, vault PDA and system program that v17
+      // required were dropped (see ACCOUNTS_INIT_MARKET in the v18 SDK, and the
+      // proven newmarkets.ts seed). Passing the old 9-account array tripped the
+      // SDK's "Account count mismatch: expected 3, got 9" guard at step 1.
+      keys: buildAccountMetas(ACCOUNTS_INIT_MARKET, {
+        admin: walletPk,
+        slab: slabPk,
+        mint: params.mint,
+      }),
       data: encodeInitMarket(v17InitArgs),
     });
     const setNftProgramIdIx = buildIx({
@@ -1009,7 +1015,9 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     });
     const initPortfolioIx = buildIx({
       programId,
-      keys: buildAccountMetas(ACCOUNTS_INIT_USER, [walletPk, slabPk, lpPortfolioKp.publicKey]),
+      keys: buildAccountMetas(ACCOUNTS_INIT_USER, {
+        owner: walletPk, market: slabPk, portfolio: lpPortfolioKp.publicKey,
+      }),
       data: encodeInitUser({}),
     });
     const createCtxIx = SystemProgram.createAccount({
@@ -1018,9 +1026,10 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     });
     const setMatcherConfigIx = buildIx({
       programId,
-      keys: buildAccountMetas(ACCOUNTS_SET_MATCHER_CONFIG, [
-        walletPk, slabPk, lpPortfolioKp.publicKey, matcherProgramId, matcherCtxKp.publicKey, matcherDelegatePk,
-      ]),
+      keys: buildAccountMetas(ACCOUNTS_SET_MATCHER_CONFIG, {
+        lpOwner: walletPk, market: slabPk, lpPortfolio: lpPortfolioKp.publicKey,
+        matcherProg: matcherProgramId, matcherCtx: matcherCtxKp.publicKey, matcherDelegate: matcherDelegatePk,
+      }),
       // v18 fresh-market bootstrap: the LP is the FIRST portfolio created on this
       // brand-new market, so its program-assigned portfolioId is 1 and its
       // matcher-sequence is 0 (InitUser just ran in this same tx, no prior ops).
@@ -1038,9 +1047,10 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     });
     const initMatcherCtxIx = buildIx({
       programId,
-      keys: buildAccountMetas(ACCOUNTS_INIT_MATCHER_CTX, [
-        walletPk, slabPk, lpPortfolioKp.publicKey, matcherCtxKp.publicKey, matcherProgramId, matcherDelegatePk,
-      ]),
+      keys: buildAccountMetas(ACCOUNTS_INIT_MATCHER_CTX, {
+        lpOwner: walletPk, market: slabPk, lpPortfolio: lpPortfolioKp.publicKey,
+        matcherCtx: matcherCtxKp.publicKey, matcherProg: matcherProgramId, matcherDelegate: matcherDelegatePk,
+      }),
       data: encodeInitMatcherCtx({
         kind: 0, tradingFeeBps: Number(params.tradingFeeBps), baseSpreadBps: 50, maxTotalBps: 200,
         impactKBps: 0, liquidityNotionalE6: 0n,
@@ -1061,9 +1071,10 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     // M3a: DepositCollateral + 2x TopUpBackingBucket (deadlock-prevention seed)
     const depositIx = buildIx({
       programId,
-      keys: buildAccountMetas(ACCOUNTS_DEPOSIT_COLLATERAL, [
-        walletPk, slabPk, lpPortfolioKp.publicKey, userAta, vaultAta, WELL_KNOWN.tokenProgram,
-      ]),
+      keys: buildAccountMetas(ACCOUNTS_DEPOSIT_COLLATERAL, {
+        owner: walletPk, market: slabPk, portfolio: lpPortfolioKp.publicKey,
+        sourceToken: userAta, vaultToken: vaultAta, tokenProgram: WELL_KNOWN.tokenProgram,
+      }),
       // v18 fresh-market: LP portfolioId 1; matcher-sequence is now 1 because
       // SetMatcherConfig (M2, above) advanced it 0->1 (Deposit/Withdraw/SetMatcher
       // all bump the per-portfolio matcher-sequence).
@@ -1073,12 +1084,23 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
         amount: params.lpCollateral.toString(),
       }),
     });
-    const backingIxs: TransactionInstruction[] = [0, 1].map((domain) =>
-      buildIx({
+    const backingIxs: TransactionInstruction[] = [0, 1].map((domain) => {
+      // v18 TOP_UP_BACKING_BUCKET grew to 7 accounts: +ledger (a per-domain,
+      // handler-created PDA) +systemProgram (percolator-prog #433). The ledger is
+      // DIFFERENT per domain, so derive it inside this per-domain map. Matches the
+      // proven newmarkets.ts seed; the old 5-account array missed both new accounts.
+      const [ledger] = deriveLpBackingLedger(programId, slabPk, domain);
+      return buildIx({
         programId,
-        keys: buildAccountMetas(ACCOUNTS_TOP_UP_BACKING_BUCKET, [
-          walletPk, slabPk, userAta, vaultAta, WELL_KNOWN.tokenProgram,
-        ]),
+        keys: buildAccountMetas(ACCOUNTS_TOP_UP_BACKING_BUCKET, {
+          signer: walletPk,
+          market: slabPk,
+          sourceToken: userAta,
+          vaultToken: vaultAta,
+          tokenProgram: WELL_KNOWN.tokenProgram,
+          ledger,
+          systemProgram: WELL_KNOWN.systemProgram,
+        }),
         data: encodeTopUpBackingBucket({
           // Real seed, not dust: the SHORT domain can never be topped up again
           // once CreateLpVault runs. See backingSeedPerDomain in lib/market-params.ts.
@@ -1092,8 +1114,8 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
           amount: backingSeed.toString(),
           expirySlot: MAX_BACKING_BUCKET_EXPIRY_SLOT.toString(),
         }),
-      }),
-    );
+      });
+    });
     const m3aDescriptor: TailTxDescriptor = {
       label: "Funding liquidity",
       instructions: [depositIx, ...backingIxs],
@@ -1106,7 +1128,9 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     // can never roll back the deposit above — preserves the H9/W3 fix.
     const topupIx = buildIx({
       programId,
-      keys: buildAccountMetas(ACCOUNTS_TOPUP_INSURANCE, [walletPk, slabPk, userAta, vaultAta, WELL_KNOWN.tokenProgram]),
+      keys: buildAccountMetas(ACCOUNTS_TOPUP_INSURANCE, {
+        signer: walletPk, market: slabPk, sourceToken: userAta, vaultToken: vaultAta, tokenProgram: WELL_KNOWN.tokenProgram,
+      }),
       // v18 fresh-market: asset-0 market_id = 1; authority_epoch = 0; intentId is
       // the NEXT value on the shared insurance/backing one-shot lane — backing
       // consumed 1 and 2 above, so insurance takes 3.
@@ -1117,7 +1141,9 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
         amount: params.insuranceAmount.toString(),
       }),
     });
-    const crankKeys = buildAccountMetas(ACCOUNTS_PERMISSIONLESS_CRANK_BASE, [walletPk, slabPk, lpPortfolioKp.publicKey]);
+    const crankKeys = buildAccountMetas(ACCOUNTS_PERMISSIONLESS_CRANK_BASE, {
+      owner: walletPk, market: slabPk, portfolio: lpPortfolioKp.publicKey,
+    });
     // ONLY a pyth market carries a Pyth push-oracle account on the crank.
     //
     // This used to be `!isAdminOracle && !isHyperpOracle`, which is TRUE for a
@@ -2008,11 +2034,16 @@ export function useCreateMarket() {
               };
               const initMarketData = encodeInitMarket(v17InitArgs);
 
-              const initMarketKeys = buildAccountMetas(ACCOUNTS_INIT_MARKET, [
-                wallet.publicKey, slabPk, params.mint, vaultAta,
-                WELL_KNOWN.tokenProgram, WELL_KNOWN.clock, WELL_KNOWN.rent,
-                vaultPda, WELL_KNOWN.systemProgram,
-              ]);
+              // v18 InitMarket takes exactly 3 accounts [admin, slab, mint] — see the
+              // M1 fix note above (~line 987) and ACCOUNTS_INIT_MARKET in the v18 SDK.
+              // The old 9-account array (vault ATA, token program, clock, rent, vault
+              // PDA, system program) tripped the "Account count mismatch: expected 3,
+              // got 9" guard on this resume-Step-0/retry path.
+              const initMarketKeys = buildAccountMetas(ACCOUNTS_INIT_MARKET, {
+                admin: wallet.publicKey,
+                slab: slabPk,
+                mint: params.mint,
+              });
               const initMarketIx = buildIx({ programId, keys: initMarketKeys, data: initMarketData });
 
               const sig = await sendTx({
@@ -2117,11 +2148,16 @@ export function useCreateMarket() {
             };
             const initMarketData = encodeInitMarket(v17InitArgs);
 
-            const initMarketKeys = buildAccountMetas(ACCOUNTS_INIT_MARKET, [
-              wallet.publicKey, slabPk, params.mint, vaultAta,
-              WELL_KNOWN.tokenProgram, WELL_KNOWN.clock, WELL_KNOWN.rent,
-              vaultPda, WELL_KNOWN.systemProgram,
-            ]);
+            // v18 InitMarket takes exactly 3 accounts [admin, slab, mint] — see the
+            // M1 fix note above (~line 987). The old 9-account array (vault ATA,
+            // token program, clock, rent, vault PDA, system program) tripped the
+            // "Account count mismatch: expected 3, got 9" guard on this fresh-
+            // creation-via-sequential-flow path.
+            const initMarketKeys = buildAccountMetas(ACCOUNTS_INIT_MARKET, {
+              admin: wallet.publicKey,
+              slab: slabPk,
+              mint: params.mint,
+            });
             const initMarketIx = buildIx({ programId, keys: initMarketKeys, data: initMarketData });
 
             const sig = await sendTx({
@@ -2421,14 +2457,14 @@ export function useCreateMarket() {
             ): TransactionInstruction =>
               buildIx({
                 programId,
-                keys: buildAccountMetas(ACCOUNTS_INIT_MATCHER_CTX, [
-                  walletPublicKeyStep2,
-                  slabPk,
-                  lpPortfolioPk,
-                  matcherCtxPk,
-                  matcherProgramId,
-                  delegatePk,
-                ]),
+                keys: buildAccountMetas(ACCOUNTS_INIT_MATCHER_CTX, {
+                  lpOwner: walletPublicKeyStep2,
+                  market: slabPk,
+                  lpPortfolio: lpPortfolioPk,
+                  matcherCtx: matcherCtxPk,
+                  matcherProg: matcherProgramId,
+                  matcherDelegate: delegatePk,
+                }),
                 data: encodeInitMatcherCtx({
                   kind: 0,
                   tradingFeeBps: Number(params.tradingFeeBps),
@@ -2646,14 +2682,14 @@ export function useCreateMarket() {
               const smId = readPortfolioIdentity(new Uint8Array(smInfo.data));
               const setMatcherConfigIx = buildIx({
                 programId,
-                keys: buildAccountMetas(ACCOUNTS_SET_MATCHER_CONFIG, [
-                  walletPublicKeyStep2,
-                  slabPk,
-                  lpPortfolioPk,
-                  matcherProgramId,
-                  matcherCtxPk,
-                  delegatePk,
-                ]),
+                keys: buildAccountMetas(ACCOUNTS_SET_MATCHER_CONFIG, {
+                  lpOwner: walletPublicKeyStep2,
+                  market: slabPk,
+                  lpPortfolio: lpPortfolioPk,
+                  matcherProg: matcherProgramId,
+                  matcherCtx: matcherCtxPk,
+                  matcherDelegate: delegatePk,
+                }),
                 data: encodeSetMatcherConfig({
                   portfolioId: smId.portfolioId,
                   expectedSequence: smId.matcherSequence,
@@ -2730,11 +2766,11 @@ export function useCreateMarket() {
 
               const initPortfolioIx = buildIx({
                 programId,
-                keys: buildAccountMetas(ACCOUNTS_INIT_USER, [
-                  walletPublicKeyStep2,
-                  slabPk,
-                  lpPortfolioPk,
-                ]),
+                keys: buildAccountMetas(ACCOUNTS_INIT_USER, {
+                  owner: walletPublicKeyStep2,
+                  market: slabPk,
+                  portfolio: lpPortfolioPk,
+                }),
                 data: encodeInitUser({}),
               });
 
@@ -2937,11 +2973,18 @@ export function useCreateMarket() {
             amount: params.lpCollateral.toString(),
           });
           const depositKeys = isV17SlabDeposit
-            ? buildAccountMetas(ACCOUNTS_DEPOSIT_COLLATERAL, [
-                wallet.publicKey, slabPk, depositPortfolioPk, userAta, vaultTokenAta,
-                WELL_KNOWN.tokenProgram,
-              ])
-            : buildAccountMetas(ACCOUNTS_DEPOSIT_COLLATERAL, [
+            ? buildAccountMetas(ACCOUNTS_DEPOSIT_COLLATERAL, {
+                owner: wallet.publicKey, market: slabPk, portfolio: depositPortfolioPk,
+                sourceToken: userAta, vaultToken: vaultTokenAta, tokenProgram: WELL_KNOWN.tokenProgram,
+              })
+            : // NOT verified against the current v18 ACCOUNTS_DEPOSIT_COLLATERAL spec
+              // ([owner,market,portfolio,sourceToken,vaultToken,tokenProgram]) — this is
+              // the pre-v16/v17 legacy 6-account array (userAta/vaultAta/tokenProgram/clock,
+              // no portfolio account), guarded behind `!isV17SlabDeposit` and unreachable for
+              // every currently-deployed market (all are v17-magic). Left as-is: fixing it
+              // is out of scope for the v18 mismatch sweep and untestable against any live
+              // v12 slab. Flagged in the PR report.
+              buildAccountMetas(ACCOUNTS_DEPOSIT_COLLATERAL, [
                 wallet.publicKey, slabPk, userAta, vaultAta,
                 WELL_KNOWN.tokenProgram, WELL_KNOWN.clock,
               ]);
@@ -2958,13 +3001,14 @@ export function useCreateMarket() {
             authorityEpoch: insSlabData ? readAssetControlSeqs(insSlabData, 0).authorityEpoch : 0n,
             amount: params.insuranceAmount.toString(),
           });
-          // ACCOUNTS_TOPUP_INSURANCE has 6 entries — clock was added in v12.19.
-          // Earlier code passed only 5 pubkeys, which silently broke TX3 on
-          // the deployed binary. SDK 2.0.9 has the right shape; we just need
-          // to supply the matching 6th pubkey here.
-          const topupKeys = buildAccountMetas(ACCOUNTS_TOPUP_INSURANCE, [
-            wallet.publicKey, slabPk, userAta, isV17SlabDeposit ? vaultTokenAta : vaultAta, WELL_KNOWN.tokenProgram,
-          ]);
+          // v18 ACCOUNTS_TOPUP_INSURANCE is [signer,market,sourceToken,vaultToken,
+          // tokenProgram] — 5 entries, no clock (the stale "6 entries / clock in
+          // v12.19" note above no longer matches the deployed v18 SDK). Object
+          // form for clarity — see ACCOUNTS_TOPUP_INSURANCE in the v18 SDK.
+          const topupKeys = buildAccountMetas(ACCOUNTS_TOPUP_INSURANCE, {
+            signer: wallet.publicKey, market: slabPk, sourceToken: userAta,
+            vaultToken: isV17SlabDeposit ? vaultTokenAta : vaultAta, tokenProgram: WELL_KNOWN.tokenProgram,
+          });
           const topupIx = buildIx({ programId, keys: topupKeys, data: topupData });
 
           // W2 fix (2026-07-08): read what's already on-chain BEFORE (re)sending the
@@ -3058,12 +3102,26 @@ export function useCreateMarket() {
               const bbAuthorityEpoch = readAssetControlSeqs(bbSlabData, 0).authorityEpoch;
               const backingIxs: TransactionInstruction[] = [];
               for (const domain of [LONG_DOMAIN, SHORT_DOMAIN]) {
+                // v18 TOP_UP_BACKING_BUCKET grew to 7 accounts: +ledger (a
+                // per-domain, handler-created PDA) +systemProgram (#433). The
+                // ledger is DIFFERENT per domain — derive it inside this loop.
+                // Matches the fix at ~line 1087 (main path) and the proven
+                // newmarkets.ts seed; the old 5-account array here missed both
+                // new accounts and silently built the wrong instruction on this
+                // Step 3 resume/retry path.
+                const [ledger] = deriveLpBackingLedger(programId, slabPk, domain);
                 backingIxs.push(
                   buildIx({
                     programId,
-                    keys: buildAccountMetas(ACCOUNTS_TOP_UP_BACKING_BUCKET, [
-                      wallet.publicKey, slabPk, userAta, backingVaultToken, WELL_KNOWN.tokenProgram,
-                    ]),
+                    keys: buildAccountMetas(ACCOUNTS_TOP_UP_BACKING_BUCKET, {
+                      signer: wallet.publicKey,
+                      market: slabPk,
+                      sourceToken: userAta,
+                      vaultToken: backingVaultToken,
+                      tokenProgram: WELL_KNOWN.tokenProgram,
+                      ledger,
+                      systemProgram: WELL_KNOWN.systemProgram,
+                    }),
                     data: encodeTopUpBackingBucket({
                       domain,
                       marketId: bbMarketId,
@@ -3175,9 +3233,9 @@ export function useCreateMarket() {
             {
               const crankData = encodePermissionlessCrank({ nowSlot: 0n, observations: defaultCrankObservations(0) });
               const crankPortfolioPk = isV17SlabDeposit ? depositPortfolioPk : slabPk;
-              const crankKeys = buildAccountMetas(ACCOUNTS_PERMISSIONLESS_CRANK_BASE, [
-                wallet.publicKey, slabPk, crankPortfolioPk,
-              ]);
+              const crankKeys = buildAccountMetas(ACCOUNTS_PERMISSIONLESS_CRANK_BASE, {
+                owner: wallet.publicKey, market: slabPk, portfolio: crankPortfolioPk,
+              });
               // ONLY a pyth market carries a Pyth oracle tail. Same bug as the
               // batched path: `!isAdminOracle && !isHyperpOracle` is TRUE for a
               // keeper market, whose oracleFeed is the mainnet DEX POOL address
