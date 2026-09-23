@@ -332,20 +332,19 @@ Run `npx tsc --noEmit` and `pnpm test` locally before pushing so CI passes first
 
 - **Cluster:** Solana **devnet** only.
 - **Collateral:** sim-USDC `DJ54k4wH92NTtNP8RuHAwG8si1bevXEknzctDdqYN8eC` (6 decimals).
-- **Programs** (in `app/lib/config.ts`):
-  - wrapper `69VUZ7a2BeXBTpRRManLamF5UWTaNR9B1hy5Se3cdXy9`
+- **Programs** (in `app/lib/config.ts`) — v18 (2026-09-22):
+  - wrapper `GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ`
   - matcher `4seJWjv3R5qfXY8R5ntuPHWsoqcVvaxvfFSnU2AnGMhT`
-  - nft `5TnritLtHS76s5iV8axqDmqhcmJKMRUekMGrk9rBTqSP`
-  - vault/stake `51CeUNpbXovK2BRADPyssuf3Q1xWGabEK9pYkp5mqVhQ`
-- **Live markets** (devnet slabs) — 2026-07-10 born-immortal re-seed (both backing-bucket
-  domains seeded to a non-lapsing expiry via TopUpBackingBucket, fixing the freshness-
-  deadlock that could brick a market after an idle gap):
-  - SOL `7RXTVmGcJMDqqTCFu5ADQRyLDvVZBi3r5U5WXzoULHJV`
-  - JUP `B22quVNFuuEYwx4dQigwn41BMBuk9ZcTdMik4UH7PshY`
-  - TRUMP `6Hqn4VoMHjvCb1XWQkpnJ1UE3xAverJezVdk3czvgQxh`
-  - PENGU `Gbpuam5UYV4MpC1DmGeTVZWtT4UGDmahMW2vo4p1MBAf`
-  - BURNIE `GPpyVaHAEJ8u6W9UAyCPp6tuQB2Chm1Z6uLUKA9ePJBC`
-  - Percolator `FGaUkXepxCggbmpbgXDWUZ3V2CGSh6MeDCU6KLTLShbH`
+  - nft `CNGBPZRALk9Xu8BdgWNyrLJ7daQ9eJYFf1GnEEC7YCU3`
+  - vault/stake `GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3`
+- **Live markets** (devnet slabs) — 2026-09-22 v18 fresh clean re-seed (born-immortal;
+  position-NFT mint fixed so trades close cleanly):
+  - SOL `3t2iZ8GbRiiLDGfdtFZLfSWx8v7tfWFbaEpW9Qsq22cG`
+  - JUP `8JHSgJXFKdrsW8ksknQYMyrckfzkux2SkSDQZKXnSBVY`
+  - TRUMP `C8xgG7Y51pq86Avo6KGLvVbnTTEi6J1vVZxBP6xV18hL`
+  - PENGU `DutyL6caGodQ486y4LBd22PHNJmKQSmP1HLPdVgeso9a`
+  - BURNIE `8kynWczSwQUuwu9Pcj2DgGNWuZ6UH57L4Ungx5CJUrTs`
+  - Percolator `7iP6v2Am2yHBJy9ymWRdf6hEhYccuBMEXSJj7x5CAPDP`
 - **Common commands** (from `app/`): `pnpm dev` · `pnpm dev:price-ws` ·
   `npx tsc --noEmit` · `pnpm test`.
 
