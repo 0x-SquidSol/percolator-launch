@@ -90,10 +90,20 @@ export function isZombieMarket(row: {
   // evidence either way, so decline to classify. Genuinely dead markets are still
   // excluded upstream: the indexer's sweep sets status=closed + indexer_excluded
   // on dust-vault/no-account slabs, and both the view and the query filter those.
+  //
+  // Use `!= null` (loose), NOT `!== undefined`: the server sees these columns as
+  // undefined (a reduced-schema DB row omits them) and correctly declines — but
+  // JSON serialization turns those absent fields into `null` over the wire, so the
+  // client received `vault_balance: null` etc. With a strict `!== undefined` guard
+  // `null !== undefined` is TRUE → the guard failed to fire on the client → the
+  // null-vault branch classified every freshly-seeded market as a zombie and the
+  // list rendered empty ("0 MARKETS"). `!= null` treats null and undefined alike,
+  // so client and server agree. A genuine dead market carries a real numeric 0
+  // (e.g. vault_balance === 0), which is != null and still proceeds to the checks.
   const hasLivenessSignals =
-    row.vault_balance !== undefined ||
-    row.c_tot !== undefined ||
-    row.total_accounts !== undefined;
+    row.vault_balance != null ||
+    row.c_tot != null ||
+    row.total_accounts != null;
   if (!hasLivenessSignals) return false;
 
   const vaultBal = row.vault_balance ?? null;

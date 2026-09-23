@@ -65,6 +65,25 @@ describe("isZombieMarket — reduced schema (absent liveness columns)", () => {
     ).toBe(true);
   });
 
+  it("does NOT zombie a row whose liveness columns are all null (over-the-wire shape)", () => {
+    // Regression (2026-09-23 blank /markets): the server omits these columns
+    // (undefined) and correctly declines, but JSON turns absent → null on the
+    // wire, so the CLIENT receives vault_balance/c_tot/total_accounts = null.
+    // A strict `!== undefined` guard let null through and classified every
+    // freshly-seeded market (no indexed stats yet) as a zombie → "0 MARKETS".
+    // null must be treated like undefined: no liveness evidence → not zombie.
+    expect(
+      isZombieMarket({
+        vault_balance: null,
+        c_tot: null,
+        last_price: null,
+        volume_24h: null,
+        total_open_interest: 0,
+        total_accounts: null,
+      }),
+    ).toBe(false);
+  });
+
   it("treats a single supplied liveness column as enough to classify", () => {
     // total_accounts alone is evidence: present and zero, with nothing else alive.
     expect(
