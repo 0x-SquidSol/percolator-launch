@@ -286,7 +286,6 @@ export function useInsuranceLP() {
         balanceKey(walletPubkeyStr, lpMintInfo.mintPda.toBase58()),
         lpRead,
       );
-      lastLpRef.current = knownLp;
       const userLpBalance = knownLp.amount;
 
       // Calculate derived values
@@ -303,8 +302,14 @@ export function useInsuranceLP() {
         : 0n;
 
       // User's collateral ATA balance (available to deposit into the LP vault).
-      // No wallet connected is itself evidence of zero, so that is the default.
-      let collateralRead: TokenRead = { ok: true, absent: true };
+      // No wallet is genuine evidence of zero. A connected wallet whose
+      // collateral mint has not resolved yet is NOT: `refreshState` only gates
+      // on slabState/lpMintInfo/connection, so it runs with `config` still
+      // undefined, and claiming a confirmed zero there would wipe a good
+      // balance for the same reason the read failure did.
+      let collateralRead: TokenRead = walletPubkeyStr
+        ? { ok: false }
+        : { ok: true, absent: true };
       if (walletPubkeyStr && slabState.config) {
         try {
           const walletPk = new PublicKey(walletPubkeyStr);
@@ -328,8 +333,12 @@ export function useInsuranceLP() {
         balanceKey(walletPubkeyStr, slabState.config?.collateralMint.toBase58()),
         collateralRead,
       );
-      lastCollateralRef.current = knownCollateral;
       const userCollateralBalance = knownCollateral.amount;
+      // NOTE: the refs are NOT written here. A superseded run must not touch
+      // the cache — it bails at the `stale()` guard below without publishing,
+      // and a write here would leave the cache holding a value that no
+      // rendered state ever matched, silently disabling the carry-forward for
+      // the run that DOES publish. Committed with setState instead.
 
       // ─── LP Vault Registry (v17 "Earn" vault) ───────────────────────────────
       // Separate on-chain account from the engine insuranceFund read above.
@@ -408,6 +417,10 @@ export function useInsuranceLP() {
       }
 
       if (stale()) return;
+      // This run's result is the one being published, so it is also the one
+      // the cache should hold.
+      lastLpRef.current = knownLp;
+      lastCollateralRef.current = knownCollateral;
       setState({
         insuranceBalance,
         lpSupply,

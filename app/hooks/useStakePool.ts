@@ -308,11 +308,19 @@ export function useStakePool() {
         }
       } catch { /* vault may not exist */ }
 
-      // Fetch user balances. No wallet connected is itself evidence of zero, so
-      // that is the default; a FAILED read is evidence of nothing and must not
+      // Fetch user balances. A FAILED read is evidence of nothing and must not
       // be reported as zero — see lib/token-balance.ts.
-      let lpRead: TokenRead = { ok: true, absent: true };
-      let collateralRead: TokenRead = { ok: true, absent: true };
+      //
+      // No wallet is genuine evidence of zero. A connected wallet whose
+      // `slabState.config` has not resolved yet is NOT: `refreshState` only
+      // gates on pdas/connection, so it runs with `config` still undefined,
+      // and claiming a confirmed zero there would wipe a good balance for the
+      // same reason the read failure did.
+      const unknownUntilRead: TokenRead = walletPubkeyStr
+        ? { ok: false }
+        : { ok: true, absent: true };
+      let lpRead: TokenRead = unknownUntilRead;
+      let collateralRead: TokenRead = unknownUntilRead;
       let userDepositSlot = 0n;
 
       if (walletPubkeyStr && slabState.config) {
@@ -368,10 +376,13 @@ export function useStakePool() {
         balanceKey(walletPubkeyStr, slabState.config?.collateralMint.toBase58()),
         collateralRead,
       );
-      lastLpRef.current = knownLp;
-      lastCollateralRef.current = knownCollateral;
       const userLpBalance = knownLp.amount;
       const userCollateralBalance = knownCollateral.amount;
+      // NOTE: the refs are NOT written here. A superseded run must not touch
+      // the cache — it bails at the `stale()` guard below without publishing,
+      // and a write here would leave the cache holding a value that no
+      // rendered state ever matched, silently disabling the carry-forward for
+      // the run that DOES publish. Committed with setState instead.
 
       // Calculate derived values
       const redemptionRateE6 = lpSupply > 0n
@@ -399,6 +410,10 @@ export function useStakePool() {
       }
 
       if (stale()) return;
+      // This run's result is the one being published, so it is also the one
+      // the cache should hold.
+      lastLpRef.current = knownLp;
+      lastCollateralRef.current = knownCollateral;
       setState({
         poolExists: true,
         poolAddress: pdas.poolPda,
