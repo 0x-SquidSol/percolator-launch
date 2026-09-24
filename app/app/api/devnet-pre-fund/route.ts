@@ -26,7 +26,6 @@ import {
   Keypair,
   PublicKey,
   Transaction,
-  sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import {
   getAssociatedTokenAddress,
@@ -36,7 +35,7 @@ import {
   getMint,
 } from "@solana/spl-token";
 import { getConfig } from "@/lib/config";
-import { getServerConnection } from "@/lib/server-rpc";
+import { getServerConnection, sendAndConfirmServerTx } from "@/lib/server-rpc";
 import * as Sentry from "@sentry/nextjs";
 // GH#2335: the fallback limiter used when Supabase is unavailable must itself be
 // cross-instance safe — a module-level Map is per-lambda-instance on Vercel and lets
@@ -474,10 +473,10 @@ export async function POST(req: NextRequest) {
 
     let sig: string;
     try {
-      sig = await withTimeout(
-        sendAndConfirmTransaction(connection, tx, [mintAuthority], { commitment: "confirmed" }),
-        30_000,
-      );
+      // Robust send+confirm: the padre load-balanced RPC throws BlockhashNotFound /
+      // "block height exceeded" even when the mint lands, which surfaced here as a
+      // 500 on the create-market pre-fund / sim-USDC-claim step.
+      sig = await sendAndConfirmServerTx(connection, tx, [mintAuthority], { timeoutMs: 45_000 });
     } catch (txErr) {
       // TX failed — release DB gate if available.
       if (supabaseForGate && gate.claimId != null) {

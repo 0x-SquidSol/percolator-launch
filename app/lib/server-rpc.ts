@@ -1,4 +1,4 @@
-import { Connection, type Commitment } from "@solana/web3.js";
+import { Connection, Transaction, type Commitment, type Signer } from "@solana/web3.js";
 import { getNetwork, getRpcEndpoint } from "./config";
 
 /**
@@ -35,4 +35,80 @@ export function getServerConnection(commitment: Commitment = "confirmed"): Conne
     commitment,
     ...(origin ? { httpHeaders: { Origin: origin } } : {}),
   });
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+function isBlockhashMiss(e: unknown): boolean {
+  const m = (e instanceof Error ? e.message : String(e)).toLowerCase();
+  return m.includes("blockhashnotfound") || m.includes("blockhash not found");
+}
+
+/**
+ * Robust server-side send+confirm for a legacy Transaction on a load-balanced
+ * devnet RPC (the padre endpoint). Web3.js `sendAndConfirmTransaction` throws
+ * "BlockhashNotFound" (a node behind the LB hasn't propagated the just-fetched
+ * blockhash) and "block height exceeded" (slow confirm) even when the tx lands —
+ * which surfaced to users as a 500 "Internal server error" on the create-market
+ * pre-fund / sim-USDC-claim step.
+ *
+ * Mitigations: (1) fetch a FINALIZED blockhash (seen by every LB node) so the
+ * send/preflight can't miss it; (2) `skipPreflight` by default — these are
+ * server-signed, trusted txs, and the send-node preflight is the main
+ * BlockhashNotFound source; (3) confirm by POLLING the signature status (not
+ * blockhash-tied `confirmTransaction`), so a slow-but-landed tx is reported as
+ * success instead of a false failure; (4) retry ONLY on a pre-wire send-time
+ * blockhash miss — never re-send after the tx is on the wire, to avoid a
+ * double-mint. Throws only when the tx genuinely did not confirm.
+ */
+export async function sendAndConfirmServerTx(
+  connection: Connection,
+  tx: Transaction,
+  signers: Signer[],
+  opts: { maxSendAttempts?: number; timeoutMs?: number; skipPreflight?: boolean } = {},
+): Promise<string> {
+  const maxSendAttempts = opts.maxSendAttempts ?? 3;
+  const timeoutMs = opts.timeoutMs ?? 45_000;
+  const skipPreflight = opts.skipPreflight ?? true;
+
+  let sig: string | undefined;
+  for (let attempt = 0; attempt < maxSendAttempts && !sig; attempt++) {
+    const { blockhash } = await connection.getLatestBlockhash("finalized");
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = tx.feePayer ?? signers[0].publicKey;
+    tx.signatures = [];
+    tx.sign(...signers);
+    try {
+      sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight, maxRetries: 5 });
+    } catch (e) {
+      if (isBlockhashMiss(e) && attempt < maxSendAttempts - 1) {
+        await sleep(1200);
+        continue;
+      }
+      throw e;
+    }
+  }
+  if (!sig) throw new Error("sendAndConfirmServerTx: transaction was never broadcast");
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await sleep(1500);
+    let s;
+    try {
+      s = (await connection.getSignatureStatus(sig, { searchTransactionHistory: true })).value;
+    } catch {
+      continue;
+    }
+    if (!s) continue;
+    if (s.err) throw new Error(`Transaction failed: ${JSON.stringify(s.err)}`);
+    if (s.confirmationStatus === "confirmed" || s.confirmationStatus === "finalized") return sig;
+  }
+  // Final re-check — the padre RPC can be slow to reflect a landed tx.
+  const finalStatus = await connection
+    .getSignatureStatus(sig, { searchTransactionHistory: true })
+    .catch(() => ({ value: null as null }));
+  const fs = finalStatus.value;
+  if (fs && !fs.err && (fs.confirmationStatus === "confirmed" || fs.confirmationStatus === "finalized")) {
+    return sig;
+  }
+  throw new Error(`Transaction ${sig} not confirmed within ${timeoutMs}ms`);
 }
