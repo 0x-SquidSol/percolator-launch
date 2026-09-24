@@ -104,7 +104,8 @@ interface RawFundingRow {
 }
 
 interface RawCandleRow {
-  price: string;
+  /** NULL for is_liquidation markers — see the guard in `bucketCandles`. */
+  price: string | null;
   size: string;
   created_at: Date;
 }
@@ -227,7 +228,7 @@ export function emptyUdf(status: "no_data" | "error", errmsg?: string): UdfRespo
  * Bucket raw trade rows (ascending `created_at`) into TradingView UDF candles.
  */
 export function bucketCandles(
-  rows: { price: string; size: string; created_at: Date | string }[],
+  rows: { price: string | null; size: string; created_at: Date | string }[],
   bucketSeconds: number,
 ): UdfResponse {
   if (rows.length === 0) return emptyUdf("no_data");
@@ -240,9 +241,17 @@ export function bucketCandles(
       : new Date(r.created_at).getTime();
     const tsSec   = Math.floor(tsMs / 1000);
     const bucket  = Math.floor(tsSec / bucketSeconds) * bucketSeconds;
+    // A MISSING price is not a price of zero. `percolator-indexer` writes
+    // NULL for is_liquidation markers (insertTradeRow.ts: "null for
+    // is_liquidation markers"), and `Number(null)` is `0`, which is finite —
+    // so the old guard admitted it and manufactured an o=h=l=c=0 candle. On
+    // 2026-09-24 that rendered SOL-PERP as a vertical drop to zero with a
+    // -100.00% badge. Require a positive price: a row without one is not a
+    // trade, and contributes no volume either.
+    if (r.price === null || r.price === undefined) continue;
     const price   = Number(r.price);
     const size    = Math.abs(Number(r.size));
-    if (!Number.isFinite(price) || !Number.isFinite(size)) continue;
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(size)) continue;
 
     const existing = bars.get(bucket);
     if (!existing) {
