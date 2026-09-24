@@ -339,12 +339,12 @@ Run `npx tsc --noEmit` and `pnpm test` locally before pushing so CI passes first
   - vault/stake `GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3`
 - **Live markets** (devnet slabs) — 2026-09-22 v18 fresh clean re-seed (born-immortal;
   position-NFT mint fixed so trades close cleanly):
-  - SOL `3t2iZ8GbRiiLDGfdtFZLfSWx8v7tfWFbaEpW9Qsq22cG`
-  - JUP `8JHSgJXFKdrsW8ksknQYMyrckfzkux2SkSDQZKXnSBVY`
-  - TRUMP `C8xgG7Y51pq86Avo6KGLvVbnTTEi6J1vVZxBP6xV18hL`
-  - PENGU `DutyL6caGodQ486y4LBd22PHNJmKQSmP1HLPdVgeso9a`
-  - BURNIE `8kynWczSwQUuwu9Pcj2DgGNWuZ6UH57L4Ungx5CJUrTs`
-  - Percolator `7iP6v2Am2yHBJy9ymWRdf6hEhYccuBMEXSJj7x5CAPDP`
+  - SOL `AzagguvrWmRgcBpsKuqomW7Yb1YUUd6UzcrkiRsqdhr`
+  - JUP `HvCDVSx5gStg1WAxBAaXwpouLyTvAHCyBPHJHh3RfVJg`
+  - TRUMP `CdN8r7FBYBvCGAS75TKAK5UCzY9Zv9P4HaGHuTJ3VXNg`
+  - PENGU `ENdXK8k6iiWCAx4Z9XfoKLg9oXsEbPL4hEtmEmUqozDZ`
+  - BURNIE `BeumQKPdWHTBewYnbGDbcUed5EPvr39covYtPPqJkYGV`
+  - Percolator `BbuB3mb5DkFmJLfoaumkbM6eEv3wZDjz9YZokhEgVJv3`
 - **Common commands** (from `app/`): `pnpm dev` · `pnpm dev:price-ws` ·
   `npx tsc --noEmit` · `pnpm test`.
 
