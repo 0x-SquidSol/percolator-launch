@@ -102,7 +102,7 @@ const MAINNET_MARKET_DIRECTORY_FALLBACK: Record<string, unknown>[] = [
 const DEVNET_MARKET_DIRECTORY_FALLBACK: Record<string, unknown>[] = [
   {
     // Live v18 SOL market — fresh clean re-seed 2026-09-22 (shared sim-USDC collateral).
-    slab_address: "3t2iZ8GbRiiLDGfdtFZLfSWx8v7tfWFbaEpW9Qsq22cG",
+    slab_address: "AzagguvrWmRgcBpsKuqomW7Yb1YUUd6UzcrkiRsqdhr",
     program_id: "GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ",
     mint_address: "DJ54k4wH92NTtNP8RuHAwG8si1bevXEknzctDdqYN8eC",
     symbol: "SOL-PERP",

@@ -92,19 +92,19 @@ if (!MAINNET_RPC_URL) {
 
 /** Pyth mainnet crypto price-feed IDs, keyed by the CURRENT devnet slab. */
 const PYTH_FEED: Record<string, string> = {
-  "3t2iZ8GbRiiLDGfdtFZLfSWx8v7tfWFbaEpW9Qsq22cG": "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d", // SOL (v18 GnwdeQr fresh)
-  "8JHSgJXFKdrsW8ksknQYMyrckfzkux2SkSDQZKXnSBVY": "0a0408d619e9380abad35060f9192039ed5042fa6f82301d0e48bb52be830996", // JUP (v18 fresh)
-  "C8xgG7Y51pq86Avo6KGLvVbnTTEi6J1vVZxBP6xV18hL": "879551021853eec7a7dc827578e8e69da7e4fa8148339aa0d3d5296405be4b1a", // TRUMP (v18 fresh)
-  "DutyL6caGodQ486y4LBd22PHNJmKQSmP1HLPdVgeso9a": "bed3097008b9b5e3c93bec20be79cb43986b85a996475589351a21e67bae9b61", // PENGU (v18 fresh)
+  "AzagguvrWmRgcBpsKuqomW7Yb1YUUd6UzcrkiRsqdhr": "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d", // SOL (v18 GnwdeQr fresh)
+  "HvCDVSx5gStg1WAxBAaXwpouLyTvAHCyBPHJHh3RfVJg": "0a0408d619e9380abad35060f9192039ed5042fa6f82301d0e48bb52be830996", // JUP (v18 fresh)
+  "CdN8r7FBYBvCGAS75TKAK5UCzY9Zv9P4HaGHuTJ3VXNg": "879551021853eec7a7dc827578e8e69da7e4fa8148339aa0d3d5296405be4b1a", // TRUMP (v18 fresh)
+  "ENdXK8k6iiWCAx4Z9XfoKLg9oXsEbPL4hEtmEmUqozDZ": "bed3097008b9b5e3c93bec20be79cb43986b85a996475589351a21e67bae9b61", // PENGU (v18 fresh)
 };
 const idToSlab = new Map(Object.entries(PYTH_FEED).map(([slab, id]) => [id.toLowerCase(), slab]));
 const PYTH_LABELS: Record<string, string> = {
-  "3t2iZ8GbRiiLDGfdtFZLfSWx8v7tfWFbaEpW9Qsq22cG": "SOL/USDC",
-  "8JHSgJXFKdrsW8ksknQYMyrckfzkux2SkSDQZKXnSBVY": "JUP/USDC",
-  "C8xgG7Y51pq86Avo6KGLvVbnTTEi6J1vVZxBP6xV18hL": "TRUMP/USDC",
-  "DutyL6caGodQ486y4LBd22PHNJmKQSmP1HLPdVgeso9a": "PENGU/USDC",
+  "AzagguvrWmRgcBpsKuqomW7Yb1YUUd6UzcrkiRsqdhr": "SOL/USDC",
+  "HvCDVSx5gStg1WAxBAaXwpouLyTvAHCyBPHJHh3RfVJg": "JUP/USDC",
+  "CdN8r7FBYBvCGAS75TKAK5UCzY9Zv9P4HaGHuTJ3VXNg": "TRUMP/USDC",
+  "ENdXK8k6iiWCAx4Z9XfoKLg9oXsEbPL4hEtmEmUqozDZ": "PENGU/USDC",
 };
-const SOL_SLAB = "3t2iZ8GbRiiLDGfdtFZLfSWx8v7tfWFbaEpW9Qsq22cG";
+const SOL_SLAB = "AzagguvrWmRgcBpsKuqomW7Yb1YUUd6UzcrkiRsqdhr";
 
 // ── DEX poll: the 2 pump.fun markets with no Pyth feed ──────────────────────
 
@@ -124,8 +124,8 @@ interface DexMarketEntry extends PoolReadEntry {
  * on-chain — indistinguishable from a broken price feed.
  */
 const SEED_DEX_MARKETS: DexMarketEntry[] = [
-  { slab: "8kynWczSwQUuwu9Pcj2DgGNWuZ6UH57L4Ungx5CJUrTs", poolAddress: "5tYFviFWQRKV9BJSTHGitbdqEYC1BGUgRUDnSADUXqJP", dexType: "pumpswap", label: "BURNIE/WSOL" },
-  { slab: "7iP6v2Am2yHBJy9ymWRdf6hEhYccuBMEXSJj7x5CAPDP", poolAddress: "Ebs3mXAzqZfzHfsdinTNw7gPy4uNyEAywcCiJxzLRrBW", dexType: "pumpswap", label: "PERC/WSOL" },
+  { slab: "BeumQKPdWHTBewYnbGDbcUed5EPvr39covYtPPqJkYGV", poolAddress: "5tYFviFWQRKV9BJSTHGitbdqEYC1BGUgRUDnSADUXqJP", dexType: "pumpswap", label: "BURNIE/WSOL" },
+  { slab: "BbuB3mb5DkFmJLfoaumkbM6eEv3wZDjz9YZokhEgVJv3", poolAddress: "Ebs3mXAzqZfzHfsdinTNw7gPy4uNyEAywcCiJxzLRrBW", dexType: "pumpswap", label: "PERC/WSOL" },
 ];
 
 /**
