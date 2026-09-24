@@ -581,11 +581,17 @@ export function useTrade(slabAddress: string) {
           ]),
           // v18: TradeCpi/BatchTradeCpi bind the two portfolios' identity
           // (portfolioId + positionEpoch) + accountB's matcher-sequence + the
-          // asset marketId. feeBps=0n → program applies the market's configured
-          // tradingFeeBps. >1 leg: BatchTradeCpi — same 7 accounts, several matcher
-          // fills in one instruction, so an over-cap close lands with ONE signature.
-          // (maxSlippage/maxFeeAtoms=0 = no aggregate cap; the per-leg limitPrice
-          // is the real bound — matches the gate's encodeBatchTradeCpi.)
+          // asset marketId. feeBps MUST be the market's configured trade fee. An
+          // earlier note claimed feeBps=0n makes the program apply the market
+          // default — that is FALSE on the deployed v18 wrapper: fee_bps=0 with a
+          // non-zero insurance share fails validation and the trade reverts
+          // InvalidInstruction (Custom 9, which the ticket then MISLABELS as a
+          // slippage rejection — see errorMessages.ts). The proven newmarkets.ts
+          // seed passes the explicit market fee, so read it from
+          // wrapperConfigV17.tradeFeeBps. >1 leg: BatchTradeCpi — same 7 accounts,
+          // several matcher fills in one instruction, so an over-cap close lands
+          // with ONE signature. (maxSlippage/maxFeeAtoms=0 = no aggregate cap; the
+          // per-leg limitPrice is the real bound — matches the gate's encodeBatchTradeCpi.)
           data:
             legs.length > 1
               ? encodeBatchTradeCpi({
@@ -593,7 +599,7 @@ export function useTrade(slabAddress: string) {
                     assetIndex: 0,
                     marketId: tradeMarketId,
                     sizeQ: legSize.toString(),
-                    feeBps: 0n,
+                    feeBps: wrapperConfigV17?.tradeFeeBps ?? 30n,
                     limitPrice: effectiveLimitPriceE6.toString(),
                   })),
                   maxSlippageAtoms: 0n,
@@ -613,7 +619,7 @@ export function useTrade(slabAddress: string) {
                   assetIndex: 0,
                   marketId: tradeMarketId,
                   sizeQ: params.size.toString(),
-                  feeBps: 0n,
+                  feeBps: wrapperConfigV17?.tradeFeeBps ?? 30n,
                   limitPrice: effectiveLimitPriceE6.toString(),
                   backingFeeCapBps: 0,
                 }),

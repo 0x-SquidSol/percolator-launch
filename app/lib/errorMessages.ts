@@ -363,15 +363,19 @@ export function humanizeError(rawMsg: string, context?: "trade"): string {
     if (code === 1 && !isNftProgramError(rawMsg) && isSplTokenProgramError(rawMsg)) {
       return SPL_TOKEN_INSUFFICIENT_FUNDS_MESSAGE;
     }
-    // TX1 (2026-07-08): Custom(9) from a trade() CPI submit is the
-    // slippage/worst-fill-price rejection (the fill moved past the
-    // limitPriceE6 bound the ticket sent on-chain) — NOT the generic
-    // "invalid/unsupported instruction" text in ERROR_CODE_MAP[9], which is
-    // correct for deposit/withdraw/NFT/market-creation call sites (where
-    // code 9 really does mean an instruction-selector/matcher mismatch).
-    // Only trade-submit call sites pass context: "trade".
+    // Custom(9) === PercolatorError::InvalidInstruction on the deployed v18
+    // wrapper. From a trade() CPI submit it has TWO causes and we cannot tell
+    // them apart from the code alone:
+    //   (a) the fill moved past the per-leg limitPrice bound (a genuine slippage
+    //       rejection), OR
+    //   (b) the trade instruction itself was invalid — e.g. feeBps=0 with a
+    //       non-zero insurance share (the 2026-09 bug where the ticket assumed
+    //       "feeBps=0 → market default" and every trade reverted here).
+    // The old text asserted (a) only, which sent debugging down the slippage
+    // path while the real cause was (b). Keep it honest: name the likely cause
+    // and the recovery. Only trade-submit call sites pass context: "trade".
     if (code === 9 && context === "trade") {
-      return "Price moved past your slippage tolerance before this order filled. Try again — the size and leverage are unchanged.";
+      return "The trade was rejected by the program (invalid instruction) — usually the price moved past your slippage tolerance, or a trade parameter was off. Try again with the same size and leverage.";
     }
     if (ERROR_CODE_MAP[code]) {
       return ERROR_CODE_MAP[code];
