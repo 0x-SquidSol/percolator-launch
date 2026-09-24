@@ -17,6 +17,13 @@ import {
   unpackAccount,
 } from '@solana/spl-token';
 import { pollWhenVisible } from '@/lib/pollWhenVisible';
+import {
+  NO_BALANCE_KNOWN,
+  balanceKey,
+  resolveTokenBalance,
+  type KnownBalance,
+  type TokenRead,
+} from '@/lib/token-balance';
 
 // ═══════════════════════════════════════════════════════════════
 // Types
@@ -241,6 +248,10 @@ export function useStakePool() {
   // slab changed mid-fetch) and bail out instead of overwriting fresher state
   // with stale data once its sequential awaits finally resolve.
   const requestIdRef = useRef(0);
+  // Last balances we actually observed, tagged with whose they are, so a
+  // failed poll can fall back to them without stranding them on another wallet.
+  const lastLpRef = useRef<KnownBalance>(NO_BALANCE_KNOWN);
+  const lastCollateralRef = useRef<KnownBalance>(NO_BALANCE_KNOWN);
 
   const refreshState = useCallback(async () => {
     if (!pdas || !connection) {
@@ -297,9 +308,11 @@ export function useStakePool() {
         }
       } catch { /* vault may not exist */ }
 
-      // Fetch user balances
-      let userLpBalance = 0n;
-      let userCollateralBalance = 0n;
+      // Fetch user balances. No wallet connected is itself evidence of zero, so
+      // that is the default; a FAILED read is evidence of nothing and must not
+      // be reported as zero — see lib/token-balance.ts.
+      let lpRead: TokenRead = { ok: true, absent: true };
+      let collateralRead: TokenRead = { ok: true, absent: true };
       let userDepositSlot = 0n;
 
       if (walletPubkeyStr && slabState.config) {
@@ -311,22 +324,24 @@ export function useStakePool() {
           const userLpAta = await getAssociatedTokenAddress(poolData.lpMint, walletPk);
           const lpAtaInfo = await connection.getAccountInfo(userLpAta);
           if (stale()) return;
-          if (lpAtaInfo) {
-            const acct = unpackAccount(userLpAta, lpAtaInfo);
-            userLpBalance = acct.amount;
-          }
-        } catch { /* no LP ATA yet */ }
+          lpRead = lpAtaInfo
+            ? { ok: true, amount: unpackAccount(userLpAta, lpAtaInfo).amount }
+            : { ok: true, absent: true }; // no LP ATA yet — genuinely no shares
+        } catch {
+          lpRead = { ok: false }; // the read failed; we learned nothing
+        }
 
         // User collateral ATA
         try {
           const userCollAta = await getAssociatedTokenAddress(collateralMint, walletPk);
           const collAtaInfo = await connection.getAccountInfo(userCollAta);
           if (stale()) return;
-          if (collAtaInfo) {
-            const acct = unpackAccount(userCollAta, collAtaInfo);
-            userCollateralBalance = acct.amount;
-          }
-        } catch { /* no collateral ATA */ }
+          collateralRead = collAtaInfo
+            ? { ok: true, amount: unpackAccount(userCollAta, collAtaInfo).amount }
+            : { ok: true, absent: true }; // no ATA — the user genuinely holds none
+        } catch {
+          collateralRead = { ok: false }; // the read failed; we learned nothing
+        }
 
         // User deposit PDA (cooldown tracking)
         if (pdas.depositPda) {
@@ -342,6 +357,21 @@ export function useStakePool() {
           } catch { /* no deposit PDA yet */ }
         }
       }
+
+      const knownLp = resolveTokenBalance(
+        lastLpRef.current,
+        balanceKey(walletPubkeyStr, poolData.lpMint.toBase58()),
+        lpRead,
+      );
+      const knownCollateral = resolveTokenBalance(
+        lastCollateralRef.current,
+        balanceKey(walletPubkeyStr, slabState.config?.collateralMint.toBase58()),
+        collateralRead,
+      );
+      lastLpRef.current = knownLp;
+      lastCollateralRef.current = knownCollateral;
+      const userLpBalance = knownLp.amount;
+      const userCollateralBalance = knownCollateral.amount;
 
       // Calculate derived values
       const redemptionRateE6 = lpSupply > 0n

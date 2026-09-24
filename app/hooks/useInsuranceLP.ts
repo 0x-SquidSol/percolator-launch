@@ -34,6 +34,13 @@ import { assertKnownProgram } from '@/lib/programAllowlist';
 import { useParams } from 'next/navigation';
 import { sanitizeOnChainValue } from '@/lib/health';
 import { pollWhenVisible } from '@/lib/pollWhenVisible';
+import {
+  NO_BALANCE_KNOWN,
+  balanceKey,
+  resolveTokenBalance,
+  type KnownBalance,
+  type TokenRead,
+} from '@/lib/token-balance';
 
 /**
  * Which LP-vault redemption step a `withdraw()` call actually ran:
@@ -211,6 +218,11 @@ export function useInsuranceLP() {
   // fresher state with stale data once its sequential awaits finally
   // resolve. Mirrors the equivalent guard in useStakePool.ts.
   const requestIdRef = useRef(0);
+  // Last balances we actually observed, tagged with the account they belong
+  // to, so a failed poll can fall back to them without stranding one
+  // account's figure on another.
+  const lastLpRef = useRef<KnownBalance>(NO_BALANCE_KNOWN);
+  const lastCollateralRef = useRef<KnownBalance>(NO_BALANCE_KNOWN);
 
   // Poll insurance state
   const refreshState = useCallback(async () => {
@@ -239,7 +251,9 @@ export function useInsuranceLP() {
 
       let lpSupply = 0n;
       let lpDecimals = 6;
-      let userLpBalance = 0n;
+      // No wallet, or no LP mint, is itself evidence of zero — that is the
+      // default. A FAILED read is evidence of nothing; see lib/token-balance.ts.
+      let lpRead: TokenRead = { ok: true, absent: true };
 
       if (mintExists) {
         // Read supply and decimals from LP mint
@@ -258,15 +272,22 @@ export function useInsuranceLP() {
             );
             const ataInfo = await connection.getAccountInfo(userLpAta);
             if (stale()) return;
-            if (ataInfo) {
-              const account = unpackAccount(userLpAta, ataInfo);
-              userLpBalance = account.amount;
-            }
+            lpRead = ataInfo
+              ? { ok: true, amount: unpackAccount(userLpAta, ataInfo).amount }
+              : { ok: true, absent: true }; // no ATA — the user genuinely holds none
           } catch {
-            // ATA doesn't exist yet — user has 0 LP tokens
+            lpRead = { ok: false }; // the read failed; we learned nothing
           }
         }
       }
+
+      const knownLp = resolveTokenBalance(
+        lastLpRef.current,
+        balanceKey(walletPubkeyStr, lpMintInfo.mintPda.toBase58()),
+        lpRead,
+      );
+      lastLpRef.current = knownLp;
+      const userLpBalance = knownLp.amount;
 
       // Calculate derived values
       const redemptionRateE6 = lpSupply > 0n
@@ -282,7 +303,8 @@ export function useInsuranceLP() {
         : 0n;
 
       // User's collateral ATA balance (available to deposit into the LP vault).
-      let userCollateralBalance = 0n;
+      // No wallet connected is itself evidence of zero, so that is the default.
+      let collateralRead: TokenRead = { ok: true, absent: true };
       if (walletPubkeyStr && slabState.config) {
         try {
           const walletPk = new PublicKey(walletPubkeyStr);
@@ -292,13 +314,22 @@ export function useInsuranceLP() {
           );
           const collateralAtaInfo = await connection.getAccountInfo(collateralAta);
           if (stale()) return;
-          if (collateralAtaInfo) {
-            userCollateralBalance = unpackAccount(collateralAta, collateralAtaInfo).amount;
-          }
+          collateralRead = collateralAtaInfo
+            ? { ok: true, amount: unpackAccount(collateralAta, collateralAtaInfo).amount }
+            : { ok: true, absent: true }; // no ATA — the user genuinely holds none
         } catch {
-          // ATA doesn't exist yet — user has 0 collateral available
+          // The read itself failed (rate limit, transport, malformed account).
+          // That is not evidence of zero; see lib/token-balance.ts.
+          collateralRead = { ok: false };
         }
       }
+      const knownCollateral = resolveTokenBalance(
+        lastCollateralRef.current,
+        balanceKey(walletPubkeyStr, slabState.config?.collateralMint.toBase58()),
+        collateralRead,
+      );
+      lastCollateralRef.current = knownCollateral;
+      const userCollateralBalance = knownCollateral.amount;
 
       // ─── LP Vault Registry (v17 "Earn" vault) ───────────────────────────────
       // Separate on-chain account from the engine insuranceFund read above.
