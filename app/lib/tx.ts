@@ -1,4 +1,4 @@
-import { Connection, Transaction, TransactionInstruction, ComputeBudgetProgram, SendTransactionError, SystemProgram, TransactionExpiredBlockheightExceededError } from "@solana/web3.js";
+import { Connection, Transaction, TransactionInstruction, ComputeBudgetProgram, SendTransactionError, SystemProgram, TransactionExpiredBlockheightExceededError, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import type { PublicKey, Signer } from "@solana/web3.js";
 
@@ -614,7 +614,19 @@ export async function sendTx({
       const usesAtomicSend = !!wallet.signAndSendTransaction && signers.length === 0;
       const runSimulation = async (): Promise<void> => {
         try {
-          const simResult = await connection.simulateTransaction(tx);
+          // Simulate with replaceRecentBlockhash so the preflight can't
+          // false-negative with "BlockhashNotFound" when the load-balanced RPC
+          // node handling the simulate call hasn't yet propagated the blockhash
+          // we just fetched (a lag artifact — the tx itself is fine). The RPC
+          // substitutes its own recent blockhash for the simulation ONLY; the
+          // real signed tx below still carries our fetched blockhash. Program
+          // errors (Custom/margin/etc.) still surface in value.err as before.
+          const simTx = new VersionedTransaction(tx.compileMessage());
+          const simResult = await connection.simulateTransaction(simTx, {
+            replaceRecentBlockhash: true,
+            sigVerify: false,
+            commitment: "confirmed",
+          });
           if (simResult.value.err) {
             const logs = simResult.value.logs ?? [];
             // Extract the most useful log line (program error or custom message)
@@ -754,10 +766,12 @@ export async function sendTx({
       const msg = e instanceof Error ? e.message : String(e);
       lastError = e instanceof Error ? e : new Error(msg);
 
-      const isBlockhashExpired =
-        msg.includes("block height exceeded") ||
-        msg.includes("Blockhash not found") ||
-        msg.includes("has expired");
+      // Use the shared predicate so every blockhash-miss spelling is retried —
+      // notably the RPC's own "BlockhashNotFound" (no spaces), which the old
+      // inline `includes("Blockhash not found")` check missed, so a preflight/
+      // send blockhash lag on the load-balanced RPC was thrown straight to the
+      // user instead of retried with a fresh blockhash.
+      const isBlockhashExpired = isBlockhashExpiredError(lastError);
 
       // If clock drift is large, enrich the error message for the user
       if (isBlockhashExpired && cachedClockDriftSeconds > MAX_CLOCK_DRIFT_SECONDS) {

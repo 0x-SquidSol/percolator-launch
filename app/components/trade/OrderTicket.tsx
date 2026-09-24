@@ -1440,16 +1440,16 @@ setEngineLockError(null);
           <div className="font-mono tabular-nums text-[var(--text)]">{formatTokenAmount(buyingPower, decimals)} {collateralSymbol}</div>
         </div>
         {connected && !needsAccount && !needsDeposit && (
-          <div className="flex shrink-0 flex-col items-end gap-1">
+          <div className="flex shrink-0 items-center gap-1.5">
             <button
               onClick={() => toggleInlineDeposit("deposit")}
-              className="text-[10px] uppercase tracking-[0.12em] text-[var(--accent)] transition-colors duration-150 hover:brightness-110"
+              className="rounded-sm border border-[var(--accent)]/50 bg-[var(--accent)]/[0.1] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--accent)] transition-all duration-150 hover:bg-[var(--accent)]/[0.18] hover:brightness-110"
             >
               + Deposit
             </button>
             <button
               onClick={() => toggleInlineDeposit("withdraw")}
-              className="text-[10px] uppercase tracking-[0.12em] text-[var(--long)] transition-colors duration-150 hover:brightness-110"
+              className="rounded-sm border border-[var(--long)]/50 bg-[var(--long)]/[0.1] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--long)] transition-all duration-150 hover:bg-[var(--long)]/[0.18] hover:brightness-110"
             >
               − Withdraw
             </button>
