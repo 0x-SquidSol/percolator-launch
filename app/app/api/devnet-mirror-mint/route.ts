@@ -26,7 +26,6 @@ import { getClientIp } from "@/lib/get-client-ip";
 import { Redis } from "@upstash/redis";
 import { Ratelimit } from "@upstash/ratelimit";
 import {
-  Connection,
   Keypair,
   PublicKey,
   Transaction,
@@ -41,6 +40,7 @@ import {
   createInitializeMintInstruction,
 } from "@solana/spl-token";
 import { getConfig } from "@/lib/config";
+import { getServerConnection } from "@/lib/server-rpc";
 import { getServiceClient } from "@/lib/supabase";
 import { getDevnetMintSigner } from "@/lib/devnet-signer";
 import { validateTokenMetadata, validateDexScreenerResponse, validateJupiterTokenResponse } from "@/lib/token-metadata-validators";
@@ -288,7 +288,7 @@ export async function POST(req: NextRequest) {
     const mintAuthPk = new PublicKey(mintSigner.publicKey());
 
     const cfg = getConfig();
-    const connection = new Connection(cfg.rpcUrl, "confirmed");
+    const connection = getServerConnection("confirmed");
 
     const mintKeypair = Keypair.generate();
 

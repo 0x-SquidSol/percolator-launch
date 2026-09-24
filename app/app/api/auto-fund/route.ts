@@ -20,6 +20,7 @@ import {
   createMintToInstruction,
 } from "@solana/spl-token";
 import { getConfig } from "@/lib/config";
+import { getServerConnection } from "@/lib/server-rpc";
 import { getDevnetMintSigner } from "@/lib/devnet-signer";
 import { assertSuccessfulConfirmation } from "@/lib/transaction-confirmation";
 import * as Sentry from "@sentry/nextjs";
@@ -125,7 +126,7 @@ export async function POST(req: NextRequest) {
     }
 
     const cfg = getConfig();
-    const connection = new Connection(cfg.rpcUrl, "confirmed");
+    const connection = getServerConnection("confirmed");
     const publicConnection = new Connection(PUBLIC_DEVNET_RPC, "confirmed");
 
     const results: { sol_airdropped: boolean; usdc_minted: boolean; sol_amount?: number; usdc_amount?: number } = {

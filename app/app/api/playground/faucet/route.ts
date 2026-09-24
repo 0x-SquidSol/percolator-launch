@@ -44,6 +44,7 @@ import {
   TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
 import { getDevnetMintSigner } from "@/lib/devnet-signer";
+import { getServerConnection } from "@/lib/server-rpc";
 import * as Sentry from "@sentry/nextjs";
 import { assertSuccessfulConfirmation } from "@/lib/transaction-confirmation";
 
@@ -186,15 +187,12 @@ export async function POST(req: NextRequest) {
     const mintAuthPk = new PublicKey(mintSigner.publicKey());
     const usdcMint = new PublicKey(SIM_USDC_MINT);
 
-    // Use the server-side RPC proxy so we don't expose the Helius key
-    const rpcUrl =
-      typeof process !== "undefined"
-        ? (process.env.HELIUS_DEVNET_API_KEY
-            ? `https://devnet.helius-rpc.com/?api-key=${process.env.HELIUS_DEVNET_API_KEY}`
-            : "https://api.devnet.solana.com")
-        : "https://api.devnet.solana.com";
-
-    const connection = new Connection(rpcUrl, "confirmed");
+    // ROOT CAUSE FIX: this used to hand-build a URL straight from
+    // HELIUS_DEVNET_API_KEY, which is the exhausted key (HTTP 429 "max usage
+    // reached") — see lib/server-rpc.ts. getServerConnection() prefers the
+    // working DEVNET_RPC_URL override (with the required Origin header) and
+    // falls back to the public devnet RPC instead.
+    const connection = getServerConnection("confirmed");
 
     // ── Mint Sim-USDC ───────────────────────────────────────────────────────
     let usdcSig: string;

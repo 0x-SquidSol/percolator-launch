@@ -105,6 +105,7 @@ import type { RegisteredMarket } from "@/lib/playground-registered-markets";
 import { upsertRegisteredMarket } from "@/lib/playground-registered-markets";
 import { normalizeDexType, KEEPER_DEX_TYPES, type KeeperDexType } from "@/lib/dex-type";
 import { getConfig, getAllProgramIds } from "@/lib/config";
+import { getServerConnection } from "@/lib/server-rpc";
 import { getServiceClient, getServerNetwork } from "@/lib/supabase";
 import { resolveTokenLogo } from "@/lib/token-logo";
 import { sanitizeLogoUrl } from "@/lib/token-metadata-validators";
@@ -367,8 +368,7 @@ export async function POST(req: NextRequest) {
     // actually administers THIS slab (on-chain admin/marketauth), so a valid
     // signature from an unrelated wallet can't repoint someone else's market.
     try {
-      const cfg = getConfig();
-      const connection = new Connection(cfg.rpcUrl, "confirmed");
+      const connection = getServerConnection("confirmed");
       const slabPubkey = new PublicKey(slabAddress);
       const accountInfo = await connection.getAccountInfo(slabPubkey);
       if (!accountInfo) {

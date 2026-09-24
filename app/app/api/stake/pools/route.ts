@@ -9,9 +9,9 @@
  */
 
 import { NextResponse } from "next/server";
-import { Connection, PublicKey } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 import { getServiceClient, getServerNetwork } from "@/lib/supabase";
-import { getRpcEndpoint } from "@/lib/config";
+import { getServerConnection } from "@/lib/server-rpc";
 import { getStakeProgramId, deriveStakePool, STAKE_POOL_SIZE } from "@percolatorct/sdk";
 import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
 import { readRegisteredMarkets, type RegisteredMarket } from "@/lib/playground-registered-markets";
@@ -184,7 +184,7 @@ export async function GET() {
       });
     }
 
-    const connection = new Connection(getRpcEndpoint(), "confirmed");
+    const connection = getServerConnection("confirmed");
 
     // 1. Fetch all on-chain StakePool accounts
     const rawAccounts = await connection.getProgramAccounts(stakeProgramId, {

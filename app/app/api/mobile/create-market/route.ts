@@ -27,7 +27,6 @@ import {
   SystemProgram,
   Transaction,
   TransactionInstruction,
-  Connection,
   ComputeBudgetProgram,
 } from "@solana/web3.js";
 import {
@@ -61,7 +60,8 @@ import {
   V17_PORTFOLIO_ACCOUNT_LEN,
   type SlabTierKey,
 } from "@percolatorct/sdk";
-import { getConfig, getRpcEndpoint } from "@/lib/config";
+import { getConfig } from "@/lib/config";
+import { getServerConnection } from "@/lib/server-rpc";
 import { defaultCrankObservations } from "@/lib/v18-wire";
 import { getClientIp } from "@/lib/get-client-ip";
 import {
@@ -250,8 +250,7 @@ export async function POST(req: NextRequest) {
     );
 
     // ── RPC & blockhash ───────────────────────────────────────────────────────
-    const rpcUrl = getRpcEndpoint();
-    const connection = new Connection(rpcUrl, "confirmed");
+    const connection = getServerConnection("confirmed");
     const { blockhash, lastValidBlockHeight } =
       await connection.getLatestBlockhash("confirmed");
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { SlabProvider, useSlabState } from '@/components/providers/SlabProvider';
 import { useInsuranceLP } from '@/hooks/useInsuranceLP';
 import { useTokenMeta } from '@/hooks/useTokenMeta';
@@ -60,6 +60,15 @@ export function VaultDepositRail({ slab, vault, onTxSuccess, onPositionResolved 
 function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }: VaultDepositRailProps & { slab: string }) {
   const { state, loading, deposit, withdraw, refreshState } = useInsuranceLP();
   const { config } = useSlabState();
+
+  // Latch "we've completed at least one load" so the "not initialized" warning
+  // is driven by the durable `state.registryExists` fact, not by the transient
+  // `loading` flag that toggles on every background revalidation (which made the
+  // warning flicker on and off). Resets per vault via the key={slab} remount.
+  const [everLoaded, setEverLoaded] = useState(false);
+  useEffect(() => {
+    if (!loading) setEverLoaded(true);
+  }, [loading]);
 
   const collateralMeta = useTokenMeta(config?.collateralMint ?? null);
   const collateralSymbol = collateralMeta?.symbol ?? 'USDC';
@@ -135,7 +144,7 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
             </div>
           )}
 
-          {!loading && !state.registryExists && (
+          {everLoaded && !state.registryExists && (
             <p className="mt-3 border-t border-[var(--warning)]/20 pt-3 text-[11px] text-[var(--warning)]">
               ⚠ This vault isn&apos;t initialized on-chain yet — deposits are unavailable until the deployer creates it.
             </p>

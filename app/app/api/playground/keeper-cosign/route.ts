@@ -40,7 +40,6 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import {
-  Connection,
   PublicKey,
   Transaction,
   TransactionInstruction,
@@ -54,7 +53,8 @@ import {
   buildIx,
   buildAccountMetas,
 } from "@percolatorct/sdk";
-import { getRpcEndpoint, getConfig } from "@/lib/config";
+import { getConfig } from "@/lib/config";
+import { getServerConnection } from "@/lib/server-rpc";
 import { readAssetMarketId, readAssetControlSeqs } from "@/lib/v18-wire";
 import { MAX_PRICE_E6 } from "@/lib/oraclePrice";
 import { requirePlaygroundKeeperSigner } from "@/lib/playground-keeper-signer";
@@ -149,8 +149,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const rpcUrl = getRpcEndpoint();
-    const connection = new Connection(rpcUrl, "confirmed");
+    const connection = getServerConnection("confirmed");
     const keeperPk = new PublicKey(keeper.publicKey());
 
     /*

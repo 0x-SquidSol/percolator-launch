@@ -23,7 +23,6 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import {
-  Connection,
   Keypair,
   PublicKey,
   Transaction,
@@ -37,6 +36,7 @@ import {
   getMint,
 } from "@solana/spl-token";
 import { getConfig } from "@/lib/config";
+import { getServerConnection } from "@/lib/server-rpc";
 import * as Sentry from "@sentry/nextjs";
 // GH#2335: the fallback limiter used when Supabase is unavailable must itself be
 // cross-instance safe — a module-level Map is per-lambda-instance on Vercel and lets
@@ -304,7 +304,7 @@ export async function POST(req: NextRequest) {
       // Malformed RPC URL — getConfig() validated it, so this should never happen
     }
 
-    const connection = new Connection(cfg.rpcUrl, "confirmed");
+    const connection = getServerConnection("confirmed");
 
     // H3: read the on-chain balance FIRST — before touching the 24h rate gate.
     // All three devnet-pre-fund calls inside a single wizard launch (vault seed,

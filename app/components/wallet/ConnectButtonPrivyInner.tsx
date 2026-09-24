@@ -31,10 +31,19 @@ export const ConnectButtonPrivyInner: FC = () => {
   }, [wallets, preferredAddress]);
 
   const displayAddress = useMemo(() => {
-    if (!activeWallet) return "";
-    const addr = activeWallet.address;
+    // activeWallet can be transiently null right after Privy authenticates (the
+    // `wallets` array hasn't populated / preferredAddress hasn't matched yet).
+    // Fall back to the user's primary/linked wallet so the button never renders
+    // as an empty accent-colored block. See line ~98.
+    const addr =
+      activeWallet?.address ??
+      user?.wallet?.address ??
+      user?.linkedAccounts?.find(
+        (a): a is WalletLinkedAccount => a.type === "wallet",
+      )?.address;
+    if (!addr) return "";
     return `${addr.slice(0, 4)}...${addr.slice(-4)}`;
-  }, [activeWallet]);
+  }, [activeWallet, user]);
 
   const network = useMemo(() => getConfig().network, []);
 
@@ -93,9 +102,9 @@ export const ConnectButtonPrivyInner: FC = () => {
             ? "text-[var(--accent)] border-[var(--accent)]/30 bg-[var(--accent)]/[0.06] hover:bg-[var(--accent)]/[0.12]"
             : "text-[var(--text)] border-[var(--accent)] bg-[var(--accent)]/20 hover:bg-[var(--accent)]/30",
         ].join(" ")}
-        aria-label={authenticated ? `Wallet: ${displayAddress}` : "Connect wallet"}
+        aria-label={authenticated ? `Wallet: ${displayAddress || "connected"}` : "Connect wallet"}
       >
-        {authenticated ? displayAddress : "Connect"}
+        {authenticated ? (displayAddress || "Wallet") : "Connect"}
       </button>
 
       {!authenticated && showDebug && solflareBrowseUrl ? (

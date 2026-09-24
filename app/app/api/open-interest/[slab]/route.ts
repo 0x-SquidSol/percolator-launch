@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { Connection, PublicKey } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 import {
   parseEngine,
   isV17Account,
@@ -10,6 +10,7 @@ import { proxyToApi } from "@/lib/api-proxy";
 import { validateSlabParam } from "@/lib/route-validators";
 import { isBlockedSlab } from "@/lib/blocklist";
 import { getConfig } from "@/lib/config";
+import { getServerConnection } from "@/lib/server-rpc";
 import { hasIndexerDb } from "@/lib/indexer-db";
 
 export const dynamic = "force-dynamic";
@@ -76,7 +77,7 @@ export async function GET(
   // ── PRIMARY PATH: read OI directly from chain ────────────────────────────
   try {
     const cfg = getConfig();
-    const connection = new Connection(cfg.rpcUrl, "confirmed");
+    const connection = getServerConnection("confirmed");
     const slabPk = new PublicKey(validSlab);
     const info = await connection.getAccountInfo(slabPk, "confirmed");
 

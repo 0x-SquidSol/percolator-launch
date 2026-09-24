@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Connection, PublicKey } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 import { validateNumericParam } from "@/lib/route-validators";
 import { parseHeader, parseConfig, discoverMarkets, type DiscoveredMarket, isV17Account, parseWrapperConfigV17, parseAssetOracleProfileV17, parseMarketGroupV17OI, type V17MarketGroupOI, type RiskParams, V17_HEADER_LEN, V17_MARKET_GROUP_OFF, V17_MARKET_GROUP_LEN } from "@percolatorct/sdk";
 import { getServiceClient, getServerNetwork } from "@/lib/supabase";
-import { getConfig, getRpcEndpoint } from "@/lib/config";
+import { getConfig } from "@/lib/config";
+import { getServerConnection } from "@/lib/server-rpc";
 import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
 import { readRegisteredMarkets, type RegisteredMarket } from "@/lib/playground-registered-markets";
 import { parseV17RiskParams } from "@/lib/v17-engine-config";
@@ -388,8 +389,7 @@ async function discoverMarketsOnChain(
   const cfg = getConfig();
   if (cfg.network !== "devnet") return [];
 
-  const rpcUrl = getRpcEndpoint();
-  const connection = new Connection(rpcUrl, "confirmed");
+  const connection = getServerConnection("confirmed");
 
   try {
     const programId = new PublicKey(cfg.programId);
@@ -510,7 +510,7 @@ async function onChainOrStaticResponse(request: NextRequest, reason: string): Pr
             .map((m) => String((m as Record<string, unknown>).slab_address ?? ""))
             .filter((s) => !!s);
           if (candidateSlabs.length > 0) {
-            const lpConnection = new Connection(getRpcEndpoint(), "confirmed");
+            const lpConnection = getServerConnection("confirmed");
             const knownLpCapitals = await getKnownMarketLpCapitals(lpConnection, candidateSlabs);
 
             // Wizard-launched markets (e.g. Percolator, BURNIE) have no
@@ -1514,7 +1514,7 @@ export async function POST(req: NextRequest) {
   // Verify slab account exists on-chain and is owned by our program
   try {
     const cfg = getConfig();
-    const connection = new Connection(cfg.rpcUrl, "confirmed");
+    const connection = getServerConnection("confirmed");
     const slabPubkey = new PublicKey(slab_address);
     // Retry the on-chain read across transient RPC hiccups. A single 429 /
     // rate-limit must NOT be mistaken for a missing slab — that would 400 a

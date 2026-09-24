@@ -6,7 +6,7 @@ import {
   V17_HEADER_LEN,
   V17_MARKET_GROUP_OFF,
 } from "@percolatorct/sdk";
-import { getRpcEndpoint } from "@/lib/config";
+import { getServerConnection } from "@/lib/server-rpc";
 import { sanitizeOnChainValue } from "@/lib/health";
 
 /**
@@ -174,7 +174,7 @@ export async function readLiveMarketStates(
   }
   if (pubkeys.length === 0) return out;
 
-  const conn = connection ?? new Connection(getRpcEndpoint(), "confirmed");
+  const conn = connection ?? getServerConnection("confirmed");
 
   for (let start = 0; start < pubkeys.length; start += CHUNK) {
     const chunk = pubkeys.slice(start, start + CHUNK);

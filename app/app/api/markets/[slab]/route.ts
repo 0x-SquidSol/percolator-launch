@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Connection, PublicKey } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 import { getServiceClient, getServerNetwork } from "@/lib/supabase";
 import { validateSlabParam } from "@/lib/route-validators";
 import { SLUG_ALIASES } from "@/lib/symbol-utils";
@@ -11,7 +11,8 @@ import {
   isV17Account,
   V17_HEADER_LEN,
 } from "@percolatorct/sdk";
-import { getConfig, getRpcEndpoint } from "@/lib/config";
+import { getConfig } from "@/lib/config";
+import { getServerConnection } from "@/lib/server-rpc";
 import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
 import { readCreatorFeeClaimable } from "@/lib/v17-creator-fee";
 import { readRegisteredMarkets } from "@/lib/playground-registered-markets";
@@ -40,8 +41,7 @@ async function withOnChainMarketLp(
 
   try {
     const programId = new PublicKey(getConfig().programId as string);
-    const rpcUrl = getRpcEndpoint();
-    const connection = new Connection(rpcUrl, "confirmed");
+    const connection = getServerConnection("confirmed");
     const capital = await getMarketLpCapital(connection, programId, slab);
     if (capital != null) {
       return { ...market, vault_balance: Number(capital) };
@@ -67,8 +67,7 @@ const MARKETS_CACHE_HEADERS = {
 async function onChainSlabFallback(slab: string): Promise<NextResponse> {
   try {
     const slabPk = new PublicKey(slab);
-    const rpcUrl = getRpcEndpoint();
-    const connection = new Connection(rpcUrl, "confirmed");
+    const connection = getServerConnection("confirmed");
     const info = await connection.getAccountInfo(slabPk);
 
     if (!info) {

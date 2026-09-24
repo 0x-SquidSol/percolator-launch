@@ -4,7 +4,7 @@
 // (Security issue #1031)
 
 import { NextRequest, NextResponse } from "next/server";
-import { Connection, PublicKey } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 import { parseEngine, isV17Account, discoverMarkets, parseMarketGroupV17OI } from "@percolatorct/sdk";
 import { getServiceClient, getServerNetwork } from "@/lib/supabase";
 import { isActiveMarket, isSaneMarketValue, isZombieMarket } from "@/lib/activeMarketFilter";
@@ -14,7 +14,8 @@ import { computeDisplayOiUsd } from "@/lib/oi-display";
 import { BLOCKED_SLAB_ADDRESSES } from "@/lib/blocklist";
 import { getClientIp } from "@/lib/get-client-ip";
 import { createUpstashRateLimiter } from "@/lib/upstash-rate-limit";
-import { getConfig, getRpcEndpoint } from "@/lib/config";
+import { getConfig } from "@/lib/config";
+import { getServerConnection } from "@/lib/server-rpc";
 import {
   hasIndexerDb,
   queryStatsAggregate,
@@ -183,7 +184,7 @@ async function computeStatsFromOnChainDiscovery(): Promise<(ReturnType<typeof ze
   if (cfg.network !== "devnet") return null;
 
   try {
-    const connection = new Connection(getRpcEndpoint(), "confirmed");
+    const connection = getServerConnection("confirmed");
     const programId = new PublicKey(cfg.programId);
     const found = await discoverMarkets(connection, programId, {
       sequential: true,
@@ -272,7 +273,7 @@ async function computeStatsFromIndexer(): Promise<ReturnType<typeof zeroStats>> 
 
   if (knownSlabs.length > 0) {
     try {
-      const connection = new Connection(getRpcEndpoint(), "confirmed");
+      const connection = getServerConnection("confirmed");
       const pubkeys = knownSlabs.map((s) => new PublicKey(s));
       // I: queryKnownSlabs() caps at exactly 100 today (LIMIT 100), which sits
       // right at the getMultipleAccountsInfo ceiling — chunked defensively so

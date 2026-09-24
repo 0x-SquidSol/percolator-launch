@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Connection, PublicKey } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 import { fetchSlab, parseAccount, parseEngine, parseParams } from "@percolatorct/sdk";
 import { getConfig, getAllProgramIds } from "@/lib/config";
+import { getServerConnection } from "@/lib/server-rpc";
 import { sanitizeAccountCount } from "@/lib/health";
 
 // v17/v18 wrapper program IDs — parseEngine does not support this account format.
@@ -48,7 +49,7 @@ export async function GET(
       );
     }
 
-    const connection = new Connection(cfg.rpcUrl, "confirmed");
+    const connection = getServerConnection("confirmed");
     const data = await fetchSlab(connection, slabPk);
     const engine = parseEngine(data);
     const riskParams = parseParams(data);

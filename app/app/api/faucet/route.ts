@@ -36,6 +36,7 @@ import {
   getAccount,
 } from "@solana/spl-token";
 import { getConfig } from "@/lib/config";
+import { getServerConnection } from "@/lib/server-rpc";
 import { getDevnetMintSigner } from "@/lib/devnet-signer";
 import { assertSuccessfulConfirmation } from "@/lib/transaction-confirmation";
 import * as Sentry from "@sentry/nextjs";
@@ -323,7 +324,7 @@ export async function POST(req: NextRequest) {
     }
 
     const mintAuthPk = new PublicKey(mintSigner.publicKey());
-    const connection = new Connection(cfg.rpcUrl, "confirmed");
+    const connection = getServerConnection("confirmed");
 
     // On-chain authority check: verify our signer matches the mint's authority
     // before attempting MintTo. Returns 400 (not 500) on mismatch so callers

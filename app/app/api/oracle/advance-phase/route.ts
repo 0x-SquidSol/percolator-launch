@@ -20,7 +20,6 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import {
-  Connection,
   Keypair,
   PublicKey,
   Transaction,
@@ -34,6 +33,7 @@ import {
   ACCOUNTS_ADVANCE_ORACLE_PHASE,
 } from "@percolatorct/sdk";
 import { getConfig } from "@/lib/config";
+import { getServerConnection } from "@/lib/server-rpc";
 import {
   checkAdvancePhaseRateLimit,
   ADVANCE_PHASE_RATE_LIMIT,
@@ -112,7 +112,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const cfg = getConfig();
-    const connection = new Connection(cfg.rpcUrl, "confirmed");
+    const connection = getServerConnection("confirmed");
     const slab = new PublicKey(slabAddress);
 
     // BUG FIX (devnet flow-test 2026-07-01, flowtest/15-advance-oracle.ts): the previous

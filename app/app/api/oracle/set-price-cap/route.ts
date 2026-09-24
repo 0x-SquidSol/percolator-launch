@@ -45,7 +45,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { checkAdminSecret } from "@/lib/admin-secret";
 import {
-  Connection,
   Keypair,
   PublicKey,
   Transaction,
@@ -59,6 +58,7 @@ import {
   ACCOUNTS_SET_ORACLE_PRICE_CAP,
 } from "@percolatorct/sdk";
 import { getConfig } from "@/lib/config";
+import { getServerConnection } from "@/lib/server-rpc";
 import { getServiceClient } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
@@ -180,10 +180,7 @@ export async function POST(req: NextRequest) {
 
   const config = getConfig();
   const programId = new PublicKey(config.programId);
-  const connection = new Connection(
-    process.env.NEXT_PUBLIC_SOLANA_RPC_URL ?? config.rpcUrl,
-    "confirmed",
-  );
+  const connection = getServerConnection("confirmed");
 
   // Determine which slabs to apply the cap to
   let slabAddresses: string[] = [];

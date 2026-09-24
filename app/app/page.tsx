@@ -88,7 +88,7 @@ export default function Home() {
 
         <ScrollReveal delay={0.18}>
           <div className="mt-10 flex flex-wrap items-center gap-6">
-            <ButtonLink href="/trade" variant="primary" size="lg" iconRight={ARROW}>
+            <ButtonLink href="/markets" variant="primary" size="lg" iconRight={ARROW}>
               Start trading
             </ButtonLink>
             <Link

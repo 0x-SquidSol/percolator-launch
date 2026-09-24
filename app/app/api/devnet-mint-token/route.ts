@@ -12,7 +12,6 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import {
-  Connection,
   Keypair,
   PublicKey,
   Transaction,
@@ -30,6 +29,7 @@ import {
   createMintToInstruction,
 } from "@solana/spl-token";
 import { getConfig } from "@/lib/config";
+import { getServerConnection } from "@/lib/server-rpc";
 import { getServiceClient } from "@/lib/supabase";
 import { getDevnetMintSigner } from "@/lib/devnet-signer";
 import { validateTokenMetadata, validateDexScreenerResponse } from "@/lib/token-metadata-validators";
@@ -263,7 +263,7 @@ export async function POST(req: NextRequest) {
     tokenInfo.symbol = sanitizeTokenSymbol(tokenInfo.symbol);
 
     const cfg = getConfig();
-    const connection = new Connection(cfg.rpcUrl, "confirmed");
+    const connection = getServerConnection("confirmed");
 
     // BUG-1 FIX: If devnet mint already exists, airdrop tokens to creator instead of
     // creating a new mint. devnet-mirror-mint creates the mint during wizard Step 1, so

@@ -11,9 +11,9 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { Connection, PublicKey } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
-import { getRpcEndpoint } from "@/lib/config";
+import { getServerConnection } from "@/lib/server-rpc";
 import * as Sentry from "@sentry/nextjs";
 import { getServiceClient } from "@/lib/supabase";
 import { getClientIp } from "@/lib/get-client-ip";
@@ -119,7 +119,7 @@ export async function POST(req: NextRequest) {
     // separately on the issue.
     const SPL_MINT_LEN = 82;
     try {
-      const conn = new Connection(getRpcEndpoint(), "confirmed");
+      const conn = getServerConnection("confirmed");
       const info = await conn.getAccountInfo(new PublicKey(mintAddress));
       if (!info) {
         return NextResponse.json(

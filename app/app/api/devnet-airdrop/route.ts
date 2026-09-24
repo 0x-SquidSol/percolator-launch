@@ -50,6 +50,7 @@ import {
   getMinimumBalanceForRentExemptMint,
 } from "@solana/spl-token";
 import { getConfig } from "@/lib/config";
+import { getServerConnection } from "@/lib/server-rpc";
 import { getDevnetMintSigner } from "@/lib/devnet-signer";
 import type { getServiceClient as _GetServiceClient } from "@/lib/supabase";
 import * as Sentry from "@sentry/nextjs";
@@ -629,7 +630,7 @@ export async function POST(req: NextRequest) {
       const mintAuthPk = new PublicKey(mintSigner.publicKey());
 
       const cfg = getConfig();
-      const connection = new Connection(cfg.rpcUrl, "confirmed");
+      const connection = getServerConnection("confirmed");
 
       // Verify we are the mint authority — if not, we cannot mint tokens.
       // This happens for devnet-native tokens (e.g. user pasted a token address
