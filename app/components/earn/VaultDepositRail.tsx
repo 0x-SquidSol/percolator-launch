@@ -145,8 +145,8 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
           )}
 
           {everLoaded && !state.registryExists && (
-            <p className="mt-3 border-t border-[var(--warning)]/20 pt-3 text-[11px] text-[var(--warning)]">
-              ⚠ This vault isn&apos;t initialized on-chain yet — deposits are unavailable until the deployer creates it.
+            <p className="mt-3 border-t border-[var(--border)]/60 pt-3 text-[11px] text-[var(--text-secondary)]">
+              LP-vault deposits aren&apos;t available on this market — these playground markets run without the optional Earn vault.
             </p>
           )}
         </div>
