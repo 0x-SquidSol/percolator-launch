@@ -422,16 +422,35 @@ export async function POST(req: NextRequest) {
       sig = await connection.sendRawTransaction(
         (signedTx as Transaction).serialize(),
       );
-      const confirmation =
-        await connection.confirmTransaction(
-          { signature: sig, blockhash, lastValidBlockHeight },
-          "confirmed",
-        );
+      try {
+        const confirmation =
+          await connection.confirmTransaction(
+            { signature: sig, blockhash, lastValidBlockHeight },
+            "confirmed",
+          );
 
-      assertSuccessfulConfirmation(
-        confirmation,
-        "USDC faucet mint",
-      );
+        assertSuccessfulConfirmation(
+          confirmation,
+          "USDC faucet mint",
+        );
+      } catch (confirmErr) {
+        // The devnet RPC can be slow to reflect confirmation, so
+        // confirmTransaction may throw "block height exceeded" even though the
+        // mint actually landed — a false negative that would show the user an
+        // error and burn their 24h rate-limit claim despite receiving tokens.
+        // Re-check the signature status directly before declaring failure.
+        const status = await connection.getSignatureStatus(sig, {
+          searchTransactionHistory: true,
+        });
+        const s = status.value;
+        const landed =
+          !!s &&
+          !s.err &&
+          (s.confirmationStatus === "confirmed" ||
+            s.confirmationStatus === "finalized");
+        if (!landed) throw confirmErr;
+        // else: the mint confirmed on re-check — fall through to success.
+      }
     } catch (chainErr) {
       if (supabase && gate.claimId) { try { const { releaseFaucetClaim } = await import("@/lib/faucet-rate-gate"); await releaseFaucetClaim(supabase, gate.claimId); } catch { /* best-effort */ } }
       throw chainErr;
