@@ -84,6 +84,14 @@ const StuckSlabCard: FC<{
   const { closeSlab, loading: closeLoading, error: closeError } = useCloseMarket();
   const [dismissed, setDismissed] = useState(false);
   const [reclaimResult, setReclaimResult] = useState<{ sig: string; sol: number } | null>(null);
+  // BUG FIX (2026-09-25, tester-reported "RESUME CREATION is a dead button"):
+  // clicking RESUME CREATION only ever updated the PARENT wizard's internal
+  // React state (resumeFromStep + the restored slab keypair) — it never gave
+  // THIS card any visible acknowledgment, unlike RECLAIM (which shows a tx
+  // link) and DISCARD (which dismisses the card). To a tester the click
+  // looked like it did nothing: same card, same buttons, no change. Track the
+  // click locally so this card confirms it immediately, same as its siblings.
+  const [resumeClicked, setResumeClicked] = useState(false);
 
   // Already dismissed this session
   if (dismissed) return null;
@@ -187,10 +195,14 @@ const StuckSlabCard: FC<{
           {onResume && (
             <button
               type="button"
-              onClick={() => onResume(stuckSlab.publicKey.toBase58(), resumeFromStep)}
-              className="border border-[var(--accent)]/50 bg-[var(--accent)]/[0.08] px-4 py-2 text-[11px] font-bold uppercase tracking-[0.1em] text-[var(--accent)] hover:bg-[var(--accent)]/[0.15] transition-colors"
+              disabled={resumeClicked}
+              onClick={() => {
+                onResume(stuckSlab.publicKey.toBase58(), resumeFromStep);
+                setResumeClicked(true);
+              }}
+              className="border border-[var(--accent)]/50 bg-[var(--accent)]/[0.08] px-4 py-2 text-[11px] font-bold uppercase tracking-[0.1em] text-[var(--accent)] hover:bg-[var(--accent)]/[0.15] transition-colors disabled:opacity-50"
             >
-              RESUME CREATION →
+              {resumeClicked ? "RESUMING…" : "RESUME CREATION →"}
             </button>
           )}
           <button
@@ -224,6 +236,15 @@ const StuckSlabCard: FC<{
               >
                 View tx
               </a>
+            </p>
+          )}
+          {/* Visible confirmation that the click registered — see the
+              resumeClicked fix note above. Without this, the card looked
+              unchanged after clicking RESUME CREATION (a "dead button"). */}
+          {resumeClicked && (
+            <p className="w-full text-[10px] text-[var(--accent)]">
+              ✓ Resume mode set for step {resumeFromStep} of 6 — scroll up, re-enter this
+              market&apos;s parameters, and click LAUNCH MARKET to continue.
             </p>
           )}
           <button

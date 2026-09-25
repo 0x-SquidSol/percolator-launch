@@ -5,9 +5,11 @@ import {
   parseMarketGroupV17OI,
   V17_HEADER_LEN,
   V17_MARKET_GROUP_OFF,
+  deriveStakePool,
 } from "@percolatorct/sdk";
 import { getServerConnection } from "@/lib/server-rpc";
 import { sanitizeOnChainValue } from "@/lib/health";
+import { getConfig } from "@/lib/config";
 
 /**
  * Live per-market state, read straight from the slab account.
@@ -53,7 +55,42 @@ export interface LiveMarketState {
   vault: number;
   /** Total collateral across portfolios (micro-units). */
   cTot: number;
+  /**
+   * BUG FIX (2026-09-25, tester-reported: a market that failed partway through
+   * creation — e.g. died at "Create Earn vault" before ever reaching stake-pool
+   * init — still showed up in /markets and my-markets).
+   *
+   * True once the market has run every step of the create-market wizard,
+   * including the FINAL one (percolator-stake InitPool). That instruction
+   * irreversibly rotates WrapperConfigV17.marketauth from the creator's wallet
+   * to the stake-pool PDA (see useCreateMarket.ts's Step 5 comment: "Stake
+   * InitPool ... ROTATES on-chain marketauth from this wallet to the
+   * stake-pool PDA" and CreateLpVault's own marketauth-gating — that rotation
+   * is deliberately the LAST on-chain mutation any create-market path
+   * performs). So `marketauth == derive("stake_pool", slab)` under the
+   * network's stake program is a free, zero-extra-RPC completeness signal:
+   * it's read off the SAME slab account this file already fetches for price/
+   * OI/vault, just compared against a deterministic PDA instead of a fixed
+   * offset. No stake program pinned for this network (mainnet today — see
+   * PERCOLATOR_ERRORS[60] StakeProgramNotPinned) ⇒ the stake step doesn't
+   * apply here, so every market is treated as complete rather than filtered.
+   */
+  isComplete: boolean;
 }
+
+/** Devnet-only today (percolator-stake has no mainnet deployment — see
+ *  PERCOLATOR_ERRORS[60] StakeProgramNotPinned in @percolatorct/sdk). Read
+ *  once per module load, not per-market — getConfig() is a pure function of
+ *  the deployment's network. */
+const STAKE_PROGRAM_ID: PublicKey | null = (() => {
+  const vaultProgramId = (getConfig() as { vaultProgramId?: string }).vaultProgramId;
+  if (!vaultProgramId) return null;
+  try {
+    return new PublicKey(vaultProgramId);
+  } catch {
+    return null;
+  }
+})();
 
 /**
  * MarketGroupV16HeaderAccount field offsets, relative to V17_MARKET_GROUP_OFF.
@@ -95,16 +132,36 @@ function readU128LE(data: Uint8Array, offset: number): bigint {
 }
 
 /** Parse one slab's live state. Returns null if the account isn't a v17 slab. */
-function parseLiveState(data: Uint8Array): LiveMarketState | null {
+function parseLiveState(data: Uint8Array, slabKey: PublicKey): LiveMarketState | null {
   if (!isV17Account(data)) return null;
 
   let markPriceUsd: number | null = null;
+  // Default to complete: no stake program pinned for this network (mainnet
+  // today) means the stake step doesn't gate anything here — see the
+  // isComplete doc comment above. Only devnet, where the stake program IS
+  // pinned, can flip this to false.
+  let isComplete = true;
   try {
     const cfg = parseWrapperConfigV17(data, V17_HEADER_LEN);
     const e6 = cfg.markEwmaE6;
     if (e6 > 0n && e6 < MAX_SANE_PRICE_E6) markPriceUsd = Number(e6) / 1_000_000;
+
+    if (STAKE_PROGRAM_ID) {
+      try {
+        const [expectedStakePoolPda] = deriveStakePool(slabKey, STAKE_PROGRAM_ID);
+        isComplete = cfg.marketauth.equals(expectedStakePoolPda);
+      } catch {
+        // PDA derivation/compare failed for an unexpected reason — fail closed
+        // (not complete) rather than let an unproven slab through the filter.
+        // Independent of the price parse above, which already succeeded.
+        isComplete = false;
+      }
+    }
   } catch {
     // Config unreadable — the row keeps a null price rather than a wrong one.
+    // Unreadable also means we can't prove completeness — fail closed (not
+    // complete) rather than let an unparseable slab through the filter.
+    isComplete = false;
   }
 
   let oiLongQ = 0;
@@ -144,6 +201,7 @@ function parseLiveState(data: Uint8Array): LiveMarketState | null {
     insurance,
     vault,
     cTot,
+    isComplete,
   };
 }
 
@@ -182,7 +240,7 @@ export async function readLiveMarketStates(
       const infos = await conn.getMultipleAccountsInfo(chunk.map((c) => c.key));
       infos.forEach((info, i) => {
         if (!info?.data) return;
-        const state = parseLiveState(new Uint8Array(info.data));
+        const state = parseLiveState(new Uint8Array(info.data), chunk[i].key);
         if (state) out.set(chunk[i].slab, state);
       });
     } catch {

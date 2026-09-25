@@ -17,6 +17,7 @@ import {
 } from "@percolatorct/sdk";
 import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
 import { readAssetControlSeqs } from "@/lib/v18-wire";
+import { parseMarketCreationError } from "@/lib/parseMarketError";
 
 /**
  * CloseSlab (IX_TAG.CloseSlab = 13) instruction in percolator-prog.
@@ -190,8 +191,31 @@ export function useCloseMarket() {
           setError("Cannot close: there are still open user accounts on this market.");
         } else if (msg.includes("User rejected") || msg.includes("WalletSign")) {
           setError("Transaction cancelled.");
+        } else if (/custom program error:\s*0x15\b/i.test(msg) || msg.includes("EngineLockActive")) {
+          // BUG FIX (2026-09-25, tester-reported): 0x15 = Custom(21) = EngineLockActive
+          // (see PERCOLATOR_ERRORS in @percolatorct/sdk). This used to fall through to
+          // the raw "Failed to close slab: Simulation failed: ..." dump below. It is a
+          // genuine on-chain precondition failure, not a client bug or an RPC flake —
+          // the slab's engine lock hasn't cleared (a prior close/recovery attempt on
+          // this same slab didn't finish), so CloseSlab correctly refuses. A fresh
+          // blockhash won't help; surface the real, actionable reason instead.
+          setError(
+            "Cannot close yet: this market's engine lock is still active — a previous close " +
+            "or recovery on this slab hasn't finished clearing. This is a real on-chain state " +
+            "block, not a network hiccup, so retrying immediately won't help. Wait a few " +
+            "minutes and try again; if it still won't clear, contact a maintainer."
+          );
         } else {
-          setError(`Failed to close slab: ${msg.slice(0, 200)}`);
+          // Any other custom-program-error code: reuse the same decoder the create-market
+          // wizard uses (SDK PERCOLATOR_ERRORS hint table) instead of dumping the raw
+          // simulation log, so an unrecognised code still gets a real explanation where
+          // possible rather than an opaque "custom program error: 0xNN".
+          const decoded = parseMarketCreationError(err);
+          setError(
+            decoded.startsWith("Transaction failed:")
+              ? `Failed to close slab: ${msg.slice(0, 200)}`
+              : `Cannot close: ${decoded}`
+          );
         }
 
         setLoading(false);

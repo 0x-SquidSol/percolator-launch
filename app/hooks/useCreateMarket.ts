@@ -591,7 +591,7 @@ async function registerMarketWithKeeper(
 // below unchanged, including every idempotency check it relies on to resume
 // a partially-created market safely).
 //
-// Maps the 12-tx sequential flow to 5-6 independent transactions:
+// Maps the 12-tx sequential flow to 6-7 independent transactions:
 //   M1  = createAccount(slab)+createATA+InitMarket+SetNftProgramId
 //   cosignTx (keeper mode only) = the server-built keeper co-sign tx, wallet-
 //         signed inside the same batch, otherwise untouched
@@ -601,19 +601,27 @@ async function registerMarketWithKeeper(
 //   M3b = TopUpInsurance + PermissionlessCrank (best-effort/non-fatal, same
 //         as the sequential path's own tail — its failure must never roll
 //         back the deposit, per the H9/W3 fix, so it's ALWAYS its own tx)
-//   M4  = CreateLpVault + createAccount(stakeLpMint)+createAccount(stakeVault)
-//         +StakeInitPool — broadcast only after keeper-register has returned,
-//         since StakeInitPool irreversibly rotates on-chain marketauth away
-//         from the creator wallet and keeper-register's H1 check requires
-//         marketauth === deployer.
+//   M4a = CreateLpVault alone — the "Creating Earn vault..." step. SPLIT OUT
+//         (2026-09-25) from what used to be a single M4 bundling this with the
+//         entire stake-pool tail below: that bundle was the largest/most
+//         fragile tx in the pipeline (up to 6 ixs, 3 signers, ~18 accounts)
+//         and is what tester reports of "Step 5 Create Earn vault — Internal
+//         error" were hitting. Mirrors the sequential/resume path, which has
+//         always kept these as two separate sends.
+//   M4b = createAccount(stakeLpMint)+createAccount(stakeVault)+
+//         [UpdateFeeSplit]+StakeInitPool+BindInsuranceAuthority — broadcast
+//         only after M4a has landed AND keeper-register has returned, since
+//         StakeInitPool irreversibly rotates on-chain marketauth away from
+//         the creator wallet and both CreateLpVault and keeper-register's H1
+//         check require marketauth === deployer.
 //
 // `updateInFlightStep` is called with the SAME lastStep values the resume
 // machinery already expects after each landing (M1→2, M2→3, M3(a+b)→4,
-// M4→6 — see inFlightMarket.ts's lastStep doc and RecoverSolBanner.tsx),
-// so a mid-pipeline failure falls back cleanly onto the existing
-// RecoverSolBanner/handleRetry resume flow (which always passes an explicit
-// step and therefore uses the sequential code, reading the same idempotency
-// state this batch path left behind).
+// M4a→5, M4b→6 — see inFlightMarket.ts's lastStep doc and
+// RecoverSolBanner.tsx), so a mid-pipeline failure falls back cleanly onto
+// the existing RecoverSolBanner/handleRetry resume flow (which always passes
+// an explicit step and therefore uses the sequential code, reading the same
+// idempotency state this batch path left behind).
 //
 // FALLBACK CONTRACT: any failure BEFORE the first transaction broadcasts
 // (capability gap, network hiccup, preflight failure, or the user declining
@@ -1167,7 +1175,9 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       signers: [],
     };
 
-    // M4: CreateLpVault + createAccount(mint)+createAccount(vault)+StakeInitPool
+    // M4a/M4b instructions — CreateLpVault (M4a) + createAccount(mint)+
+    // createAccount(vault)+StakeInitPool tail (M4b). Split into two separate
+    // transactions below (see the M4-split fix note above this function).
     const createLpVaultIx = buildIx({
       programId,
       keys: buildAccountMetas(ACCOUNTS_CREATE_LP_VAULT, {
@@ -1230,12 +1240,32 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       }),
       data: encodeStakeBindInsuranceAuthority(),
     });
-    const m4Descriptor: TailTxDescriptor = {
-      label: "Opening staking & LP vaults",
+    // BUG FIX (2026-09-25, tester-reported "Step 5 Create Earn vault — Internal
+    // error"): M4 used to bundle CreateLpVault + createAccount(mint) +
+    // createAccount(vault) + [UpdateFeeSplit] + StakeInitPool + BindInsuranceAuthority
+    // into ONE transaction — up to 6 instructions, 3 signers (wallet + 2 fresh
+    // keypairs) and ~18 unique accounts, by far the largest/most fragile tx in the
+    // whole pipeline. The sequential per-step path (Step 4 / Step 5 below in the
+    // resume/retry flow) has always kept these as TWO separate sends — CreateLpVault
+    // alone, then the mint/vault/InitPool/Bind bundle — and that split is what makes
+    // Step 4 there small and reliable. Mirror that split here: M4a is CreateLpVault
+    // alone (matches STEP_LABELS[4] = "Creating Earn vault...", the exact step
+    // testers reported failing); M4b is everything that must follow it. This also
+    // gives each piece its own retryable landing step (lastStep 4→5→6) instead of
+    // one opaque "5/6 bundled" failure that always blamed the Earn-vault label even
+    // when the actual broadcast/size issue was in the (unrelated) stake-pool tail.
+    const m4aDescriptor: TailTxDescriptor = {
+      label: "Creating the Earn vault",
+      instructions: [createLpVaultIx],
+      computeUnits: 250_000,
+      signers: [],
+    };
+    const m4bDescriptor: TailTxDescriptor = {
+      label: "Opening the staking pool",
       // Order is load-bearing (see orderStakeTailInstructions): UpdateFeeSplit (if any)
       // BEFORE InitPool, Bind AFTER InitPool.
       instructions: orderStakeTailInstructions(
-        [createLpVaultIx, createLpMintIx, createStakeVaultIx],
+        [createLpMintIx, createStakeVaultIx],
         updateFeeSplitIx,
         initPoolIx,
         bindInsuranceIx,
@@ -1244,22 +1274,22 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       signers: [stakeLpMintKp, stakeVaultKp],
     };
 
-    // The 5 dependent, rebuild-capable txs — SAME order as before (M1, M2,
-    // M3a, M3b, M4). Building them here against the one shared `blockhash` is
-    // byte-for-byte equivalent to the old inline `buildBatchTx` calls; the
-    // descriptors are what let `recoverTailFrom` (below) rebuild only the
-    // not-yet-landed ones against a fresh blockhash if the tail's serial
-    // confirm-then-broadcast pipeline outruns this blockhash's validity.
-    const tailDescriptors: TailTxDescriptor[] = [m1Descriptor, m2Descriptor, m3aDescriptor, m3bDescriptor, m4Descriptor];
+    // The 6 dependent, rebuild-capable txs — SAME order as before, with M4 now
+    // split into M4a/M4b (see the fix note above). Building them here against the
+    // one shared `blockhash` is byte-for-byte equivalent to the old inline
+    // `buildBatchTx` calls; the descriptors are what let `recoverTailFrom` (below)
+    // rebuild only the not-yet-landed ones against a fresh blockhash if the tail's
+    // serial confirm-then-broadcast pipeline outruns this blockhash's validity.
+    const tailDescriptors: TailTxDescriptor[] = [m1Descriptor, m2Descriptor, m3aDescriptor, m3bDescriptor, m4aDescriptor, m4bDescriptor];
     const buildTailTx = (d: TailTxDescriptor, hash: string): Transaction =>
       buildBatchTx({ instructions: d.instructions, computeUnits: d.computeUnits, priorityFeeMicroLamports: priorityFee, blockhash: hash, feePayer: walletPk });
-    const [m1, m2, m3a, m3b, m4] = tailDescriptors.map((d) => buildTailTx(d, blockhash));
+    const [m1, m2, m3a, m3b, m4a, m4b] = tailDescriptors.map((d) => buildTailTx(d, blockhash));
 
     // cosignTx is deserialized exactly as the server built it — its own
     // blockhash, no heap-frame/CU ixs added — never run through buildBatchTx.
     // It is NOT a TailTxDescriptor and is never rebuilt on expiry (see the
     // TailTxDescriptor comment above).
-    const orderedTxs: Transaction[] = [m1, ...(cosignTx ? [cosignTx] : []), m2, m3a, m3b, m4];
+    const orderedTxs: Transaction[] = [m1, ...(cosignTx ? [cosignTx] : []), m2, m3a, m3b, m4a, m4b];
     // Human-readable label per batched tx, in the SAME order — the progress UI
     // shows what is being CREATED ("Creating the market", "Funding liquidity"),
     // never internal transaction indices. A launching user cares about market
@@ -1270,7 +1300,8 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       m2Descriptor.label,
       m3aDescriptor.label,
       m3bDescriptor.label,
-      m4Descriptor.label,
+      m4aDescriptor.label,
+      m4bDescriptor.label,
     ];
 
     // ---- ONE wallet approval for the whole batch --------------------------
@@ -1286,13 +1317,14 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     const signedM2 = signedTxs[idx++];
     const signedM3a = signedTxs[idx++];
     const signedM3b = signedTxs[idx++];
-    const signedM4 = signedTxs[idx++];
-    if (!signedM1 || !signedM2 || !signedM3a || !signedM3b || !signedM4) {
+    const signedM4a = signedTxs[idx++];
+    const signedM4b = signedTxs[idx++];
+    if (!signedM1 || !signedM2 || !signedM3a || !signedM3b || !signedM4a || !signedM4b) {
       throw new Error("Wallet did not return a signature for every transaction in the batch.");
     }
     signedM1.partialSign(slabKp);
     signedM2.partialSign(lpPortfolioKp, matcherCtxKp);
-    signedM4.partialSign(stakeLpMintKp, stakeVaultKp);
+    signedM4b.partialSign(stakeLpMintKp, stakeVaultKp);
 
     // ---- Mutable tail state for blockhash-expiry recovery -----------------
     // `signedTail[i]` is the CURRENTLY-SIGNED transaction for `tailDescriptors[i]`
@@ -1300,7 +1332,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     // below (defined after `landed`/`landingTotal`/`orderedLabels` exist, just
     // before the pipelined broadcast starts) overwrites entries in place if a
     // not-yet-landed one has to be rebuilt against a fresh blockhash.
-    const signedTail: Transaction[] = [signedM1, signedM2, signedM3a, signedM3b, signedM4];
+    const signedTail: Transaction[] = [signedM1, signedM2, signedM3a, signedM3b, signedM4a, signedM4b];
     let blockhashRecoveries = 0;
 
     // ---- Persist recovery state BEFORE the first broadcast ---------------
@@ -1594,8 +1626,22 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     // about to be reported as failed.
     const keeperOutcome = await startKeeperRegister();
 
-    const m4Sig = await broadcastTailTx(4);
-    advanceLanding(m4Sig);
+    // M4a: CreateLpVault alone (see the M4-split fix note above the descriptor
+    // definitions) — this is the "Creating Earn vault..." step (STEP_LABELS[4]).
+    // Landing it as its OWN transaction, separately from the stake-pool tail,
+    // means a failure here is reported (and resumable) as exactly what it is,
+    // and never drags in the much larger/riskier M4b bundle.
+    const m4aSig = await broadcastTailTx(4);
+    advanceLanding(m4aSig);
+    updateInFlightStep(slabPk.toBase58(), 5);
+
+    // M4b: mint/vault creation + [UpdateFeeSplit] + StakeInitPool + BindInsuranceAuthority.
+    // MUST run after M4a (CreateLpVault is marketauth-gated; StakeInitPool here
+    // irreversibly rotates marketauth to the pool PDA) and after keeper-register
+    // above (same marketauth-rotation constraint that used to gate the old
+    // single M4).
+    const m4bSig = await broadcastTailTx(5);
+    advanceLanding(m4bSig);
     updateInFlightStep(slabPk.toBase58(), 6);
 
 

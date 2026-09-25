@@ -191,6 +191,17 @@ export function parseMarketCreationError(error: unknown): string {
     return "Wallet disconnected. Please reconnect your wallet and try again.";
   }
 
+  // Bare RPC/wallet-transport failure ("Internal error" — JSON-RPC -32603, or an
+  // equally opaque wallet-side send failure with no program logs attached). This
+  // carries no custom-error code and no InstructionError, so none of the checks
+  // above can classify it — it's a transport/node hiccup, not an on-chain
+  // rejection. Give the user an actionable, honest message instead of echoing
+  // the bare string (tester-reported as "Transaction failed: Internal error"
+  // on the Earn-vault step).
+  if (/^internal error$/i.test(msg.trim()) || msg.includes("-32603")) {
+    return "The RPC node returned a generic internal error (no on-chain detail) — usually a transient node hiccup on a load-balanced devnet endpoint. Click Retry; if it keeps happening on the same step, try again in a minute or add your own Helius devnet key.";
+  }
+
   // Fallback: truncate long messages but keep them informative
   if (msg.length > 200) {
     return `Transaction failed: ${msg.slice(0, 180)}... Click Retry or Start Over.`;

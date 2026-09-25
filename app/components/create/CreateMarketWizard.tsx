@@ -183,6 +183,19 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
    */
   const [resumeFromStep, setResumeFromStep] = useState<number | null>(null);
 
+  // BUG FIX (2026-09-25, tester-reported "RESUME CREATION is a dead button"):
+  // clicking RESUME CREATION previously only updated React state — nothing
+  // scrolled the "Resume mode" indicator (below) into view, so on a page
+  // where the recovery card + the click target aren't both already on screen
+  // (e.g. multiple stuck-slab cards stacked above it), the click looked like
+  // it did nothing. Scroll the indicator into view the moment resume mode
+  // turns on, so the click has an immediate, visible effect every time.
+  const resumeBannerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (resumeFromStep === null) return;
+    resumeBannerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [resumeFromStep]);
+
   // PERC-516: Persist wizard state to localStorage whenever it changes.
   // Clear on successful market creation (handled in the success callback).
   useEffect(() => {
@@ -960,7 +973,10 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
 
       {/* PERC-513: Resume mode indicator — shown when user clicked "Resume Creation" from the banner */}
       {resumeFromStep !== null && (
-        <div className="border border-[var(--accent)]/40 bg-[var(--accent)]/[0.06] px-4 py-3 flex items-center justify-between gap-3">
+        <div
+          ref={resumeBannerRef}
+          className="border border-[var(--accent)]/40 bg-[var(--accent)]/[0.06] px-4 py-3 flex items-center justify-between gap-3"
+        >
           <div className="flex items-center gap-2">
             <span className="text-[var(--accent)] text-[12px]">⚡</span>
             <span className="text-[11px] text-[var(--text-secondary)]">

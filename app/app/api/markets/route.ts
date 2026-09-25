@@ -907,13 +907,45 @@ export async function GET(request: NextRequest) {
       };
     });
 
+    // BUG FIX (2026-09-25, tester-reported: a market whose creation failed
+    // partway through — e.g. died at "Create Earn vault", before stake-pool
+    // init ever ran — still showed up in /markets and my-markets). Drop those
+    // here, upstream of every count below, so total/activeTotal/zombieCount
+    // all agree on what actually counts as a listed market.
+    //
+    // Signal: LiveMarketState.isComplete (see lib/live-market-state.ts) — true
+    // once WrapperConfigV17.marketauth has rotated to the market's stake-pool
+    // PDA, which only happens on the FINAL step of every create-market path
+    // (percolator-stake InitPool). Read off the same slab account already
+    // fetched for price/OI/vault, so this costs zero extra RPC calls.
+    //
+    // Built-ins (PLAYGROUND_SLAB_META, the 6 curated markets) are exempt: they
+    // are maintainer-seeded and proven complete out of band, so a stale/
+    // unreadable is_complete for one of them must never hide a healthy
+    // curated market. `is_complete` is `undefined` (not `false`) when live
+    // state couldn't be read at all (RPC gap) — that degrades to "still
+    // shown", matching this route's existing policy of never zeroing a
+    // market out over a transient RPC failure (see market-registry.ts).
+    // Only an EXPLICIT `false` — proven incomplete on-chain — is filtered,
+    // and unlike zombie markets there is no include_incomplete opt-in: there
+    // is no legitimate reason to list a market whose creation demonstrably
+    // never finished.
+    const completeOnly = sanitized.filter((m) => {
+      const row = m as Record<string, unknown>;
+      if (row.is_complete === false && !PLAYGROUND_SLAB_META[row.slab_address as string]) {
+        return false;
+      }
+      return true;
+    });
+
     // GH#1420: Filter zombie markets (vault_balance=0) unless ?include_zombie=true
-    const nonZombie = sanitized.filter((m) => includeZombie || !(m as Record<string, unknown>).is_zombie);
-    // GH#1429: Compute zombieCount from sanitized array BEFORE the zombie filter, not from
-    // the difference sanitized.length - nonZombie.length. When include_zombie=true, nonZombie
-    // includes all markets (including zombies), making the difference always 0. Computing
-    // directly from the tagged is_zombie field gives the correct count regardless of the flag.
-    const zombieCount = sanitized.filter((m) => (m as Record<string, unknown>).is_zombie === true).length;
+    const nonZombie = completeOnly.filter((m) => includeZombie || !(m as Record<string, unknown>).is_zombie);
+    // GH#1429: Compute zombieCount from the (complete-only) array BEFORE the zombie
+    // filter, not from the difference sanitized.length - nonZombie.length. When
+    // include_zombie=true, nonZombie includes all markets (including zombies),
+    // making the difference always 0. Computing directly from the tagged is_zombie
+    // field gives the correct count regardless of the flag.
+    const zombieCount = completeOnly.filter((m) => (m as Record<string, unknown>).is_zombie === true).length;
 
     // #1168: Include total count so API consumers can get market count without
     // fetching all records. Reflects post-filter count (blocked markets excluded).
@@ -924,7 +956,7 @@ export async function GET(request: NextRequest) {
     // markets (including zombies), so activeTotal counted zombie markets that passed
     // isActiveMarket() — producing 71 instead of 69. Computing from the zombie-excluded
     // set ensures consistency with /api/stats.
-    const nonZombieOnly = sanitized.filter((m) => !(m as Record<string, unknown>).is_zombie);
+    const nonZombieOnly = completeOnly.filter((m) => !(m as Record<string, unknown>).is_zombie);
     const activeTotal = nonZombieOnly.filter((m) => isActiveMarket(m as Parameters<typeof isActiveMarket>[0])).length;
     // GH#1760: Expose markets_with_price for transparency — subset of activeTotal with a sane last_price.
     // activeTotal = has any sane stat (price OR volume OR OI); markets_with_price = only those with price.

@@ -159,6 +159,16 @@ export async function loadMergedMarketRows(): Promise<MarketRegistryRow[] | null
       insurance_balance: live.insurance,
       vault_balance: live.vault,
       c_tot: live.cTot,
+      // BUG FIX (2026-09-25): completeness signal for filtering markets whose
+      // creation died partway through (e.g. failed at "Create Earn vault",
+      // before stake-pool init ever ran) — see LiveMarketState.isComplete's
+      // doc comment in lib/live-market-state.ts for what this actually checks.
+      // Left absent (not merged in) when live state couldn't be read, so a
+      // transient RPC gap degrades to "unknown" rather than "incomplete" —
+      // consumers (app/api/markets/route.ts) treat undefined as visible,
+      // matching this file's existing "partial RPC results degrade to the
+      // pre-merge behaviour rather than zeroing a market out" policy.
+      is_complete: live.isComplete,
     };
   });
 }

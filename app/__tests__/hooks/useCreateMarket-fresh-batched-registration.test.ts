@@ -75,19 +75,29 @@ describe("useCreateMarket fresh batched registration", () => {
     expect(register).toBeGreaterThan(insuranceGate);
   });
 
-  it("keeps keeper-registration before M4, where marketauth still works", () => {
-    // Deliberately NOT deferred like the DB registration: StakeInitPool (in M4)
-    // rotates marketauth away from the deployer, and keeper-register's H1 check
-    // requires marketauth to still equal the deployer. Pinning the order stops
-    // someone "fixing" the asymmetry and silently breaking keeper registration.
+  it("keeps keeper-registration before M4b, where marketauth still works", () => {
+    // Deliberately NOT deferred like the DB registration: StakeInitPool (now in
+    // M4b — M4 was split into M4a/M4b on 2026-09-25 to fix a tester-reported
+    // "Step 5 Create Earn vault — Internal error" caused by the old single M4
+    // bundling CreateLpVault + the entire stake-pool tail into one oversized,
+    // fragile transaction) rotates marketauth away from the deployer, and
+    // keeper-register's H1 check requires marketauth to still equal the
+    // deployer. Pinning the order stops someone "fixing" the asymmetry and
+    // silently breaking keeper registration.
     //
     // #2464 narrowed the window from "after M3a" to "after the insurance check",
     // but this upper bound is unchanged and is the reason it could not move any
     // later. Asserting on the INVOCATION, not the thunk's declaration.
     const keeper = freshBatchSource.indexOf("await startKeeperRegister()");
-    const m4 = freshBatchSource.indexOf("const m4Sig = await broadcastTailTx(4)");
+    const m4a = freshBatchSource.indexOf("const m4aSig = await broadcastTailTx(4)");
+    const m4b = freshBatchSource.indexOf("const m4bSig = await broadcastTailTx(5)");
     expect(keeper).toBeGreaterThanOrEqual(0);
-    expect(m4).toBeGreaterThan(keeper);
+    expect(m4a).toBeGreaterThan(keeper);
+    // M4a (CreateLpVault) does not rotate marketauth; M4b (StakeInitPool) does.
+    // Both must still follow keeper-register — M4a because CreateLpVault is
+    // itself marketauth-gated, M4b for the reason above — and M4b must follow
+    // M4a (CreateLpVault must land before the marketauth it depends on rotates).
+    expect(m4b).toBeGreaterThan(m4a);
   });
 
   it("keeps registration to a single call site in the batched path", () => {
