@@ -112,18 +112,18 @@ export function useQuickLaunch(mint: string | null): QuickLaunchResult {
             setOracleType("pyth");
             setPythFeedId(data.feedId);
             setDexPoolAddress(null);
-            setAdminPrice(formatResolvedPrice(data.price));
+            setAdminPrice((prev) => formatResolvedPrice(data.price) ?? prev);
           } else if (preferPool || (data.oracleMode === "hyperp" && data.dexPoolAddress)) {
             // PERC-470: Hyperp mode — DEX pool is the oracle
             setOracleType("hyperp_ema");
             setPythFeedId(null);
             setDexPoolAddress(data.dexPoolAddress);
-            setAdminPrice(formatResolvedPrice(data.price));
+            setAdminPrice((prev) => formatResolvedPrice(data.price) ?? prev);
           } else {
             setOracleType("admin");
             setPythFeedId(null);
             setDexPoolAddress(null);
-            setAdminPrice(formatResolvedPrice(data.price));
+            setAdminPrice((prev) => formatResolvedPrice(data.price) ?? prev);
           }
         } else {
           // Non-ok response — fall back to admin oracle, but flag the failure

@@ -7,6 +7,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  MAX_REPRESENTABLE_PRICE,
   MIN_REPRESENTABLE_PRICE,
   formatResolvedPrice,
   pickInitialPrice,
@@ -38,6 +39,35 @@ describe("toInitialPriceE6 — a resolved price is not always a usable one", () 
     expect(toInitialPriceE6("0.0000009")).toMatchObject({ reason: "below-minimum" });
   });
 
+  it("rejects a price above the protocol maximum instead of passing it through", () => {
+    // Past MAX_PRICE_E6 sanitizePriceE6 returns 0n and every readout shows
+    // "$—", and keeper-cosign 400s mid-launch. Better to say so up front.
+    expect(toInitialPriceE6("1000001")).toMatchObject({ reason: "above-maximum" });
+    expect(toInitialPriceE6(String(MAX_REPRESENTABLE_PRICE))).toEqual({
+      ok: true,
+      e6: 1_000_000_000_000n,
+    });
+  });
+
+  it("handles exponential notation the same as decimal", () => {
+    expect(toInitialPriceE6("1e-8")).toMatchObject({ reason: "below-minimum" });
+    expect(toInitialPriceE6("1e-6")).toEqual({ ok: true, e6: 1n });
+    expect(toInitialPriceE6("2.5e-1")).toEqual({ ok: true, e6: 250_000n });
+  });
+
+  it("documents the band that used to launch at a WRONG price, not a missing one", () => {
+    // Two distinct old failures, either side of the toFixed(6) rounding point:
+    //   (5e-7, 1e-6) rounded UP to "0.000001" and launched at up to 2x the
+    //                real price — a silently mis-sized market, not a hang.
+    //   (0, 5e-7]    rounded DOWN to "0.000000" and hung on the feed message.
+    // Exactly 5e-7 floors, because its binary value sits just under the half.
+    expect((6e-7).toFixed(6)).toBe("0.000001"); // pinned: the wrong-price band
+    expect((5e-7).toFixed(6)).toBe("0.000000"); // pinned: the hang band
+    // Both are now refused with an accurate reason instead.
+    expect(toInitialPriceE6("0.0000006")).toMatchObject({ reason: "below-minimum" });
+    expect(toInitialPriceE6("0.0000005")).toMatchObject({ reason: "below-minimum" });
+  });
+
   it("CONTROL: ordinary prices still convert exactly", () => {
     // Without this, "reject small prices" could be implemented as "reject
     // everything", which would block every launch instead of just the
@@ -55,15 +85,24 @@ describe("pickInitialPrice — a later null must not erase a known price", () =>
     // of its upstreams fail, so adminPrice is null while the pool price is
     // good. The wizard assigned that null straight over the good value on its
     // way to step 2, and nothing ever put it back.
-    expect(pickInitialPrice("0.25", null, "0.25")).toBe("0.25");
+    // Distinct values on purpose: with `previous` and `fromPool` equal, a
+    // mutant that ignores the pool source entirely still passes.
+    expect(pickInitialPrice("0.10", null, "0.25")).toBe("0.25");
   });
 
   it("keeps whatever is already held when both sources come back empty", () => {
     expect(pickInitialPrice("0.25", null, null)).toBe("0.25");
   });
 
-  it("prefers the oracle price, which is what the keeper will push", () => {
-    expect(pickInitialPrice("0.10", "0.30", "0.20")).toBe("0.30");
+  it("prefers the pool price, which is what the keeper actually pushes", () => {
+    // The keeper is registered against wizard.dexPool.poolAddress, so the pool
+    // scan's price is the mark it will push. /api/oracle/resolve uses a
+    // different pair (no supported-DEX filter, no liquidity floor).
+    expect(pickInitialPrice("0.10", "0.30", "0.20")).toBe("0.20");
+  });
+
+  it("falls back to the oracle price when the pool scan filtered the token out", () => {
+    expect(pickInitialPrice("0.10", "0.30", null)).toBe("0.30");
   });
 
   it('treats a formatted-to-zero string as no price at all', () => {
@@ -81,6 +120,13 @@ describe("pickInitialPrice — a later null must not erase a known price", () =>
     // Without this, "never downgrade" could be implemented as "never change",
     // pinning the first price ever seen and ignoring the real feed.
     expect(pickInitialPrice("0.10", "0.99", null)).toBe("0.99");
+  });
+
+  it("accepts exponential notation, which is what production actually carries", () => {
+    // formatResolvedPrice uses String(), and JS emits exponential below 1e-6 —
+    // so "1e-8" is the real wire value between the hook and the wizard.
+    expect(pickInitialPrice(null, null, "1e-8")).toBe("1e-8");
+    expect(pickInitialPrice("1e-8", null, null)).toBe("1e-8");
   });
 });
 
