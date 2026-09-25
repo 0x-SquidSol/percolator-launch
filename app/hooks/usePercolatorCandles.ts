@@ -64,9 +64,16 @@ const candleCache = new Map<string, { candles: PercolatorCandle[]; at: number }>
  * candles (most of them) EVERY timeframe click re-paid that round trip for an
  * answer that had not changed. Hence a short TTL instead of none: long enough
  * that flicking through timeframes is instant, short enough that a market
- * indexed a minute later still shows up.
+ * indexed moments later still shows up.
+ *
+ * 15s, not 60s. A burst of timeframe clicks happens within a few seconds, so
+ * this captures essentially all of the speed win. The cost of a longer TTL is
+ * paid at the worst possible moment: right after the user's OWN first trade
+ * lands, when they are watching. This hook has no poll, so until the next
+ * (slab, timeframe) change nothing re-fetches — a long TTL turns "blank until
+ * you click" into "blank even if you click".
  */
-const EMPTY_CACHE_TTL_MS = 60_000;
+const EMPTY_CACHE_TTL_MS = 15_000;
 const emptyCache = new Map<string, number>();
 
 // `from`/`to` are quantized to this grid (see fetchData) so repeated calls
@@ -257,6 +264,12 @@ export function usePercolatorCandles(
         const ts = Math.floor((msg.timestamp ?? Date.now()) / 1000);
         const bucket = Math.floor(ts / bucketSec) * bucketSec;
         if (!Number.isFinite(price) || !Number.isFinite(size)) return;
+
+        // A trade just happened, so "this market has no candles" is now false
+        // no matter how recently we recorded it. Without this, a user who
+        // trades into a previously-empty market and then clicks a timeframe
+        // gets served the remembered emptiness instead of their own fill.
+        emptyCache.delete(`${slabAddress}:${timeframe}`);
 
         setCandles((prev) => {
           const last = prev[prev.length - 1];

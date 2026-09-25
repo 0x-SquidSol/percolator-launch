@@ -15,6 +15,7 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { RES_TO_SECONDS } from "@/lib/indexer-db";
 import {
   CHART_WINDOWS,
   MAX_BARS_PER_REQUEST,
@@ -117,6 +118,23 @@ describe("widening must not produce a payload the chart cannot draw", () => {
     // widening, which is exactly its job.)
     expect(windowCovers("1m", 5 * 24 * HOUR)).toBe(false);
     expect(windowCovers("1d", 4000 * 24 * HOUR)).toBe(false);
+  });
+
+  it("bucketSec agrees with the server's own bucket size for that resolution", () => {
+    // A genuine cross-module invariant, and the one real bug this file can
+    // catch. bucketSec drives CLIENT-side live-bar bucketing in
+    // usePercolatorCandles; RES_TO_SECONDS drives SERVER-side bucketing in
+    // indexer-db. If they drift, the live WebSocket bar lands in a different
+    // bucket than the historical bars and duplicates or overwrites the last
+    // candle. They agree today and nothing else keeps them agreeing.
+    const UDF: Record<string, string> = {
+      "1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240",
+      "1d": "1D", "7d": "1D", "30d": "1D",
+    };
+    for (const tf of ALL) {
+      expect(CHART_WINDOWS[tf].bucketSec, `${tf} bucketSec vs RES_TO_SECONDS`)
+        .toBe(RES_TO_SECONDS[UDF[tf]]);
+    }
   });
 
   it("bucket sizes are the real bar lengths", () => {
