@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { Timeframe } from "./usePythChart";
 import { boundedSet } from "@/lib/bounded-map";
+import { CHART_WINDOWS } from "@/lib/chart-window";
 
 export type PercolatorCandleStatus = "idle" | "loading" | "success" | "empty" | "error";
 
@@ -22,16 +23,20 @@ export interface UsePercolatorCandlesResult {
   refresh: () => void;
 }
 
-const RESOLUTION_MAP: Record<Timeframe, { resolution: string; bucketSec: number; lookbackSec: number }> = {
-  "1m":  { resolution: "1",   bucketSec: 60,            lookbackSec: 2 * 3600 },
-  "5m":  { resolution: "5",   bucketSec: 5 * 60,        lookbackSec: 8 * 3600 },
-  "15m": { resolution: "15",  bucketSec: 15 * 60,       lookbackSec: 24 * 3600 },
-  "1h":  { resolution: "60",  bucketSec: 60 * 60,       lookbackSec: 7 * 86400 },
-  "4h":  { resolution: "240", bucketSec: 4 * 60 * 60,   lookbackSec: 30 * 86400 },
-  "1d":  { resolution: "1D",  bucketSec: 24 * 60 * 60,  lookbackSec: 180 * 86400 },
-  "7d":  { resolution: "1D",  bucketSec: 24 * 60 * 60,  lookbackSec: 365 * 86400 },
-  "30d": { resolution: "1D",  bucketSec: 24 * 60 * 60,  lookbackSec: 5 * 365 * 86400 },
+// Windows live in lib/chart-window.ts, shared with usePythChart. The
+// resolution string stays here: this route speaks UDF ("1D"), Pyth Benchmarks
+// wants "D", and the two tables previously differed on exactly that.
+const UDF_RESOLUTION: Record<Timeframe, string> = {
+  "1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240",
+  "1d": "1D", "7d": "1D", "30d": "1D",
 };
+const RESOLUTION_MAP: Record<Timeframe, { resolution: string; bucketSec: number; lookbackSec: number }> =
+  Object.fromEntries(
+    (Object.keys(CHART_WINDOWS) as Timeframe[]).map((tf) => [
+      tf,
+      { resolution: UDF_RESOLUTION[tf], ...CHART_WINDOWS[tf] },
+    ]),
+  ) as Record<Timeframe, { resolution: string; bucketSec: number; lookbackSec: number }>;
 
 function deriveWsUrl(): string | null {
   const explicit = process.env.NEXT_PUBLIC_WS_URL;
@@ -49,6 +54,20 @@ const CACHE_MAX_ENTRIES = 30;
 /** Successful batches only, with a paint-freshness stamp. */
 const CACHE_PAINT_MAX_AGE_MS = 10 * 60_000;
 const candleCache = new Map<string, { candles: PercolatorCandle[]; at: number }>();
+
+/**
+ * How long a `no_data` answer is remembered.
+ *
+ * Not caching it at all (the previous behaviour) is correct in the sense that
+ * a market indexed later must not paint blank forever — this hook has no poll.
+ * But /api/candles costs 600-1400ms, so on the markets that have no indexed
+ * candles (most of them) EVERY timeframe click re-paid that round trip for an
+ * answer that had not changed. Hence a short TTL instead of none: long enough
+ * that flicking through timeframes is instant, short enough that a market
+ * indexed a minute later still shows up.
+ */
+const EMPTY_CACHE_TTL_MS = 60_000;
+const emptyCache = new Map<string, number>();
 
 // `from`/`to` are quantized to this grid (see fetchData) so repeated calls
 // within the window reuse the exact same URL and actually hit the route's
@@ -103,6 +122,20 @@ export function usePercolatorCandles(
       setError(null);
     }
 
+    // A recent `no_data` for this exact pair: the answer has not changed, and
+    // /api/candles costs 600-1400ms to say so. Skipping it is what makes
+    // flicking between timeframes instant on an unindexed market — which is
+    // most of them. Expires (EMPTY_CACHE_TTL_MS) so a market indexed a minute
+    // from now still appears without a reload.
+    if (!cached) {
+      const emptyAt = emptyCache.get(key);
+      if (emptyAt !== undefined && Date.now() - emptyAt < EMPTY_CACHE_TTL_MS) {
+        setCandles([]);
+        setStatus("empty");
+        return;
+      }
+    }
+
     if (endpointUnavailable) {
       // Known-unconfigured for this deployment/session — skip straight to
       // the empty state so TradingChart's Pyth/DEX fallback cascade engages
@@ -130,9 +163,8 @@ export function usePercolatorCandles(
       if (fetchKeyRef.current !== key) return; // stale guard
       if (body.s === "error") throw new Error(body.errmsg ?? "backend error");
       if (body.s === "no_data") {
-        // NEVER cache an empty batch: a market whose candles simply haven't
-        // been indexed yet would then paint blank from cache forever (this
-        // hook has no poll — see the effect below).
+        // Remembered briefly, not forever — see EMPTY_CACHE_TTL_MS.
+        boundedSet(emptyCache, key, Date.now(), CACHE_MAX_ENTRIES);
         setCandles([]);
         setStatus("empty");
         return;
