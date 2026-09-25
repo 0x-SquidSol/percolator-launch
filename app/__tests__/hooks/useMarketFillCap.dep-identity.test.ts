@@ -25,7 +25,7 @@
  * useInsuranceLP.ts:170 about SlabProvider rebuilding `config` every poll).
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { PublicKey, Keypair } from "@solana/web3.js";
 
@@ -142,5 +142,97 @@ describe("useMarketFillCap — slab-poll churn must not blank the capacity row",
     });
 
     expect(result.current).toBeNull();
+  });
+});
+
+describe("useMarketFillCap — a failed caps read must not disable the cap guards", () => {
+  const connection = {} as never;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.clearAllMocks();
+    vi.mocked(useConnectionCompat).mockReturnValue({ connection });
+    vi.mocked(useSlabState).mockReturnValue({
+      programId: new PublicKey(PROGRAM_ID_B58),
+    } as never);
+    vi.mocked(getMatcherInventory).mockResolvedValue(INVENTORY);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("retries the first caps resolve, so one 429 at mount is not fatal", async () => {
+    // getMatcherCaps returns null for BOTH "no matcher config" and "the read
+    // failed" (`.catch(() => null)` in lib/matcherCaps.ts). Before the retry,
+    // a single rate-limited getProgramAccounts at mount left the ticket with
+    // no per-trade cap and no inventory for the whole market visit — and
+    // `exceedsFillCap`/`exceedsSideCapacity` both false, so it would happily
+    // submit an order that reverts with a bare InvalidAccountData.
+    vi.mocked(getMatcherCaps)
+      .mockResolvedValueOnce(null) // the 429
+      .mockResolvedValue(CAPS); // recovered
+
+    const { result } = renderHook(() => useMarketFillCap(SLAB_A));
+    await act(async () => {});
+    expect(result.current).toBeNull(); // first attempt failed
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+
+    expect(result.current?.maxFillAbs).toBe(CAPS.maxFillAbs);
+    expect(result.current?.inventoryBase).toBe(INVENTORY);
+  });
+
+  it("gives up after a bounded number of attempts on a genuinely cap-less market", async () => {
+    // CONTROL on the retry. A v12/mock/broken market really has no matcher
+    // config, and must not sit in an unbounded getProgramAccounts loop.
+    vi.mocked(getMatcherCaps).mockResolvedValue(null);
+
+    renderHook(() => useMarketFillCap(SLAB_A));
+    await act(async () => {});
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+    });
+
+    // initial attempt + the three backoff retries, then silence
+    expect(vi.mocked(getMatcherCaps).mock.calls.length).toBe(4);
+  });
+
+  it("re-reads caps on the poll tick, so the TTL and invalidation can land", async () => {
+    // lib/matcherCaps.ts bounds staleness with a 300s TTL and exposes
+    // invalidateMatcherCaps(), which useTrade.ts:714 calls after a failed
+    // trade. Neither reaches this hook unless it asks again.
+    vi.mocked(getMatcherCaps).mockResolvedValue(CAPS);
+
+    renderHook(() => useMarketFillCap(SLAB_A));
+    await act(async () => {});
+    const afterMount = vi.mocked(getMatcherCaps).mock.calls.length;
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000);
+    });
+
+    expect(vi.mocked(getMatcherCaps).mock.calls.length).toBeGreaterThan(afterMount);
+  });
+
+  it("CONTROL: a failed re-read does not blank caps that are already good", async () => {
+    // Load-bearing. Blanking on a transient failure would re-open the flicker
+    // AND drop the guards; keeping the last good value fails safe, because the
+    // ticket keeps BLOCKING over-cap orders instead of silently allowing them.
+    vi.mocked(getMatcherCaps).mockResolvedValue(CAPS);
+    const { result } = renderHook(() => useMarketFillCap(SLAB_A));
+    await act(async () => {});
+    expect(result.current?.maxFillAbs).toBe(CAPS.maxFillAbs);
+
+    vi.mocked(getMatcherCaps).mockResolvedValue(null);
+    vi.mocked(getMatcherInventory).mockResolvedValue(null);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000);
+    });
+
+    expect(result.current?.maxFillAbs).toBe(CAPS.maxFillAbs);
+    expect(result.current?.inventoryBase).toBe(INVENTORY);
   });
 });
