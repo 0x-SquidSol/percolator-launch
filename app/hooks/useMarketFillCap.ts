@@ -43,17 +43,30 @@ export function useMarketFillCap(slabAddress: string): MarketFillLimits | null {
   const [caps, setCaps] = useState<MatcherCaps | null>(null);
   const [inventoryBase, setInventoryBase] = useState<bigint | null>(null);
 
+  // PERC-9204: stable primitive standing in for `programId` below. The effect
+  // BLANKS caps+inventory before refetching, which is right on a real market
+  // switch and wrong on a poll. SlabProvider rebuilds programId as a brand-new
+  // PublicKey on every slab poll (`programId: owner ?? s.programId`, where
+  // `owner` comes fresh off each getAccountInfo), and parseSlab only
+  // short-circuits on byte-identical slabs — so on any market with activity
+  // the identity churned every ~3s, the effect re-ran, and the capacity row
+  // blinked out. base58 is stable across polls and still changes on a real
+  // program change. Mirrors usePositionNft.ts and useUserAccount.ts.
+  const programIdStr = programId?.toBase58() ?? null;
+
   useEffect(() => {
     // Reset on market switch: without this, market B's order briefly
     // validates against market A's caps and inventory.
     setCaps(null);
     setInventoryBase(null);
-    if (!programId || !slabAddress) return;
+    if (!programIdStr || !slabAddress) return;
     let cancelled = false;
     let dispose: (() => void) | null = null;
     let slabPk: PublicKey;
+    let programPk: PublicKey;
     try {
       slabPk = new PublicKey(slabAddress);
+      programPk = new PublicKey(programIdStr);
     } catch {
       return; // malformed address — nothing to resolve
     }
@@ -64,7 +77,7 @@ export function useMarketFillCap(slabAddress: string): MarketFillLimits | null {
     const refresh = () => {
       if (fetching) return;
       fetching = true;
-      void getMatcherInventory(connection, programId, slabPk)
+      void getMatcherInventory(connection, programPk, slabPk)
         .then((inv) => {
           if (!cancelled && inv !== null) setInventoryBase(inv);
         })
@@ -76,7 +89,7 @@ export function useMarketFillCap(slabAddress: string): MarketFillLimits | null {
     // matcher config (v12 slab, mock slab, broken launch) would otherwise
     // re-run a full getProgramAccounts scan every 20s per mounted instance,
     // forever, for nothing.
-    void getMatcherCaps(connection, programId, slabPk).then((c) => {
+    void getMatcherCaps(connection, programPk, slabPk).then((c) => {
       if (cancelled) return;
       setCaps(c);
       if (c) {
@@ -88,7 +101,7 @@ export function useMarketFillCap(slabAddress: string): MarketFillLimits | null {
       cancelled = true;
       dispose?.();
     };
-  }, [connection, programId, slabAddress]);
+  }, [connection, programIdStr, slabAddress]);
 
   if (!caps) return null;
   return { ...caps, inventoryBase };
