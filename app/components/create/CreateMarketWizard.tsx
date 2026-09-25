@@ -268,7 +268,14 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
       // Apply detected oracle price as adminPrice (used if oracle ends up admin)
       adminPrice: pickInitialPrice(prev.adminPrice, quickLaunch.adminPrice, quickLaunch.config?.initialPrice),
     }));
-  }, [quickLaunch.config]);
+    // `quickLaunch.adminPrice` belongs here too. The two prices resolve from
+    // SEPARATE effects in useQuickLaunch — config lands as soon as tokenMeta
+    // does, while /api/oracle/resolve takes up to 8s — so adminPrice is
+    // normally the LATE one. Keyed on config alone, a price that arrived after
+    // the auto-advance never reached the wizard at all, and the button sat on
+    // "Waiting on price feed" with a perfectly good price one hook away. That
+    // is the permanent form of the reported hang.
+  }, [quickLaunch.config, quickLaunch.adminPrice]);
 
   // Derived values
   const mintValid = isValidBase58Pubkey(wizard.mintAddress) && wizard.mintAddress.length >= 32;
@@ -387,13 +394,18 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
       // PERC-470: Hyperp mode uses index_feed_id = zeros.
       // The DEX pool address is passed separately via dexPoolAddress.
       // Use the detected DEX price as initial mark price.
+      // Same floor as the admin/keeper path below. Left on a bare toE6 this
+      // branch disagreed with it in BOTH directions: 8e-7 rounded up to 1n and
+      // launched at $0.000001 (+25%), while 4e-7 rounded to 0n and blocked —
+      // reporting a feed problem for a price the feed had delivered.
       const dexPrice = wizard.dexPool?.priceUsd;
-      if (!dexPrice || dexPrice <= 0) {
-        // Security: don't default to $1 — require a real price for hyperp mode
-        return { oracleFeed: "0".repeat(64), priceE6: 0n };
-      }
-      const priceE6 = toE6(dexPrice);
-      return { oracleFeed: "0".repeat(64), priceE6 };
+      const resolvedHyperp = toInitialPriceE6(
+        dexPrice != null ? String(dexPrice) : null,
+      );
+      return {
+        oracleFeed: "0".repeat(64),
+        priceE6: resolvedHyperp.ok ? resolvedHyperp.e6 : 0n,
+      };
     }
     // Admin / keeper oracle — NEVER default to a placeholder price.
     // deriveMarketParams converts the LP's notional guardrails into a TOKEN
@@ -417,7 +429,16 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
   // BELOW the E6 floor is not a feed problem and no amount of waiting fixes
   // it — telling the user to wait was the bug. See lib/initial-price.ts.
   const priceProblem =
-    wizard.oracleType === "pyth" ? null : toInitialPriceE6(wizard.adminPrice);
+    wizard.oracleType === "pyth"
+      ? null
+      : toInitialPriceE6(
+          // Read whichever field the active branch actually prices from,
+          // otherwise the hyperp path blocks on dexPool.priceUsd and then
+          // explains itself using an unrelated (often null) adminPrice.
+          wizard.oracleType === "hyperp_ema"
+            ? (wizard.dexPool?.priceUsd != null ? String(wizard.dexPool.priceUsd) : null)
+            : wizard.adminPrice,
+        );
   const priceBelowMinimum =
     priceProblem != null && !priceProblem.ok && priceProblem.reason === "below-minimum"
       ? priceProblem
@@ -478,7 +499,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
             ? "Adjust liquidity or insurance"
             : !oraclePriceValid
               ? (priceBelowMinimum
-                  ? `${wizard.tokenMeta?.symbol ?? "This token"} trades at $${priceBelowMinimum.price.toPrecision(3)}, below the $0.000001 minimum a market can price`
+                  ? `${wizard.tokenMeta?.symbol ?? "This token"} trades at ${formatMarkPrice(priceBelowMinimum.price)}, below the $0.000001 minimum a market can price`
                   : "Waiting on price feed")
               : !mockBypass && !hasSufficientSol
                 ? `Need ~${requiredSol.toFixed(3)} SOL`
