@@ -35,6 +35,18 @@ const TIMEFRAME_CONFIG: Record<
 ) as Record<Timeframe, { resolution: "1" | "5" | "15" | "60" | "240" | "D"; lookbackSecs: number }>;
 
 const POLL_INTERVAL_MS = 30_000; // re-poll the in-progress bar every 30 s
+/**
+ * How recently a cached batch must have been fetched for a timeframe switch to
+ * skip the network entirely.
+ *
+ * Painting from cache and then re-fetching anyway was the reason switching
+ * timeframes still cost a round trip on every click, forever, on any
+ * Pyth-backed market. The data cannot have moved meaningfully inside one poll
+ * interval — that is the cadence the hook itself chose for staleness — so
+ * within it a switch is served from memory. Past it the poll behaviour is
+ * unchanged: paint the cached bars, refresh in the background.
+ */
+const REFETCH_SKIP_MS = POLL_INTERVAL_MS;
 
 // Module-level (not per-component-instance) so switching timeframe and back
 // within the same page session repaints instantly from cache instead of
@@ -112,6 +124,10 @@ export function usePythChart(
       setCandles(cached.candles);
       setStatus("success");
       setError(null);
+      // Fresh enough that a refetch cannot tell us anything new — skip it.
+      // Without this the hook painted from cache and then fetched anyway, so
+      // flicking between timeframes cost a round trip every single click.
+      if (Date.now() - cached.at < REFETCH_SKIP_MS) return;
     } else {
       // Don't flip to loading on refreshes — keep showing cached data to avoid
       // flicker on the ~30 s repoll. Only go to loading on the very first fetch.

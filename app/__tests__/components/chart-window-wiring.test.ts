@@ -49,6 +49,46 @@ describe("each source keeps the resolution string its own API expects", () => {
   });
 });
 
+describe("the window actually reaches the request", () => {
+  it("both hooks derive `from` from the shared lookback, not a literal", () => {
+    // The regexes above only prove CHART_WINDOWS is imported. A mutant that
+    // imports it and then writes `const from = to - 7200` reintroduces the
+    // original bug and passes every one of them. Pin the derivation itself.
+    expect(PERC).toMatch(/const\s+from\s*=\s*to\s*-\s*lookbackSec\s*;/);
+    expect(PYTH).toMatch(/const\s+from\s*=\s*to\s*-\s*lookbackSecs\s*;/);
+  });
+
+  it("the empty short-circuit actually returns before fetching", () => {
+    // Asserting that `emptyCache.get` appears somewhere does not prove the
+    // fetch is skipped: deleting the `return`, inverting the comparison, or
+    // moving the block below the fetch all leave the call in place.
+    const block = PERC.slice(
+      PERC.indexOf("const emptyAt = emptyCache.get("),
+      PERC.indexOf("if (endpointUnavailable)"),
+    );
+    expect(block.length).toBeGreaterThan(0);
+    expect(block).toMatch(/Date\.now\(\)\s*-\s*emptyAt\s*<\s*EMPTY_CACHE_TTL_MS/);
+    expect(block).toMatch(/return\s*;/);
+    // ...and it must sit ahead of the network call, not after it.
+    expect(PERC.indexOf("const emptyAt = emptyCache.get(")).toBeLessThan(
+      PERC.indexOf("await fetch(`/api/candles/"),
+    );
+  });
+
+  it("a live trade drops the remembered emptiness", () => {
+    // Otherwise the user's own first fill is hidden behind the TTL.
+    expect(PERC).toMatch(/emptyCache\.delete\(`\$\{slabAddress\}:\$\{timeframe\}`\)/);
+  });
+
+  it("a fresh Pyth batch short-circuits the refetch", () => {
+    // usePythChart painted from cache and then fetched anyway, so every
+    // timeframe click cost a round trip on any Pyth-backed market — the
+    // reported "takes forever when switching timeframe".
+    expect(PYTH).toContain("REFETCH_SKIP_MS");
+    expect(PYTH).toMatch(/if\s*\(Date\.now\(\)\s*-\s*cached\.at\s*<\s*REFETCH_SKIP_MS\)\s*return\s*;/);
+  });
+});
+
 describe("an empty answer is remembered briefly, not re-fetched every click", () => {
   it("no_data is cached with a TTL rather than discarded", () => {
     // /api/candles costs 600-1400ms. Previously `no_data` was never cached, so
