@@ -623,7 +623,22 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
   // though on-chain validation already succeeded — permanently disabling Continue.
   const setMintAddress = useCallback((mint: string) => {
     if (currentMintRef.current === mint) return; // no-op if address unchanged
-    setWizard((prev) => ({ ...prev, mintAddress: mint }));
+    setWizard((prev) => ({
+      ...prev,
+      mintAddress: mint,
+      // A different token invalidates every detection result, and `adminPrice`
+      // above all. pickInitialPrice deliberately KEEPS the last known price
+      // rather than downgrading to nothing — correct across polls of the same
+      // token, catastrophic across tokens, because the launch gate would then
+      // pass using the PREVIOUS token's price. A wrong opening price is not
+      // cosmetic: it permanently mis-sizes maxFillAbs/maxInventoryAbs (see the
+      // note in getOracleFeedAndPrice). Clearing here is what makes the
+      // never-downgrade rule safe.
+      adminPrice: null,
+      dexPool: null,
+      oracleType: "admin",
+      oracleFeed: "",
+    }));
     // Reset network validation only on a genuine address change.
     setMintExistsOnNetwork(false);
   }, []);
