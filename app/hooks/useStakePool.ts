@@ -382,7 +382,7 @@ export function useStakePool() {
       const userLpBalance = knownLp.amount;
       const userCollateralBalance = knownCollateral.amount;
       // NOTE: the refs are updated only where this run's result is actually
-      // PUBLISHED (see the final `stale()` guard below), not here — a
+      // PUBLISHED (after the final `stale()` guard below), not here — a
       // superseded run must never write the cache.
 
       // Calculate derived values
@@ -411,6 +411,12 @@ export function useStakePool() {
       }
 
       if (stale()) return;
+      // This run's result is the one being published — it's also the one the
+      // carry-forward cache should hold from now on. Without these two writes
+      // the refs stay at NO_BALANCE_KNOWN forever, so `resolveTokenBalance`
+      // never finds a matching key and every failed read still reports 0.
+      lastLpRef.current = knownLp;
+      lastCollateralRef.current = knownCollateral;
       setState({
         poolExists: true,
         poolAddress: pdas.poolPda,
