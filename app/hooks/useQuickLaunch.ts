@@ -6,6 +6,7 @@ import { PublicKey } from "@solana/web3.js";
 import { useDexPoolSearch, type DexPoolResult } from "./useDexPoolSearch";
 import { fetchTokenMeta } from "@/lib/tokenMeta";
 import { getNetwork } from "@/lib/config";
+import { formatResolvedPrice } from "@/lib/initial-price";
 
 export interface QuickLaunchConfig {
   mint: string;
@@ -111,18 +112,18 @@ export function useQuickLaunch(mint: string | null): QuickLaunchResult {
             setOracleType("pyth");
             setPythFeedId(data.feedId);
             setDexPoolAddress(null);
-            if (data.price > 0) setAdminPrice(data.price.toFixed(6));
+            setAdminPrice(formatResolvedPrice(data.price));
           } else if (preferPool || (data.oracleMode === "hyperp" && data.dexPoolAddress)) {
             // PERC-470: Hyperp mode — DEX pool is the oracle
             setOracleType("hyperp_ema");
             setPythFeedId(null);
             setDexPoolAddress(data.dexPoolAddress);
-            if (data.price > 0) setAdminPrice(data.price.toFixed(6));
+            setAdminPrice(formatResolvedPrice(data.price));
           } else {
             setOracleType("admin");
             setPythFeedId(null);
             setDexPoolAddress(null);
-            if (data.price > 0) setAdminPrice(data.price.toFixed(6));
+            setAdminPrice(formatResolvedPrice(data.price));
           }
         } else {
           // Non-ok response — fall back to admin oracle, but flag the failure
@@ -242,7 +243,10 @@ export function useQuickLaunch(mint: string | null): QuickLaunchResult {
       decimals: tokenMeta.decimals,
       // null, never "1.000000": a fabricated opening price permanently
       // mis-sizes the LP's per-trade cap (see QuickLaunchConfig.initialPrice).
-      initialPrice: price > 0 ? price.toFixed(6) : null,
+      // NOT toFixed(6): below 5e-7 that yields "0.000000", which is
+      // indistinguishable from "no price" downstream and is how a working feed
+      // got reported as "Waiting on price feed". See lib/initial-price.ts.
+      initialPrice: formatResolvedPrice(price),
       maxLeverage,
       initialMarginBps,
       maintenanceMarginBps,

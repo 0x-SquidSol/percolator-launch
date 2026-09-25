@@ -32,6 +32,7 @@ import { RecoverSolBanner } from "./RecoverSolBanner";
 import { computeCreateMarketSolCost } from "./CostEstimate";
 import { isValidBase58Pubkey } from "@/lib/createWizardUtils";
 import { isMockMode } from "@/lib/mock-mode";
+import { pickInitialPrice, toInitialPriceE6 } from "@/lib/initial-price";
 
 type WizardStep = 1 | 2;
 
@@ -265,7 +266,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
       ),
       lpCollateral: quickLaunch.config!.lpCollateral,
       // Apply detected oracle price as adminPrice (used if oracle ends up admin)
-      adminPrice: quickLaunch.config!.initialPrice || prev.adminPrice,
+      adminPrice: pickInitialPrice(prev.adminPrice, quickLaunch.adminPrice, quickLaunch.config?.initialPrice),
     }));
   }, [quickLaunch.config]);
 
@@ -404,15 +405,23 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
     // InvalidAccountData. A $1 fallback here also silently DEFEATED the
     // oraclePriceValid gate below (1 -> 1e6 is non-zero), so the launch was
     // never actually blocked. Missing or unparseable price => 0n => blocked.
-    const price = parseFloat(wizard.adminPrice ?? "");
-    const priceE6 = Number.isFinite(price) && price > 0 ? toE6(price) : 0n;
-    return { oracleFeed: "0".repeat(64), priceE6 };
+    const resolved = toInitialPriceE6(wizard.adminPrice);
+    return { oracleFeed: "0".repeat(64), priceE6: resolved.ok ? resolved.e6 : 0n };
   };
 
   // Pyth doesn't rely on a client-computed priceE6 (the on-chain feed supplies it), so it's
   // always "ready." Hyperp/admin/keeper all need a nonzero detected price before launching.
   const { priceE6: currentPriceE6 } = getOracleFeedAndPrice();
   const oraclePriceValid = wizard.oracleType === "pyth" ? true : currentPriceE6 !== 0n;
+  // Why the price is unusable, so the button can say something true. A price
+  // BELOW the E6 floor is not a feed problem and no amount of waiting fixes
+  // it — telling the user to wait was the bug. See lib/initial-price.ts.
+  const priceProblem =
+    wizard.oracleType === "pyth" ? null : toInitialPriceE6(wizard.adminPrice);
+  const priceBelowMinimum =
+    priceProblem != null && !priceProblem.ok && priceProblem.reason === "below-minimum"
+      ? priceProblem
+      : null;
 
   /**
    * Can the keeper actually PRICE this market once it exists?
@@ -468,7 +477,9 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
           : !paramsValid
             ? "Adjust liquidity or insurance"
             : !oraclePriceValid
-              ? "Waiting on price feed"
+              ? (priceBelowMinimum
+                  ? `${wizard.tokenMeta?.symbol ?? "This token"} trades at $${priceBelowMinimum.price.toPrecision(3)}, below the $0.000001 minimum a market can price`
+                  : "Waiting on price feed")
               : !mockBypass && !hasSufficientSol
                 ? `Need ~${requiredSol.toFixed(3)} SOL`
                 : !skipTokenBalanceCheck && (!hasTokens || !hasSufficientTokensForSeed)
@@ -543,7 +554,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
           ...base,
           oracleType: "pyth" as const,
           oracleFeed: quickLaunch.pythFeedId,
-          adminPrice: quickLaunch.adminPrice,
+          adminPrice: pickInitialPrice(prev.adminPrice, quickLaunch.adminPrice, quickLaunch.config?.initialPrice),
         };
       }
       // PERC-470: Hyperp EMA — auto-detected DEX pool as oracle (mainnet only)
@@ -556,7 +567,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
             ...base,
             oracleType: "keeper" as const,
             oracleFeed: quickLaunch.dexPoolAddress,
-            adminPrice: quickLaunch.adminPrice,
+            adminPrice: pickInitialPrice(prev.adminPrice, quickLaunch.adminPrice, quickLaunch.config?.initialPrice),
             dexPool: quickLaunch.poolInfo ?? null,
           };
         }
@@ -564,7 +575,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
           ...base,
           oracleType: "hyperp_ema" as const,
           oracleFeed: quickLaunch.dexPoolAddress,
-          adminPrice: quickLaunch.adminPrice,
+          adminPrice: pickInitialPrice(prev.adminPrice, quickLaunch.adminPrice, quickLaunch.config?.initialPrice),
           dexPool: quickLaunch.poolInfo ?? null,
         };
       }
@@ -573,7 +584,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
         ...base,
         oracleType: "admin" as const,
         oracleFeed: "",
-        adminPrice: quickLaunch.adminPrice,
+        adminPrice: pickInitialPrice(prev.adminPrice, quickLaunch.adminPrice, quickLaunch.config?.initialPrice),
       };
     });
   }, [quickLaunch, isDevnet]);
