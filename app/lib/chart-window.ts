@@ -51,6 +51,16 @@ const HOUR = 3600;
 const DAY = 86_400;
 
 /**
+ * Hard span limit on the Pyth proxy: app/api/chart/pyth/route.ts rejects
+ * `to - from > 5 years` with a 400. usePythChart derives its range from the
+ * same windows, so any entry past this returns 400 on every poll forever.
+ * Asserted in the tests, with margin — the route's check is `>`, so sitting
+ * exactly on the boundary is one off-by-one away from breaking.
+ */
+export const MAX_PYTH_SPAN_SEC = 5 * 365 * DAY;
+
+
+/**
  * A sparse market must still chart. Each window is at least this long, so a
  * market that trades a few times a day has something to show on every
  * timeframe rather than only the long ones.
@@ -59,20 +69,27 @@ export const MIN_WINDOW_SEC = DAY;
 
 /**
  * Upper bound on bars per request, so widening a window cannot produce a
- * payload the chart cannot draw. Every entry below is checked against it.
+ * payload the chart cannot draw. Asserted over every entry below by
+ * __tests__/lib/chart-window.test.ts.
+ *
+ * NOTE what this does NOT bound: the ROWS the server reads.
+ * queryTradesForCandles caps at 50k trades, and a single daily bucket can be
+ * backed by millions of them, so a bar ceiling says nothing about the row cap.
+ * Those are separate limits and this is only the first.
  */
 export const MAX_BARS_PER_REQUEST = 4000;
 
+
 export const CHART_WINDOWS: Record<ChartTimeframe, ChartWindow> = {
   //                                              window        max bars
-  "1m":  { bucketSec: 60,        lookbackSec: 1 * DAY },     // 1440
-  "5m":  { bucketSec: 5 * 60,    lookbackSec: 3 * DAY },     //  864
-  "15m": { bucketSec: 15 * 60,   lookbackSec: 7 * DAY },     //  672
+  "1m":  { bucketSec: 60,        lookbackSec: 2 * DAY },     // 2880  (margin past a >24h idle gap)
+  "5m":  { bucketSec: 5 * 60,    lookbackSec: 5 * DAY },     // 1440
+  "15m": { bucketSec: 15 * 60,   lookbackSec: 14 * DAY },    // 1344
   "1h":  { bucketSec: HOUR,      lookbackSec: 45 * DAY },    // 1080
   "4h":  { bucketSec: 4 * HOUR,  lookbackSec: 180 * DAY },   // 1080
   "1d":  { bucketSec: DAY,       lookbackSec: 1095 * DAY },  // 1095
-  "7d":  { bucketSec: DAY,       lookbackSec: 1825 * DAY },  // 1825
-  "30d": { bucketSec: DAY,       lookbackSec: 3650 * DAY },  // 3650
+  "7d":  { bucketSec: DAY,       lookbackSec: 1460 * DAY },  // 1460  (4y, inside the 5y Pyth cap)
+  "30d": { bucketSec: DAY,       lookbackSec: 1700 * DAY },  // 1700  (~4.66y, inside the 5y Pyth cap)
 };
 
 /** Worst-case bar count for a timeframe — every bucket in the window filled. */

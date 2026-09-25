@@ -195,16 +195,24 @@ export async function queryTradesForCandles(
   const sql = getSql();
   const fromIso = new Date(fromSec * 1000).toISOString();
   const toIso   = new Date(toSec   * 1000).toISOString();
-  return sql<RawCandleRow[]>`
+  // DESC + reverse, not ASC. The LIMIT is a real ceiling on a busy market, and
+  // with ASC the rows it drops are the NEWEST ones — the chart would paint
+  // history, stop at some point in the past with no indication anything was
+  // missing, and leave the live bar stranded across a gap. Losing the far end
+  // of history instead is merely a shorter chart. The index backing this is
+  // (slab_address, network, created_at DESC), so this is also its natural
+  // order. Callers still receive ascending rows.
+  const rows = await sql<RawCandleRow[]>`
     SELECT price::text AS price, size::text AS size, created_at
     FROM trades
     WHERE slab_address = ${slabAddress}
       AND network = ${getServerNetwork()}
       AND created_at >= ${fromIso}::timestamptz
       AND created_at <= ${toIso}::timestamptz
-    ORDER BY created_at ASC
+    ORDER BY created_at DESC
     LIMIT ${maxRows}
   `;
+  return rows.reverse();
 }
 
 // ── OHLCV bucketing (ported from percolator-api/src/routes/candles.ts) ──────
