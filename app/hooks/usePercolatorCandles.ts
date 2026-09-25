@@ -181,8 +181,17 @@ export function usePercolatorCandles(
         setCandles(bars);
         setStatus("success");
         boundedSet(candleCache, key, { candles: bars, at: Date.now() }, CACHE_MAX_ENTRIES);
+        // Real data supersedes any remembered emptiness. Without this the two
+        // caches can disagree: the empty short-circuit is skipped only while a
+        // candleCache entry survives, and the two maps evict independently, so
+        // a stale `no_data` could be served again after a success for the same
+        // key. One delete removes the whole ordering hazard.
+        emptyCache.delete(key);
         return;
       }
+      // `s: "ok"` with zero bars is the other empty answer — same cost to
+      // re-fetch, so it gets the same short TTL as `no_data`.
+      boundedSet(emptyCache, key, Date.now(), CACHE_MAX_ENTRIES);
       setCandles([]);
       setStatus("empty");
     } catch (err) {

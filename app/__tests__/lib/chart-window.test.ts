@@ -18,6 +18,7 @@ import { describe, expect, it } from "vitest";
 import {
   CHART_WINDOWS,
   MAX_BARS_PER_REQUEST,
+  MAX_PYTH_SPAN_SEC,
   MIN_WINDOW_SEC,
   maxBarsFor,
   windowCovers,
@@ -53,7 +54,10 @@ describe("chart windows must catch a sparse market's trades", () => {
   });
 
   it("a market trading once a day charts on every timeframe", () => {
-    const ageSec = 24 * HOUR;
+    // Deliberately 25h, not 24h: at exactly 24h this passed by zero seconds
+    // against a `<=`, which asserts only that the window is as narrow as it
+    // can possibly be while still nominally "covering a daily trader".
+    const ageSec = 25 * HOUR;
     for (const tf of ALL) {
       expect(windowCovers(tf, ageSec), tf).toBe(true);
     }
@@ -68,6 +72,28 @@ describe("widening must not produce a payload the chart cannot draw", () => {
     // 50k-row query cap in queryTradesForCandles.
     for (const tf of ALL) {
       expect(maxBarsFor(tf), `${tf} bar ceiling`).toBeLessThanOrEqual(MAX_BARS_PER_REQUEST);
+    }
+  });
+
+  it("CONTROL: every window stays inside the Pyth proxy's hard span cap", () => {
+    // Load-bearing, and it exists because widening broke exactly this.
+    // app/api/chart/pyth/route.ts rejects `to - from > 5 years` with a 400,
+    // and usePythChart derives its range from these same windows — so a window
+    // past the cap is not a degraded chart, it is a guaranteed 400 on every
+    // poll, forever, for every symbol. The bar ceiling above does not catch it:
+    // a 3650-day daily window is only 3650 bars and passes that test cleanly.
+    for (const tf of ALL) {
+      expect(CHART_WINDOWS[tf].lookbackSec, `${tf} vs Pyth span cap`)
+        .toBeLessThanOrEqual(MAX_PYTH_SPAN_SEC);
+    }
+  });
+
+  it("CONTROL: and keeps real margin, because the route's check is `>`", () => {
+    // Sitting exactly on the boundary passes today and breaks on any future
+    // `+1 day` here, or if that route ever tightens `>` to `>=`.
+    for (const tf of ALL) {
+      expect(CHART_WINDOWS[tf].lookbackSec, `${tf} needs margin`)
+        .toBeLessThan(MAX_PYTH_SPAN_SEC * 0.95);
     }
   });
 
@@ -86,7 +112,10 @@ describe("widening must not produce a payload the chart cannot draw", () => {
   it("CONTROL: a trade older than the window is still excluded", () => {
     // "Cover sparse markets" must not become "never filter anything" — the
     // window still has to bound the query.
-    expect(windowCovers("1m", 40 * HOUR)).toBe(false);
+    // 1m reaches back 2 days, so pick something clearly beyond it. (40h used
+    // to be outside the window and is now inside — this control caught the
+    // widening, which is exactly its job.)
+    expect(windowCovers("1m", 5 * 24 * HOUR)).toBe(false);
     expect(windowCovers("1d", 4000 * 24 * HOUR)).toBe(false);
   });
 
