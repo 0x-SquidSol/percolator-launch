@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import type { PythCandleData } from "@/app/api/chart/pyth/route";
 import { pollWhenVisible } from "@/lib/pollWhenVisible";
 import { boundedSet } from "@/lib/bounded-map";
+import { CHART_WINDOWS } from "@/lib/chart-window";
 
 export type PythChartStatus = "idle" | "loading" | "success" | "empty" | "error";
 
@@ -14,19 +15,24 @@ export type Timeframe = "1m" | "5m" | "15m" | "1h" | "4h" | "1d" | "7d" | "30d";
  * wider than the displayed range so the user can scroll back. Pyth returns
  * one bar per resolution step within [from, to].
  */
+// The WINDOWS come from lib/chart-window.ts, shared with usePercolatorCandles:
+// they were a duplicated copy, and widening one without the other would leave
+// the two candle sources disagreeing about how far back "1m" means. The
+// resolution stays local — Pyth Benchmarks wants "D" where our UDF route wants
+// "1D", which is the one thing the two tables never had in common.
+const PYTH_RESOLUTION: Record<Timeframe, "1" | "5" | "15" | "60" | "240" | "D"> = {
+  "1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240",
+  "1d": "D", "7d": "D", "30d": "D",
+};
 const TIMEFRAME_CONFIG: Record<
   Timeframe,
   { resolution: "1" | "5" | "15" | "60" | "240" | "D"; lookbackSecs: number }
-> = {
-  "1m":  { resolution: "1",   lookbackSecs: 2 * 3600 },        // 2 h of 1-min bars   (120 bars)
-  "5m":  { resolution: "5",   lookbackSecs: 8 * 3600 },        // 8 h of 5-min bars   (96 bars)
-  "15m": { resolution: "15",  lookbackSecs: 24 * 3600 },       // 24 h of 15-min bars (96 bars)
-  "1h":  { resolution: "60",  lookbackSecs: 7 * 86400 },       // 7 d of 1-h bars     (168 bars)
-  "4h":  { resolution: "240", lookbackSecs: 30 * 86400 },      // 30 d of 4-h bars    (180 bars)
-  "1d":  { resolution: "D",   lookbackSecs: 180 * 86400 },     // 180 d of daily bars
-  "7d":  { resolution: "D",   lookbackSecs: 365 * 86400 },     // 1 yr of daily bars
-  "30d": { resolution: "D",   lookbackSecs: 5 * 365 * 86400 }, // 5 yrs of daily bars
-};
+> = Object.fromEntries(
+  (Object.keys(CHART_WINDOWS) as Timeframe[]).map((tf) => [
+    tf,
+    { resolution: PYTH_RESOLUTION[tf], lookbackSecs: CHART_WINDOWS[tf].lookbackSec },
+  ]),
+) as Record<Timeframe, { resolution: "1" | "5" | "15" | "60" | "240" | "D"; lookbackSecs: number }>;
 
 const POLL_INTERVAL_MS = 30_000; // re-poll the in-progress bar every 30 s
 
