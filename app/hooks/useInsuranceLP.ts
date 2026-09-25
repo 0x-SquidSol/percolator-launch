@@ -34,6 +34,13 @@ import { assertKnownProgram } from '@/lib/programAllowlist';
 import { useParams } from 'next/navigation';
 import { sanitizeOnChainValue } from '@/lib/health';
 import { pollWhenVisible } from '@/lib/pollWhenVisible';
+import {
+  NO_BALANCE_KNOWN,
+  balanceKey,
+  resolveTokenBalance,
+  type KnownBalance,
+  type TokenRead,
+} from '@/lib/token-balance';
 
 /**
  * Which LP-vault redemption step a `withdraw()` call actually ran:
@@ -211,6 +218,12 @@ export function useInsuranceLP() {
   // fresher state with stale data once its sequential awaits finally
   // resolve. Mirrors the equivalent guard in useStakePool.ts.
   const requestIdRef = useRef(0);
+  // #2545: last balances actually OBSERVED (not "last published state"),
+  // tagged with the account they came from — see lib/token-balance.ts. Lets a
+  // poll whose getAccountInfo call throws (rate limit, transport hiccup) fall
+  // back to the previous figure instead of asserting a confirmed zero.
+  const lastLpRef = useRef<KnownBalance>(NO_BALANCE_KNOWN);
+  const lastCollateralRef = useRef<KnownBalance>(NO_BALANCE_KNOWN);
 
   // Poll insurance state
   const refreshState = useCallback(async () => {
@@ -239,7 +252,10 @@ export function useInsuranceLP() {
 
       let lpSupply = 0n;
       let lpDecimals = 6;
-      let userLpBalance = 0n;
+      // #2545: default is "no wallet / no LP mint" — genuine evidence of
+      // zero. A read that actually FAILS overwrites this to `{ ok: false }`
+      // below; see lib/token-balance.ts for why that distinction matters.
+      let lpRead: TokenRead = { ok: true, absent: true };
 
       if (mintExists) {
         // Read supply and decimals from LP mint
@@ -258,15 +274,24 @@ export function useInsuranceLP() {
             );
             const ataInfo = await connection.getAccountInfo(userLpAta);
             if (stale()) return;
-            if (ataInfo) {
-              const account = unpackAccount(userLpAta, ataInfo);
-              userLpBalance = account.amount;
-            }
+            lpRead = ataInfo
+              ? { ok: true, amount: unpackAccount(userLpAta, ataInfo).amount }
+              : { ok: true, absent: true }; // no ATA — the user genuinely holds none
           } catch {
-            // ATA doesn't exist yet — user has 0 LP tokens
+            // The read itself failed (rate limit, transport hiccup, …) — that
+            // is NOT evidence of zero. Carry the last-known balance forward
+            // instead of flashing "0" (#2545).
+            lpRead = { ok: false };
           }
         }
       }
+
+      const knownLp = resolveTokenBalance(
+        lastLpRef.current,
+        balanceKey(walletPubkeyStr, lpMintInfo.mintPda.toBase58()),
+        lpRead,
+      );
+      const userLpBalance = knownLp.amount;
 
       // Calculate derived values
       const redemptionRateE6 = lpSupply > 0n
@@ -282,7 +307,14 @@ export function useInsuranceLP() {
         : 0n;
 
       // User's collateral ATA balance (available to deposit into the LP vault).
-      let userCollateralBalance = 0n;
+      // #2545: no wallet is genuine evidence of zero. A connected wallet whose
+      // `slabState.config` hasn't resolved yet is NOT — refreshState only
+      // gates on lpMintInfo/connection above, so it can run before `config`
+      // is set, and treating that as a confirmed zero would wipe a good
+      // balance for the same reason a failed read would.
+      let collateralRead: TokenRead = walletPubkeyStr
+        ? { ok: false }
+        : { ok: true, absent: true };
       if (walletPubkeyStr && slabState.config) {
         try {
           const walletPk = new PublicKey(walletPubkeyStr);
@@ -292,13 +324,25 @@ export function useInsuranceLP() {
           );
           const collateralAtaInfo = await connection.getAccountInfo(collateralAta);
           if (stale()) return;
-          if (collateralAtaInfo) {
-            userCollateralBalance = unpackAccount(collateralAta, collateralAtaInfo).amount;
-          }
+          collateralRead = collateralAtaInfo
+            ? { ok: true, amount: unpackAccount(collateralAta, collateralAtaInfo).amount }
+            : { ok: true, absent: true }; // no ATA — the user genuinely holds none
         } catch {
-          // ATA doesn't exist yet — user has 0 collateral available
+          // The read itself failed — not evidence of zero. See #2545.
+          collateralRead = { ok: false };
         }
       }
+      const knownCollateral = resolveTokenBalance(
+        lastCollateralRef.current,
+        balanceKey(walletPubkeyStr, slabState.config?.collateralMint.toBase58()),
+        collateralRead,
+      );
+      const userCollateralBalance = knownCollateral.amount;
+      // NOTE: the refs below are updated only where this run's result is
+      // actually PUBLISHED (past the final `stale()` guard). A superseded
+      // run must never write the cache — it would leave a value cached that
+      // no rendered state ever matched, quietly disabling the carry-forward
+      // for whichever run does end up publishing.
 
       // ─── LP Vault Registry (v17 "Earn" vault) ───────────────────────────────
       // Separate on-chain account from the engine insuranceFund read above.
@@ -377,6 +421,10 @@ export function useInsuranceLP() {
       }
 
       if (stale()) return;
+      // This run's result is the one being published — it's also the one the
+      // carry-forward cache should hold from now on.
+      lastLpRef.current = knownLp;
+      lastCollateralRef.current = knownCollateral;
       setState({
         insuranceBalance,
         lpSupply,
@@ -549,6 +597,20 @@ export function useInsuranceLP() {
       const domain = state.lpVaultDomain;
       const [ledgerPda] = deriveLpBackingLedger(progPk, marketPk, domain);
       const [siblingLedgerPda] = deriveLpBackingLedger(progPk, marketPk, domain ^ 1);
+
+      // Guard: the LP vault mint must exist (and be SPL-Token-owned) before we
+      // build the depositor's LP ATA. On a market with no Earn vault — the 6
+      // built-in markets by design, or a user market whose step-5 vault creation
+      // failed — the mint account is absent, and
+      // createAssociatedTokenAccountInstruction(lpMintPda) fails deep in the ATA
+      // program with a cryptic `IncorrectProgramId` (the "mint" isn't owned by
+      // the token program). Surface an accurate reason instead.
+      const lpMintInfo = await connection.getAccountInfo(lpMintPda);
+      if (!lpMintInfo) {
+        throw new Error(
+          "This market's Earn vault isn't initialized on-chain — LP deposits aren't available here.",
+        );
+      }
 
       const collateralMint = slabState.config.collateralMint;
       const vaultTokenAta = await getAssociatedTokenAddress(collateralMint, vaultPda, true);

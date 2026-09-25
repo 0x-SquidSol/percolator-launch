@@ -195,22 +195,41 @@ export function useInitUser(slabAddress: string) {
           if (requestedDeposit > 0n) {
             try {
               const userAta = await getAta(wallet.publicKey, mktConfig.collateralMint);
-              let ataBalance = 0n;
+              const [vaultPda] = deriveVaultAuthority(programId, slabPk);
+              const vaultTokenAta = await getAta(vaultPda, mktConfig.collateralMint, true);
+              // Distinguish "ATA genuinely absent" (0 is correct — user holds no
+              // collateral yet) from "the balance READ failed" (a transient RPC
+              // hiccup — unknown, NOT zero). getTokenAccountBalance threw for both
+              // and the old catch clamped the deposit to 0, so on a rate-limited
+              // read the user got an init-only account with their funds left
+              // behind and no error (#2547). getAccountInfo returns null for an
+              // absent account and throws ONLY on a real read failure.
+              let ataInfo: Awaited<ReturnType<typeof connection.getAccountInfo>> = null;
+              let readFailed = false;
               try {
-                const info = await connection.getTokenAccountBalance(userAta);
-                ataBalance = BigInt(info.value.amount);
+                ataInfo = await connection.getAccountInfo(userAta);
               } catch {
-                ataBalance = 0n; // ATA doesn't exist yet, or a transient RPC hiccup — nothing to deposit
+                readFailed = true;
               }
-              clampedDeposit = requestedDeposit < ataBalance ? requestedDeposit : ataBalance;
-              if (clampedDeposit > 0n) {
-                const [vaultPda] = deriveVaultAuthority(programId, slabPk);
-                const vaultTokenAta = await getAta(vaultPda, mktConfig.collateralMint, true);
+              if (readFailed) {
+                // Read failed — do NOT silently drop the deposit. Proceed with the
+                // full requested amount; the on-chain Deposit tx validates the real
+                // balance and surfaces an accurate error if it is insufficient.
+                clampedDeposit = requestedDeposit;
                 depositAccounts = { userAta, vaultTokenAta };
+              } else if (ataInfo === null) {
+                clampedDeposit = 0n; // ATA absent — nothing to deposit
+                depositAccounts = null;
+              } else {
+                // SPL / Token-2022 token account: amount is a u64 LE at offset 64.
+                const ataBalance =
+                  ataInfo.data.length >= 72 ? ataInfo.data.readBigUInt64LE(64) : 0n;
+                clampedDeposit = requestedDeposit < ataBalance ? requestedDeposit : ataBalance;
+                depositAccounts = clampedDeposit > 0n ? { userAta, vaultTokenAta } : null;
               }
             } catch {
-              // Best-effort: fall through to init-only. The account still
-              // gets created; the user can deposit manually afterward.
+              // Deterministic setup (ATA / vault derivation) failed — fall through
+              // to init-only; the user can deposit manually afterward.
               depositAccounts = null;
               clampedDeposit = 0n;
             }

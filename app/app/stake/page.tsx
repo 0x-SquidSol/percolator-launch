@@ -20,6 +20,8 @@ import { ProgressBar } from "@/components/ui/ProgressBar";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { ShimmerSkeleton } from "@/components/ui/ShimmerSkeleton";
 import { MarketLogo } from "@/components/market/MarketLogo";
+import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
+import Link from "next/link";
 
 /* ── Types ── */
 
@@ -29,6 +31,8 @@ interface StakePool {
   symbol: string;
   slabAddress: string;
   logoUrl?: string | null;
+  /** Underlying token mint (for the token logo) — from PLAYGROUND_SLAB_META. */
+  mainnetCa?: string;
   /** SPL mint for pool collateral (USDC). Used to query wallet ATA balance. */
   collateralMint?: string;
   tvl: number;
@@ -89,6 +93,7 @@ function apiPoolToStakePool(p: ApiPool): StakePool {
     symbol: p.symbol,
     slabAddress: p.slabAddress,
     logoUrl: p.logoUrl,
+    mainnetCa: PLAYGROUND_SLAB_META[p.slabAddress]?.mainnet_ca,
     collateralMint: p.collateralMint,
     tvl: p.tvl,
     apr: p.apr,
@@ -1045,20 +1050,29 @@ function PoolRow({
   const yourStake = position ? formatUsd(position.estimatedValue) : connected ? "$—" : "—";
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={() => onSelect(pool.id)}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(pool.id); } }}
       aria-pressed={selected}
-      className={`${STAKE_GRID_COLS} w-full border-b border-[var(--border)] border-l-2 px-3 py-2.5 text-left transition-colors duration-100 ${
+      className={`${STAKE_GRID_COLS} w-full cursor-pointer border-b border-[var(--border)] border-l-2 px-3 py-2.5 text-left transition-colors duration-100 ${
         selected
           ? "border-l-[var(--accent)] bg-[var(--accent)]/[0.06]"
           : "border-l-transparent hover:bg-[var(--bg-elevated)]"
       }`}
     >
-      {/* Pool / market */}
+      {/* Pool / market — symbol links to the market's chart; the rest of the row selects the pool to stake */}
       <div className="flex min-w-0 items-center gap-2">
-        <MarketLogo logoUrl={pool.logoUrl} symbol={pool.symbol} pixelOverride={22} decorative />
-        <span className="min-w-0 truncate text-[12px] font-medium text-[var(--text)]">{pool.symbol}</span>
+        <MarketLogo mainnetCa={pool.mainnetCa} logoUrl={pool.logoUrl} symbol={pool.symbol} pixelOverride={22} decorative />
+        <Link
+          href={`/trade/${pool.slabAddress}`}
+          onClick={(e) => e.stopPropagation()}
+          title={`Open ${pool.symbol} chart`}
+          className="min-w-0 truncate text-[12px] font-medium text-[var(--text)] transition-colors hover:text-[var(--accent)] hover:underline"
+        >
+          {pool.symbol}
+        </Link>
       </div>
 
       {/* TVL */}
@@ -1086,7 +1100,7 @@ function PoolRow({
       >
         {pool.apr > 0 ? `${pool.apr.toFixed(1)}%` : "0%"}
       </span>
-    </button>
+    </div>
   );
 }
 
