@@ -179,27 +179,38 @@ export function useInsuranceLP() {
   // switch (including the null → defined transition when config first loads).
   const collateralMintStr = slabState.config?.collateralMint.toBase58() ?? null;
 
+  // ...and the same treatment for `programId`, for the same reason. The note
+  // above stabilizes `config`, but `lpMintInfo`/`registryInfo` below are memos
+  // keyed on the raw `programId` OBJECT that return fresh object literals —
+  // and they are in the same effect's dep array, so they re-introduced exactly
+  // the churn that note is guarding against. SlabProvider rebuilds programId
+  // per poll (`programId: owner ?? s.programId`), so the effect re-ran every
+  // ~3s on an active market: setLoading(true) + a full 6-call refresh, which
+  // shimmered every stat cell on the Earn page. Stabilizing one dependency and
+  // not its siblings leaves the effect exactly as unstable as before.
+  const programIdStr = programId?.toBase58() ?? null;
+
   // Derive the insurance LP mint PDA
   const lpMintInfo = useMemo(() => {
-    if (!slabAddress || !programId) return null;
+    if (!slabAddress || !programIdStr) return null;
     try {
       const slabPubkey = new PublicKey(slabAddress);
-      const progPubkey = new PublicKey(programId);
+      const progPubkey = new PublicKey(programIdStr);
       const [mintPda, bump] = deriveInsuranceLpMint(progPubkey, slabPubkey);
       return { mintPda, bump };
     } catch {
       return null;
     }
-  }, [slabAddress, programId]);
+  }, [slabAddress, programIdStr]);
 
   // Derive the LP Vault Registry PDA (and, once a wallet is connected, the
   // redemption-ticket PDA for that wallet). Kept separate from lpMintInfo above
   // so a failure deriving one never blocks the other.
   const registryInfo = useMemo(() => {
-    if (!slabAddress || !programId) return null;
+    if (!slabAddress || !programIdStr) return null;
     try {
       const slabPubkey = new PublicKey(slabAddress);
-      const progPubkey = new PublicKey(programId);
+      const progPubkey = new PublicKey(programIdStr);
       const [registryPda] = deriveLpVaultRegistry(progPubkey, slabPubkey);
       let redemptionPda: PublicKey | null = null;
       if (walletPubkeyStr) {
@@ -210,7 +221,7 @@ export function useInsuranceLP() {
     } catch {
       return null;
     }
-  }, [slabAddress, programId, walletPubkeyStr]);
+  }, [slabAddress, programIdStr, walletPubkeyStr]);
 
   // S-H1 fix: bumped at the start of every refreshState() call. Lets a stale
   // in-flight call detect that a newer call has since started (e.g. wallet

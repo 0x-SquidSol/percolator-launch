@@ -26,7 +26,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderHook, act } from "@testing-library/react";
+import { renderHook, act, waitFor } from "@testing-library/react";
 import { PublicKey, Keypair } from "@solana/web3.js";
 
 vi.mock("@/hooks/useWalletCompat", () => ({
@@ -80,6 +80,17 @@ describe("useMarketFillCap — slab-poll churn must not blank the capacity row",
     return h;
   }
 
+  it("premise: SlabProvider re-emits a NEW object with the SAME value", () => {
+    // Both assertions below are NEGATIVE ("unchanged"), which is also what a
+    // test that reproduces nothing reports. Pin the mechanism explicitly so
+    // they cannot pass vacuously — e.g. after a future migration to
+    // @solana/kit, whose addresses are opaque strings and never churn.
+    const a = new PublicKey(PROGRAM_ID_B58);
+    const b = new PublicKey(PROGRAM_ID_B58);
+    expect(b).not.toBe(a);
+    expect(b.toBase58()).toBe(a.toBase58());
+  });
+
   it("keeps the capacity value when SlabProvider re-emits the same programId", async () => {
     const { result, rerender } = await renderSettled(SLAB_A);
     expect(result.current?.inventoryBase).toBe(INVENTORY);
@@ -126,6 +137,24 @@ describe("useMarketFillCap — slab-poll churn must not blank the capacity row",
     });
 
     expect(result.current).toBeNull();
+  });
+
+  it("CONTROL: ...and then loads market B's own values", async () => {
+    // The other half of the reset contract, and the one that matters most:
+    // "never refetch after the first mount" satisfies EVERY other test in this
+    // file while leaving the row gone for the rest of the session — strictly
+    // worse than the flicker this PR fixes. Resetting is only correct if a
+    // reload follows.
+    const INVENTORY_B = 999_000n;
+    const { result, rerender } = await renderSettled(SLAB_A);
+    expect(result.current?.inventoryBase).toBe(INVENTORY);
+
+    vi.mocked(getMatcherInventory).mockResolvedValue(INVENTORY_B);
+    await act(async () => {
+      rerender({ s: SLAB_B });
+    });
+
+    await waitFor(() => expect(result.current?.inventoryBase).toBe(INVENTORY_B));
   });
 
   it("CONTROL: a genuinely different programId still resets", async () => {

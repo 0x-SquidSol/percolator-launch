@@ -138,7 +138,12 @@ describe("useInsuranceLP", () => {
 
     // Mock slab state
     mockSlabState = {
-      programId: mockProgramId.toBase58(),
+      // A real PublicKey, as SlabProvider actually supplies (its context type
+      // is `PublicKey | null`). This was a base58 STRING, which typechecked
+      // only because the mock is untyped: every consumer happened to funnel it
+      // through `new PublicKey(...)`, which accepts both, so the mismatch
+      // stayed invisible until a consumer called a PublicKey method on it.
+      programId: mockProgramId,
       engine: {
         insuranceFund: {
           balance: 1000000n, // 1 SOL
@@ -203,6 +208,31 @@ describe("useInsuranceLP", () => {
 
       // Should NOT have excessive calls (would indicate infinite loop)
       expect(mockConnection.getAccountInfo.mock.calls.length).toBeLessThan(callCount + 10);
+    });
+
+    it("does not re-fetch when SlabProvider re-emits the same programId as a new object", async () => {
+      // SlabProvider rebuilds programId as a brand-new PublicKey on every slab
+      // poll (`programId: owner ?? s.programId`, owner being fresh off each
+      // getAccountInfo). `lpMintInfo`/`registryInfo` are memos keyed on that
+      // object that return fresh object literals, and they sit in the dep array
+      // of the effect that does `setLoading(true); refreshStateRef.current()`.
+      // So every poll re-armed the shimmer on all five Earn stat cells and
+      // re-ran a 6-call refresh. The PERC-9204 note two lines above that effect
+      // stabilizes `config` and was silently undone by these two siblings.
+      const { result, rerender } = renderHook(() => useInsuranceLP());
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      const callsAfterLoad = mockConnection.getAccountInfo.mock.calls.length;
+
+      for (let poll = 0; poll < 3; poll++) {
+        vi.mocked(useSlabState).mockReturnValue({
+          ...mockSlabState,
+          programId: new PublicKey(mockProgramId.toBase58()), // same value, new object
+        });
+        rerender();
+      }
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      expect(mockConnection.getAccountInfo.mock.calls.length).toBe(callsAfterLoad);
     });
 
     it("should use stable wallet public key reference to prevent re-render loop", async () => {
