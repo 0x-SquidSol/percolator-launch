@@ -8,6 +8,7 @@ import type { MarketConfig, EngineState, RiskParams, SlabHeader, Account } from 
 import { AccountKind } from "@percolatorct/sdk";
 import type { PortfolioPosition } from "@/hooks/usePortfolio";
 import { computeLiquidationDistancePct } from "@/lib/liquidation-distance";
+import { classifyLiquidation } from "@/lib/liquidation-state";
 import type { UserAccountInfo } from "@/hooks/useUserAccount";
 
 interface MockMarketData {
@@ -468,6 +469,10 @@ export function getMockPortfolioPositions(): PortfolioPosition[] {
     const liquidationPriceE6 = BigInt(Math.round(m.priceUsd * liqFactor * 1_000_000));
     // Same direction-aware helper the real portfolio scan uses (percent 0-100).
     const liquidationDistancePct = computeLiquidationDistancePct(posSize, priceE6, liquidationPriceE6);
+    // Mock positions always have a real entry and a real mark, so they are
+    // straightforwardly liquidatable — the demo should never render the
+    // "unknown" state, which is a real-data condition.
+    const liquidationState = classifyLiquidation(posSize, priceE6, liquidationPriceE6, true);
 
     positions.push({
       slabAddress: slabAddr,
@@ -478,6 +483,7 @@ export function getMockPortfolioPositions(): PortfolioPosition[] {
       oraclePriceE6: priceE6,
       liquidationPriceE6,
       liquidationDistancePct,
+      liquidationState,
       unrealizedPnl: pnl,
       // Mock positions carry a real `entryE6`, so PnL here is always
       // displayable — mock mode must not exercise the "--" path.

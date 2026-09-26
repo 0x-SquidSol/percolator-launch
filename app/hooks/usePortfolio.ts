@@ -37,6 +37,7 @@ import { getAllProgramIds, getNetwork } from "@/lib/config";
 import { applyInvert, sanitizePriceE6 } from "@/lib/oraclePrice";
 import { getEntryPrice } from "@/lib/entry-price";
 import { computeLiquidationDistancePct } from "@/lib/liquidation-distance";
+import { classifyLiquidation, type LiquidationState } from "@/lib/liquidation-state";
 import { discoverMarketsViaProgramDirectory } from "@/lib/market-directory-discovery";
 import { PERCOLATOR_NFT_PROGRAM_ID } from "@/lib/nft-program";
 import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
@@ -190,6 +191,12 @@ export interface PortfolioPosition {
   liquidationPriceE6: bigint;
   /** Distance to liquidation as a percentage (0 = at liq, 100 = far from liq) */
   liquidationDistancePct: number;
+  /**
+   * WHY there is (or isn't) a liquidation price. `liquidationDistancePct`
+   * cannot say: its fallback is a finite 100 for three different situations,
+   * only one of which is actually safe. See lib/liquidation-state.ts and #2412.
+   */
+  liquidationState: LiquidationState;
   /** Unrealized PnL (mark-to-market using oracle) */
   unrealizedPnl: bigint;
   /**
@@ -254,6 +261,26 @@ export interface PortfolioPosition {
 }
 
 export type LiquidationSeverity = "safe" | "warning" | "danger";
+
+/**
+ * Severity from a classified state rather than from a bare percentage.
+ *
+ * `getLiquidationSeverity` below cannot distinguish the three situations that
+ * all arrive as a finite 100 — see lib/liquidation-state.ts. Only one of them
+ * is safe; the other two are an absent signal, and #2412's principle is that an
+ * absent signal is not evidence of safety. Its `!Number.isFinite` guard does
+ * not catch them because 100 is finite.
+ */
+export function getLiquidationSeverityForState(
+  state: LiquidationState,
+): LiquidationSeverity {
+  if (state.kind === "liquidatable") return getLiquidationSeverity(state.distancePct);
+  // Collateral covers the position at any price — genuinely safe, and the one
+  // case where withholding a liquidation price is the correct answer.
+  if (state.kind === "unliquidatable") return "safe";
+  // A flat position carries no risk; the other unknowns carry unmeasured risk.
+  return state.reason === "no-position" ? "safe" : "danger";
+}
 
 export function getLiquidationSeverity(distancePct: number): LiquidationSeverity {
   // #2412: a non-finite distance must NOT read as "safe". Both comparisons below
@@ -475,6 +502,14 @@ function buildV17Position(
     oraclePriceE6,
     liquidationPriceE6,
   );
+  // The distance alone cannot distinguish "collateral covers this position" or
+  // "we have no mark price" — both arrive as 100, which maps to "safe".
+  const liquidationState = classifyLiquidation(
+    account.positionSize,
+    oraclePriceE6,
+    liquidationPriceE6,
+    entryPriceSource !== "unknown",
+  );
 
   const absPos = account.positionSize < 0n ? -account.positionSize : account.positionSize;
   let leverage = 0;
@@ -493,6 +528,7 @@ function buildV17Position(
     oraclePriceE6,
     liquidationPriceE6,
     liquidationDistancePct,
+    liquidationState,
     unrealizedPnl,
     entryPriceSource,
     realizedLoss: portfolio.residualCrystallizedLossAtomsTotal,
@@ -767,6 +803,12 @@ export async function fetchPortfolioSnapshot(
               oraclePriceE6,
               liquidationPriceE6,
             );
+            const liquidationState = classifyLiquidation(
+              account.positionSize,
+              oraclePriceE6,
+              liquidationPriceE6,
+              resolvedEntry.source !== "unknown",
+            );
 
             // Risk leverage = notional / slab account capital.
             const absPos = account.positionSize < 0n ? -account.positionSize : account.positionSize;
@@ -782,6 +824,7 @@ export async function fetchPortfolioSnapshot(
             }
 
             allPositions.push({
+              liquidationState,
               slabAddress: slabAddrStr,
               symbol: resolveSymbol(slabAddrStr, symbolBySlab),
               account,

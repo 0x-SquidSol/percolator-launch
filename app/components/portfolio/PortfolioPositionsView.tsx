@@ -12,7 +12,8 @@ import { useEngineFreshness } from "@/hooks/useEngineFreshness";
 import { ClosePositionModal } from "@/components/trade/ClosePositionModal";
 import { clearEntryPrice } from "@/lib/entry-price";
 import { useWalletCompat } from "@/hooks/useWalletCompat";
-import { usePortfolio, getLiquidationSeverity, type PortfolioPosition } from "@/hooks/usePortfolio";
+import { usePortfolio, getLiquidationSeverity, getLiquidationSeverityForState, type PortfolioPosition } from "@/hooks/usePortfolio";
+import { classifyLiquidation } from "@/lib/liquidation-state";
 import { useLiveSlabPrices } from "@/hooks/useLiveSlabPrices";
 import { useLpPositions } from "@/hooks/useLpPositions";
 import { AtRiskBanner } from "@/components/portfolio/AtRiskBanner";
@@ -221,7 +222,17 @@ function PositionCard({
     pos.liquidationDistancePct,
   );
   const pnlPositive = pnlTokens >= 0n;
-  const severity = getLiquidationSeverity(liquidationDistancePct);
+  // Classified from the LIVE mark this row renders with, not the snapshot the
+  // hook captured. Severity must come from the state, because the percentage
+  // reports a finite 100 for "no mark" and "no entry" just as it does for
+  // "collateral covers it" — and only the last of those is safe (#2412).
+  const liveLiquidationState = classifyLiquidation(
+    posSize,
+    markE6,
+    liquidationPriceE6,
+    pos.entryPriceSource !== "unknown",
+  );
+  const severity = getLiquidationSeverityForState(liveLiquidationState);
   const livePriceUsd = getSnapshot(pos.slabAddress).priceUsd ?? (markE6 > 0n ? Number(markE6) / 1e6 : null);
 
   return (
