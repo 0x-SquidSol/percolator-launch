@@ -53,3 +53,31 @@ export function isEngineCrankStale(market: CreatedMarket, currentSlot: bigint | 
   if (assetSlotLast == null || currentSlot == null) return false;
   return Number(currentSlot - assetSlotLast) >= ENGINE_STALE_THRESHOLD_SLOTS;
 }
+
+/**
+ * How many affected market names a summary line lists before it collapses the
+ * rest into a count.
+ *
+ * The crank-stale condition used to render ONE ROW PER MARKET, which on a quiet
+ * devnet reproduced the creator's entire market list above the real one (#2573).
+ * It is now a single line — but a line that names nothing is worse than the list
+ * it replaced, so it names a few and counts the rest.
+ */
+export const ATTENTION_NAME_CAP = 4;
+
+/**
+ * Build the "SOL, COLLECT, PENGU +2 more" fragment for a summary line.
+ *
+ * Returns "" for an empty list: the caller renders nothing at all in that case,
+ * and an empty string keeps that decision at the call site rather than
+ * inventing a phrase like "no markets".
+ */
+export function summarizeAffectedMarkets(
+  names: readonly string[],
+  cap: number = ATTENTION_NAME_CAP,
+): string {
+  if (names.length === 0) return "";
+  if (names.length <= cap) return names.join(", ");
+  // Strictly MORE than the cap, so this can never read "+0 more".
+  return `${names.slice(0, cap).join(", ")} +${names.length - cap} more`;
+}

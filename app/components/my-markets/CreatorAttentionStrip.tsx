@@ -1,12 +1,11 @@
 "use client";
 
 import { FC } from "react";
-import Link from "next/link";
 import type { CreatedMarket } from "@/hooks/useCreatedMarkets";
 import type { CreatorMarketDetail } from "./types";
 import { RecoverSolBanner } from "@/components/create/RecoverSolBanner";
 import { useCreateMarket, type KeeperRegisterRetryParams } from "@/hooks/useCreateMarket";
-import { isKeeperFeedDead, isEngineCrankStale } from "./attentionLogic";
+import { isKeeperFeedDead, isEngineCrankStale, summarizeAffectedMarkets } from "./attentionLogic";
 import { resolveIdentity, type ResolvedIdentity } from "@/lib/bulk-identity";
 
 /** One "retry keeper registration" row. Its own useCreateMarket() instance so
@@ -93,6 +92,17 @@ export const CreatorAttentionStrip: FC<CreatorAttentionStripProps> = ({ markets,
   const keeperDead = markets.filter((m) => isKeeperFeedDead(m, currentSlot));
   const crankStale = markets.filter((m) => isEngineCrankStale(m, currentSlot));
 
+  // Name the affected markets, capped — informative without becoming the list
+  // this summary exists to remove. Same field-level identity merge as
+  // KeeperRetryRow, so the two lines in one strip cannot disagree about a
+  // market's name while the detail fetch is in flight.
+  const crankStaleLabel = summarizeAffectedMarkets(
+    crankStale.map((m) => {
+      const slab = m.slabAddress.toBase58();
+      return resolveIdentity(details[slab] ?? null, identities[slab] ?? null).symbol ?? m.label;
+    }),
+  );
+
   const hasAnything = keeperDead.length > 0 || crankStale.length > 0;
 
   return (
@@ -107,24 +117,27 @@ export const CreatorAttentionStrip: FC<CreatorAttentionStripProps> = ({ markets,
             <KeeperRetryRow key={m.slabAddress.toBase58()} market={m} detail={details[m.slabAddress.toBase58()] ?? null} identity={identities[m.slabAddress.toBase58()] ?? null} />
           ))}
 
-          {/* (c) engine crank stale — informational only, no fake fix button */}
-          {crankStale.map((m) => {
-            const slab = m.slabAddress.toBase58();
-            const symbol = details[slab]?.symbol ?? m.label;
-            return (
-              <div key={slab} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5">
-                <div>
-                  <span className="text-[11px] font-semibold text-[var(--text)]">{symbol}</span>
-                  <span className="ml-2 text-[10px] text-[var(--text-secondary)]">
-                    engine crank is stale (accrue cliff) — no self-service fix; it clears once the market is next traded or externally cranked.
-                  </span>
-                </div>
-                <Link href={`/trade/${slab}`} className="shrink-0 text-[10px] uppercase tracking-[0.1em] text-[var(--accent)] hover:brightness-125">
-                  open market →
-                </Link>
-              </div>
-            );
-          })}
+          {/* (c) engine crank stale — ONE summary line, not a row per market.
+              This used to render one row per stale market, which on a quiet
+              devnet reproduced the creator's entire market list above the real
+              one (#2573). It earns a list less than anything else here: it is
+              explicitly informational with no self-service fix, AND every row
+              in the real list below already carries a pulsing crank-freshness
+              dot with the same tooltip, so the per-market detail was never
+              lost by summarising it. */}
+          {crankStale.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 px-4 py-2.5">
+              <span className="text-[11px] font-semibold text-[var(--text)]">
+                {crankStale.length === 1
+                  ? "1 market has a stale engine crank"
+                  : `${crankStale.length} markets have a stale engine crank`}
+              </span>
+              <span className="text-[10px] text-[var(--text-secondary)]">
+                {crankStaleLabel} — accrue cliff, no self-service fix. Each clears once that
+                market is next traded or cranked; the pulsing dot on a row below marks which.
+              </span>
+            </div>
+          )}
         </div>
       )}
     </div>

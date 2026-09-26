@@ -9,6 +9,12 @@
  * anything. This is the surface answer — per market, with a total, and a single
  * claim-all.
  *
+ * SUMMARY ONLY — no per-market rows. The first version of this panel listed
+ * every market, which reproduced the market list a third time on a page that
+ * already showed it twice (#2573). The per-market figure and its claim button
+ * live on CreatorMarketRow instead, so the page has ONE list and the row
+ * carries the detail.
+ *
  * THE DISPLAY RULE, which is the whole point: a balance that could not be READ
  * renders as "unavailable", never as a zero. `/api/markets/[slab]`'s Supabase
  * branch used to return no creator-fee field at all, and the row collapsed that
@@ -30,8 +36,6 @@ import {
   type CreatorFeeEntry,
 } from "@/lib/creator-fee-summary";
 import { resolveIdentity, type ResolvedIdentity } from "@/lib/bulk-identity";
-import { explorerTxUrl } from "@/lib/config";
-import { Tooltip } from "@/components/ui/Tooltip";
 
 interface CreatorFeesPanelProps {
   markets: CreatedMarket[];
@@ -80,10 +84,8 @@ export const CreatorFeesPanel: FC<CreatorFeesPanelProps> = ({
 
   const summary = useMemo(() => summarizeCreatorFees(entries), [entries]);
   const targets = useMemo(() => claimAllTargets(entries), [entries]);
-  const outcomeBySlab = useMemo(
-    () => new Map(outcomes.map((o) => [o.slab, o])),
-    [outcomes],
-  );
+  const labelFor = (slab: string) =>
+    entries.find((e) => e.slab === slab)?.label ?? slab.slice(0, 8);
 
   if (markets.length === 0) return null;
 
@@ -163,69 +165,25 @@ export const CreatorFeesPanel: FC<CreatorFeesPanelProps> = ({
         </div>
       )}
 
-      <div className="divide-y divide-[var(--border)]/30">
-        {entries.map((e) => {
-          const outcome = outcomeBySlab.get(e.slab);
-          const claimingThis = busy && progress.current === e.slab;
-          return (
-            <div key={e.slab} className="flex flex-wrap items-center gap-3 px-4 py-2.5">
-              <span className="min-w-[80px] text-[11px] font-semibold text-[var(--text)]">
-                {e.label}
-              </span>
-
-              <span
-                className="min-w-[90px] text-[12px] tabular-nums text-[var(--text)]"
-                style={{ fontFamily: "var(--font-mono)" }}
-              >
-                {e.claimable.kind === "unknown" ? (
-                  <Tooltip text="This market's creator-fee counter could not be read, so it is left out of the total. It is not a zero.">
-                    <span className="text-[var(--text-dim)]">unavailable</span>
-                  </Tooltip>
-                ) : e.claimable.kind === "none" ? (
-                  <span className="text-[var(--text-dim)]">0.00</span>
-                ) : (
-                  fmt(Number(e.claimable.atoms) / 10 ** e.decimals)
-                )}
-              </span>
-
-              <div className="ml-auto flex items-center gap-2">
-                {outcome?.signature && (
-                  <a
-                    href={explorerTxUrl(outcome.signature)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[10px] text-[var(--long)] underline decoration-dotted"
-                  >
-                    claimed
-                  </a>
-                )}
-                {outcome?.error && (
-                  <span className="max-w-[260px] text-[10px] text-[var(--short)]">
-                    {outcome.error}
-                  </span>
-                )}
-
-                {e.claimable.kind === "claimable" && e.isClaimAuthority && !outcome?.signature && (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void runClaim([e.slab])}
-                    className="border border-[var(--accent)]/30 px-2.5 py-1 text-[10px] uppercase tracking-[0.1em] text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/10 disabled:opacity-40"
-                  >
-                    {claimingThis ? "claiming…" : "claim"}
-                  </button>
-                )}
-
-                {e.claimable.kind === "claimable" && !e.isClaimAuthority && (
-                  <Tooltip text="Only this market's asset admin can claim its fees. That is a different wallet — connect it to claim.">
-                    <span className="text-[10px] text-[var(--text-dim)]">another wallet claims</span>
-                  </Tooltip>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      {outcomes.length > 0 && (
+        <div className="border-t border-[var(--border)]/40 px-4 py-2.5">
+          {outcomes.filter((o) => o.signature).length > 0 && (
+            <p className="text-[10px] text-[var(--long)]">
+              claimed on {outcomes.filter((o) => o.signature).length} market
+              {outcomes.filter((o) => o.signature).length === 1 ? "" : "s"}
+            </p>
+          )}
+          {/* Per-market failures are listed, not counted: a claim-all sends one
+              transaction PER market precisely so a partial failure is
+              survivable, which is only useful if the creator can see which
+              ones to retry. */}
+          {outcomes.filter((o) => o.error).map((o) => (
+            <p key={o.slab} className="text-[10px] text-[var(--short)]">
+              {labelFor(o.slab)}: {o.error}
+            </p>
+          ))}
+        </div>
+      )}
     </div>
   );
 };
