@@ -56,12 +56,17 @@ export function applyResolved<T>(
 }
 
 /**
- * Seed the map from a synchronous cache before any request goes out.
+ * Seed a map from a synchronous cache before any request goes out.
  *
- * The page already WRITES every resolved identity to the cross-navigation
- * identity cache (`setMarketIdentity`) and never reads it back, so returning to
- * My Markets re-showed mint addresses for a full second with the answer already
- * in memory. `getSeed` returns null for a miss.
+ * Used by hooks/useMarketIdentities.ts to paint tickers from the session
+ * identity cache on the first committed render: /my-markets WROTE that cache on
+ * every resolve and never read it back, so returning to the page re-showed
+ * placeholders for a full second with the answer already in memory.
+ *
+ * NOTE: seed a map of IDENTITY, never a map of per-market detail. Presence in
+ * the detail map means "this market has its numbers in", and an identity-only
+ * placeholder there makes the page publish a $0.00 liquidity aggregate as a
+ * finished figure. `getSeed` returns null for a miss.
  */
 export function seedFromCache<T>(
   slabs: readonly string[],
