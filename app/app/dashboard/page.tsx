@@ -161,32 +161,6 @@ const TradeHistory = dynamic(
   }
 );
 
-const Watchlist = dynamic(
-  () => import("@/components/dashboard/Watchlist").then((m) => m.Watchlist),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="h-[200px] bg-[var(--panel-bg)] border border-[var(--border)] p-4 flex flex-col">
-        <ShimmerSkeleton className="h-4 w-24 mb-4" />
-        <div className="flex-1 space-y-3">
-          {[1, 2].map(i => (
-            <div key={i} className="flex justify-between items-center">
-              <div className="flex items-center gap-2">
-                <ShimmerSkeleton className="h-6 w-6 rounded-full" />
-                <div className="space-y-1">
-                  <ShimmerSkeleton className="h-3.5 w-16" />
-                  <ShimmerSkeleton className="h-2.5 w-24" />
-                </div>
-              </div>
-              <ShimmerSkeleton className="h-4 w-12" />
-            </div>
-          ))}
-        </div>
-      </div>
-    )
-  }
-);
-
 const FundingRates = dynamic(
   () => import("@/components/dashboard/FundingRates").then((m) => m.FundingRates),
   {
@@ -211,7 +185,7 @@ const FundingRates = dynamic(
 );
 
 // Mobile tab type
-type MobileTab = "overview" | "positions" | "history" | "watchlist";
+type MobileTab = "overview" | "positions" | "history" | "funding";
 
 export default function DashboardPage() {
   useEffect(() => { document.title = "Dashboard — Percolator"; }, []);
@@ -329,14 +303,15 @@ export default function DashboardPage() {
             </div>
           </ScrollReveal>
 
-          {/* Row 3: Trade History + Watchlist/Funding */}
+          {/* Row 3: Trade History + Funding. The markets watchlist used to sit
+              here; a portfolio is your own positions, and a directory of every
+              market belongs on /markets. */}
           <ScrollReveal delay={0.2}>
             <div className="grid gap-4 lg:grid-cols-5">
               <div className="lg:col-span-3">
                 <TradeHistory />
               </div>
               <div className="lg:col-span-2 space-y-4">
-                <Watchlist />
                 <FundingRates />
               </div>
             </div>
@@ -352,7 +327,7 @@ export default function DashboardPage() {
                 { key: "overview", icon: "📊", label: "Overview" },
                 { key: "positions", icon: "📋", label: "Positions" },
                 { key: "history", icon: "🕐", label: "History" },
-                { key: "watchlist", icon: "👁", label: "Watchlist" },
+                { key: "funding", icon: "💸", label: "Funding" },
               ] as const
             ).map((tab) => (
               <button
@@ -387,12 +362,7 @@ export default function DashboardPage() {
             </div>
           )}
           {mobileTab === "history" && <TradeHistory />}
-          {mobileTab === "watchlist" && (
-            <div className="space-y-4">
-              <Watchlist />
-              <FundingRates />
-            </div>
-          )}
+          {mobileTab === "funding" && <FundingRates />}
         </div>
       </div>
     </div>
