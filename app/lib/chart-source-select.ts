@@ -41,6 +41,18 @@ export type ChartFetchStatus = "idle" | "loading" | "success" | "error";
 export interface ChartSourceState {
   status: ChartFetchStatus;
   /**
+   * False when this source can never produce data for this market — no Pyth
+   * symbol mapping, or no mainnet CA for the DEX pool lookup.
+   *
+   * Load-bearing, and NOT the same as `status === "idle"`. useTokenChart sets
+   * `idle` and returns without fetching when its mint is null, and stays there
+   * forever; so does usePythChart with no symbol. Without this flag an
+   * inapplicable source looks permanently "not yet settled", and a market with
+   * 1..9 internal bars and no CA would fall through to the oracle FOREVER
+   * rather than showing its own trades. Defaults to true.
+   */
+  applicable?: boolean;
+  /**
    * Bars with a REAL price — not merely finite.
    *
    * 0 is finite, and the indexer buckets a NULL-price liquidation marker into
@@ -61,13 +73,25 @@ export interface ChartSourceState {
  */
 export const MIN_PERC_BARS = 10;
 
-/** Settled with no usable data — as opposed to still in flight. */
+/**
+ * Settled with no usable data — as opposed to still in flight.
+ *
+ * A source that cannot apply to this market is settled by definition: it is
+ * not going to answer. A source that is merely `idle` or `loading` has not
+ * answered YET, and treating that as "nothing" is what lets a thin series
+ * flash in during the round trip.
+ */
 function settledEmpty(s: ChartSourceState): boolean {
+  if (s.applicable === false) return true;
   if (s.status === "error") return true;
   return s.status === "success" && s.pricedBars === 0;
 }
 
 function hasData(s: ChartSourceState): boolean {
+  // An inapplicable source is never chosen, whatever it reports. Without this
+  // the flag would only gate the fallback branch, leaving a stale series from
+  // a previous market able to win while the new one has no mapping at all.
+  if (s.applicable === false) return false;
   return s.status === "success" && s.pricedBars > 0;
 }
 

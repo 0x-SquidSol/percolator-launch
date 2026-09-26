@@ -455,8 +455,20 @@ const TradingChartInner: FC<{ slabAddress: string; mintAddress?: string }> = ({
   // 1000-bar DEX series once Pyth's upstream shim started 404ing. See #2579.
   const activeDataSource = selectChartSource({
     percolator: { status: percolatorStatus, pricedBars: percPriced.length },
-    pyth: { status: pythStatus, pricedBars: pythFinite.length },
-    dex: { status: externalStatus, pricedBars: externalFinite.length },
+    // `applicable` marks a source that can never answer for this market:
+    // usePythChart with no symbol mapping and useTokenChart with no mint both
+    // park on `idle` and never fetch. Without it they read as "not settled
+    // yet" forever, stranding such markets on the oracle series.
+    pyth: {
+      status: pythStatus,
+      pricedBars: pythFinite.length,
+      applicable: pythSymbol != null,
+    },
+    dex: {
+      status: externalStatus,
+      pricedBars: externalFinite.length,
+      applicable: mintAddress != null,
+    },
   });
 
   const hasPercolatorData = activeDataSource === "percolator";

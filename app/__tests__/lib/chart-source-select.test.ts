@@ -97,9 +97,9 @@ describe("a source still loading is not a source with nothing", () => {
     ).toBe("percolator");
   });
 
-  it("treats an idle source as not-yet-settled too", () => {
-    // `idle` is what usePythChart reports for an asset with no Pyth mapping —
-    // distinct from `error`, and it must not count as "settled empty" either.
+  it("treats an APPLICABLE idle source as not-yet-settled", () => {
+    // A source that has simply not started yet must not count as "nothing".
+    // An INAPPLICABLE idle source is different and is covered below.
     expect(
       selectChartSource({ percolator: bars(1), pyth: idle, dex: loading }),
     ).toBe("oracle");
@@ -129,5 +129,56 @@ describe("zero-priced bars never count", () => {
     expect(
       selectChartSource({ percolator: bars(0), pyth: errored, dex: bars(184) }),
     ).toBe("dex");
+  });
+});
+
+describe("a source that can never answer is settled, not pending", () => {
+  // useTokenChart sets `idle` and returns without fetching when its mint is
+  // null; usePythChart does the same with no symbol mapping. Both stay there
+  // for the life of the page.
+  const inapplicable: ChartSourceState = { status: "idle", pricedBars: 0, applicable: false };
+
+  it("shows a market its OWN trades when neither external source applies", () => {
+    // THE REGRESSION THIS PREVENTS: a market with no mainnet_ca and no Pyth
+    // mapping would otherwise sit on `idle` forever, never satisfy
+    // "settled empty", and render the oracle series permanently instead of the
+    // trades it actually has.
+    expect(
+      selectChartSource({
+        percolator: bars(3),
+        pyth: inapplicable,
+        dex: inapplicable,
+      }),
+    ).toBe("percolator");
+  });
+
+  it("still waits on an applicable source that is merely loading", () => {
+    // CONTROL: "inapplicable is settled" must not collapse into "idle is
+    // settled", which would let the thin series flash in mid-round-trip again.
+    expect(
+      selectChartSource({
+        percolator: bars(3),
+        pyth: inapplicable,
+        dex: { status: "loading", pricedBars: 0 },
+      }),
+    ).toBe("oracle");
+  });
+
+  it("an inapplicable source never wins even if it somehow reports bars", () => {
+    expect(
+      selectChartSource({
+        percolator: none,
+        pyth: { status: "success", pricedBars: 500, applicable: false },
+        dex: bars(184),
+      }),
+    ).toBe("dex");
+  });
+
+  it("CONTROL: applicable defaults to true when omitted", () => {
+    // Every other test in this file omits the flag; if the default flipped,
+    // they would all silently change meaning.
+    expect(
+      selectChartSource({ percolator: bars(1), pyth: errored, dex: { status: "loading", pricedBars: 0 } }),
+    ).toBe("oracle");
   });
 });
