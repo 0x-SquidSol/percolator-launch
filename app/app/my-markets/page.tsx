@@ -377,6 +377,7 @@ const MyMarketsPage: FC = () => {
                 detail={details[slab] ?? null}
                 identity={identities[slab] ?? null}
                 chainCurrentSlot={chainCurrentSlot}
+                onClaimed={refetchMarkets}
                 expanded={expandedSlab === slab}
                 onToggleExpand={() => setExpandedSlab((cur) => (cur === slab ? null : slab))}
               />

@@ -17,6 +17,8 @@ import { computeMarketHealthFromStats } from "@/lib/health";
 import { HealthBadge } from "@/components/market/HealthBadge";
 import { MarketLogo } from "@/components/market/MarketLogo";
 import { resolveIdentity, type ResolvedIdentity } from "@/lib/bulk-identity";
+import { classifyClaimable } from "@/lib/creator-fee-summary";
+import { useClaimCreatorFees } from "@/hooks/useClaimCreatorFees";
 import { LogoUpload } from "@/components/create/LogoUpload";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { subscribeSlab, getSnapshot } from "@/lib/priceStore/priceStore";
@@ -139,9 +141,12 @@ interface CreatorMarketRowProps {
   chainCurrentSlot: bigint | null;
   expanded: boolean;
   onToggleExpand: () => void;
+  /** Re-read balances after a successful claim, so the badge does not linger
+   *  showing an amount the creator has already banked. */
+  onClaimed?: () => void;
 }
 
-export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, identity, chainCurrentSlot, expanded, onToggleExpand }) => {
+export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, identity, chainCurrentSlot, expanded, onToggleExpand, onClaimed }) => {
   const { toast } = useToast();
   const actions = useAdminActions();
   const closeMarket = useCloseMarket();
@@ -150,19 +155,35 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
   const isV17 = !!market.configV17;
   const v17Stats = market.v17Stats;
 
-  // Creator-fee claim (tag 90) surfacing. The connected wallet can claim only
-  // when it IS this market's fee authority (asset 0's asset_admin). We show a
-  // non-interactive "to claim" indicator on the collapsed row so creators SEE
-  // accrued fees without hunting for the hidden /analytics URL, and mount the
-  // real one-click claim panel in the expand drawer below.
+  // Creator-fee claim (tag 90). The connected wallet can claim only when it IS
+  // this market's fee authority (asset 0's asset_admin).
+  //
+  // This is now the CLAIM AFFORDANCE, not a hint to go looking for one. It used
+  // to be a non-interactive badge saying "expand this market to claim", which
+  // meant a creator with eight markets opened eight drawers (#2573).
+  //
+  // The balance goes through the shared classifier: an ABSENT counter is
+  // `unknown`, never 0. Reading it as 0 told every creator they had earned
+  // nothing, because the API did not return the field at all (#2571).
   const wallet = useWalletCompat();
-  const claimableAtoms = detail?.creator_fee_claimable_atoms
-    ? (() => { try { return BigInt(detail.creator_fee_claimable_atoms!); } catch { return 0n; } })()
-    : 0n;
+  const claimState = classifyClaimable(detail?.creator_fee_claimable_atoms);
   const isClaimAuthority =
     !!wallet.publicKey && !!detail?.creator_fee_authority &&
     detail.creator_fee_authority === wallet.publicKey.toBase58();
-  const hasClaimableFees = isClaimAuthority && claimableAtoms > 0n;
+  const hasClaimableFees = isClaimAuthority && claimState.kind === "claimable";
+  const rowClaim = useClaimCreatorFees();
+  const claimThisMarket = useCallback(
+    (e: { preventDefault: () => void; stopPropagation: () => void }) => {
+      e.preventDefault();
+      // The badge sits inside the row's expand control; without this a claim
+      // click would also toggle the drawer.
+      e.stopPropagation();
+      void rowClaim.claim([slab]).then((results) => {
+        if (results.some((r) => r.signature)) onClaimed?.();
+      });
+    },
+    [rowClaim, slab, onClaimed],
+  );
 
   const decimals = unitScaleToDecimals(market.configV17?.unitScale ?? market.config?.unitScale);
 
@@ -305,13 +326,27 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
         <div className="min-w-[92px]">
           <p className="text-[13px] font-semibold text-[var(--text)]">{symbol}</p>
           <p className="text-[10px] text-[var(--text-dim)]" style={{ fontFamily: "var(--font-mono)" }}>{shortAddr(slab)}</p>
-          {hasClaimableFees && (
+          {hasClaimableFees && claimState.kind === "claimable" && (
+            // Not inside the row's expand <button>: nesting a button in a button
+            // is invalid, and a click here must claim rather than toggle.
             <span
-              className="mt-1 inline-flex items-center gap-1 rounded-full border border-[var(--accent)]/40 bg-[var(--accent)]/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.1em] text-[var(--accent)]"
-              title="You have accrued creator fees. Expand this market to claim."
+              role="button"
+              tabIndex={0}
+              aria-label={`Claim creator fees on ${symbol}`}
+              onClick={claimThisMarket}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") claimThisMarket(e); }}
+              className="mt-1 inline-flex cursor-pointer items-center gap-1 rounded-full border border-[var(--accent)]/40 bg-[var(--accent)]/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.1em] text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/20"
             >
-              ◈ {formatUsdFromNumber(Number(claimableAtoms) / 1_000_000)} to claim
+              {/* decimals, NOT a hardcoded 1e6 — this read 1_000_000 regardless
+                  of the market's own collateral scale, so a 9-decimal collateral
+                  displayed 1000x its real claimable. */}
+              ◈ {rowClaim.busy
+                ? "claiming…"
+                : `${formatStatValue(claimState.atoms, "currency", decimals)} claim`}
             </span>
+          )}
+          {rowClaim.outcomes[0]?.error && (
+            <span className="mt-1 block text-[9px] text-[var(--short)]">{rowClaim.outcomes[0].error}</span>
           )}
         </div>
         <div className="min-w-[70px]">
