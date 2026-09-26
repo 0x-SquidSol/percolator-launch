@@ -22,6 +22,7 @@ import { ShimmerSkeleton } from "@/components/ui/ShimmerSkeleton";
 import { MarketLogo } from "@/components/market/MarketLogo";
 import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
 import Link from "next/link";
+import { FeeBreakdown } from "@/components/FeeBreakdown";
 
 /* ── Types ── */
 
@@ -342,6 +343,11 @@ function StakeHeader({
           0% by design and flushes to insurance reduce staked value. For fee yield, use
           an LP vault on Earn.
         </p>
+        {/* The 0% above reads as an oversight without the other shares beside
+            it — "16% to insurance" is the number it gets mistaken for. #2565. */}
+        <div className="mt-3 max-w-lg border border-[var(--border)] bg-[var(--panel-bg)] p-3">
+          <FeeBreakdown highlight="staker" showStaker />
+        </div>
 
         {/* Stats strip */}
         <div

@@ -74,6 +74,7 @@ import { AUTO_DEPOSIT_AMOUNT } from "@/hooks/useAutoDeposit";
 import { useWalletNetworkGuard } from "@/hooks/useWalletNetworkGuard";
 import { isOracleStaleBlocking } from "@/lib/oracle-stale-gate";
 import { invalidatePortfolio } from "@/lib/portfolio-invalidation";
+import { FEE_LEGS, legPercent, splitFeeAtoms } from "@/lib/fee-breakdown";
 
 const LEVERAGE_SNAP_POINTS = [1, 3, 5, 10, 20];
 const SIZE_PRESETS = [25, 50, 75, 100];
@@ -612,6 +613,14 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const hasOrder = marginNative > 0n && positionSize > 0n && !exceedsBalance;
   const estEntry = hasOrder ? computeEstimatedEntryPrice(oracleE6, tradingFeeBps, direction) : 0n;
   const fee = hasOrder ? computeTradingFee((positionSize * oracleE6) / 1_000_000n, tradingFeeBps) : 0n;
+  // Where that fee lands. Same split on every market (the RATE varies, the
+  // division does not), so this is a constant string per fee amount. #2565.
+  const feeDestinationTitle = (() => {
+    if (fee <= 0n) return undefined;
+    const parts = splitFeeAtoms(fee);
+    const fmt = (v: bigint) => `${formatTokenAmount(v, decimals)} ${collateralSymbol}`;
+    return FEE_LEGS.map((leg) => `${leg.label} ${legPercent(leg)}% (${fmt(parts[leg.id])})`).join(" · ");
+  })();
   // M8 fix: two bugs in the receipt's liq-price row.
   // (1) beforeLiqPrice always read "—" because `userAccount.account
   //     .entryPrice` is always 0n on v17 (the on-chain field isn't
@@ -1184,7 +1193,14 @@ setEngineLockError(null);
             />
             {detailsVisible && (
               <>
-                <DiffRow label="Fees" before="—" after={`${formatTokenAmount(fee, decimals)} ${collateralSymbol}`} />
+                <DiffRow
+                  label="Fees"
+                  before="—"
+                  after={`${formatTokenAmount(fee, decimals)} ${collateralSymbol}`}
+                  /* A trader saw what they pay and nothing about where it goes.
+                     The split is identical on every market, unlike the rate. #2565. */
+                  tooltip={feeDestinationTitle}
+                />
                 <DiffRow
                   label="Slippage bound"
                   before="—"
