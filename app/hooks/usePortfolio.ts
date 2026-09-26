@@ -40,6 +40,10 @@ import { computeLiquidationDistancePct } from "@/lib/liquidation-distance";
 import { discoverMarketsViaProgramDirectory } from "@/lib/market-directory-discovery";
 import { PERCOLATOR_NFT_PROGRAM_ID } from "@/lib/nft-program";
 import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
+import {
+  PORTFOLIO_RECONCILE_MS,
+  subscribePortfolioInvalidation,
+} from "@/lib/portfolio-invalidation";
 
 const MAINNET_STATIC_MARKETS = [
   {
@@ -1312,13 +1316,33 @@ export function usePortfolio(enabled: boolean = true): PortfolioData {
     // showing the old size until the 30s poll — which is exactly what tempts a
     // user into clicking Close a second time on a position that is already
     // (partially) closed.
-    [1400, 2600, 4000].forEach((ms) =>
+    PORTFOLIO_RECONCILE_MS.forEach((ms) =>
       setTimeout(() => {
         forceNextLoad.current = true;
         setRefreshCounter((c) => c + 1);
       }, ms),
     );
   };
+
+  // Any component can announce "the portfolio changed on chain" without
+  // holding this (expensive) hook — see lib/portfolio-invalidation.ts. Opening
+  // a position used to tell the portfolio nothing, so the site-wide
+  // PositionsBar waited out the 30s poll while the trade page's own dock had
+  // already updated. Closing had this via `onClosed={portfolio.refresh}`;
+  // opening did not.
+  useEffect(() => {
+    if (!enabled) return;
+    return subscribePortfolioInvalidation(() => {
+      forceNextLoad.current = true;
+      setRefreshCounter((c) => c + 1);
+      PORTFOLIO_RECONCILE_MS.forEach((ms) =>
+        setTimeout(() => {
+          forceNextLoad.current = true;
+          setRefreshCounter((c) => c + 1);
+        }, ms),
+      );
+    });
+  }, [enabled]);
 
   // Auto-refresh when tab becomes visible (e.g., after closing position on trade page)
   // and every 30s while visible. Gated on `enabled` too — otherwise a

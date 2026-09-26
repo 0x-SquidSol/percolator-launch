@@ -73,6 +73,7 @@ import { useInitUser } from "@/hooks/useInitUser";
 import { AUTO_DEPOSIT_AMOUNT } from "@/hooks/useAutoDeposit";
 import { useWalletNetworkGuard } from "@/hooks/useWalletNetworkGuard";
 import { isOracleStaleBlocking } from "@/lib/oracle-stale-gate";
+import { invalidatePortfolio } from "@/lib/portfolio-invalidation";
 
 const LEVERAGE_SNAP_POINTS = [1, 3, 5, 10, 20];
 const SIZE_PRESETS = [25, 50, 75, 100];
@@ -817,6 +818,15 @@ setEngineLockError(null);
           clearEntryPrice(slabAddress, userAccount.idx, wallet);
         }
       }
+      // The site-wide PositionsBar reads usePortfolio, which refreshes its
+      // position list on a 30s interval and learns nothing from refreshSlab()
+      // — that only updates this page's own dock via the slab-bytes scan. So
+      // a new position sat missing from the header for up to half a minute.
+      // Closing already had this (`onClosed={portfolio.refresh}`); opening did
+      // not. Fired immediately rather than inside the 1500ms timeout below:
+      // the notification carries its own reconciliation burst, so there is
+      // nothing to wait for. See lib/portfolio-invalidation.ts.
+      invalidatePortfolio();
       setTimeout(() => {
         refreshSlab();
         setTradePhase("idle");
