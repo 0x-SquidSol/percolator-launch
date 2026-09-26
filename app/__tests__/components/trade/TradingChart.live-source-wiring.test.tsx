@@ -124,6 +124,11 @@ vi.mock('@/hooks/useLivePrice', () => ({
   }),
 }));
 
+vi.mock('@/lib/chart-source-select', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/chart-source-select')>();
+  return { ...actual, selectChartSource: vi.fn(actual.selectChartSource) };
+});
+
 vi.mock('@/hooks/usePercolatorCandles', () => ({
   usePercolatorCandles: () => ({
     candles: harness.percolatorCandles,
@@ -277,7 +282,7 @@ vi.mock('@/components/trade/ChartDrawingToolbar', () => ({
 }));
 
 import { TradingChart } from '@/components/trade/TradingChart';
-import { resolveChartDataSource } from '@/lib/chart-live-tick';
+import { selectChartSource } from '@/lib/chart-source-select';
 
 describe('TradingChart live-source wiring', () => {
   beforeEach(() => {
@@ -294,7 +299,7 @@ describe('TradingChart live-source wiring', () => {
     );
   });
 
-  it("forwards the component's active Percolator source flags to the resolver", async () => {
+  it("forwards each source's status and PRICED bar count to the selector", async () => {
     render(
       <TradingChart
         slabAddress="TestSlab1111111111111111111111111111111111"
@@ -302,8 +307,15 @@ describe('TradingChart live-source wiring', () => {
       />,
     );
 
+    // The selector receives source STATE, not pre-collapsed booleans — the
+    // booleans are what hid #2579, because the component decided precedence
+    // before anything testable saw the inputs.
     await waitFor(() => {
-      expect(vi.mocked(resolveChartDataSource)).toHaveBeenLastCalledWith(true, false, false);
+      expect(vi.mocked(selectChartSource)).toHaveBeenLastCalledWith({
+        percolator: { status: 'success', pricedBars: harness.percolatorCandles.length },
+        pyth: { status: 'success', pricedBars: 0 },
+        dex: { status: 'idle', pricedBars: 0 },
+      });
     });
   });
 });
