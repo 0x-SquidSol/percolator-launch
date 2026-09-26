@@ -28,6 +28,14 @@ export interface TraderStatsResponse {
   shortTrades: number;
   totalVolume: string;
   totalFees: string;
+  /**
+   * Fills carrying a recorded fee. `trades.fee` is 0 on every row today
+   * (indexer #153 neutered the extraction), so `totalFees` of "0" means
+   * "unknown", not "nil" — and only this count separates them. See #2567.
+   */
+  feesRecorded: number;
+  /** Fills with no usable price, which contribute nothing to totalVolume. */
+  tradesMissingPrice: number;
   uniqueMarkets: number;
   firstTradeAt: string | null;
   lastTradeAt: string | null;
@@ -51,6 +59,9 @@ function aggregateRows(rows: { side: string; size: string; price: string; fee: s
   let shortTrades = 0;
   let totalVolume = 0n;
   let totalFees = 0n;
+  // Counted on the same pass, so the fallback is as honest as the aggregate.
+  let feesRecorded = 0;
+  let tradesMissingPrice = 0;
   const markets = new Set<string>();
   let firstTradeAt: string | null = null;
   let lastTradeAt: string | null = null;
@@ -62,12 +73,18 @@ function aggregateRows(rows: { side: string; size: string; price: string; fee: s
     try {
       const rawSize = BigInt(String(row.size).split(".")[0]);
       const absSize = rawSize < 0n ? -rawSize : rawSize;
-      const priceE6 = toE6(Number(row.price));
+      const priceNum = Number(row.price);
+      // A row with no usable price contributes nothing, so the running total
+      // silently omits whole trades unless we count them. #2567.
+      if (!Number.isFinite(priceNum) || priceNum <= 0) tradesMissingPrice += 1;
+      const priceE6 = toE6(priceNum);
       totalVolume += (absSize * priceE6) / 1_000_000n;
     } catch { /* skip malformed */ }
 
     try {
-      totalFees += BigInt(Math.round(Number(row.fee)));
+      const feeNum = Number(row.fee);
+      if (Number.isFinite(feeNum) && feeNum > 0) feesRecorded += 1;
+      totalFees += BigInt(Math.round(feeNum));
     } catch { /* skip */ }
 
     if (row.slab_address) markets.add(String(row.slab_address));
@@ -84,6 +101,8 @@ function aggregateRows(rows: { side: string; size: string; price: string; fee: s
     shortTrades,
     totalVolume: totalVolume.toString(),
     totalFees: totalFees.toString(),
+    feesRecorded,
+    tradesMissingPrice,
     uniqueMarkets: markets.size,
     firstTradeAt,
     lastTradeAt,
@@ -181,6 +200,10 @@ export async function GET(
       shortTrades: 0,
       totalVolume: "0",
       totalFees: "0",
+      // No trades at all, so nothing is unrecorded and nothing is missing a
+      // price — the display maps totalTrades === 0 to "—" regardless.
+      feesRecorded: 0,
+      tradesMissingPrice: 0,
       uniqueMarkets: 0,
       firstTradeAt: null,
       lastTradeAt: null,

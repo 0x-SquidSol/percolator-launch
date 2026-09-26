@@ -493,6 +493,25 @@ export interface TraderStatsAggregate {
   shortTrades: number;
   totalVolume: string;
   totalFees: string;
+  /**
+   * How many of this trader's fills carry a recorded fee.
+   *
+   * `trades.fee` is 0 on every row today: the indexer's extractFeeFromTransfers
+   * is deliberately neutered (#153) because deriving the fee from the trader's
+   * SOL delta was recording collateral movements as fees. So `totalFees` being
+   * "0" means "not recorded", NOT "you paid nothing" — and the UI must not
+   * present the second. This count is what separates them, and it starts
+   * reporting a real sum by itself once a backfill populates the column.
+   */
+  feesRecorded: number;
+  /**
+   * How many fills have no usable price, and therefore contributed nothing to
+   * `totalVolume`. Same cause: extractPriceFromLogs is neutered (#150, log
+   * injection) and the price is stored as 0 when the slab post-state is absent
+   * from the payload. A volume figure computed over those rows is understated,
+   * not wrong-by-a-rounding — it is missing whole trades.
+   */
+  tradesMissingPrice: number;
   uniqueMarkets: number;
   firstTradeAt: string | null;
   lastTradeAt: string | null;
@@ -508,6 +527,8 @@ export async function queryTraderStatsAggregate(
     short_trades: string;
     total_volume: string;
     total_fees: string;
+    fees_recorded: string;
+    trades_missing_price: string;
     unique_markets: string;
     first_trade_at: Date | null;
     last_trade_at: Date | null;
@@ -520,6 +541,8 @@ export async function queryTraderStatsAggregate(
         abs(trunc(size::numeric)) * floor(price::numeric * 1000000 + 0.5) / 1000000
       )), 0)::bigint::text                                      AS total_volume,
       COALESCE(sum(floor(fee::numeric + 0.5)), 0)::bigint::text AS total_fees,
+      count(*) FILTER (WHERE fee > 0)::text                     AS fees_recorded,
+      count(*) FILTER (WHERE price IS NULL OR price <= 0)::text AS trades_missing_price,
       count(DISTINCT slab_address)::text                        AS unique_markets,
       min(created_at)                                           AS first_trade_at,
       max(created_at)                                           AS last_trade_at
@@ -536,6 +559,8 @@ export async function queryTraderStatsAggregate(
     shortTrades: Number(r?.short_trades ?? 0),
     totalVolume: r?.total_volume ?? "0",
     totalFees: r?.total_fees ?? "0",
+    feesRecorded: Number(r?.fees_recorded ?? 0),
+    tradesMissingPrice: Number(r?.trades_missing_price ?? 0),
     uniqueMarkets: Number(r?.unique_markets ?? 0),
     firstTradeAt: iso(r?.first_trade_at ?? null),
     lastTradeAt: iso(r?.last_trade_at ?? null),

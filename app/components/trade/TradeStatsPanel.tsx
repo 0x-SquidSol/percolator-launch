@@ -4,6 +4,12 @@ import { FC } from "react";
 import { ShimmerSkeleton } from "@/components/ui/ShimmerSkeleton";
 import { formatTokenAmount } from "@/lib/format";
 import type { TraderStatsResponse } from "@/hooks/useTraderStats";
+import {
+  FEES_UNRECORDED_NOTE,
+  feesPaidDisplay,
+  volumeDisplay,
+  volumeNote,
+} from "@/lib/trade-stats-display";
 
 interface TradeStatsPanelProps {
   stats: TraderStatsResponse | null;
@@ -134,6 +140,17 @@ export const TradeStatsPanel: FC<TradeStatsPanelProps> = ({
     );
   }
 
+  // "0" is not a fee, and an understated sum is not a volume — see
+  // lib/trade-stats-display.ts and #2567. Derived once, after the guards
+  // above make `stats` non-null, so both cells read one decision rather than
+  // re-deriving it inline.
+  const fees = feesPaidDisplay(stats.totalTrades, stats.feesRecorded, stats.totalFees);
+  const volume = volumeDisplay(
+    stats.totalTrades,
+    stats.tradesMissingPrice,
+    stats.totalVolume,
+  );
+
   const longPct =
     stats.totalTrades > 0
       ? ((stats.longTrades / stats.totalTrades) * 100).toFixed(0)
@@ -160,20 +177,31 @@ export const TradeStatsPanel: FC<TradeStatsPanelProps> = ({
           />
         </div>
 
-        {/* Volume */}
+        {/* Volume — understated, not wrong, when a trade has no recorded
+            price: those rows contribute nothing to size x price. #2567. */}
         <div className="bg-[var(--panel-bg)] p-3.5">
           <StatCell
             label="Volume Traded"
-            value={formatVolume(stats.totalVolume)}
+            value={
+              volume.kind === "no-trades"
+                ? "—"
+                : volume.kind === "unknown"
+                  ? "—"
+                  : formatVolume(volume.atoms)
+            }
+            sub={volumeNote(volume)}
           />
         </div>
 
-        {/* Fees paid */}
+        {/* Fees paid — "0" here was a false statement: the fee column is 0 on
+            every row because the indexer's extraction is neutered (#153), so
+            the amount is unknown, not nil. #2567. */}
         <div className="bg-[var(--panel-bg)] p-3.5">
           <StatCell
             label="Fees Paid"
-            value={formatFees(stats.totalFees)}
-            highlight="short"
+            value={fees.kind === "known" ? formatFees(fees.atoms) : "—"}
+            sub={fees.kind === "unrecorded" ? FEES_UNRECORDED_NOTE : undefined}
+            highlight={fees.kind === "known" ? "short" : undefined}
           />
         </div>
 
