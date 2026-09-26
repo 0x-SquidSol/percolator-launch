@@ -10,9 +10,10 @@ import { CreatorAttentionStrip } from "@/components/my-markets/CreatorAttentionS
 import { toCreatorMarketDetail, unitScaleToDecimals, resolveCreatedMarketPriceE6, type CreatorMarketDetail } from "@/components/my-markets/types";
 import { isKeeperFeedDead, isEngineCrankStale } from "@/components/my-markets/attentionLogic";
 import { useLiveSlabPrices } from "@/hooks/useLiveSlabPrices";
-import { setMarketIdentity } from "@/lib/marketIdentityCache";
+import { getMarketIdentity, setMarketIdentity } from "@/lib/marketIdentityCache";
 import { isMockMode } from "@/lib/mock-mode";
 import { getMockMyMarkets } from "@/lib/mock-trade-data";
+import { applyResolved, seedFromCache } from "@/lib/incremental-details";
 
 const pageHeader = (
   <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.25em] text-[var(--accent)]/60">
@@ -73,8 +74,37 @@ function useCreatorMarketDetails(slabs: string[]) {
     }
     let cancelled = false;
     setLoading(true);
-    Promise.all(
-      list.map(async (slab) => {
+
+    // Paint whatever the cross-navigation identity cache already knows, before
+    // a single request goes out. This page WROTE that cache on every resolve
+    // and never read it back, so returning here re-showed mint addresses for a
+    // full second with the answer already in memory. #2569.
+    setDetails(
+      seedFromCache<CreatorMarketDetail>(list, (slab) => {
+        const id = getMarketIdentity(slab);
+        if (!id || (id.symbol == null && id.logo_url == null)) return null;
+        return toCreatorMarketDetail({
+          slab_address: slab,
+          symbol: id.symbol ?? null,
+          name: id.name ?? null,
+          logo_url: id.logo_url ?? null,
+          mainnet_ca: id.mainnet_ca ?? null,
+        });
+      }),
+    );
+
+    // Publish each market as ITS OWN fetch lands. Previously a single
+    // Promise.all(...).then(setDetails) held every row at its mint address
+    // until the slowest market settled — measured 1022ms against 517ms for the
+    // fastest four, and a failing market made everyone wait out its timeout.
+    let outstanding = list.length;
+    const settle = () => {
+      outstanding -= 1;
+      if (outstanding <= 0 && !cancelled) setLoading(false);
+    };
+
+    for (const slab of list) {
+      void (async () => {
         try {
           const res = await fetch(`/api/markets/${slab}`);
           if (!res.ok) return null;
@@ -84,27 +114,27 @@ function useCreatorMarketDetails(slabs: string[]) {
         } catch {
           return null;
         }
-      }),
-    ).then((results) => {
-      if (cancelled) return;
-      const next: Record<string, CreatorMarketDetail> = {};
-      results.forEach((d, i) => {
-        if (d) {
-          next[list[i]] = d;
-          // Feed the cross-navigation identity cache as each market resolves
-          // so /trade/[slab] never flashes a placeholder name for a market
-          // this creator just clicked into from their own dashboard.
-          setMarketIdentity(list[i], {
-            symbol: d.symbol ?? undefined,
-            name: d.name ?? undefined,
-            logo_url: d.logo_url ?? undefined,
-            mainnet_ca: d.mainnet_ca ?? null,
-          });
-        }
-      });
-      setDetails(next);
-      setLoading(false);
-    });
+      })()
+        .then((d) => {
+          if (cancelled) return;
+          // A null result keeps whatever is already shown — a transient 500
+          // must not revert a resolved row to its mint address. `list` is the
+          // allow-list, so a late response from a previous wallet is dropped.
+          setDetails((prev) => applyResolved(prev, { slab, detail: d }, list));
+          if (d) {
+            // Feed the cross-navigation identity cache as each market resolves
+            // so /trade/[slab] never flashes a placeholder name for a market
+            // this creator just clicked into from their own dashboard.
+            setMarketIdentity(slab, {
+              symbol: d.symbol ?? undefined,
+              name: d.name ?? undefined,
+              logo_url: d.logo_url ?? undefined,
+              mainnet_ca: d.mainnet_ca ?? null,
+            });
+          }
+        })
+        .finally(settle);
+    }
     return () => { cancelled = true; };
   }, [slabsKey]);
 
