@@ -9,7 +9,7 @@
  * same tick, and a change in another tab lands here too.
  */
 
-import { useCallback, useMemo } from "react";
+import { useCallback } from "react";
 import { useSyncExternalStore } from "react";
 import {
   subscribeWatchlist,
@@ -33,14 +33,14 @@ export function useWatchlist() {
   const unwatch = useCallback((slab: string) => { unwatchMarket(slab); }, []);
   const toggle = useCallback((slab: string) => { toggleWatchMarket(slab); }, []);
 
-  // O(1) membership for the markets table, which asks once per row on every
-  // render. `.includes` per row would be O(n*m) across a few hundred markets.
-  const watchedSet = useMemo(() => new Set(watchlist), [watchlist]);
-
+  // Deliberately NOT a memoised Set. Every consumer today asks about exactly
+  // one slab, and the markets table mounts one control PER ROW — so a Set per
+  // component would allocate hundreds of them to answer a single lookup each,
+  // which is strictly worse than the `.includes` it would replace. Revisit only
+  // if a consumer appears that tests many slabs at once.
   return {
     watchlist,
-    watchedSet,
-    isWatched: useCallback((slab: string) => watchedSet.has(slab), [watchedSet]),
+    isWatched: useCallback((slab: string) => watchlist.includes(slab), [watchlist]),
     watch,
     unwatch,
     toggle,

@@ -20,6 +20,7 @@ import {
   getWatchlistServerSnapshot,
   subscribeWatchlist,
   resetWatchlistCacheForTests,
+  handleStorageEventForTests,
   WATCHLIST_STORAGE_KEY,
   WATCHLIST_MAX,
 } from "@/lib/watchlist";
@@ -28,6 +29,15 @@ import {
 const A = "AzagguvrWmRgcBpsKuqomW7Yb1YUUd6UzcrkiRsqdhr";
 const B = "3t67LQPdgiSqGvXsYff3Pzv2uHtM1zZ7f29HsnEzb6vJ";
 const C = "7mgX3bkzEivRrCffCJ7XzqfAp3gpjm63RNinwDhr7b41";
+
+/** n DISTINCT 43-char base58 addresses (no 0/O/I/l), for cap tests. */
+function distinctSlabs(n: number): string[] {
+  const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  return Array.from({ length: n }, (_, i) => {
+    const suffix = String(i).split("").map((d) => alphabet[Number(d)]).join("");
+    return ("Az" + alphabet.repeat(2)).slice(0, 43 - suffix.length) + suffix;
+  });
+}
 
 describe("reading whatever is in storage", () => {
   it("drops entries that are not market addresses", () => {
@@ -47,8 +57,20 @@ describe("reading whatever is in storage", () => {
   });
 
   it("truncates a list longer than the cap", () => {
-    const many = Array.from({ length: WATCHLIST_MAX + 10 }, () => A);
-    expect(parseWatchlist(many).length).toBeLessThanOrEqual(WATCHLIST_MAX);
+    // DISTINCT addresses. The first version of this test used WATCHLIST_MAX+10
+    // copies of ONE address: de-dup collapsed it to length 1, so the assertion
+    // passed no matter what the cap did — deleting the cap entirely survived
+    // it. A test whose fixture cannot reach the branch is not coverage.
+    const many = distinctSlabs(WATCHLIST_MAX + 10);
+    expect(parseWatchlist(many)).toHaveLength(WATCHLIST_MAX);
+  });
+
+  it("keeps the FIRST entries when truncating, not a random window", () => {
+    const many = distinctSlabs(WATCHLIST_MAX + 5);
+    const out = parseWatchlist(many);
+    expect(out[0]).toBe(many[0]);
+    expect(out[WATCHLIST_MAX - 1]).toBe(many[WATCHLIST_MAX - 1]);
+    expect(out).not.toContain(many[WATCHLIST_MAX]);
   });
 });
 
@@ -122,6 +144,59 @@ describe("the browser store", () => {
     expect(isWatched(A)).toBe(true);
   });
 
+  it("holds MORE THAN ONE market, newest first", () => {
+    // Every store test used to touch only one address, so a store physically
+    // incapable of holding two — commit(next.slice(0,1)), or watchMarket
+    // bypassing addSlab entirely — passed the whole suite. The panel renders
+    // this list directly, so this is the shipped shape.
+    watchMarket(A);
+    watchMarket(B);
+    watchMarket(C);
+    expect(getWatchlistSnapshot()).toEqual([C, B, A]);
+    resetWatchlistCacheForTests();
+    expect(getWatchlistSnapshot()).toEqual([C, B, A]);
+  });
+
+  it("persists a REMOVAL, not just an addition", () => {
+    // `writeStorage` only on growth would pass every other test here: remove a
+    // market, reload, and it is back.
+    watchMarket(A);
+    watchMarket(B);
+    unwatchMarket(A);
+    resetWatchlistCacheForTests();
+    expect(isWatched(A)).toBe(false);
+    expect(isWatched(B)).toBe(true);
+  });
+
+  it("toggles OFF a market that was loaded from storage, not just one added this session", () => {
+    // The real first click after a reload: `current` is null and must be
+    // hydrated before the toggle decides direction. Reading `current ?? []`
+    // instead would route to add, no-op, and the star would never turn off.
+    window.localStorage.setItem(WATCHLIST_STORAGE_KEY, JSON.stringify([A]));
+    resetWatchlistCacheForTests();
+    toggleWatchMarket(A);
+    expect(isWatched(A)).toBe(false);
+  });
+
+  it("writes under the exact documented key", () => {
+    // Renaming the key silently wipes every existing user's list. Importing the
+    // constant would make this test blind to that, so the literal is hardcoded.
+    watchMarket(A);
+    expect(window.localStorage.getItem("perc:watchlist:v1")).toBe(JSON.stringify([A]));
+  });
+
+  it("hands subscribers a snapshot that already contains the change", () => {
+    // emit() before `current` is updated is the classic useSyncExternalStore
+    // tearing bug, and a call-count assertion cannot see it.
+    const seen: readonly string[][] = [];
+    const unsub = subscribeWatchlist(() => {
+      (seen as string[][]).push([...getWatchlistSnapshot()]);
+    });
+    watchMarket(A);
+    expect(seen[0]).toEqual([A]);
+    unsub();
+  });
+
   it("returns a STABLE reference while nothing changes", () => {
     // useSyncExternalStore re-reads on every render; a fresh array each call is
     // an infinite render loop, not a subtle inefficiency.
@@ -174,5 +249,68 @@ describe("the browser store", () => {
     // Returning a new [] per call would loop during hydration.
     expect(getWatchlistServerSnapshot()).toBe(getWatchlistServerSnapshot());
     expect(getWatchlistServerSnapshot()).toEqual([]);
+  });
+});
+
+describe("one shared storage listener, not one per subscriber", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    resetWatchlistCacheForTests();
+  });
+
+  it("attaches once for many subscribers and detaches on the last", () => {
+    // The markets table mounts a watch control PER ROW and grows by infinite
+    // scroll, so subscribers reach the hundreds. A listener each meant one
+    // cross-tab edit ran N handlers, each re-parsing storage and notifying all
+    // N subscribers — N re-parses and N^2 callbacks for a single change.
+    const add = vi.spyOn(window, "addEventListener");
+    const remove = vi.spyOn(window, "removeEventListener");
+
+    const unsubs = [vi.fn(), vi.fn(), vi.fn()].map((cb) => subscribeWatchlist(cb));
+    const storageAdds = add.mock.calls.filter(([type]) => type === "storage").length;
+    expect(storageAdds).toBe(1);
+
+    unsubs[0]();
+    unsubs[1]();
+    expect(remove.mock.calls.filter(([type]) => type === "storage").length).toBe(0);
+
+    unsubs[2]();
+    expect(remove.mock.calls.filter(([type]) => type === "storage").length).toBe(1);
+
+    add.mockRestore();
+    remove.mockRestore();
+  });
+
+  it("adopts another tab's change and notifies subscribers once each", () => {
+    const seen = vi.fn();
+    const unsub = subscribeWatchlist(seen);
+
+    window.localStorage.setItem(WATCHLIST_STORAGE_KEY, JSON.stringify([A, B]));
+    handleStorageEventForTests({ key: WATCHLIST_STORAGE_KEY } as StorageEvent);
+
+    expect(seen).toHaveBeenCalledTimes(1);
+    expect(getWatchlistSnapshot()).toEqual([A, B]);
+    unsub();
+  });
+
+  it("CONTROL: ignores a storage event for someone else's key", () => {
+    // Without the key check, every unrelated write on the origin would re-parse
+    // and re-render every watch control on the page.
+    watchMarket(A);
+    const seen = vi.fn();
+    const unsub = subscribeWatchlist(seen);
+    handleStorageEventForTests({ key: "perc:entry:something" } as StorageEvent);
+    expect(seen).not.toHaveBeenCalled();
+    unsub();
+  });
+
+  it("does not churn subscribers when another tab wrote the SAME list", () => {
+    watchMarket(A);
+    const seen = vi.fn();
+    const unsub = subscribeWatchlist(seen);
+    // Storage already holds exactly [A]; re-announcing it changes nothing.
+    handleStorageEventForTests({ key: WATCHLIST_STORAGE_KEY } as StorageEvent);
+    expect(seen).not.toHaveBeenCalled();
+    unsub();
   });
 });

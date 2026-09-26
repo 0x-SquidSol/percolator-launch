@@ -1134,7 +1134,7 @@ function MarketsPageInner() {
                       ].join(" ")}
                     >
                       <div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex min-w-0 items-center gap-2">
                           <MarketLogo
                             logoUrl={m.supabase?.logo_url}
                             mintAddress={logoMintAddress}
@@ -1142,13 +1142,15 @@ function MarketsPageInner() {
                             symbol={displaySymbol ?? undefined}
                             size="sm"
                           />
-                          <span className="font-semibold text-[var(--text)] text-sm">
+                          {/* min-w-0 + truncate: the first column is ~221px at
+                              the narrow breakpoint, and an admin-oracle market
+                              carrying BOTH the "manual" and "no price" badges
+                              plus the watch control leaves the symbol only ~40px.
+                              Without these the row collides with the price
+                              column instead of truncating. */}
+                          <span className="min-w-0 truncate font-semibold text-[var(--text)] text-sm">
                             {displaySymbol ? `${displaySymbol}/USD` : shortenAddress(m.slabAddress)}
                           </span>
-                          {/* Sits with the row badges, matching their shape.
-                              Renders as a span with stopPropagation because the
-                              row is a link — watching must not navigate. */}
-                          <WatchButton slab={m.slabAddress} symbol={displaySymbol} />
                           {m.isAdminOracle && (
                             <span className="border border-[var(--text-dim)]/30 bg-[var(--text-dim)]/[0.08] px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-wider text-[var(--text-secondary)]">manual</span>
                           )}
@@ -1162,6 +1164,9 @@ function MarketsPageInner() {
                               no price
                             </span>
                           )}
+                          {/* After the status badges, so it never splits that
+                              cluster; shrink-0 so it survives truncation. */}
+                          <WatchButton slab={m.slabAddress} symbol={displaySymbol} />
                         </div>
                         <div className="text-[10px] text-[var(--text-secondary)]" style={{ fontFamily: "var(--font-mono)" }}>
                           {displayName ? `${displayName} · ${shortenAddress(subtitleAddress)}` : shortenAddress(subtitleAddress)}
