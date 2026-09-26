@@ -14,6 +14,7 @@ import { isMockMode } from "@/lib/mock-mode";
 import { getMockMyMarkets } from "@/lib/mock-trade-data";
 import { useMarketIdentities } from "@/hooks/useMarketIdentities";
 import { useCreatorMarketDetails } from "@/hooks/useCreatorMarketDetails";
+import { CreatorFeesPanel } from "@/components/my-markets/CreatorFeesPanel";
 
 const pageHeader = (
   <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.25em] text-[var(--accent)]/60">
@@ -307,6 +308,16 @@ const MyMarketsPage: FC = () => {
                 : `${fmtUsd(liquiditySeededTotal)} liquidity seeded across ${resolvedCount} of ${slabs.length} markets`}
           </p>
         </div>
+
+        {/* Creator fees: per-market claimable + totals + claim-all. Previously
+            reachable ONLY from inside each row's expand drawer, with no totals
+            anywhere, so a creator could not tell what they had earned. */}
+        <CreatorFeesPanel
+          markets={myMarkets}
+          details={details}
+          identities={identities}
+          onClaimed={refetchMarkets}
+        />
 
         {/* Tier-2 tiles */}
         <div className="mb-8 grid grid-cols-2 gap-px overflow-hidden border border-[var(--border)] bg-[var(--border)] sm:grid-cols-4">

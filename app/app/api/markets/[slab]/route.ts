@@ -52,6 +52,51 @@ async function withOnChainMarketLp(
   return market;
 }
 
+/**
+ * Creator-fee claim balance, for the Supabase-backed path.
+ *
+ * `creator_fee_claimable_atoms` lives ONLY in the market account's wrapper
+ * config (bytes 584..592 — see lib/v17-creator-fee.ts). Supabase has no column
+ * for it, so the Supabase branch of GET used to return no creator-fee fields at
+ * all. Verified against the playground: every market answered 200 with
+ * `creator_fee_claimable_atoms` and `creator_fee_authority` as ABSENT KEYS.
+ * The creator dashboard reads `detail?.creator_fee_claimable_atoms ? … : 0n`,
+ * so an absent field rendered as "nothing to claim" on every market — a
+ * creator earning fees saw no claim affordance anywhere.
+ *
+ * Costs one getAccountInfo (~100ms) on this route. Acceptable because the
+ * route already budgets an on-chain read above, and because /my-markets no
+ * longer blocks its tickers on this route at all (hooks/useMarketIdentities.ts).
+ *
+ * NEVER fabricates a zero. A failed read leaves both fields `null`, which the
+ * UI must render as "unknown" — reporting "$0.00 claimable" to a creator who
+ * has fees is the failure mode this whole path exists to avoid.
+ */
+async function withCreatorFee(
+  market: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  if (market.creator_fee_claimable_atoms != null) return market;
+
+  const slab = market.slab_address as string | undefined;
+  if (!slab) return market;
+
+  try {
+    const connection = getServerConnection("confirmed");
+    const info = await connection.getAccountInfo(new PublicKey(slab));
+    if (!info?.data) return { ...market, creator_fee_claimable_atoms: null, creator_fee_authority: null };
+    const claim = readCreatorFeeClaimable(info.data);
+    if (!claim) return { ...market, creator_fee_claimable_atoms: null, creator_fee_authority: null };
+    return {
+      ...market,
+      creator_fee_claimable_atoms: claim.atoms.toString(),
+      creator_fee_authority: claim.claimAuthority?.toBase58() ?? null,
+    };
+  } catch {
+    // Unknown, NOT zero.
+    return { ...market, creator_fee_claimable_atoms: null, creator_fee_authority: null };
+  }
+}
+
 /** Success responses only — matches GET /api/markets (errors omit this to avoid caching 404/500). */
 const MARKETS_CACHE_HEADERS = {
   "Cache-Control": "public, s-maxage=10, stale-while-revalidate=60",
@@ -137,7 +182,9 @@ async function onChainSlabFallback(slab: string): Promise<NextResponse> {
       // Creator fee claim (tag 90). atoms as a string (u64 can exceed JS number
       // precision); authority is asset-0 asset_admin, the only wallet that can
       // claim. null when not a v17 market.
-      creator_fee_claimable_atoms: creatorFee ? creatorFee.atoms.toString() : "0",
+      // null, NOT "0": a failed parse is unknown, and "0" would tell a creator
+      // with real fees that they have none. Same rule as vault_balance below.
+      creator_fee_claimable_atoms: creatorFee ? creatorFee.atoms.toString() : null,
       creator_fee_authority: creatorFee?.claimAuthority?.toBase58() ?? null,
       total_accounts: 0,
       funding_rate: null,
@@ -377,8 +424,11 @@ export async function GET(
     // (see withOnChainMarketLp doc comment) — read the real LP-portfolio
     // capital on-chain for the trade-page detail view when both are null.
     const withLp = await withOnChainMarketLp(sanitized);
+    // Supabase has no creator-fee column; the counter lives in the market
+    // account. Without this the creator dashboard reads a hardcoded 0.
+    const withFee = await withCreatorFee(withLp);
 
-    return NextResponse.json({ market: withLp }, { headers: MARKETS_CACHE_HEADERS });
+    return NextResponse.json({ market: withFee }, { headers: MARKETS_CACHE_HEADERS });
   } catch (error) {
     Sentry.captureException(error, {
       tags: { endpoint: "/api/markets/[slab]", method: "GET", slab },

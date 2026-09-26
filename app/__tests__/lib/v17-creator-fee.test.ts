@@ -27,6 +27,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PublicKey } from "@solana/web3.js";
 import {
+  V17_EXPECTED_VERSION,
   v17MarketAccountLen,
   V17_CREATOR_FEE_CLAIMABLE_OFF,
   V17_HEADER_LEN,
@@ -65,9 +66,9 @@ const MINT = new PublicKey("DJ54k4wH92NTtNP8RuHAwG8si1bevXEknzctDdqYN8eC");
 
 function makeV17Market(claimable: bigint, kind: number = V17_KIND_MARKET): Uint8Array {
   const buf = Buffer.alloc(v17MarketAccountLen(1)); // 3147
-  // header: magic "PERCV16\0" LE, version 17, kind
+  // header: magic "PERCV16\0" LE, version from the SDK (bumped 17 -> 18), kind
   buf.set([0x00, 0x36, 0x31, 0x56, 0x43, 0x52, 0x45, 0x50], 0);
-  buf.writeUInt16LE(17, 8);
+  buf.writeUInt16LE(V17_EXPECTED_VERSION, 8);
   buf[V17_KIND_OFF] = kind;
 
   // config fields we read

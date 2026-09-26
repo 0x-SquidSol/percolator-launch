@@ -24,10 +24,12 @@
  * unreliable under jsdom — same approach as useAdminActions/useInsuranceLP tests).
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { readAssetControlSeqs } from "@/lib/v18-wire";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PublicKey } from "@solana/web3.js";
 import {
+  V17_EXPECTED_VERSION,
   v17MarketAccountLen,
   V17_CREATOR_FEE_CLAIMABLE_OFF,
   V17_HEADER_LEN,
@@ -132,9 +134,9 @@ function makeRaw(
   budgetLong: bigint = BUDGET_LONG,
 ): Uint8Array {
   const buf = Buffer.alloc(v17MarketAccountLen(1));
-  // v17 header: magic "\0" "6" "1" "V" "C" "R" "E" "P", version 17, kind MARKET
+  // v17 header: magic "\0" "6" "1" "V" "C" "R" "E" "P", version from the SDK (bumped 17 -> 18), kind MARKET
   buf.set([0x00, 0x36, 0x31, 0x56, 0x43, 0x52, 0x45, 0x50], 0);
-  buf.writeUInt16LE(17, 8);
+  buf.writeUInt16LE(V17_EXPECTED_VERSION, 8);
   buf[V17_KIND_OFF] = V17_KIND_MARKET;
 
   // WrapperConfig: marketauth @16, collateral mint @48
@@ -283,7 +285,7 @@ describe("useCreatorClaim — the claimable comes from byte 584, NOT the insuran
 });
 
 describe("useCreatorClaim — claim tx shape (tag 90)", () => {
-  it("emits tag 90 + amount(u128 LE) = exactly 17 bytes, with the 6 tag-90 accounts", async () => {
+  it("emits tag 90 + amount(u128 LE) + assetIndex + authorityEpoch = 27 bytes, with the 6 tag-90 accounts", async () => {
     vi.mocked(useSlabState).mockReturnValue(slabState() as never);
     const { result } = renderHook(() => useCreatorClaim());
 
@@ -296,10 +298,23 @@ describe("useCreatorClaim — claim tx shape (tag 90)", () => {
     expect(ixs).toHaveLength(1);
     const ix = ixs[0];
 
-    // wire = tag(90) + amount(u128 LE)
-    expect(ix.data.length).toBe(1 + 16);
+    // wire = tag(90) + amount(u128 LE) + assetIndex(u16 LE) + authorityEpoch(u64 LE).
+    // Was 1+16 before v18 bound tag 90 to asset 0's authority_epoch lane (CAS,
+    // expected-current). The two extra fields are the CAS binding, not padding.
+    expect(ix.data.length).toBe(1 + 16 + 2 + 8);
     expect(ix.data[0]).toBe(90);
     expect(readU128LE(ix.data, 1)).toBe(CLAIMABLE);
+    // assetIndex 0 — this claim is always asset 0's creator leg.
+    expect(ix.data[17] | (ix.data[18] << 8)).toBe(0);
+    // The epoch must be the LIVE current value read from the same bytes as the
+    // amount. Tag 90 is CAS expected-current, so sending current+1 — the classic
+    // mistake, since most sequence numbers ARE incremented — fails on chain.
+    // Derived from the fixture through the same reader production uses, so this
+    // cannot drift from the layout.
+    const wireEpoch = Buffer.from(ix.data.slice(19, 27)).readBigUInt64LE(0);
+    const liveEpoch = readAssetControlSeqs(makeRaw(ADMIN), 0).authorityEpoch;
+    expect(wireEpoch).toBe(liveEpoch);
+    expect(wireEpoch).not.toBe(liveEpoch + 1n);
 
     // ACCOUNTS_WITHDRAW_CREATOR_FEE:
     // [authority(s,w), market(w), destToken(w), vaultToken(w), vaultAuthority(ro), tokenProgram(ro)]
