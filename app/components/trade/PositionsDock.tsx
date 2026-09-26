@@ -80,6 +80,7 @@ import { applyInvert, sanitizePriceE6 } from "@/lib/oraclePrice";
 import { isSentinelValue } from "@/lib/health";
 import { RenderProfiler } from "@/components/dev/RenderProfiler";
 import { isOracleStaleBlocking } from "@/lib/oracle-stale-gate";
+import { computeMarginHealthPct, unliquidatableHealthThresholdPct } from "@/lib/margin-health";
 
 function abs(n: bigint): bigint {
   return n < 0n ? -n : n;
@@ -299,6 +300,16 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
   // Long-side clamp: liq at/below $0 with a live position = cannot be
   // liquidated by price (excess collateral) — formatLiqPrice renders "∞".
   const liqUnliquidatable = liqPriceE6 <= 0n && entryPriceE6 > 0n && account.positionSize !== 0n;
+  // When there is no liquidation price, "no liquidation price" is not a risk
+  // figure. Margin health is: capital/notional, defined without an entry or a
+  // liq price, and it crosses its threshold at exactly the collateral level
+  // where the liq price disappears. See lib/margin-health.ts and #2558.
+  const marginHealthPct = computeMarginHealthPct(
+    account.capital,
+    account.positionSize,
+    currentPriceE6,
+  );
+  const healthThresholdPct = unliquidatableHealthThresholdPct(maintenanceBps);
   const liqPriceColor = (() => {
     if (liqUnliquidatable) return "text-[var(--text-secondary)]";
     if (liqPriceE6 <= 0n) return "text-[var(--text-secondary)]";
@@ -413,9 +424,17 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
               <td
                 className={`whitespace-nowrap px-3 py-2.5 text-right font-medium ${liqPriceColor}`}
                 style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}
-                title={liqUnliquidatable ? "No liquidation price — collateral exceeds position notional; cannot be liquidated by price" : undefined}
+                title={
+                  liqUnliquidatable && marginHealthPct != null
+                    ? `No liquidation price: collateral is ${marginHealthPct.toFixed(1)}% of this position's notional, past the ${healthThresholdPct}% at which it cannot be liquidated by price. Withdrawing collateral below that brings a liquidation price back.`
+                    : liqUnliquidatable
+                      ? "No liquidation price — collateral exceeds position notional; cannot be liquidated by price"
+                      : undefined
+                }
               >
-                {formatLiqPrice(liqPriceE6, { hasPosition: liqUnliquidatable })}
+                {liqUnliquidatable && marginHealthPct != null
+                  ? `${marginHealthPct.toFixed(0)}% mgn`
+                  : formatLiqPrice(liqPriceE6, { hasPosition: liqUnliquidatable })}
               </td>
               <td className={`whitespace-nowrap px-3 py-2.5 text-right ${hasValidMark && pnlIsKnown ? pnlColor : "text-[var(--text-dim)]"}`} style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}>
                 {!pnlIsKnown ? (

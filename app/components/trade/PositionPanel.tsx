@@ -45,6 +45,7 @@ import { getBackendUrl } from "@/lib/config";
 import { pollWhenVisible } from "@/lib/pollWhenVisible";
 import { parseHumanAmount } from "@/lib/parseAmount";
 import { isOracleStaleBlocking } from "@/lib/oracle-stale-gate";
+import { computeMarginHealthPct } from "@/lib/margin-health";
 import {
   formatLeverage,
   ORDER_LEVERAGE_TITLE,
@@ -421,11 +422,11 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     ? `${ORDER_LEVERAGE_TITLE} ${RISK_LEVERAGE_LABEL} is ${formatLeverage(accountLeverage)} because all collateral in this slab account backs liquidation.`
     : RISK_LEVERAGE_TITLE;
 
-  let marginHealthStr = "N/A";
-  if (hasPosition && notionalE6 > 0n) {
-    const healthPct = Number(account.capital * 1_000_000n * 100n / notionalE6);
-    marginHealthStr = `${healthPct.toFixed(1)}%`;
-  }
+  // Shared with the other four surfaces that show a liquidation price — this
+  // was the only one computing it. Nominal size, not ADL-reduced exposure:
+  // see the note above notionalE6 and lib/margin-health.ts.
+  const marginHealthPct = computeMarginHealthPct(account.capital, absNominal, currentPriceE6);
+  const marginHealthStr = marginHealthPct == null ? "N/A" : `${marginHealthPct.toFixed(1)}%`;
 
   // 3.4: Funding rate /8h + countdown
   const SLOTS_PER_8H = 72_000n; // 9000 slots/hr * 8

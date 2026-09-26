@@ -14,6 +14,7 @@ import { clearEntryPrice } from "@/lib/entry-price";
 import { useWalletCompat } from "@/hooks/useWalletCompat";
 import { usePortfolio, getLiquidationSeverity, getLiquidationSeverityForState, type PortfolioPosition } from "@/hooks/usePortfolio";
 import { classifyLiquidation } from "@/lib/liquidation-state";
+import { computeMarginHealthPct, unliquidatableHealthThresholdPct } from "@/lib/margin-health";
 import { useLiveSlabPrices } from "@/hooks/useLiveSlabPrices";
 import { useLpPositions } from "@/hooks/useLpPositions";
 import { AtRiskBanner } from "@/components/portfolio/AtRiskBanner";
@@ -233,6 +234,17 @@ function PositionCard({
     pos.entryPriceSource !== "unknown",
   );
   const severity = getLiquidationSeverityForState(liveLiquidationState);
+  // The risk figure that survives a missing liquidation price: capital over
+  // notional, needing neither an entry nor a liq price. It crosses its
+  // threshold at exactly the collateral level where the liq price disappears,
+  // so the row can say which side of that line the position is on rather than
+  // rendering a dash. Nominal size — see lib/margin-health.ts and #2558.
+  const marginHealthPct = computeMarginHealthPct(
+    pos.account?.capital ?? 0n,
+    posSize,
+    markE6,
+  );
+  const healthThresholdPct = unliquidatableHealthThresholdPct(pos.maintenanceMarginBps);
   const livePriceUsd = getSnapshot(pos.slabAddress).priceUsd ?? (markE6 > 0n ? Number(markE6) / 1e6 : null);
 
   return (
@@ -393,8 +405,15 @@ function PositionCard({
                 >
                   {hasPosition && liquidationPriceE6 > 0n
                     ? formatUsdPriceE6(liquidationPriceE6)
-                    : "—"}
+                    : liveLiquidationState.kind === "unliquidatable" && marginHealthPct != null
+                      ? `${marginHealthPct.toFixed(0)}% mgn`
+                      : "—"}
                 </p>
+                {liveLiquidationState.kind === "unliquidatable" && marginHealthPct != null && (
+                  <p className="mt-0.5 text-[9px] text-[var(--text-dim)]">
+                    no liq price above {healthThresholdPct}%
+                  </p>
+                )}
               </div>
             </div>
           </div>
