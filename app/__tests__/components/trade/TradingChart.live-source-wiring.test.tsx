@@ -313,8 +313,12 @@ describe('TradingChart live-source wiring', () => {
     await waitFor(() => {
       expect(vi.mocked(selectChartSource)).toHaveBeenLastCalledWith({
         percolator: { status: 'success', pricedBars: harness.percolatorCandles.length },
-        pyth: { status: 'success', pricedBars: 0 },
-        dex: { status: 'idle', pricedBars: 0 },
+        // `applicable` tells the selector a source can never answer, as opposed
+        // to not having answered yet. Symbol is 'SOL' (mapped) and a mint is
+        // passed, so both apply here; the distinction is exercised in
+        // __tests__/lib/chart-source-select.test.ts.
+        pyth: { status: 'success', pricedBars: 0, applicable: true },
+        dex: { status: 'idle', pricedBars: 0, applicable: true },
       });
     });
   });
