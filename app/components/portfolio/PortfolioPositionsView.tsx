@@ -241,7 +241,7 @@ function PositionCard({
   // rendering a dash. Nominal size — see lib/margin-health.ts and #2558.
   const marginHealthPct = computeMarginHealthPct(
     pos.account?.capital ?? 0n,
-    posSize,
+    pos.account?.positionSize ?? 0n,
     markE6,
   );
   const healthThresholdPct = unliquidatableHealthThresholdPct(pos.maintenanceMarginBps);

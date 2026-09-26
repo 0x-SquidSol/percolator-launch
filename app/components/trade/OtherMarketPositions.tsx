@@ -183,7 +183,7 @@ const OtherMarketRow: FC<{
   const liqUnliquidatable = liqPriceE6 <= 0n && entryE6 > 0n && posSize !== 0n;
   // The risk figure that survives a missing liquidation price — see
   // lib/margin-health.ts and #2558. Nominal size, not ADL-reduced exposure.
-  const marginHealthPct = computeMarginHealthPct(pos.account?.capital ?? 0n, posSize, markE6);
+  const marginHealthPct = computeMarginHealthPct(pos.account?.capital ?? 0n, pos.account?.positionSize ?? 0n, markE6);
   const healthThresholdPct = unliquidatableHealthThresholdPct(pos.maintenanceMarginBps);
   const pnlColor = pnlTokens === 0n ? "text-[var(--text-muted)]" : pnlTokens > 0n ? "text-[var(--long)]" : "text-[var(--short)]";
   const roeColor = roe === 0 ? "text-[var(--text-muted)]" : roe > 0 ? "text-[var(--long)]" : "text-[var(--short)]";
