@@ -4,25 +4,16 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
 import { useParams } from "next/navigation";
 import { PublicKey } from "@solana/web3.js";
-import { getAssociatedTokenAddress } from "@solana/spl-token";
-import {
-  ACCOUNTS_WITHDRAW_CREATOR_FEE,
-  buildAccountMetas,
-  buildIx,
-  deriveVaultAuthority,
-  encodeWithdrawCreatorFee,
-  WELL_KNOWN,
-} from "@percolatorct/sdk";
 import { sendTx } from "@/lib/tx";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { useTokenMeta } from "@/hooks/useTokenMeta";
 import { assertKnownProgram } from "@/lib/programAllowlist";
-import { readAssetControlSeqs } from "@/lib/v18-wire";
 import {
   isCreatorFeeClaimAuthority,
   readCreatorFeeClaimable,
 } from "@/lib/v17-creator-fee";
 import { mapCreatorClaimError } from "@/lib/creatorClaimError";
+import { buildCreatorFeeClaimIx, CreatorFeeClaimError } from "@/lib/creator-fee-claim-ix";
 
 export interface CreatorClaimData {
   /** True iff the connected wallet is asset 0's `asset_admin` — the ONLY wallet tag 90 accepts. */
@@ -157,55 +148,24 @@ export function useCreatorClaim() {
       }
       assertKnownProgram(slabState.programId);
 
-      // Re-read at send time rather than trusting the render-time snapshot: the
-      // amount on the wire must match the counter this instruction will debit.
-      const current = readCreatorFeeClaimable(raw);
-      if (!current) {
-        return fail("This market does not expose a creator fee counter.");
-      }
-      if (!isCreatorFeeClaimAuthority(current, wallet.publicKey)) {
-        return fail(
-          "Only this market's admin (the creator) can claim its fees. Connect the creator wallet.",
-        );
-      }
-      const amount = amountArg ?? current.atoms;
-      if (amount <= 0n) {
-        return fail("Nothing to claim — this market has not accrued any creator fees yet.");
-      }
-      if (amount > current.atoms) {
-        return fail(
-          "Claim exceeds the accrued creator fees for this market. The claim is exact-amount — request no more than the accrued balance.",
-        );
-      }
-
       setLoading(true);
       setError(null);
       setSuccess(null);
       try {
-        const progPk = new PublicKey(slabState.programId);
-        const marketPk = new PublicKey(slabAddress);
-        const collateralMint = current.collateralMint;
+        // Guards AND encoding live in lib/creator-fee-claim-ix.ts so this panel
+        // and the dashboard's per-market / claim-all buttons cannot drift into
+        // disagreeing about what a valid claim is. It re-reads `raw` at send
+        // time, so the amount on the wire matches the counter it debits and the
+        // CAS-bound authority_epoch is live.
+        const built = await buildCreatorFeeClaimIx({
+          programId: new PublicKey(slabState.programId),
+          market: new PublicKey(slabAddress),
+          raw,
+          claimant: wallet.publicKey,
+          amount: amountArg,
+        });
 
-        const [vaultPda] = deriveVaultAuthority(progPk, marketPk);
-        const destToken = await getAssociatedTokenAddress(collateralMint, wallet.publicKey);
-        const vaultToken = await getAssociatedTokenAddress(collateralMint, vaultPda, true);
-
-        // v18: WithdrawCreatorFee (tag 90) is CAS-bound to asset 0's authority_epoch
-        // lane — pass the LIVE current value (not +1). Read from the same market
-        // bytes the claimable amount was read from.
-        const authorityEpoch = readAssetControlSeqs(raw, 0).authorityEpoch;
-        const data90 = encodeWithdrawCreatorFee({ amount, assetIndex: 0, authorityEpoch });
-        const keys = buildAccountMetas(ACCOUNTS_WITHDRAW_CREATOR_FEE, [
-          wallet.publicKey, // authority — asset 0's asset_admin
-          marketPk, // market
-          destToken, // destToken — claimant's collateral ATA
-          vaultToken, // vaultToken — market vault ATA (source)
-          vaultPda, // vaultAuthority PDA
-          WELL_KNOWN.tokenProgram, // tokenProgram
-        ]);
-        const ix = buildIx({ programId: progPk, keys, data: data90 });
-
-        const sig = await sendTx({ connection, wallet, instructions: [ix] });
+        const sig = await sendTx({ connection, wallet, instructions: [built.instruction] });
 
         // Re-read on-chain truth so the displayed claimable drops.
         slabState.refresh();
@@ -213,7 +173,9 @@ export function useCreatorClaim() {
         return sig;
       } catch (err) {
         const rawMsg = err instanceof Error ? err.message : String(err);
-        const friendly = mapCreatorClaimError(rawMsg);
+        // A guard message is already a sentence written for the creator; only
+        // on-chain/RPC failures need the code-to-sentence mapper.
+        const friendly = err instanceof CreatorFeeClaimError ? rawMsg : mapCreatorClaimError(rawMsg);
         setError(friendly);
         throw new Error(friendly);
       } finally {
