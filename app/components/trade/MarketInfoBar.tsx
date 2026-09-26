@@ -8,6 +8,7 @@ import { useOracleFreshness } from "@/hooks/useOracleFreshness";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { usePriceFlash } from "@/hooks/usePriceFlash";
 import { MarketSwitcher } from "@/components/trade/MarketSwitcher";
+import { WatchButton } from "@/components/market/WatchButton";
 import { formatUsdFromNumber, formatMarkPrice } from "@/lib/format";
 import { formatCompactUsd } from "@/lib/formatters";
 import { computeMarketSpread } from "@/lib/oraclePrice";
@@ -174,6 +175,10 @@ export const MarketInfoBar: FC<MarketInfoBarProps> = ({ slabAddress, symbol, log
     >
       {/* Symbol + Logo — now a dropdown market switcher (top markets + search) */}
       <MarketSwitcher slabAddress={slabAddress} symbol={symbol} logoUrl={logoUrl} mintAddress={mintAddress} mainnetCa={mainnetCa} />
+
+      {/* Watch this market. `label` variant — the info bar has room for a word,
+          unlike the dense markets table where the glyph alone is used. */}
+      <WatchButton slab={slabAddress} symbol={symbol} variant="label" />
 
       <span className="h-6 w-px bg-[var(--border)] shrink-0" />
 
