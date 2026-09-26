@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * "Fees earned" section for /my-markets.
+ * "Unclaimed fees" section for /my-markets.
  *
  * Creator fees were claimable ONLY from a panel buried inside each row's expand
  * drawer: no totals, no per-market figure on the surface, and a creator with
@@ -98,12 +98,21 @@ export const CreatorFeesPanel: FC<CreatorFeesPanelProps> = ({
     <div className="mb-8 border border-[var(--border)] bg-[var(--panel-bg)]">
       <div className="flex flex-wrap items-baseline justify-between gap-3 border-b border-[var(--border)]/60 px-4 py-3">
         <div>
+          {/* "Unclaimed", NOT "Earned". The on-chain counter is decremented by
+              every claim (tag 90 is the only thing that touches it), so it is
+              the CURRENTLY CLAIMABLE balance and cannot state lifetime revenue.
+              Labelling it "Fees Earned" would promise a figure this number is
+              not — a creator who had already claimed would read their remaining
+              balance as their total takings. Lifetime earned needs claim
+              history, which the indexer does not track today; deliberately out
+              of scope. */}
           <p className="text-[10px] font-medium uppercase tracking-[0.2em] text-[var(--text)]">
-            Fees Earned
+            Unclaimed Fees
           </p>
           <p className="mt-1 text-[10px] text-[var(--text-dim)]">
-            Your share of every trade on your markets. Accrues on chain and is
-            claimed manually — nothing is sent automatically.
+            Your share of trading fees on your markets, still sitting on chain.
+            Claimed manually — nothing is sent automatically, and this figure
+            drops to zero as you claim it.
           </p>
         </div>
 
@@ -112,7 +121,7 @@ export const CreatorFeesPanel: FC<CreatorFeesPanelProps> = ({
             // NOT "$0.00": nothing could be read, so there is no total to show.
             <p className="text-[12px] text-[var(--text-dim)]">balance unavailable</p>
           ) : summary.totalsByMint.length === 0 ? (
-            <p className="text-[12px] text-[var(--text-secondary)]">no fees accrued yet</p>
+            <p className="text-[12px] text-[var(--text-secondary)]">nothing unclaimed</p>
           ) : (
             summary.totalsByMint.map((t) => (
               <p
