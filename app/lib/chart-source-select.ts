@@ -17,7 +17,11 @@
  *     hasPercolatorData = perc.success && priced > 0 && (priced >= 10 || pythHasNothing)
  *
  * and its own comment explained `pythHasNothing` as a PER-TOKEN condition —
- * "Pyth has no feed for this long-tail asset". Then Pyth removed its
+ * "Pyth has no feed for this long-tail asset". That description was never
+ * accurate: an unmapped asset leaves usePythChart on `"idle"`, for which
+ * `pythHasNothing` was false, so the hatch never fired for the long-tail case
+ * it named. It fired only on `error` and on `success`-with-no-bars. Then Pyth
+ * removed its
  * TradingView shim upstream (`/v1/shims/tradingview/*` now 404s, while
  * `/v1/price_feeds` still returns 200), so `pythStatus === "error"` became
  * permanent for every Pyth-mapped market. A per-token exception became a
@@ -36,7 +40,14 @@
 
 import type { ChartDataSource } from "@/lib/chart-live-tick";
 
-export type ChartFetchStatus = "idle" | "loading" | "success" | "error";
+/**
+ * Mirrors what the three candle hooks actually report. `"empty"` is NOT
+ * optional: usePercolatorCandles, usePythChart and useTokenChart all set it
+ * for a batch that came back with no rows, and it is the state a dataless
+ * source spends its life in. Omitting it here both failed the type check and
+ * made `settledEmpty` unreachable for the most common real case.
+ */
+export type ChartFetchStatus = "idle" | "loading" | "success" | "empty" | "error";
 
 export interface ChartSourceState {
   status: ChartFetchStatus;
@@ -82,8 +93,14 @@ export const MIN_PERC_BARS = 10;
  * flash in during the round trip.
  */
 function settledEmpty(s: ChartSourceState): boolean {
+  // Cannot answer for this market at all.
   if (s.applicable === false) return true;
-  if (s.status === "error") return true;
+  // Answered, with nothing. `"empty"` is what the hooks report for a zero-row
+  // batch — a mint with no GeckoTerminal pool, or an upstream 429 that the
+  // route maps to an empty 200 (see #2578). Checking only `"success"` with no
+  // bars misses both, because these hooks never pair `"success"` with an empty
+  // batch.
+  if (s.status === "error" || s.status === "empty") return true;
   return s.status === "success" && s.pricedBars === 0;
 }
 

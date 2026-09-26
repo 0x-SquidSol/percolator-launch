@@ -1,4 +1,4 @@
-import { render, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const harness = vi.hoisted(() => {
@@ -60,6 +60,18 @@ const harness = vi.hoisted(() => {
   // on every render would repeatedly call setSeriesEpoch() and loop forever.
   const emptyCandles: never[] = [];
 
+  // Mutable per-source state. The file previously hardcoded these in the
+  // vi.mock factories, so no test could vary them — which is why three wrong
+  // component implementations passed the whole suite.
+  const sources = {
+    percolatorStatus: 'success' as string,
+    percolatorCandlesOverride: null as unknown[] | null,
+    pythStatus: 'success' as string,
+    pythCandles: [] as unknown[],
+    dexStatus: 'idle' as string,
+    dexCandles: [] as unknown[],
+  };
+
   const chartTheme = {
     bg: '#000000',
     textColor: '#ffffff',
@@ -79,6 +91,7 @@ const harness = vi.hoisted(() => {
     priceLine,
     percolatorCandles,
     emptyCandles,
+    sources,
     chartTheme,
   };
 });
@@ -131,22 +144,22 @@ vi.mock('@/lib/chart-source-select', async (importOriginal) => {
 
 vi.mock('@/hooks/usePercolatorCandles', () => ({
   usePercolatorCandles: () => ({
-    candles: harness.percolatorCandles,
-    status: 'success',
+    candles: harness.sources.percolatorCandlesOverride ?? harness.percolatorCandles,
+    status: harness.sources.percolatorStatus,
   }),
 }));
 
 vi.mock('@/hooks/usePythChart', () => ({
   usePythChart: () => ({
-    candles: harness.emptyCandles,
-    status: 'success',
+    candles: harness.sources.pythCandles,
+    status: harness.sources.pythStatus,
   }),
 }));
 
 vi.mock('@/hooks/useTokenChart', () => ({
   useTokenChart: () => ({
-    candles: harness.emptyCandles,
-    status: 'idle',
+    candles: harness.sources.dexCandles,
+    status: harness.sources.dexStatus,
     poolAddress: null,
   }),
 }));
@@ -287,6 +300,12 @@ import { selectChartSource } from '@/lib/chart-source-select';
 describe('TradingChart live-source wiring', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    harness.sources.percolatorStatus = 'success';
+    harness.sources.percolatorCandlesOverride = null;
+    harness.sources.pythStatus = 'success';
+    harness.sources.pythCandles = [];
+    harness.sources.dexStatus = 'idle';
+    harness.sources.dexCandles = [];
 
     vi.stubGlobal(
       'fetch',
@@ -321,5 +340,59 @@ describe('TradingChart live-source wiring', () => {
         dex: { status: 'idle', pricedBars: 0, applicable: true },
       });
     });
+  });
+
+  it("renders the DEX badge when a 1-bar internal series loses to 1000 DEX bars", async () => {
+    // #2579, end to end through the component. Asserting the ARGUMENTS to the
+    // selector is not enough: restoring the old boolean chain, or swapping the
+    // pyth/dex derivations, leaves those arguments identical and changes only
+    // what is rendered. This pins the RESULT.
+    // One bar, the shape of the real stub: o=h=l=c=114.629292.
+    harness.sources.percolatorCandlesOverride = [
+      { time: 1_720_000_000, open: 114.629292, high: 114.629292, low: 114.629292, close: 114.629292, volume: 1 },
+    ];
+    harness.sources.pythStatus = 'error';
+    harness.sources.dexStatus = 'success';
+    // `timestamp`, not `time` — the DEX source is CandleData from
+    // /api/chart/[mint], and finiteCandles reads that shape.
+    harness.sources.dexCandles = Array.from({ length: 1000 }, (_, i) => ({
+      timestamp: 1_720_000_000_000 + i * 300_000,
+      open: 121, high: 121.6, low: 120.4, close: 121.5, volume: 1,
+    }));
+
+    render(
+      <TradingChart
+        slabAddress="TestSlab1111111111111111111111111111111111"
+        mintAddress="TestMint1111111111111111111111111111111111"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('DEX')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('PERC')).toBeNull();
+  });
+
+  it("CONTROL: the internal source still wins once it has enough bars", async () => {
+    // Guards against fixing the override by never choosing Percolator.
+    harness.sources.pythStatus = 'error';
+    harness.sources.dexStatus = 'success';
+    harness.sources.dexCandles = Array.from({ length: 1000 }, (_, i) => ({
+      timestamp: 1_720_000_000_000 + i * 300_000,
+      open: 121, high: 121.6, low: 120.4, close: 121.5, volume: 1,
+    }));
+
+    render(
+      <TradingChart
+        slabAddress="TestSlab1111111111111111111111111111111111"
+        mintAddress="TestMint1111111111111111111111111111111111"
+      />,
+    );
+
+    // The default harness series is 10 positively-priced bars = the threshold.
+    await waitFor(() => {
+      expect(screen.getByText('PERC')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('DEX')).toBeNull();
   });
 });
