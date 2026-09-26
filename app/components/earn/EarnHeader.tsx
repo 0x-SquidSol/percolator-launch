@@ -3,6 +3,11 @@
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
 import type { EarnStats } from '@/hooks/useEarnStats';
 import { ShimmerSkeleton } from '@/components/ui/ShimmerSkeleton';
+import { FeeBreakdown } from "@/components/FeeBreakdown";
+import { FEE_LEGS, legPercent } from "@/lib/fee-breakdown";
+
+/** Derived, never restated — see lib/fee-breakdown.ts. */
+const LP_SHARE_PCT = legPercent(FEE_LEGS.find((l) => l.id === "lp")!);
 
 
 interface EarnHeaderProps {
@@ -41,10 +46,17 @@ export function EarnHeader({ stats, loading }: EarnHeaderProps) {
             LpVaultCrankFees moved all of it into the vault. The keeper now
             cranks on its own interval. */}
         <p className="mt-1.5 text-[11px] text-[var(--text-muted)] max-w-lg">
-          Deposits and redemptions are live on devnet. LPs earn a 48% share of every
-          trading fee, distributed to the vault automatically — so APY reflects real
+          Deposits and redemptions are live on devnet. LPs earn a {LP_SHARE_PCT}% share of
+          every trading fee, distributed to the vault automatically — so APY reflects real
           trading activity and reads 0% while a market is quiet.
         </p>
+        {/* The share above was a hard-coded literal in prose — the kind that
+            keeps reading 48% after the protocol changes. It is derived now, and
+            shown against the other legs so an LP can see what they are a share
+            OF. #2565. */}
+        <div className="mt-3 max-w-lg border border-[var(--border)] bg-[var(--panel-bg)] p-3">
+          <FeeBreakdown highlight="lp" />
+        </div>
 
         {/* Stats row */}
         <div className="mt-5 grid grid-cols-1 gap-px border border-[var(--border)] bg-[var(--border)] sm:grid-cols-3" aria-label="Earn statistics">

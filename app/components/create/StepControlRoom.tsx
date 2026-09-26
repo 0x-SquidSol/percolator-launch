@@ -4,6 +4,7 @@ import { FC, useMemo } from "react";
 import { RotaryDial } from "./RotaryDial";
 import { HoldToLaunch } from "./HoldToLaunch";
 import { MIN_SAFE_INITIAL_MARGIN_BPS } from "@/hooks/useCreateMarket";
+import { FeeBreakdown } from "@/components/FeeBreakdown";
 
 /**
  * The protocol floors initial margin at MIN_SAFE_INITIAL_MARGIN_BPS (1500 bps
@@ -179,6 +180,10 @@ export const StepControlRoom: FC<StepControlRoomProps> = ({
               setTradingFeeBps has no consumers — so "set by liquidity" is the
               honest description of both facts. See #2563. */}
           <Readout k="Trading fee" v={`${tradingFeeBps} bps · set by token liquidity`} />
+          {/* A creator is never told they earn a share of this anywhere. #2565. */}
+          <div className="col-span-full pt-1">
+            <FeeBreakdown highlight="creator" feeBps={tradingFeeBps} />
+          </div>
           <Readout k="You seed" v={`${(lp + ins).toLocaleString()} ${collateralSymbol}`} />
           <Readout k="Approvals" v="1" />
         </div>
