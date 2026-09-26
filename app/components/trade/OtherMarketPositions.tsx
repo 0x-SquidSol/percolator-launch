@@ -56,6 +56,7 @@ import {
 import { isMockMode } from "@/lib/mock-mode";
 import { isMockSlab, getMockPortfolioPositions } from "@/lib/mock-trade-data";
 import { isOracleStaleBlocking } from "@/lib/oracle-stale-gate";
+import { computeMarginHealthPct, unliquidatableHealthThresholdPct } from "@/lib/margin-health";
 
 function abs(n: bigint): bigint {
   return n < 0n ? -n : n;
@@ -180,6 +181,10 @@ const OtherMarketRow: FC<{
   const displaySymbol = symbol.replace(/-PERP$/i, "");
   const liqPriceE6 = pos.liquidationPriceE6;
   const liqUnliquidatable = liqPriceE6 <= 0n && entryE6 > 0n && posSize !== 0n;
+  // The risk figure that survives a missing liquidation price — see
+  // lib/margin-health.ts and #2558. Nominal size, not ADL-reduced exposure.
+  const marginHealthPct = computeMarginHealthPct(pos.account?.capital ?? 0n, posSize, markE6);
+  const healthThresholdPct = unliquidatableHealthThresholdPct(pos.maintenanceMarginBps);
   const pnlColor = pnlTokens === 0n ? "text-[var(--text-muted)]" : pnlTokens > 0n ? "text-[var(--long)]" : "text-[var(--short)]";
   const roeColor = roe === 0 ? "text-[var(--text-muted)]" : roe > 0 ? "text-[var(--long)]" : "text-[var(--short)]";
   const livePriceUsd = getSnapshot(pos.slabAddress).priceUsd ?? (hasValidMark ? Number(markE6) / 1e6 : null);
@@ -215,9 +220,17 @@ const OtherMarketRow: FC<{
         <td
           className="whitespace-nowrap px-3 py-2.5 text-right font-medium text-[var(--text-secondary)]"
           style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}
-          title={liqUnliquidatable ? "No liquidation price — collateral exceeds position notional; cannot be liquidated by price" : undefined}
+          title={
+            liqUnliquidatable && marginHealthPct != null
+              ? `No liquidation price: collateral is ${marginHealthPct.toFixed(1)}% of this position's notional, past the ${healthThresholdPct}% at which it cannot be liquidated by price.`
+              : liqUnliquidatable
+                ? "No liquidation price — collateral exceeds position notional; cannot be liquidated by price"
+                : undefined
+          }
         >
-          {formatLiqPrice(liqPriceE6, { hasPosition: liqUnliquidatable })}
+          {liqUnliquidatable && marginHealthPct != null
+            ? `${marginHealthPct.toFixed(0)}% mgn`
+            : formatLiqPrice(liqPriceE6, { hasPosition: liqUnliquidatable })}
         </td>
         <td className={`whitespace-nowrap px-3 py-2.5 text-right ${hasValidMark && pnlIsKnown ? pnlColor : "text-[var(--text-dim)]"}`} style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }} title={pnlIsKnown ? undefined : UNKNOWN_ENTRY_TOOLTIP}>
           {!pnlIsKnown ? (
