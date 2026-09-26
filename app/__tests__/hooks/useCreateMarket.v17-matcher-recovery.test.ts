@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Keypair, PublicKey } from '@solana/web3.js';
+import { V17_EXPECTED_VERSION } from '@percolatorct/sdk';
 
 const mocks = vi.hoisted(() => ({
   sendTx: vi.fn(),
