@@ -86,7 +86,25 @@ const MAX_PRICE_MOVE_BY_MARGIN: ReadonlyArray<{ maintenanceBps: number; maxPrice
 export const MIN_LEVERAGE_X = 2;
 export const MAX_LEVERAGE_X = 10;
 
-/** Trading fee is NOT creator-settable — one rate for every market. */
+/**
+ * UNUSED — kept only to record the decision, not to describe behaviour.
+ *
+ * The intent was one trading-fee rate for every market. It was never wired to
+ * anything: `grep FIXED_TRADING_FEE_BPS app/` returns this declaration alone,
+ * and what actually ships is derived from the token's liquidity tier in
+ * useQuickLaunch (20 / 10 / 5 bps).
+ *
+ * Half of the original comment was accurate and is worth keeping: the fee is
+ * genuinely NOT creator-settable. FeeSlider.tsx is never rendered and
+ * CreateMarketWizard's `setTradingFeeBps` has no consumers, so a creator
+ * cannot change it — it is simply chosen for them by liquidity rather than
+ * being the same everywhere.
+ *
+ * The value 30 matches nothing in production: every live market is 10 bps, and
+ * no tier is 30. Wiring this up as-is would triple the rate on new markets and
+ * leave old and new differing — so making the fee uniform is a pricing
+ * decision, not a cleanup. See #2563.
+ */
 export const FIXED_TRADING_FEE_BPS = 30;
 
 /**

@@ -171,7 +171,14 @@ export const StepControlRoom: FC<StepControlRoomProps> = ({
           <Readout k="Start price" v={startPrice} />
           <Readout k="Slab" v={`${slabBytes.toLocaleString()} B · max capacity`} />
           <Readout k="Rent" v={rentSol === null ? "—" : `${rentSol.toFixed(3)} SOL`} />
-          <Readout k="Trading fee" v={`${tradingFeeBps} bps · same on every market`} />
+          {/* NOT "same on every market": the fee is derived from the token's
+              liquidity tier in useQuickLaunch (20 / 10 / 5 bps) and that value
+              is what reaches the chain, so this line used to render e.g.
+              "20 bps · same on every market" and contradict itself. The
+              creator cannot change it either — FeeSlider is never rendered and
+              setTradingFeeBps has no consumers — so "set by liquidity" is the
+              honest description of both facts. See #2563. */}
+          <Readout k="Trading fee" v={`${tradingFeeBps} bps · set by token liquidity`} />
           <Readout k="You seed" v={`${(lp + ins).toLocaleString()} ${collateralSymbol}`} />
           <Readout k="Approvals" v="1" />
         </div>

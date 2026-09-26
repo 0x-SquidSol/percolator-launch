@@ -68,9 +68,23 @@ describe("StepControlRoom — creator-settable contract", () => {
     }
   });
 
-  it("says the fee is the same on every market", () => {
+  it("does NOT claim the fee is the same on every market", () => {
+    // This test previously asserted the opposite, pinning a claim the code
+    // does not implement: the fee is derived from the token's liquidity tier
+    // (20 / 10 / 5 bps in useQuickLaunch) and that value is what reaches the
+    // chain, so the readout rendered e.g. "20 bps - same on every market" and
+    // contradicted itself. FIXED_TRADING_FEE_BPS declares the uniform-rate
+    // policy but has no callers. See #2563.
     renderStep();
-    expect(document.body.textContent ?? "").toMatch(/same on every market/i);
+    expect(document.body.textContent ?? "").not.toMatch(/same on every market/i);
+  });
+
+  it("explains that the fee is chosen for the creator, not by them", () => {
+    // The true half of the original claim, and the part a creator needs: they
+    // cannot set this number (see the fixed-text test above), it is set by the
+    // token's liquidity.
+    renderStep();
+    expect(document.body.textContent ?? "").toMatch(/set by token liquidity/i);
   });
 
   it("never lets the insurance dial reach 0 — insurance is write-once", () => {
