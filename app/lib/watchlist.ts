@@ -13,8 +13,9 @@
  * the feature that slot was pretending to be.
  *
  * BROWSER-LOCAL, NOT WALLET-SCOPED, and deliberately so: this is a display
- * preference, the same class of thing as the chart overlay/style prefs already
- * persisted here (lib/chart-overlays.ts, lib/chart-style.ts), and keying it by
+ * preference, the same class of thing as the chart overlay prefs already
+ * persisted here (hooks/useChartOverlayPrefs.ts, key `perc:chart:overlays`;
+ * lib/chart-overlays.ts holds only the pure helpers), and keying it by
  * wallet would mean a visitor cannot watch anything until they connect — on the
  * one page (/markets) that is most useful to someone still deciding. The
  * trade-off, stated rather than hidden: a watchlist does not follow the user to
@@ -142,19 +143,49 @@ export function getWatchlistServerSnapshot(): readonly string[] {
   return EMPTY;
 }
 
+/**
+ * ONE window listener for the whole app, attached with the first subscriber and
+ * detached with the last — NOT one per subscriber.
+ *
+ * The markets table mounts a watch control per row and grows by infinite
+ * scroll, so subscribers reach the hundreds. A listener each would mean every
+ * cross-tab edit ran N handlers, each re-reading and re-parsing storage and
+ * each notifying all N subscribers: N re-parses and N^2 callbacks for one
+ * change in another tab.
+ */
+function onStorageEvent(e: StorageEvent): void {
+  // key === null is a storage.clear(); anything else that is not ours is noise.
+  if (e.key !== null && e.key !== WATCHLIST_STORAGE_KEY) return;
+  const next = readStorage();
+  // Same-value writes from another tab must not churn every subscriber.
+  if (current !== null && sameList(current, next)) return;
+  current = next;
+  emit();
+}
+
+function sameList(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 export function subscribeWatchlist(onChange: () => void): () => void {
+  const first = listeners.size === 0;
   listeners.add(onChange);
-  // Another tab edited the list: adopt it so two open tabs agree.
-  const onStorage = (e: StorageEvent) => {
-    if (e.key !== null && e.key !== WATCHLIST_STORAGE_KEY) return;
-    current = readStorage();
-    emit();
-  };
-  if (typeof window !== "undefined") window.addEventListener("storage", onStorage);
+  if (first && typeof window !== "undefined") {
+    window.addEventListener("storage", onStorageEvent);
+  }
   return () => {
     listeners.delete(onChange);
-    if (typeof window !== "undefined") window.removeEventListener("storage", onStorage);
+    if (listeners.size === 0 && typeof window !== "undefined") {
+      window.removeEventListener("storage", onStorageEvent);
+    }
   };
+}
+
+/** Test seam — drives the cross-tab path without a real StorageEvent. */
+export function handleStorageEventForTests(e: StorageEvent): void {
+  onStorageEvent(e);
 }
 
 function commit(next: readonly string[]): readonly string[] {
