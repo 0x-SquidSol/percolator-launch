@@ -18,6 +18,7 @@ import { useSlabState } from "@/components/providers/SlabProvider";
 import { useLivePrice } from "@/hooks/useLivePrice";
 import { subscribeSlab, getSnapshot } from "@/lib/priceStore/priceStore";
 import { startPerfSpan } from "@/lib/perf/perfTiming";
+import { selectChartSource } from "@/lib/chart-source-select";
 import { useTokenChart } from "@/hooks/useTokenChart";
 import { usePythChart } from "@/hooks/usePythChart";
 import { usePercolatorCandles } from "@/hooks/usePercolatorCandles";
@@ -58,7 +59,6 @@ import {
 import {
   mergeMarkPriceIntoBar,
   mergeMarkPriceIntoPoint,
-  resolveChartDataSource,
   type ChartDataSource,
 } from "@/lib/chart-live-tick";
 import { assertNever } from "@/lib/exhaustive";
@@ -440,38 +440,28 @@ const TradingChartInner: FC<{ slabAddress: string; mintAddress?: string }> = ({
   // Two exceptions where Percolator still wins below the threshold: (a) Pyth
   // returned no data for this asset (long-tail token), or (b) Pyth errored.
   // In either case "any Percolator data" is strictly better than nothing.
-  const MIN_PERC_BARS = 10;
-  // Count only bars with a REAL price toward the threshold. `finiteCandles`
-  // rejects NaN/Infinity, and the comment above explains why the gate must use
-  // it rather than the raw array — but 0 is finite, so a batch of zero-price
-  // bars passes it. Those exist today: indexer-db.ts buckets a NULL-price
-  // liquidation marker into o=h=l=c=0 (fix open at #2544), and the indexer
-  // writes those markers in quantity under v18 (percolator-indexer#200, also
-  // open). Widening the lookback window raises every market's bar count, so
-  // without this the widening would promote MORE markets into a source whose
-  // bars are zeros — a flat line at 0.00 instead of a Pyth chart. The same
-  // reasoning the existing comment gives for finiteness, applied to the value
-  // that slipped through it.
+  // Count only bars with a REAL price. `finiteCandles` rejects NaN/Infinity,
+  // but 0 is finite, and indexer-db.ts buckets a NULL-price liquidation marker
+  // into an o=h=l=c=0 candle — so a finiteness check alone promotes markets
+  // into a source whose bars are all zeros (a flat line at 0.00).
   const percPriced = useMemo(
     () => percolatorFinite.filter((c) => c.close > 0 && c.open > 0 && c.high > 0 && c.low > 0),
     [percolatorFinite],
   );
-  const percHasEnough =
-    percolatorStatus === "success" && percPriced.length >= MIN_PERC_BARS;
-  const pythHasNothing =
-    (pythStatus === "success" && pythFinite.length === 0) || pythStatus === "error";
-  const hasPercolatorData =
-    percolatorStatus === "success" &&
-    percPriced.length > 0 &&
-    (percHasEnough || pythHasNothing);
-  const hasPythData = !hasPercolatorData && pythStatus === "success" && pythFinite.length > 0;
-  const hasExternalData = !hasPercolatorData && !hasPythData && externalStatus === "success" && externalFinite.length > 0;
 
-  const activeDataSource = resolveChartDataSource(
-    hasPercolatorData,
-    hasPythData,
-    hasExternalData,
-  );
+  // The precedence rule lives in lib/chart-source-select.ts so it can be
+  // tested against source states and bar counts. Inline here, it shipped a
+  // defect nothing could catch: a 1-bar Percolator series outranking a
+  // 1000-bar DEX series once Pyth's upstream shim started 404ing. See #2579.
+  const activeDataSource = selectChartSource({
+    percolator: { status: percolatorStatus, pricedBars: percPriced.length },
+    pyth: { status: pythStatus, pricedBars: pythFinite.length },
+    dex: { status: externalStatus, pricedBars: externalFinite.length },
+  });
+
+  const hasPercolatorData = activeDataSource === "percolator";
+  const hasPythData = activeDataSource === "pyth";
+  const hasExternalData = activeDataSource === "dex";
 
   // Fetch oracle price history
   useEffect(() => {
