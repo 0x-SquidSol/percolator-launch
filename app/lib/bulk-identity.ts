@@ -15,18 +15,24 @@
  * Measured against the deployed playground: `/api/markets?limit=500` returned
  * all 9 markets in 117-192ms. One round trip, no per-market on-chain scan.
  *
- * WHAT THE BULK ROUTE ACTUALLY CARRIES — verified against the deployment, not
- * assumed. Every row carried `symbol` and `name`. `logo_url`, `mainnet_ca` and
- * `dex_pool_address` were NOT in the payload at all (absent keys, not nulls),
- * even though the route's own row builder sets them — so the field set differs
- * by deployment and must not be relied on.
+ * WHAT THE BULK ROUTE ACTUALLY CARRIES — measured, not assumed, and it VARIES
+ * BY DEPLOYMENT, which is the whole reason nothing here assumes a field set.
+ * On the playground (11 markets): `symbol` and `name` on 11/11, `mainnet_ca`
+ * and `dex_pool_address` on 10/11, `logo_url` on 4/11. On a second, stale
+ * deployment the same route returned symbol+name only, with `logo_url`,
+ * `mainnet_ca` and `dex_pool_address` as ABSENT KEYS rather than nulls —
+ * despite the route's own row builder setting all three.
  *
  * `parseBulkIdentities` therefore takes whatever identity fields a row happens
- * to carry and ignores the rest. Consequence, stated plainly rather than
- * overclaimed: on a deployment that returns symbol+name only, this makes the
- * TICKER correct in one round trip and leaves the LOGO on the per-market path.
- * The moment a deployment starts returning `logo_url`/`mainnet_ca`, logos go
- * fast too with no further change here.
+ * to carry and ignores the rest. What that buys, per field:
+ *
+ *   - TICKER: correct in one round trip, always.
+ *   - LOGO: immediate for a row carrying `logo_url`. For a row carrying only
+ *     `mainnet_ca`, MarketLogo's /api/token-logo hop can START as soon as this
+ *     call lands instead of waiting out the per-market detail — roughly
+ *     400-900ms earlier — but it is still a second request.
+ *   - Neither: falls back to the symbol's initials, which the faster ticker
+ *     improves on its own.
  *
  * `resolveIdentity` is the other half: identity arrives from three sources at
  * three different times (the session cache synchronously, the bulk directory in

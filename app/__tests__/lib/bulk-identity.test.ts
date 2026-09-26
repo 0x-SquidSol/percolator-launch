@@ -71,9 +71,10 @@ describe("what counts as usable identity", () => {
 
 describe("reading identity out of the bulk directory", () => {
   it("takes symbol and name when the payload carries no logo or CA", () => {
-    // THE VERIFIED DEPLOYMENT SHAPE. Probed against the live playground: every
-    // row carried symbol and name; logo_url, mainnet_ca and dex_pool_address
-    // were absent KEYS, not nulls. The parser must not assume a field set.
+    // A MEASURED DEPLOYMENT SHAPE. The playground carries logo_url on 4 of 11
+    // rows and mainnet_ca on 10 of 11; a second, stale deployment of the same
+    // route returned symbol+name only, with the other three as absent KEYS
+    // rather than nulls. The field set varies, so the parser assumes none.
     const rows = [
       { slab_address: "slabA", symbol: "DEVNET-SMALL-1", name: "Devnet Small Market" },
     ];
