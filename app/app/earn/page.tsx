@@ -3,28 +3,26 @@
 import { useEffect, useState } from "react";
 import { EarnVaultView } from "@/components/earn/EarnVaultView";
 import StakePage from "@/app/stake/page";
+import MyMarketsPage from "@/app/my-markets/page";
+import {
+  EARN_TABS,
+  DEFAULT_EARN_TAB,
+  isEarnTabKey,
+  type EarnTabKey,
+} from "@/components/earn/earnTabs";
 
 /**
- * Earn hub. Consolidates the LP Vault and Stake surfaces behind one tab bar.
+ * Earn hub. Consolidates the LP Vault, Stake and My Markets surfaces behind one
+ * tab bar — the three ways to earn on the platform (provide liquidity, stake,
+ * or collect creator fees on a market you launched).
  * Each source view is a "use client" default-export/named-export that takes no
  * props, so it renders directly as tab content. Only the ACTIVE tab is mounted
  * — inactive tabs' data hooks never run — and each source view brings its own
  * container (the stake page keeps its own min-h-screen wrapper), so the tab
  * bar sits above them with no extra max-width/padding wrapper.
  */
-const TABS = [
-  { key: "vault", label: "LP Vault" },
-  { key: "stake", label: "Stake" },
-] as const;
-
-type TabKey = (typeof TABS)[number]["key"];
-
-function isTabKey(value: string): value is TabKey {
-  return TABS.some((t) => t.key === value);
-}
-
 export default function EarnHubPage() {
-  const [tab, setTab] = useState<TabKey>("vault");
+  const [tab, setTab] = useState<EarnTabKey>(DEFAULT_EARN_TAB);
 
   useEffect(() => {
     document.title = "Earn | Percolator";
@@ -34,10 +32,10 @@ export default function EarnHubPage() {
   // next/navigation Suspense requirement). Default is the first tab.
   useEffect(() => {
     const hash = window.location.hash.replace(/^#/, "");
-    if (isTabKey(hash)) setTab(hash);
+    if (isEarnTabKey(hash)) setTab(hash);
   }, []);
 
-  const selectTab = (key: TabKey) => {
+  const selectTab = (key: EarnTabKey) => {
     setTab(key);
     history.replaceState(null, "", "#" + key);
   };
@@ -46,7 +44,7 @@ export default function EarnHubPage() {
     <div>
       <div className="border-b border-[var(--border)]">
         <div className="mx-auto flex max-w-[1400px] items-stretch overflow-x-auto px-4 lg:px-6 scrollbar-none">
-          {TABS.map((t) => {
+          {EARN_TABS.map((t) => {
             const on = tab === t.key;
             return (
               <button
@@ -70,6 +68,7 @@ export default function EarnHubPage() {
 
       {tab === "vault" && <EarnVaultView />}
       {tab === "stake" && <StakePage />}
+      {tab === "markets" && <MyMarketsPage />}
     </div>
   );
 }
