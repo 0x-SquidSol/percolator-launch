@@ -161,6 +161,29 @@ const TradeHistory = dynamic(
   }
 );
 
+const WatchlistPanel = dynamic(
+  () => import("@/components/portfolio/WatchlistPanel").then((m) => m.WatchlistPanel),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="h-[200px] border border-[var(--border)] bg-[var(--panel-bg)] p-4">
+        <ShimmerSkeleton className="mb-4 h-4 w-24" />
+        <div className="space-y-3">
+          {[1, 2].map((i) => (
+            <div key={i} className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <ShimmerSkeleton className="h-6 w-6 rounded-full" />
+                <ShimmerSkeleton className="h-3.5 w-20" />
+              </div>
+              <ShimmerSkeleton className="h-4 w-12" />
+            </div>
+          ))}
+        </div>
+      </div>
+    ),
+  }
+);
+
 const FundingRates = dynamic(
   () => import("@/components/dashboard/FundingRates").then((m) => m.FundingRates),
   {
@@ -185,7 +208,7 @@ const FundingRates = dynamic(
 );
 
 // Mobile tab type
-type MobileTab = "overview" | "positions" | "history" | "funding";
+type MobileTab = "overview" | "positions" | "history" | "watchlist";
 
 export default function DashboardPage() {
   useEffect(() => { document.title = "Dashboard — Percolator"; }, []);
@@ -303,15 +326,16 @@ export default function DashboardPage() {
             </div>
           </ScrollReveal>
 
-          {/* Row 3: Trade History + Funding. The markets watchlist used to sit
-              here; a portfolio is your own positions, and a directory of every
-              market belongs on /markets. */}
+          {/* Row 3: Trade History + Watchlist/Funding. The panel that used to
+              sit here listed every market, which is what /markets is for. This
+              one lists only the markets the user chose to follow. */}
           <ScrollReveal delay={0.2}>
             <div className="grid gap-4 lg:grid-cols-5">
               <div className="lg:col-span-3">
                 <TradeHistory />
               </div>
               <div className="lg:col-span-2 space-y-4">
+                <WatchlistPanel />
                 <FundingRates />
               </div>
             </div>
@@ -327,7 +351,7 @@ export default function DashboardPage() {
                 { key: "overview", icon: "📊", label: "Overview" },
                 { key: "positions", icon: "📋", label: "Positions" },
                 { key: "history", icon: "🕐", label: "History" },
-                { key: "funding", icon: "💸", label: "Funding" },
+                { key: "watchlist", icon: "☆", label: "Watchlist" },
               ] as const
             ).map((tab) => (
               <button
@@ -362,7 +386,12 @@ export default function DashboardPage() {
             </div>
           )}
           {mobileTab === "history" && <TradeHistory />}
-          {mobileTab === "funding" && <FundingRates />}
+          {mobileTab === "watchlist" && (
+            <div className="space-y-4">
+              <WatchlistPanel />
+              <FundingRates />
+            </div>
+          )}
         </div>
       </div>
     </div>

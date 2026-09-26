@@ -24,6 +24,7 @@ import { GlowButton } from "@/components/ui/GlowButton";
 import { useMultiTokenMeta } from "@/hooks/useMultiTokenMeta";
 import { useAllMarketStats } from "@/hooks/useAllMarketStats";
 import { MarketLogo } from "@/components/market/MarketLogo";
+import { WatchButton } from "@/components/market/WatchButton";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { detectOracleMode, resolveMarketPriceE6, priceE6ToUsd, sanitizePriceE6, applyInvert } from "@/lib/oraclePrice";
 import { subscribeSlab, getSnapshot } from "@/lib/priceStore/priceStore";
@@ -1144,6 +1145,10 @@ function MarketsPageInner() {
                           <span className="font-semibold text-[var(--text)] text-sm">
                             {displaySymbol ? `${displaySymbol}/USD` : shortenAddress(m.slabAddress)}
                           </span>
+                          {/* Sits with the row badges, matching their shape.
+                              Renders as a span with stopPropagation because the
+                              row is a link — watching must not navigate. */}
+                          <WatchButton slab={m.slabAddress} symbol={displaySymbol} />
                           {m.isAdminOracle && (
                             <span className="border border-[var(--text-dim)]/30 bg-[var(--text-dim)]/[0.08] px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-wider text-[var(--text-secondary)]">manual</span>
                           )}
