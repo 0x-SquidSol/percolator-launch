@@ -100,8 +100,46 @@ describe("a source still loading is not a source with nothing", () => {
   it("treats an APPLICABLE idle source as not-yet-settled", () => {
     // A source that has simply not started yet must not count as "nothing".
     // An INAPPLICABLE idle source is different and is covered below.
+    //
+    // `dex` is SETTLED here on purpose. With dex loading, the outcome was
+    // decided by dex alone and the `idle` value was inert — an
+    // idle-as-settled mutant survived this test unharmed.
     expect(
-      selectChartSource({ percolator: bars(1), pyth: idle, dex: loading }),
+      selectChartSource({ percolator: bars(1), pyth: idle, dex: none }),
+    ).toBe("oracle");
+  });
+
+  it("waits on a loading PYTH too, not just a loading DEX", () => {
+    // Every other case pairs a settled dex with a settled pyth, so a version
+    // that checked only `settledEmpty(dex)` and dropped pyth passed the whole
+    // suite. The flicker is symmetric; the test has to be too.
+    expect(
+      selectChartSource({ percolator: bars(1), pyth: loading, dex: none }),
+    ).toBe("oracle");
+  });
+});
+
+describe("bars without a settled status do not count", () => {
+  // Every fixture pairs `success` with a bar count, so the status guards were
+  // never actually exercised: a version that dropped `status === "success"`
+  // and looked only at `pricedBars` passed everything.
+  it("ignores an in-flight Percolator batch that already carries bars", () => {
+    expect(
+      selectChartSource({
+        percolator: { status: "loading", pricedBars: 50 },
+        pyth: errored,
+        dex: bars(184),
+      }),
+    ).toBe("dex");
+  });
+
+  it("does not let an in-flight Percolator batch take the last-resort slot", () => {
+    expect(
+      selectChartSource({
+        percolator: { status: "loading", pricedBars: 5 },
+        pyth: errored,
+        dex: errored,
+      }),
     ).toBe("oracle");
   });
 });
@@ -121,14 +159,37 @@ describe("precedence between the two external sources", () => {
   });
 });
 
-describe("zero-priced bars never count", () => {
-  it("ignores a Percolator series whose bars are all unpriced", () => {
-    // The indexer buckets a NULL-price liquidation marker into o=h=l=c=0.
-    // Those are finite, so a finiteness check alone would promote a flat line
-    // at 0.00 over a real chart. Callers pass the PRICED count for this reason.
+describe("the empty status", () => {
+  // All three hooks report "empty" — not "success" with zero rows — for a
+  // batch that came back with nothing. Checking only "success" made the
+  // fallback unreachable for the commonest real case: a mint with no
+  // GeckoTerminal pool, or an upstream 429 the route maps to an empty 200.
+  const empty: ChartSourceState = { status: "empty", pricedBars: 0 };
+
+  it("counts as settled, so a market still shows its own trades", () => {
     expect(
-      selectChartSource({ percolator: bars(0), pyth: errored, dex: bars(184) }),
+      selectChartSource({ percolator: bars(2), pyth: empty, dex: empty }),
+    ).toBe("percolator");
+  });
+
+  it("mixes with error and inapplicable", () => {
+    expect(
+      selectChartSource({ percolator: bars(2), pyth: errored, dex: empty }),
+    ).toBe("percolator");
+  });
+
+  it("CONTROL: an empty source still cannot WIN", () => {
+    expect(
+      selectChartSource({ percolator: none, pyth: empty, dex: bars(184) }),
     ).toBe("dex");
+  });
+
+  it("CONTROL: loading alongside empty still waits", () => {
+    // Only `loading` blocks the fallback now; if "empty" had been folded in as
+    // "pending", this would wrongly return percolator.
+    expect(
+      selectChartSource({ percolator: bars(2), pyth: empty, dex: loading }),
+    ).toBe("oracle");
   });
 });
 

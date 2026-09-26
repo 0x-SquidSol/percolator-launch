@@ -437,9 +437,10 @@ const TradingChartInner: FC<{ slabAddress: string; mintAddress?: string }> = ({
   // whichever source is showing, so a new trader sees their entry against
   // Pyth's SOL/USD context before Percolator has enough bars to stand alone.
   //
-  // Two exceptions where Percolator still wins below the threshold: (a) Pyth
-  // returned no data for this asset (long-tail token), or (b) Pyth errored.
-  // In either case "any Percolator data" is strictly better than nothing.
+  // Percolator may still win below the threshold, but ONLY once every other
+  // source has settled with nothing — see lib/chart-source-select.ts. It used
+  // to win whenever Pyth merely errored, which is how a 1-bar series came to
+  // outrank a 1000-bar DEX series after Pyth retired its shim (#2579).
   // Count only bars with a REAL price. `finiteCandles` rejects NaN/Infinity,
   // but 0 is finite, and indexer-db.ts buckets a NULL-price liquidation marker
   // into an o=h=l=c=0 candle — so a finiteness check alone promotes markets
@@ -453,6 +454,19 @@ const TradingChartInner: FC<{ slabAddress: string; mintAddress?: string }> = ({
   // tested against source states and bar counts. Inline here, it shipped a
   // defect nothing could catch: a 1-bar Percolator series outranking a
   // 1000-bar DEX series once Pyth's upstream shim started 404ing. See #2579.
+  // Priced, not merely finite — 0 is finite, and the selector's contract asks
+  // for priced counts. Percolator was the only source honouring it, so an
+  // all-zero external series could have outranked a real internal one: the
+  // flat-line-at-0.00 failure, one upstream change away.
+  const pythPriced = useMemo(
+    () => pythFinite.filter((c) => c.close > 0 && c.open > 0 && c.high > 0 && c.low > 0),
+    [pythFinite],
+  );
+  const externalPriced = useMemo(
+    () => externalFinite.filter((c) => c.close > 0 && c.open > 0 && c.high > 0 && c.low > 0),
+    [externalFinite],
+  );
+
   const activeDataSource = selectChartSource({
     percolator: { status: percolatorStatus, pricedBars: percPriced.length },
     // `applicable` marks a source that can never answer for this market:
@@ -461,12 +475,12 @@ const TradingChartInner: FC<{ slabAddress: string; mintAddress?: string }> = ({
     // yet" forever, stranding such markets on the oracle series.
     pyth: {
       status: pythStatus,
-      pricedBars: pythFinite.length,
+      pricedBars: pythPriced.length,
       applicable: pythSymbol != null,
     },
     dex: {
       status: externalStatus,
-      pricedBars: externalFinite.length,
+      pricedBars: externalPriced.length,
       applicable: mintAddress != null,
     },
   });
