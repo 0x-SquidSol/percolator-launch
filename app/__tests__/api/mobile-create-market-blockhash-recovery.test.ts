@@ -135,7 +135,7 @@ describe('mobile create-market blockhash recovery (#2400)', () => {
 
     const body = JSON.parse(rawBody) as MobileCreateMarketResponse;
 
-    expect(body.unsigned_txs).toHaveLength(4);
+    expect(body.unsigned_txs).toHaveLength(5);
     expect(body.last_valid_block_height).toBe(999_999);
 
     expect(body.registration.deployer).toBe(deployer);

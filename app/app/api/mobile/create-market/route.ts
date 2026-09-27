@@ -39,6 +39,7 @@ import {
   type InitMarketV17Args,
   encodeDepositCollateral,
   encodeTopUpInsurance,
+  encodeTopUpBackingBucket,
   encodePermissionlessCrank,
   encodeMatcherInitPassive,
   encodeSetMatcherConfig,
@@ -46,6 +47,7 @@ import {
   ACCOUNTS_INIT_MARKET,
   ACCOUNTS_DEPOSIT_COLLATERAL,
   ACCOUNTS_TOPUP_INSURANCE,
+  ACCOUNTS_TOP_UP_BACKING_BUCKET,
   ACCOUNTS_PERMISSIONLESS_CRANK_BASE,
   ACCOUNTS_SET_MATCHER_CONFIG,
   ACCOUNTS_INIT_USER,
@@ -54,6 +56,7 @@ import {
   buildIx,
   deriveVaultAuthority,
   deriveMatcherDelegate,
+  deriveLpBackingLedger,
   MATCHER_CONTEXT_LEN,
   MAX_BACKING_BUCKET_EXPIRY_SLOT,
   v17MarketAccountLen,
@@ -70,13 +73,14 @@ import {
 } from "@/lib/create-market-rate-limit";
 import * as Sentry from "@sentry/nextjs";
 import { deriveMarketParams, leverageFromMarginBps } from "@/lib/market-params";
+import {
+  buildMobileFundingIxs,
+  mobileRequiredCollateral,
+  MIN_INIT_MARKET_SEED,
+  DEFAULT_LP_COLLATERAL,
+  DEFAULT_INSURANCE,
+} from "@/lib/mobile-market-funding-ixs";
 
-/** Minimum token amount for vault seed transfer (matches on-chain guard). */
-const MIN_INIT_MARKET_SEED = 500_000_000n;
-/** Default LP collateral deposit (1,000 tokens raw with 6 decimals). */
-const DEFAULT_LP_COLLATERAL = 1_000_000_000n;
-/** Default insurance fund seed (100 tokens raw with 6 decimals). */
-const DEFAULT_INSURANCE = 100_000_000n;
 // MATCHER_CTX_SIZE imported as MATCHER_CONTEXT_LEN from @percolatorct/sdk (= 320)
 const MATCHER_CTX_SIZE = MATCHER_CONTEXT_LEN;
 /** Admin oracle feed (all zeros = on-chain admin oracle). */
@@ -468,66 +472,24 @@ export async function POST(req: NextRequest) {
     tx2.add(createCtxIx, matcherInitIx, setMatcherConfigIx);
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // TX 3: DepositCollateral + TopUpInsurance + PermissionlessCrank (final)
+    // TX 3: DepositCollateral + TopUpBackingBucket x2 + TopUpInsurance + Crank
     // v17: Deposit account list = [owner, market, portfolio, sourceToken, vaultToken, tokenProgram]
     // No clock. Portfolio = lpPortfolioPk (created in TX1).
     // v17: PermissionlessCrank uses [owner, market, portfolio] — portfolio = lpPortfolioPk.
     // Signed by: deployer only
     // ═══════════════════════════════════════════════════════════════════════════
-    const vaultTokenAta = await getAssociatedTokenAddress(mintPk, vaultPda, true);
-
-    // v17 Deposit: [owner(s,w), market(w), portfolio(w), sourceToken(w), vaultToken(w), tokenProgram]
-    const depositKeys = buildAccountMetas(ACCOUNTS_DEPOSIT_COLLATERAL, [
-      deployerPk,
-      slabPk,
-      lpPortfolioPk,
-      userAta,
-      vaultTokenAta,
-      WELL_KNOWN.tokenProgram,
-    ]);
-    const depositIx = buildIx({
+    // Deposit + insurance + crank (mandatory), and the two backing seeds as their
+    // own transaction. Extracted to lib/mobile-market-funding-ixs.ts so the VALUES
+    // can be asserted by decoding the instructions — the route itself cannot be
+    // driven in a test (GH#2542), and source-text assertions let 21 of 33 mutants
+    // through (GH#2595).
+    const funding = buildMobileFundingIxs({
       programId,
-      keys: depositKeys,
-      // v18 fresh-market: LP portfolioId 1; matcher-seq is now 1 (SetMatcherConfig
-      // in TX2 advanced it 0->1).
-      data: encodeDepositCollateral({
-        portfolioId: 1n,
-        expectedSequence: 1n,
-        amount: DEFAULT_LP_COLLATERAL.toString(),
-      }),
-    });
-
-    const topupKeys = buildAccountMetas(ACCOUNTS_TOPUP_INSURANCE, [
-      deployerPk,
-      slabPk,
+      market: slabPk,
+      lpPortfolio: lpPortfolioPk,
+      deployer: deployerPk,
       userAta,
       vaultAta,
-      WELL_KNOWN.tokenProgram,
-    ]);
-    const topupIx = buildIx({
-      programId,
-      keys: topupKeys,
-      // v18 fresh-market: asset-0 market_id = 1; authority_epoch = 0; this flow
-      // seeds no backing, so insurance is the first consumer of the shared one-shot
-      // lane (intentId 1).
-      data: encodeTopUpInsurance({
-        marketId: 1n,
-        intentId: 1n,
-        authorityEpoch: 0n,
-        amount: DEFAULT_INSURANCE.toString(),
-      }),
-    });
-
-    // v17 PermissionlessCrank: [owner(s,w), market(w), portfolio(w)] (no oracle tail for admin oracle)
-    const crankKeys3 = buildAccountMetas(ACCOUNTS_PERMISSIONLESS_CRANK_BASE, [
-      deployerPk,
-      slabPk,
-      lpPortfolioPk,
-    ]);
-    const crankIx3 = buildIx({
-      programId,
-      keys: crankKeys3,
-      data: encodePermissionlessCrank({ nowSlot: 0n, observations: defaultCrankObservations(0) }),
     });
 
     const tx3 = new Transaction({ recentBlockhash: blockhash, feePayer: deployerPk });
@@ -535,10 +497,25 @@ export async function POST(req: NextRequest) {
     // requests the full heap frame. Must be the FIRST instruction. (issue #176)
     tx3.add(ComputeBudgetProgram.requestHeapFrame({ bytes: 131072 }));
     tx3.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }));
-    tx3.add(depositIx, topupIx, crankIx3);
+    tx3.add(...funding.mandatory);
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TX4: both backing seeds — NON-FATAL by GH#2514 policy (GH#2595).
+    //
+    // Kept out of TX3 on purpose. Merging them would make a deliberately non-fatal
+    // step fatal and would raise TX3's draw from 1,100 to 3,000 tokens, so an
+    // under-funded wallet would revert the LP deposit on a launch that previously
+    // succeeded. If this transaction does not land the market is still live, and
+    // since this flow never calls CreateLpVault the creator keeps
+    // backing_bucket_authority and can top up later.
+    // ═══════════════════════════════════════════════════════════════════════════
+    const tx4 = new Transaction({ recentBlockhash: blockhash, feePayer: deployerPk });
+    tx4.add(ComputeBudgetProgram.requestHeapFrame({ bytes: 131072 }));
+    tx4.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }));
+    tx4.add(...funding.backingSeeds);
 
     // Insurance LP mint creation removed — moved to percolator-stake program.
-    // Markets are fully operational without it (TX 0-3 are sufficient).
+    // Markets are fully operational without it (TX 0-4 are sufficient).
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Response — client signs each tx with MWA, sends in order, then calls
@@ -546,8 +523,23 @@ export async function POST(req: NextRequest) {
     // ═══════════════════════════════════════════════════════════════════════════
     return NextResponse.json({
       slab_address: slabPk.toBase58(),
+      /**
+       * Total collateral TX0-TX4 draw from the deployer's token account, so the
+       * client can check BEFORE asking anyone to sign (GH#2595).
+       *
+       * vault seed + LP deposit + insurance + ONE backing seed PER DOMAIN. Seeding
+       * backing raised this from 1,600 to 3,600 tokens at the current 100%-of-LP
+       * policy, and this route has no pre-fund step of its own.
+       *
+       * TOP LEVEL, not inside `registration`: that object is read only after every
+       * transaction has succeeded, so a pre-flight figure is useless there — and
+       * POST /api/markets authenticates over the whole registration body except
+       * `nonce`/`signature` (lib/market-registration-auth.ts), so an added field
+       * there can 401 a client that builds its signing payload from a fixed list.
+       */
+      required_collateral: mobileRequiredCollateral().toString(),
       /** Base64-encoded unsigned transactions. Mobile adds the deployer signature. */
-      unsigned_txs: [tx0, tx1, tx2, tx3].map(txToBase64),
+      unsigned_txs: [tx0, tx1, tx2, tx3, tx4].map(txToBase64),
       /** Config for the POST /api/markets registration call after all txs succeed. */
       registration: {
         slab_address: slabPk.toBase58(),
@@ -558,6 +550,7 @@ export async function POST(req: NextRequest) {
         max_leverage: Math.floor(10000 / Number(initialMarginBps)),
         trading_fee_bps: 30,
         lp_collateral: DEFAULT_LP_COLLATERAL.toString(),
+
         initial_price_e6: priceE6.toString(),
       },
       /** Block height after which the blockhash expires (~60s / 150 slots). */
