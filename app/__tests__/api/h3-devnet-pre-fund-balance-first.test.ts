@@ -7,8 +7,15 @@
  * wallet + the SAME shared sim-USDC collateral mint, so they hash to one gate
  * key. Checking the gate before the balance meant the 2nd/3rd call in one flow
  * always collided with the 1st call's still-open 24h claim and 429'd, throwing
- * mid-launch — even though FUND_AMOUNT already tops up to 2× the full
- * three-step requirement.
+ * mid-launch — even though the mint already tops up to 2× the full launch
+ * requirement.
+ *
+ * GH#2592: the requirement and the mint amount now come from
+ * lib/prefund-requirement.ts, the same module the route uses. This file used to
+ * declare its own copy, labelled "Mirrors app/api/devnet-pre-fund/route.ts
+ * constants" — which meant it went on passing after the route's real numbers
+ * changed, and its third case asserted "sufficient" at a balance that could not
+ * actually fund the launch.
  *
  * We test the ordering in isolation (no live Solana RPC / Supabase needed),
  * mirroring the gate-integration test shape in gh1601-devnet-pre-fund-rate-limit.test.ts.
@@ -21,9 +28,20 @@ interface GateResult {
   claimId?: number;
 }
 
-// Mirrors app/api/devnet-pre-fund/route.ts constants.
-const FULL_MARKET_TOKEN_REQUIREMENT = 1_600_000_000n;
-const FUND_AMOUNT = FULL_MARKET_TOKEN_REQUIREMENT * 2n;
+// The route's OWN definitions — not a copy. A copy is what let this file drift.
+import {
+  DEFAULT_INSURANCE_AMOUNT,
+  DEFAULT_LP_COLLATERAL,
+  MIN_INIT_MARKET_SEED,
+  fullMarketRequirement,
+  fundAmountFor,
+} from "@/lib/prefund-requirement";
+
+const FULL_MARKET_TOKEN_REQUIREMENT = fullMarketRequirement(
+  DEFAULT_LP_COLLATERAL,
+  DEFAULT_INSURANCE_AMOUNT,
+);
+const FUND_AMOUNT = fundAmountFor(FULL_MARKET_TOKEN_REQUIREMENT);
 
 /** Simulates the post-H3 balance-first flow from devnet-pre-fund/route.ts. */
 async function simulatePreFund(
@@ -86,9 +104,13 @@ describe("H3: devnet-pre-fund balance-first gate ordering", () => {
     };
     const doMint = async () => ({ sig: "SHOULD_NOT_REACH" });
 
-    // Vault seed (500 tokens) already spent since the 1st mint — still well
-    // above the 1,600-token full requirement.
-    const result = await simulatePreFund(FUND_AMOUNT - 500_000_000n, tryFaucetGate, doMint);
+    // Vault seed already spent since the 1st mint — still above the full
+    // requirement, which is the property that keeps the later calls out of the
+    // gate. Derived from the shared module, so it cannot go on asserting
+    // sufficiency at a balance the launch could not actually use (GH#2592).
+    const drawnDown = FUND_AMOUNT - MIN_INIT_MARKET_SEED;
+    expect(drawnDown).toBeGreaterThanOrEqual(FULL_MARKET_TOKEN_REQUIREMENT);
+    const result = await simulatePreFund(drawnDown, tryFaucetGate, doMint);
     expect(result.status).toBe("sufficient");
     expect(gateTouched).toBe(false);
   });
