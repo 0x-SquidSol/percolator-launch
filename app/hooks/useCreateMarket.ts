@@ -325,6 +325,12 @@ export interface CreateMarketParams {
 }
 
 export interface CreateMarketState {
+  /**
+   * Why the one-approval batched launch fell back to the six-prompt sequential
+   * path, or null when it did not. Recorded so a user who signs six times can
+   * say WHY without having had devtools open. See #2586.
+   */
+  batchFallbackReason?: string | null;
   step: number;
   stepLabel: string;
   txSigs: string[];
@@ -680,7 +686,16 @@ interface FreshBatchContext {
 
 type FreshBatchOutcome =
   | { status: "success" }
-  | { status: "fallback" }
+  /**
+   * Nothing was broadcast, so the sequential path runs instead.
+   *
+   * `reason` is NOT decoration. This branch used to discard the error
+   * entirely, so the only visible symptom was the user signing SIX wallet
+   * prompts instead of one, with nothing anywhere saying why — unreproducible
+   * from a bug report, and invisible to anyone without devtools open. Every
+   * caller must record it. See #2586.
+   */
+  | { status: "fallback"; reason: string }
   | { status: "fatal" };
 
 // ---- Blockhash-expiry recovery for the batched launch's tail -------------
@@ -1697,7 +1712,19 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     if (!broadcastStarted) {
       // Nothing landed — safe to fall back to the sequential path in the
       // SAME create() call. See the FALLBACK CONTRACT note above.
-      return { status: "fallback" };
+      //
+      // Carry the reason out. The fallback is silent BY DESIGN for the user's
+      // funds (nothing broadcast, the launch still completes) but it was also
+      // silent for diagnosis, which is a different thing and not a feature:
+      // the batch has several unrelated ways to throw before broadcast — a
+      // 429 from /api/devnet-pre-fund's 24h faucet gate, a keeper co-sign
+      // failure, an airdrop that did not confirm — and they are
+      // indistinguishable from the outside.
+      const reason = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[useCreateMarket] BATCHED launch fell back to the 6-step sequential path: ${reason}`,
+      );
+      return { status: "fallback", reason };
     }
     const msg = parseMarketCreationError(err);
     setState((s) => ({ ...s, loading: false, error: msg }));
@@ -1971,8 +1998,21 @@ export function useCreateMarket() {
         // status === "fallback" — nothing broadcast; safe to run the
         // sequential path below in this SAME call. Reset the phase/landing
         // UI state so LaunchProgress falls back to its per-step rendering.
-        console.warn("[useCreateMarket] Batch launch unavailable or failed before broadcast — falling back to the sequential flow.");
-        setState((s) => ({ ...s, phase: "idle", landingIndex: 0, landingTotal: 0, error: null }));
+        // Keep the reason in state, not only in the console. The console line
+        // is gone the moment the tab closes, and the people who hit this are
+        // launching a market, not watching devtools — so the recovery JSON the
+        // wizard already offers is where it has to survive.
+        //
+        // NOT surfaced as `error`: nothing failed from the user's point of
+        // view. The launch continues, just with six prompts instead of one.
+        setState((s) => ({
+          ...s,
+          phase: "idle",
+          landingIndex: 0,
+          landingTotal: 0,
+          error: null,
+          batchFallbackReason: outcome.reason,
+        }));
       }
 
       try {

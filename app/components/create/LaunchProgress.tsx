@@ -20,6 +20,11 @@ interface LaunchProgressProps {
      * those — the phase view is purely additive.
      */
     phase?: "idle" | "preparing" | "awaiting-signature" | "landing" | "done";
+    /**
+     * Why the one-approval batched launch fell back to this six-prompt path.
+     * Absent when the batch was never attempted (resume/retry) or succeeded.
+     */
+    batchFallbackReason?: string | null;
     landingIndex?: number;
     /** Named market-creation steps, one per batched tx, in order. */
     landingLabels?: string[];
@@ -261,9 +266,21 @@ export const LaunchProgress: FC<LaunchProgressProps> = ({ state, onReset, onRetr
 
       {/* Progress text */}
       {!isBatchPhaseActive && state.loading && !state.error && (
-        <p className="mt-5 text-[12px] text-[var(--text-secondary)]">
-          Step {state.step + 1} of 6 — Sign the transaction in your wallet
-        </p>
+        <>
+          <p className="mt-5 text-[12px] text-[var(--text-secondary)]">
+            Step {state.step + 1} of 6 — Sign the transaction in your wallet
+          </p>
+          {/* Six prompts instead of one is a DEGRADED path, not the design.
+              Saying so — and why — turns an unreportable "the wallet kept
+              asking" into something a user can paste into an issue. Muted,
+              because the launch is still working. See #2586. */}
+          {state.batchFallbackReason && (
+            <p className="mt-1 text-[10px] text-[var(--text-dim)]">
+              One-approval launch unavailable, so each step is signed
+              separately — {state.batchFallbackReason}
+            </p>
+          )}
+        </>
       )}
 
       {/* Error state */}
