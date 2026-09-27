@@ -206,7 +206,7 @@ describe("the mint covers the launch the caller actually asked for", () => {
     const res = await POST(post({ mintAddress: MINT, walletAddress: WALLET }));
 
     expect(res.status).toBe(200);
-    // 3,600 requirement -> 7,200 minted, not the pre-fix 3,200.
+    // 3,100 requirement -> 6,200 minted, not the pre-fix 3,200 (one backing bucket).
     expect(mintedAmount()).toBe(6_200n * T);
   });
 });
