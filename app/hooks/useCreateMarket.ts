@@ -1887,6 +1887,11 @@ export function useCreateMarket() {
         error: null,
         step: startStep,
         stepLabel: STEP_LABELS[startStep],
+        // Cleared on EVERY attempt, including retries. This is a spread, so a
+        // reason left by an earlier fallback would otherwise survive into a
+        // retry that never attempted the batch at all — and be rendered under
+        // it, explaining a decision this attempt never made.
+        batchFallbackReason: null,
         ...(startStep === 0 ? { txSigs: [], slabAddress: null } : {}),
       }));
 
