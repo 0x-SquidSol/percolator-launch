@@ -807,7 +807,15 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       ? fetch("/api/devnet-pre-fund", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ mintAddress: params.mint.toBase58(), walletAddress: walletPk.toBase58() }),
+          // GH#2592: send the amounts this launch will actually spend. Without
+          // them the route funds for a fixed reference launch, which is both
+          // wrong for other LP sizes and understated for that one.
+          body: JSON.stringify({
+            mintAddress: params.mint.toBase58(),
+            walletAddress: walletPk.toBase58(),
+            lpCollateral: params.lpCollateral.toString(),
+            insuranceAmount: params.insuranceAmount.toString(),
+          }),
         })
       : Promise.resolve(null);
 
@@ -2951,6 +2959,11 @@ export function useCreateMarket() {
                 body: JSON.stringify({
                   mintAddress: params.mint.toBase58(),
                   walletAddress: wallet.publicKey.toBase58(),
+                  // GH#2592: the requirement the route checks must be the one
+                  // tx4Required is about, or it answers "sufficient" to the
+                  // very request that says the wallet is short.
+                  lpCollateral: params.lpCollateral.toString(),
+                  insuranceAmount: params.insuranceAmount.toString(),
                 }),
               });
               if (!fundResp4.ok) {

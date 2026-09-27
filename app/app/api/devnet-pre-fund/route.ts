@@ -2,7 +2,8 @@
  * PERC-744: Devnet Pre-Fund API
  *
  * POST /api/devnet-pre-fund
- * Body: { mintAddress: string, walletAddress: string }
+ * Body: { mintAddress: string, walletAddress: string,
+ *          lpCollateral?: string, insuranceAmount?: string }   // atomic units
  *
  * Mints enough tokens of a given devnet mint to a wallet so it can
  * cover the vault seed deposit (MIN_INIT_MARKET_SEED = 500_000_000 raw)
@@ -22,6 +23,16 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+// ONE definition of what a launch costs, shared with this route's tests so a
+// test can no longer mirror a stale copy of it. See lib/prefund-requirement.ts.
+import {
+  DEFAULT_INSURANCE_AMOUNT,
+  DEFAULT_LP_COLLATERAL,
+  MAX_FUNDABLE_REQUIREMENT,
+  fullMarketRequirement,
+  fundAmountFor,
+  parseAtomicAmount,
+} from "@/lib/prefund-requirement";
 import {
   Keypair,
   PublicKey,
@@ -117,27 +128,6 @@ const EMERGENCY_DEVNET_MINTS: Set<string> = new Set([
   "6yEiTM4XYRLr2WsrsHegMXfp8w4EK3Hdw4HEi2mmZgjt", // shitcoin
 ]);
 
-/**
- * Minimum seed the program requires.
- * Kept local to avoid importing a "use client" module into a server route.
- * Source of truth: hooks/useCreateMarket.ts → MIN_INIT_MARKET_SEED.
- * Must also match percolator.rs constants::MIN_INIT_MARKET_SEED.
- */
-const MIN_INIT_MARKET_SEED = 500_000_000n;
-
-/**
- * Total tokens needed for full market creation (Small slab):
- *   Vault seed:      500 tokens (MIN_INIT_MARKET_SEED)
- *   LP collateral: 1,000 tokens
- *   Insurance fund:  100 tokens
- *   Total:         1,600 tokens
- *
- * Fund 2× the total requirement so user has headroom for retries
- * and Medium/Large slabs which may need more. Fixes #757.
- */
-const FULL_MARKET_TOKEN_REQUIREMENT = 1_600_000_000n;
-const FUND_AMOUNT = FULL_MARKET_TOKEN_REQUIREMENT * 2n;
-
 /** Wrap a promise with a timeout; rejects after `ms` milliseconds. */
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
@@ -162,14 +152,44 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const { mintAddress, walletAddress } = body as {
+    const { mintAddress, walletAddress, lpCollateral, insuranceAmount } = body as {
       mintAddress?: string;
       walletAddress?: string;
+      lpCollateral?: string;
+      insuranceAmount?: string;
     };
 
     if (!mintAddress || !walletAddress) {
       return NextResponse.json(
         { error: "Missing mintAddress or walletAddress" },
+        { status: 400 },
+      );
+    }
+
+    // GH#2592: fund for the launch actually being attempted. A fixed total
+    // cannot be right for more than one LP size, and the one it was right for
+    // was mis-stated. Callers that send nothing get the old reference amounts,
+    // now costed correctly.
+    const lpAtoms = parseAtomicAmount(lpCollateral, DEFAULT_LP_COLLATERAL);
+    const insuranceAtoms = parseAtomicAmount(insuranceAmount, DEFAULT_INSURANCE_AMOUNT);
+    if (lpAtoms === null || insuranceAtoms === null) {
+      return NextResponse.json(
+        { error: "lpCollateral and insuranceAmount must be decimal integer strings of atomic units" },
+        { status: 400 },
+      );
+    }
+
+    const fullRequirement = fullMarketRequirement(lpAtoms, insuranceAtoms);
+    if (fullRequirement > MAX_FUNDABLE_REQUIREMENT) {
+      // Refused, not clamped — see MAX_FUNDABLE_REQUIREMENT.
+      return NextResponse.json(
+        {
+          error:
+            `Launch requires ${fullRequirement} atomic units, above this faucet's ceiling of ` +
+            `${MAX_FUNDABLE_REQUIREMENT}. Reduce LP collateral or fund the wallet manually.`,
+          required: fullRequirement.toString(),
+          maxFundable: MAX_FUNDABLE_REQUIREMENT.toString(),
+        },
         { status: 400 },
       );
     }
@@ -311,7 +331,7 @@ export async function POST(req: NextRequest) {
     // SAME shared sim-USDC collateral mint for the SAME wallet, so they all hash to
     // one gate key (`rateKey` below). Checking the gate before the balance meant the
     // 2nd/3rd call in one flow always hit the 1st call's still-open 24h claim and
-    // 429'd, throwing mid-launch. FUND_AMOUNT already tops up to 2× the full
+    // 429'd, throwing mid-launch. The mint tops up to 2× the full
     // three-step requirement, so once the first call funds the wallet the remaining
     // calls in the same flow see a sufficient balance here and return a 200 no-op —
     // the gate is never touched again for the rest of that launch.
@@ -326,10 +346,11 @@ export async function POST(req: NextRequest) {
       // ATA doesn't exist yet
     }
 
-    if (currentBalance >= FULL_MARKET_TOKEN_REQUIREMENT) {
+    if (currentBalance >= fullRequirement) {
       return NextResponse.json({
         status: "sufficient",
         balance: currentBalance.toString(),
+        required: fullRequirement.toString(),
         message: "Wallet already has sufficient tokens",
       });
     }
@@ -427,8 +448,11 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Need to fund: amount = FUND_AMOUNT - currentBalance (top up to 2× minimum)
-    const toMint = FUND_AMOUNT - currentBalance;
+    // Need to fund: top up to 2× the requirement for THIS launch. Because the
+    // requirement now includes both backing seeds, one mint covers the whole
+    // launch and the later calls short-circuit at the balance check above
+    // instead of reaching the 24h gate.
+    const toMint = fundAmountFor(fullRequirement) - currentBalance;
 
     // Reserve the durable fallback claim immediately before mint work.
     // reserveClaim() atomically-enough (see prefund-claim-store.ts) re-checks AND
