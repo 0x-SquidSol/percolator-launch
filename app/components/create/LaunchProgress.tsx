@@ -34,6 +34,36 @@ interface LaunchProgressProps {
   onRetry?: () => void;
 }
 
+/**
+ * Why this launch is asking for six approvals instead of one.
+ *
+ * ONE definition, rendered in TWO places — the signing view and the error
+ * panel. It started as inline JSX in the signing view only, which withheld it
+ * in the single case that matters most: when a sequential step then fails,
+ * `state.error` is set, the whole signing block unmounts, and the launch that
+ * actually broke was the one launch that did not explain itself. Two copies of
+ * the markup would drift; this cannot.
+ *
+ * Muted in both, deliberately. In the error panel it sits BELOW the error in
+ * `--text-muted`, not in `--short`: the fallback is not what failed, and
+ * colouring it as the failure would point the reader at the wrong thing.
+ */
+const BatchFallbackNote: FC<{ reason: string }> = ({ reason }) => (
+  <p
+    /* --text-muted, NOT --text-dim: globals.css measures dim at 2.55:1 against
+       --bg (1.9:1 in light theme) and muted at 4.62:1, the tier that clears AA.
+       This is a line the user is meant to read and paste into a bug report, at
+       10px. break-words + a 3-line clamp because a wallet or RPC error arrives
+       as an unbroken base58 blob and would otherwise push the Recovery panel
+       and its download button off screen; `title` keeps the full text. */
+    className="mt-1 max-w-full break-words text-[10px] leading-snug text-[var(--text-muted)] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3] overflow-hidden"
+    title={reason}
+    role="status"
+  >
+    One-approval launch unavailable, so each step is signed separately — {reason}
+  </p>
+);
+
 const STEP_LABELS = [
   "Create slab & initialize market",
   "Oracle setup & crank",
@@ -272,13 +302,9 @@ export const LaunchProgress: FC<LaunchProgressProps> = ({ state, onReset, onRetr
           </p>
           {/* Six prompts instead of one is a DEGRADED path, not the design.
               Saying so — and why — turns an unreportable "the wallet kept
-              asking" into something a user can paste into an issue. Muted,
-              because the launch is still working. See #2586. */}
+              asking" into something a user can paste into an issue. See #2586. */}
           {state.batchFallbackReason && (
-            <p className="mt-1 text-[10px] text-[var(--text-dim)]">
-              One-approval launch unavailable, so each step is signed
-              separately — {state.batchFallbackReason}
-            </p>
+            <BatchFallbackNote reason={state.batchFallbackReason} />
           )}
         </>
       )}
@@ -287,6 +313,13 @@ export const LaunchProgress: FC<LaunchProgressProps> = ({ state, onReset, onRetr
       {state.error && (
         <div className="mt-5 border border-[var(--short)]/20 bg-[var(--short)]/[0.04] p-4">
           <p className="text-[11px] text-[var(--short)]">{state.error}</p>
+          {/* The degraded-path reason survives into the error panel. A launch
+              that fell back AND then failed is the exact report worth filing,
+              and the signing block that used to carry this line has unmounted
+              by the time `error` is set. */}
+          {state.batchFallbackReason && (
+            <BatchFallbackNote reason={state.batchFallbackReason} />
+          )}
           <div className="mt-3 flex flex-wrap gap-2">
             {onRetry && (
               <button
