@@ -1,0 +1,267 @@
+// @vitest-environment node
+//
+// Node, not jsdom. PDA derivation hashes its seeds, and under jsdom the Buffer it
+// is handed fails @noble/hashes' Uint8Array check, so deriveLpBackingLedger throws
+// "Unable to find a viable program address nonce" — an environment artefact, not a
+// derivation problem. The same thing breaks PublicKey.createWithSeed in the route.
+/**
+ * GH#2595 — a mobile market launch must seed BOTH backing domains, with the right
+ * amount, the right lane and a non-expiring bucket.
+ *
+ * The route seeded neither, and said so: "this flow seeds no backing, so insurance
+ * is the first consumer of the shared one-shot lane (intentId 1)". Two reasons that
+ * diverged from the web launch, both documented in hooks/useCreateMarket.ts:
+ *
+ *   1. Counterparty backing for shorts. At BACKING_SEED_PCT_OF_LP = 100 the seed
+ *      is a real amount, not dust (lib/market-params.ts:110-129).
+ *   2. The backing-bucket freshness deadlock. The MECHANISM is the MAX expiry:
+ *      "fresh_counterparty_backing_expiry_slot() then always returns this same MAX
+ *      value, so every later automatic loss-reserve request matches the existing
+ *      expiry and hits the harmless no-op arm" (useCreateMarket.ts:3118-3123).
+ *      Buckets being Empty is the WINDOW in which seeding is safe, not the thing
+ *      that prevents the trap — an earlier version of this fix put the causality
+ *      on Emptiness, which is a gloss the repo does not make. Note also that the
+ *      repo does not establish that an Empty bucket is itself dangerous, so reason
+ *      2 is plausible rather than devnet-verified; reason 1 is the dated one.
+ *
+ * WHY THIS FILE DECODES INSTRUCTIONS INSTEAD OF MATCHING SOURCE TEXT.
+ *
+ * The first version asserted on the route's source, because the handler cannot be
+ * driven in a test (GH#2542: "Account count mismatch: expected 3, got 9"). Review
+ * built a harness, ran 33 mutants against those assertions, and **21 survived** —
+ * including seeding the LONG domain twice (`domain: 0`), paying 10% of LP, a FINITE
+ * expirySlot that re-arms the deadlock, both domains sharing lane 1, and both
+ * ledgers pointing at the slab. All of those change a VALUE, and source matching
+ * only saw TEXT. Worse, comments were never stripped, so one added comment line
+ * could hijack an anchor and revert the whole change with a green suite.
+ *
+ * The funding instructions are now built by lib/mobile-market-funding-ixs.ts, which
+ * needs no network and no mocks, so every value is asserted by comparing encoded
+ * instruction data byte-for-byte against a reference encoding. Reference encodings
+ * rather than hand-computed offsets: the layout stays the SDK's business.
+ */
+
+import { describe, it, expect } from "vitest";
+import { PublicKey } from "@solana/web3.js";
+import {
+  encodeTopUpBackingBucket,
+  encodeTopUpInsurance,
+  encodeDepositCollateral,
+  deriveLpBackingLedger,
+  MAX_BACKING_BUCKET_EXPIRY_SLOT,
+} from "@percolatorct/sdk";
+import { backingSeedPerDomain, BACKING_SEED_PCT_OF_LP } from "@/lib/market-params";
+import {
+  buildMobileFundingIxs,
+  mobileRequiredCollateral,
+  DEFAULT_LP_COLLATERAL,
+  DEFAULT_INSURANCE,
+  MIN_INIT_MARKET_SEED,
+} from "@/lib/mobile-market-funding-ixs";
+
+const programId = new PublicKey("69VUZ7a2BeXBTpRRManLamF5UWTaNR9B1hy5Se3cdXy9");
+// Fixed, not Keypair.generate(): a random market pubkey can leave
+// deriveLpBackingLedger with no viable PDA nonce, which made this file fail about
+// as often as it passed. Deterministic bytes keep the run reproducible.
+const fixedKey = (fill: number) => new PublicKey(new Uint8Array(32).fill(fill));
+const market = fixedKey(7);
+const lpPortfolio = fixedKey(11);
+const deployer = fixedKey(13);
+const userAta = fixedKey(17);
+const vaultAta = fixedKey(19);
+
+const funding = buildMobileFundingIxs({ programId, market, lpPortfolio, deployer, userAta, vaultAta });
+/** Every instruction the launch issues, for presence/absence checks. */
+const ixs = [...funding.mandatory, ...funding.backingSeeds];
+const seed = backingSeedPerDomain(DEFAULT_LP_COLLATERAL);
+
+/** The exact bytes a correct backing seed for `domain` must carry. */
+function expectedBackingData(domain: number): Buffer {
+  return Buffer.from(
+    encodeTopUpBackingBucket({
+      domain,
+      marketId: 1n,
+      intentId: BigInt(domain) + 2n,
+      authorityEpoch: 0n,
+      amount: seed.toString(),
+      expirySlot: MAX_BACKING_BUCKET_EXPIRY_SLOT.toString(),
+    }),
+  );
+}
+
+const insuranceData = (lane: bigint) =>
+  Buffer.from(
+    encodeTopUpInsurance({
+      marketId: 1n,
+      intentId: lane,
+      authorityEpoch: 0n,
+      amount: DEFAULT_INSURANCE.toString(),
+    }),
+  );
+
+const hasData = (buf: Buffer) => ixs.some((ix) => Buffer.from(ix.data).equals(buf));
+
+const backingIxs = ixs.filter((ix) =>
+  [0, 1].some((d) => Buffer.from(ix.data).equals(expectedBackingData(d))),
+);
+
+describe("both backing domains are seeded, with the right values", () => {
+  it("emits exactly two backing instructions", () => {
+    // Byte-equality against the reference encoding, so this one count also pins
+    // the amount, the domain, the intent lane and the expiry together. `domain: 0`
+    // (which seeds the long bucket twice and leaves the short one Empty) drops
+    // this to 1; dropping a seed drops it to 1; a wrong amount or expiry drops it
+    // to 0. Every one of those survived the previous source-text assertions.
+    expect(backingIxs).toHaveLength(2);
+  });
+
+  it("seeds domain 0 and domain 1, not the same one twice", () => {
+    expect(hasData(expectedBackingData(0))).toBe(true);
+    expect(hasData(expectedBackingData(1))).toBe(true);
+  });
+
+  it("pays the policy amount, floor included", () => {
+    // The exact mutation that survived before: 10% of LP with the floor dropped.
+    const wrong = Buffer.from(
+      encodeTopUpBackingBucket({
+        domain: 0,
+        marketId: 1n,
+        intentId: 2n,
+        authorityEpoch: 0n,
+        amount: ((DEFAULT_LP_COLLATERAL * 10n) / 100n).toString(),
+        expirySlot: MAX_BACKING_BUCKET_EXPIRY_SLOT.toString(),
+      }),
+    );
+    expect(hasData(wrong)).toBe(false);
+    expect(seed).toBe(DEFAULT_LP_COLLATERAL); // 100% of LP at today's policy
+  });
+
+  it("never seeds with a finite expiry", () => {
+    // A finite expiry IS the Fresh-but-lapsed state the seeding exists to prevent,
+    // so this is the wrong value that would make the fix actively harmful.
+    const finite = Buffer.from(
+      encodeTopUpBackingBucket({
+        domain: 0,
+        marketId: 1n,
+        intentId: 2n,
+        authorityEpoch: 0n,
+        amount: seed.toString(),
+        expirySlot: "1000",
+      }),
+    );
+    expect(hasData(finite)).toBe(false);
+  });
+
+  it("points each seed at its OWN per-domain ledger", () => {
+    for (const domain of [0, 1]) {
+      const ix = ixs.find((i) => Buffer.from(i.data).equals(expectedBackingData(domain)));
+      expect(ix).toBeDefined();
+      const [ledger] = deriveLpBackingLedger(programId, market, domain);
+      expect(ix!.keys.some((k) => k.pubkey.equals(ledger))).toBe(true);
+    }
+    // And the two ledgers really are different accounts, so the check above means
+    // something.
+    const [l0] = deriveLpBackingLedger(programId, market, 0);
+    const [l1] = deriveLpBackingLedger(programId, market, 1);
+    expect(l0.equals(l1)).toBe(false);
+  });
+
+  it("draws from the deployer's token account and signs as the deployer", () => {
+    for (const ix of backingIxs) {
+      expect(ix.keys.some((k) => k.pubkey.equals(userAta))).toBe(true);
+      expect(ix.keys.some((k) => k.pubkey.equals(deployer) && k.isSigner)).toBe(true);
+      expect(ix.programId.equals(programId)).toBe(true);
+    }
+  });
+});
+
+describe("the one-shot intent lane is consumed in increasing order", () => {
+  it("insurance keeps lane 1, in the mandatory group", () => {
+    // Unchanged from before this fix. `intentId` is a strictly-increasing one-shot
+    // NONCE, not the CAS — the CAS is `authorityEpoch`, 0 on every instruction
+    // here. So a reused lane does not "collide" with another instruction; the
+    // instruction presenting the consumed lane is itself rejected as a replay.
+    // An earlier version of this fix renumbered insurance to 3 and described the
+    // consequence as a CAS collision; both were wrong.
+    expect(funding.mandatory.some((ix) => Buffer.from(ix.data).equals(insuranceData(1n)))).toBe(true);
+  });
+
+  it("the seeds take lanes 2 and 3, so they must follow the mandatory group", () => {
+    expect(hasData(expectedBackingData(0))).toBe(true); // lane 2
+    expect(hasData(expectedBackingData(1))).toBe(true); // lane 3
+  });
+
+  it("the mandatory group runs deposit, then insurance, then the crank", () => {
+    const deposit = Buffer.from(
+      encodeDepositCollateral({
+        portfolioId: 1n,
+        expectedSequence: 1n,
+        amount: DEFAULT_LP_COLLATERAL.toString(),
+      }),
+    );
+    const idx = (buf: Buffer) =>
+      funding.mandatory.findIndex((ix) => Buffer.from(ix.data).equals(buf));
+    expect(idx(deposit)).toBe(0);
+    expect(idx(insuranceData(1n))).toBeGreaterThan(idx(deposit));
+    expect(funding.mandatory).toHaveLength(3);
+  });
+});
+
+describe("the seeds are NOT in the load-bearing transaction (GH#2514 policy)", () => {
+  it("the mandatory group carries no backing seed", () => {
+    // THE structural assertion. GH#2514 settled that seeding is non-fatal: "a
+    // transient RPC error must not strand a live market". Bundling the seeds with
+    // the deposit would make a non-fatal step fatal AND raise that transaction's
+    // draw from 1,100 to 3,000 tokens, so an under-funded wallet would revert the
+    // LP deposit on a launch that previously succeeded. An earlier version of this
+    // fix did exactly that.
+    for (const domain of [0, 1]) {
+      expect(
+        funding.mandatory.some((ix) => Buffer.from(ix.data).equals(expectedBackingData(domain))),
+      ).toBe(false);
+    }
+  });
+
+  it("the seed group carries nothing load-bearing", () => {
+    const deposit = Buffer.from(
+      encodeDepositCollateral({
+        portfolioId: 1n,
+        expectedSequence: 1n,
+        amount: DEFAULT_LP_COLLATERAL.toString(),
+      }),
+    );
+    expect(funding.backingSeeds.some((ix) => Buffer.from(ix.data).equals(deposit))).toBe(false);
+    expect(funding.backingSeeds.some((ix) => Buffer.from(ix.data).equals(insuranceData(1n)))).toBe(false);
+    expect(funding.backingSeeds).toHaveLength(2);
+  });
+});
+
+describe("the collateral requirement is reported, and is right", () => {
+  it("is the sum of every amount the flow actually draws", () => {
+    // Read from the SAME module the route reports from, so a wrong expression in
+    // the route cannot pass by the test restating the right one — which is how
+    // five wrong-value mutants survived the previous version.
+    expect(mobileRequiredCollateral()).toBe(
+      MIN_INIT_MARKET_SEED + DEFAULT_LP_COLLATERAL + DEFAULT_INSURANCE + 2n * seed,
+    );
+    expect(mobileRequiredCollateral()).toBe(3_600_000_000n);
+  });
+
+  it("includes BOTH backing seeds, not one and not none", () => {
+    expect(mobileRequiredCollateral()).not.toBe(
+      MIN_INIT_MARKET_SEED + DEFAULT_LP_COLLATERAL + DEFAULT_INSURANCE + seed,
+    );
+    // The pre-fix total, which the commit says a wallet cannot finish TX3 with.
+    expect(mobileRequiredCollateral()).not.toBe(1_600_000_000n);
+  });
+
+  it("includes the vault seed, which this flow — unlike the web one — transfers", () => {
+    expect(mobileRequiredCollateral()).toBeGreaterThan(
+      DEFAULT_LP_COLLATERAL + DEFAULT_INSURANCE + 2n * seed,
+    );
+  });
+
+  it("CONTROL: the policy behind the 3,600 is still 100% of LP", () => {
+    expect(BACKING_SEED_PCT_OF_LP).toBe(100n);
+  });
+});
