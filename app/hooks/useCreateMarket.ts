@@ -325,7 +325,14 @@ export interface CreateMarketState {
    * path, or null when it did not. Recorded so a user who signs six times can
    * say WHY without having had devtools open. See #2586.
    */
-  batchFallbackReason?: string | null;
+  /**
+   * REQUIRED, not optional. Optional meant the compiler guarded only the
+   * producer: deleting the `setState` that stores the reason, or the clear that
+   * stops a stale one surfacing on a retry, type-checked in silence. Required
+   * forces the initial state and reset() to name it, so every state
+   * construction has to decide.
+   */
+  batchFallbackReason: string | null;
   step: number;
   stepLabel: string;
   txSigs: string[];
@@ -679,6 +686,40 @@ interface FreshBatchContext {
   setState: (updater: (s: CreateMarketState) => CreateMarketState) => void;
 }
 
+/**
+ * A one-line, user-safe explanation of why the batched launch fell back.
+ *
+ * Three things the raw `err.message` got wrong:
+ *
+ *  - A REJECTED approval is not an unavailable fast path. Declining the single
+ *    batch prompt throws before broadcast, so it lands here — and saying
+ *    "one-approval launch unavailable" tells the user the opposite of what
+ *    happened. It was available; they declined it.
+ *  - `err.message` is `""` for `new Error()` and for several wallet-adapter
+ *    errors. An empty string satisfies `reason: string` and then renders as
+ *    nothing, which is exactly the silence this whole change exists to remove.
+ *  - Server messages are written for operators. "Is PLAYGROUND_KEEPER_KEYPAIR
+ *    set in server env?" is a question for whoever runs the deployment, not
+ *    for someone launching a market.
+ *
+ * Never throws: `String(err)` can raise on a null-prototype object, a Proxy,
+ * or a throwing `Symbol.toPrimitive`, and this runs outside any try.
+ */
+export function describeBatchFallback(err: unknown): string {
+  let raw = "";
+  try {
+    raw = err instanceof Error ? (err.message || err.name) : String(err);
+  } catch {
+    raw = "";
+  }
+  if (/user rejected|transaction cancelled|WalletSignTransactionError/i.test(raw)) {
+    return "you declined the single-approval signature";
+  }
+  // Drop the operator-facing tail; the full text still goes to the console.
+  const cleaned = raw.replace(/\s*Is [A-Z_]+ set in server env\?\s*/g, " ").trim();
+  return cleaned || "the wallet or network did not complete the batch";
+}
+
 type FreshBatchOutcome =
   | { status: "success" }
   /**
@@ -856,7 +897,12 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       const preFundResp = await preFundPromise;
       if (preFundResp && !preFundResp.ok) {
         const err = await preFundResp.json().catch(() => ({ error: "Unknown error" }));
-        throw new Error(`Devnet pre-fund failed: ${(err as { error?: string }).error ?? preFundResp.status}`);
+        const { error: pfError, nextClaimAt } = err as { error?: string; nextClaimAt?: string | null };
+        // The 429 body carries `nextClaimAt` — the retry time. Dropping it
+        // left the user with "Already pre-funded recently" and no idea when
+        // "recently" stops, which is the single fact they need.
+        const when = nextClaimAt ? ` Try again after ${nextClaimAt}.` : "";
+        throw new Error(`Devnet pre-fund failed: ${pfError ?? preFundResp.status}.${when}`);
       }
     }
 
@@ -1707,7 +1753,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       // 429 from /api/devnet-pre-fund's 24h faucet gate, a keeper co-sign
       // failure, an airdrop that did not confirm — and they are
       // indistinguishable from the outside.
-      const reason = err instanceof Error ? err.message : String(err);
+      const reason = describeBatchFallback(err);
       console.warn(
         `[useCreateMarket] BATCHED launch fell back to the 6-step sequential path: ${reason}`,
       );
@@ -1750,6 +1796,7 @@ export function useCreateMarket() {
     phase: "idle",
     landingIndex: 0,
     landingTotal: 0,
+    batchFallbackReason: null,
   });
 
   // PERC-8329 / GH#1964: Slab keypair is normally kept in-memory ONLY (this ref), not
@@ -1990,10 +2037,15 @@ export function useCreateMarket() {
         // status === "fallback" — nothing broadcast; safe to run the
         // sequential path below in this SAME call. Reset the phase/landing
         // UI state so LaunchProgress falls back to its per-step rendering.
-        // Keep the reason in state, not only in the console. The console line
-        // is gone the moment the tab closes, and the people who hit this are
-        // launching a market, not watching devtools — so the recovery JSON the
-        // wizard already offers is where it has to survive.
+        // Keep the reason in state, not only in the console — the people who
+        // hit this are launching a market, not watching devtools.
+        //
+        // This is React state and dies with the tab. It does NOT reach the
+        // downloaded recovery JSON, which is built from the localStorage
+        // in-flight record (RecoveryExportButton -> loadLastInFlightMarket)
+        // and never sees CreateMarketState. The fallback happens before
+        // anything is on chain, so there is no in-flight record to attach to
+        // yet. Noted rather than implied.
         //
         // NOT surfaced as `error`: nothing failed from the user's point of
         // view. The launch continues, just with six prompts instead of one.
@@ -3744,6 +3796,7 @@ export function useCreateMarket() {
       slabAddress: null,
       error: null,
       loading: false,
+      batchFallbackReason: null,
       devnetMint: null,
       devnetAirdropAmount: null,
       devnetAirdropSymbol: null,
