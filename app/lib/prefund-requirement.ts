@@ -25,12 +25,26 @@
 import { backingSeedPerDomain } from "@/lib/market-params";
 
 /**
- * Minimum seed the program requires at InitMarket.
- * Source of truth: hooks/useCreateMarket.ts → MIN_INIT_MARKET_SEED (a "use
- * client" module, which is why the value is restated here rather than imported).
- * Must also match percolator.rs constants::MIN_INIT_MARKET_SEED.
+ * The vault seed is deliberately NOT part of this total.
+ *
+ * `MIN_INIT_MARKET_SEED` (500 tokens) looks like it belongs here and does not.
+ * The W11 fix (2026-07-08, hooks/useCreateMarket.ts) removed the pre-InitMarket
+ * vault Transfer entirely: `launch-test-market.ts`, the proven on-chain
+ * reference, never seeds the vault before InitMarket and still succeeds, because
+ * the engine does not require or account for a pre-existing vault balance. There
+ * is no `createTransferInstruction` anywhere in the launch hook, and
+ * `MIN_INIT_MARKET_SEED` survives there only in its own definition and two
+ * "we removed this" comments.
+ *
+ * Charging it would over-state the requirement by 500 tokens, which is not
+ * harmless: a balance between the real cost and the inflated one would stop
+ * short-circuiting at the balance check and fall through to the 24h gate, where
+ * a still-open claim 429s and aborts the launch mid-flight — the same class of
+ * failure this module exists to prevent, just at a different balance.
+ *
+ * (The mobile route, app/api/mobile/create-market, DOES transfer a seed. It is a
+ * different flow and does not call this endpoint.)
  */
-export const MIN_INIT_MARKET_SEED = 500_000_000n;
 
 /**
  * Amounts assumed when a caller sends none — the reference launch the pre-fund
@@ -45,18 +59,27 @@ export const DEFAULT_INSURANCE_AMOUNT = 100_000_000n;
  * Ceiling on a fundable launch, expressed as a REQUIREMENT (the mint is 2× it).
  *
  * The caller supplies the amounts that size the mint, so this bounds what a
- * single request can ask the faucet authority for. Exceeding it must be REFUSED,
- * never clamped: funding part-way and reporting success is precisely the defect
- * this module exists to remove.
+ * single request can ask the faucet authority for. Before this was
+ * request-derived the route always minted a fixed 3,200; keeping the ceiling
+ * tight limits how far that amplification goes. At 10,000 the mint tops out at
+ * 20,000 tokens — the same order as /api/faucet's flat 10,000 — and still covers
+ * an LP seed of ~3,300, over 3x the default.
+ *
+ * Exceeding it must be REFUSED, never clamped: funding part-way and reporting
+ * success is precisely the defect this module exists to remove.
+ *
+ * NOTE this route has no per-IP fund limiter, unlike /api/playground/faucet,
+ * /api/auto-fund and /api/devnet-airdrop (see lib/fund-ip-rate-limit.ts). Only
+ * the per-wallet 24h gate and middleware's general 120 req/min/IP apply, and
+ * fresh keypairs defeat the former. Adding one is a separate decision.
  */
-export const MAX_FUNDABLE_REQUIREMENT = 50_000_000_000n; // 50,000 tokens
+export const MAX_FUNDABLE_REQUIREMENT = 10_000_000_000n; // 10,000 tokens
 
 /**
  * Total tokens a full market creation draws from the creator's collateral
  * account:
  *
- *   vault seed (MIN_INIT_MARKET_SEED)
- *   + LP collateral
+ *   LP collateral
  *   + insurance fund
  *   + ONE backing seed PER DOMAIN   ← TWO deposits, both from the creator
  *
@@ -74,23 +97,42 @@ export function fullMarketRequirement(
   lpCollateral: bigint,
   insuranceAmount: bigint,
 ): bigint {
-  return (
-    MIN_INIT_MARKET_SEED +
-    lpCollateral +
-    insuranceAmount +
-    2n * backingSeedPerDomain(lpCollateral)
-  );
+  return lpCollateral + insuranceAmount + 2n * backingSeedPerDomain(lpCollateral);
 }
 
 /**
  * What the faucet mints, given a requirement.
  *
- * 2× for retry headroom (#757) — and, load-bearing, so the SECOND and THIRD
- * pre-fund calls in a single launch still see a sufficient balance and
- * short-circuit before the 24h per-wallet gate is consulted. That property (H3,
+ * 2× for retry headroom (#757) — and, load-bearing, so a SECOND
+ * pre-fund call in a single launch still sees a sufficient balance and
+ * short-circuits before the 24h per-wallet gate is consulted. (There are two
+ * call sites, not the three the older comments claim — W11 deleted the
+ * vault-seed call.) That property (H3,
  * GH#2335) only holds while the requirement is correct: understating it is what
  * pushed the step-4 call back into the gate and made it a 429.
  */
+/**
+ * The requirement actually used to fund, given what the caller asked for.
+ *
+ * SECURITY: the caller supplies the amounts and does NOT prove ownership of
+ * `walletAddress`, and the 24h gate key is derived from public values. Letting a
+ * request lower the target created an unauthenticated 24h launch-denial: POST a
+ * victim's wallet with `lpCollateral: "0"`, the requirement collapses to the
+ * backing floor, the gate is consumed, a token mint far too small to launch with
+ * lands, and the victim's own launch then 429s for a full day. Before the amounts
+ * were request-derived this was impossible, because the fixed mint happened to
+ * satisfy a real launch.
+ *
+ * So a request may only ever raise the target. Upward correctness (a large LP
+ * launch gets funded for a large LP launch) is preserved; the downward grief is
+ * gone.
+ */
+export function fundingRequirement(lpCollateral: bigint, insuranceAmount: bigint): bigint {
+  const asked = fullMarketRequirement(lpCollateral, insuranceAmount);
+  const floor = fullMarketRequirement(DEFAULT_LP_COLLATERAL, DEFAULT_INSURANCE_AMOUNT);
+  return asked > floor ? asked : floor;
+}
+
 export function fundAmountFor(requirement: bigint): bigint {
   return requirement * 2n;
 }
@@ -104,8 +146,20 @@ export function fundAmountFor(requirement: bigint): bigint {
  * rather than fall back to a default that would under-fund; returns `fallback`
  * only when the field is genuinely absent.
  */
+export const U64_MAX = 2n ** 64n - 1n;
+
 export function parseAtomicAmount(raw: unknown, fallback: bigint): bigint | null {
-  if (raw === undefined || raw === null) return fallback;
+  // Only a genuinely ABSENT field falls back. `null` is present-and-not-a-string,
+  // so it is refused like any other malformed value rather than silently
+  // under-funding.
+  if (raw === undefined) return fallback;
   if (typeof raw !== "string" || !/^[0-9]{1,20}$/.test(raw)) return null;
-  return BigInt(raw);
+  const value = BigInt(raw);
+  // The digit bound does not bound the VALUE: 20 digits reaches ~5.4x u64, and
+  // leading zeros make the digit count meaningless anyway. Amounts end up in a
+  // u64 mint instruction, so bound the number. Today the ceiling check would also
+  // catch this, which is exactly the problem — u64 safety should not depend on a
+  // policy limit somebody may later raise.
+  if (value > U64_MAX) return null;
+  return value;
 }

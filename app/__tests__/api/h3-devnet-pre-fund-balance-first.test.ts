@@ -32,10 +32,10 @@ interface GateResult {
 import {
   DEFAULT_INSURANCE_AMOUNT,
   DEFAULT_LP_COLLATERAL,
-  MIN_INIT_MARKET_SEED,
   fullMarketRequirement,
   fundAmountFor,
 } from "@/lib/prefund-requirement";
+import { backingSeedPerDomain } from "@/lib/market-params";
 
 const FULL_MARKET_TOKEN_REQUIREMENT = fullMarketRequirement(
   DEFAULT_LP_COLLATERAL,
@@ -104,11 +104,17 @@ describe("H3: devnet-pre-fund balance-first gate ordering", () => {
     };
     const doMint = async () => ({ sig: "SHOULD_NOT_REACH" });
 
-    // Vault seed already spent since the 1st mint — still above the full
-    // requirement, which is the property that keeps the later calls out of the
-    // gate. Derived from the shared module, so it cannot go on asserting
-    // sufficiency at a balance the launch could not actually use (GH#2592).
-    const drawnDown = FUND_AMOUNT - MIN_INIT_MARKET_SEED;
+    // Part of the launch already paid since the 1st mint — the LP deposit and
+    // both backing top-ups — leaving only the insurance top-up. Still above the
+    // full requirement, which is the property that keeps later calls out of the
+    // gate (GH#2592).
+    //
+    // The drawdown is the REAL spend. An earlier version modelled it as
+    // `FUND_AMOUNT - MIN_INIT_MARKET_SEED`, a vault-seed transfer the W11 fix
+    // deleted in 2026-07-08, so it asserted sufficiency after a spend that never
+    // happens. Keep this expressed as instructions actually issued.
+    const spentSoFar = DEFAULT_LP_COLLATERAL + 2n * backingSeedPerDomain(DEFAULT_LP_COLLATERAL);
+    const drawnDown = FUND_AMOUNT - spentSoFar;
     expect(drawnDown).toBeGreaterThanOrEqual(FULL_MARKET_TOKEN_REQUIREMENT);
     const result = await simulatePreFund(drawnDown, tryFaucetGate, doMint);
     expect(result.status).toBe("sufficient");

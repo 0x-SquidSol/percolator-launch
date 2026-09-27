@@ -29,10 +29,12 @@ import {
   DEFAULT_INSURANCE_AMOUNT,
   DEFAULT_LP_COLLATERAL,
   MAX_FUNDABLE_REQUIREMENT,
-  fullMarketRequirement,
   fundAmountFor,
+  fundingRequirement,
   parseAtomicAmount,
 } from "@/lib/prefund-requirement";
+import { getClientIp } from "@/lib/get-client-ip";
+import { checkFundRateLimit } from "@/lib/fund-ip-rate-limit";
 import {
   Keypair,
   PublicKey,
@@ -179,7 +181,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const fullRequirement = fullMarketRequirement(lpAtoms, insuranceAtoms);
+    // Floored at the default launch — a request may raise the funding target,
+    // never lower it. See fundingRequirement().
+    const fullRequirement = fundingRequirement(lpAtoms, insuranceAtoms);
     if (fullRequirement > MAX_FUNDABLE_REQUIREMENT) {
       // Refused, not clamped — see MAX_FUNDABLE_REQUIREMENT.
       return NextResponse.json(
@@ -353,6 +357,20 @@ export async function POST(req: NextRequest) {
         required: fullRequirement.toString(),
         message: "Wallet already has sufficient tokens",
       });
+    }
+
+    // Per-IP bound on the shared DEVNET_MINT_AUTHORITY_KEYPAIR, mirroring
+    // /api/faucet, /api/playground/faucet, /api/auto-fund and /api/devnet-airdrop.
+    // This endpoint was the only one of the five without it (GH#2471's vector),
+    // and the mint amount is now request-derived, so the per-request ceiling alone
+    // is not a sufficient bound. Placed AFTER the sufficient-balance short-circuit
+    // so the second in-launch call spends no IP budget, and BEFORE the 24h gate.
+    const fundRl = await checkFundRateLimit(getClientIp(req));
+    if (!fundRl.allowed) {
+      return NextResponse.json(
+        { error: "Too many requests. Please slow down and try again shortly." },
+        { status: 429, headers: { "Retry-After": String(fundRl.retryAfter) } },
+      );
     }
 
     // Rate limit: DB-backed (Supabase) primary gate, durable Blob-backed fallback
