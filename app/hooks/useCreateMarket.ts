@@ -75,6 +75,11 @@ import { PERCOLATOR_NFT_PROGRAM_ID } from "@/lib/nft-program";
 import { toE6 } from "@/lib/format";
 import { buildKeeperRegisterProofMessage } from "@/lib/keeper-register-proof";
 import { deriveMarketParams, MIN_LEVERAGE_X, backingSeedPerDomain, leverageFromMarginBps } from "@/lib/market-params";
+// GH#2592: the step-4 predicate and /api/devnet-pre-fund's funding target must be
+// the SAME number. They were two hand-copies, and the route's was understated by
+// both backing seeds, so it answered "sufficient" to the very request that said
+// the wallet was short.
+import { fullMarketRequirement } from "@/lib/prefund-requirement";
 import { defaultCrankObservations, readPortfolioIdentity, readAssetMarketId, readAssetControlSeqs } from "@/lib/v18-wire";
 // v17: SetOracleAuthority (tag 17), PushOraclePrice (tag 16), SetOraclePriceCap (tag 16),
 // and UpdateConfig (tag 14) do not exist in v17. All oracle + risk params are embedded
@@ -2939,10 +2944,10 @@ export function useCreateMarket() {
           // Pre-flight: verify user has enough tokens for LP deposit + insurance top-up.
           // Fixes #757/#758 — pre-fund only checked seed amount (500), but TX4 also
           // needs lpCollateral + insuranceAmount (default 1,000 + 100 = 1,100 more).
-          // Also covers the two backing-bucket dust deposits (long+short domains,
-          // see backingSeedPerDomain) so the deadlock-prevention TopUp
-          // below never fails on a wallet funded to the exact old minimum.
-          const tx4Required = params.lpCollateral + params.insuranceAmount + 2n * backingSeed;
+          // Covers the two backing-bucket deposits (long+short domains) as well
+          // as the LP deposit and insurance. Shared with the pre-fund route via
+          // fullMarketRequirement so the two cannot disagree again (GH#2592).
+          const tx4Required = fullMarketRequirement(params.lpCollateral, params.insuranceAmount);
           let tx4Balance = 0n;
           try {
             const tx4Acct = await getAccount(connection, userAta);

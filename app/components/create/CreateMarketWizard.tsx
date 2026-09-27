@@ -15,6 +15,7 @@ import { clearInFlightMarket } from "@/lib/inFlightMarket";
 import { useQuickLaunch } from "@/hooks/useQuickLaunch";
 import { type DexPoolResult } from "@/hooks/useDexPoolSearch";
 import { parseHumanAmount } from "@/lib/parseAmount";
+import { MAX_FUNDABLE_REQUIREMENT } from "@/lib/prefund-requirement";
 import { backingSeedPerDomain } from "@/lib/market-params";
 import { getConfig, getNetwork } from "@/lib/config";
 import { toE6, formatMarkPrice } from "@/lib/format";
@@ -318,11 +319,17 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
   // BACKING_SEED_PCT_OF_LP, which is what the other two call sites do: the
   // helper also applies BACKING_SEED_MIN_ATOMS, so a tiny LP seed does not
   // under-require here the way a bare percentage would.
+  // GH#2592: deliberately NOT refactored to call fullMarketRequirement, even
+  // though it computes the same number. create-market-launch-gate.test.ts binds
+  // this expression textually — it is the regression guard dcc added for GH#2515
+  // — and this copy has never been the one that drifted. The copy that did was
+  // /api/devnet-pre-fund's, which is now unified with the hook's tx4Required.
   const totalTokensRequired = useMemo((): bigint => {
     const lpRaw = parseHumanAmount(wizard.lpCollateral || "0", decimals);
     const insRaw = parseHumanAmount(wizard.insuranceAmount, decimals);
     return lpRaw + insRaw + 2n * backingSeedPerDomain(lpRaw);
   }, [wizard.lpCollateral, wizard.insuranceAmount, decimals]);
+
   const hasSufficientTokensForSeed = wizard.walletBalance !== null && wizard.walletBalance >= totalTokensRequired;
   const symbol = wizard.tokenMeta?.symbol ?? "Token";
 
@@ -383,6 +390,14 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
   // captures can walk through the wizard without funding a real wallet.
   const mockBypass = isMockMode();
   const skipTokenBalanceCheck = isDevnet || mockBypass;
+  // On devnet the token-balance gate above is skipped because the faucet funds
+  // the wallet — but the faucet refuses a launch it cannot cover, and nothing
+  // bounds LP collateral anywhere in validation. Left ungated, a creator who
+  // types a large LP gets no warning and the refusal lands at step 3 of the
+  // sequential/resume path, AFTER earlier steps have landed on chain and spent
+  // SOL. Gate it where it is still free to fix.
+  const devnetFaucetCeilingExceeded =
+    isDevnet && !mockBypass && totalTokensRequired > MAX_FUNDABLE_REQUIREMENT;
 
   // Build oracle feed for create — also used below to gate launch on a real price
   // being available (no on-chain InitMarket call should ever ship a priceE6 of 0).
@@ -482,6 +497,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
     paramsValid &&
     oraclePriceValid &&
     (skipTokenBalanceCheck || (hasTokens && hasSufficientTokensForSeed)) &&
+    !devnetFaucetCeilingExceeded &&
     (mockBypass || hasSufficientSol);
 
   const launchDisabled = !allValid || !publicKey;
@@ -503,9 +519,11 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
                   : "Waiting on price feed")
               : !mockBypass && !hasSufficientSol
                 ? `Need ~${requiredSol.toFixed(3)} SOL`
-                : !skipTokenBalanceCheck && (!hasTokens || !hasSufficientTokensForSeed)
-                  ? "Insufficient token balance"
-                  : undefined;
+                : devnetFaucetCeilingExceeded
+                  ? `Devnet faucet caps a launch at ${(Number(MAX_FUNDABLE_REQUIREMENT) / 10 ** decimals).toLocaleString()} ${symbol} — reduce LP collateral`
+                  : !skipTokenBalanceCheck && (!hasTokens || !hasSufficientTokensForSeed)
+                    ? "Insufficient token balance"
+                    : undefined;
 
   // Demo-launch state machine. When mockBypass is on and the user clicks
   // LAUNCH MARKET, fake the 5-step deploy progress over ~3 seconds, then
