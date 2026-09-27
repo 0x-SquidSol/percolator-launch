@@ -79,6 +79,16 @@ describe("a degraded six-prompt launch says so", () => {
     expect(shortToned.length).toBe(0);
   });
 
+  it("CONTROL: an explicitly cleared reason renders nothing", () => {
+    // create() clears this on EVERY attempt, so a retry that never tried the
+    // batch shows no explanation. `null` and `undefined` must behave alike —
+    // the field is optional, and the clear writes null.
+    render(<LaunchProgress state={signingState({ batchFallbackReason: null })} />);
+
+    expect(screen.getByText(/Step 2 of 6/)).toBeInTheDocument();
+    expect(screen.queryByText(/One-approval launch unavailable/)).toBeNull();
+  });
+
   it("stays quiet once the launch is no longer mid-signature", () => {
     // The line belongs to the signing phase. Left rendered after `loading`
     // clears, it would sit under a finished market explaining a path the user
