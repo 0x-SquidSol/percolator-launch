@@ -470,7 +470,11 @@ function TradePageInner({ slab }: { slab: string }) {
   const gridStyle: CSSProperties = {
     gridTemplateAreas: '"MarketBar MarketBar" "Chart OrderTicket" "PositionsDock OrderTicket"',
     gridTemplateColumns: "minmax(0,1fr) 340px",
-    gridTemplateRows: "auto minmax(0,1fr) minmax(220px,340px)",
+    // Chart row is CLAMPED (not a bare 1fr) so it can't balloon on a big
+    // monitor or get squished on a laptop — min 340px, prefers ~50dvh, caps at
+    // 640px. The positions dock takes the remaining space (1fr) so there's no
+    // empty gap when the chart hits its cap on a tall screen.
+    gridTemplateRows: "auto clamp(340px, 50dvh, 640px) minmax(220px, 1fr)",
   };
 
   return (
