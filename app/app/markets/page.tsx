@@ -5,6 +5,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { useConnectionCompat } from "@/hooks/useWalletCompat";
 import { prefetchSlab, prefetchSlabsBatch } from "@/lib/slabCache";
+import { numericToBigInt, openInterestOf, isSupabaseSentinel } from "@/lib/supabase-numeric";
 import { setMarketIdentity } from "@/lib/marketIdentityCache";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useMarketDiscovery } from "@/hooks/useMarketDiscovery";
@@ -484,13 +485,14 @@ function MarketsPageInner() {
     }
     // Helper to get OI (prefer on-chain, fall back to Supabase)
     // Sanitizes sentinel values (u64::MAX) to 0
-    const getOI = (m: MergedMarket): bigint => {
-      // v17 discovery carries no engine state — use the Supabase stats branch below.
-      if (m.onChain && !m.onChain.configV17) return sanitizeOnChainValue(m.onChain.engine.totalOpenInterest ?? 0n);
-      const supaOI = m.supabase?.total_open_interest
-        ?? ((m.supabase?.open_interest_long ?? 0) + (m.supabase?.open_interest_short ?? 0));
-      return BigInt(isSentinelNum(supaOI) ? 0 : Math.max(0, supaOI));
-    };
+    // Lives in lib/supabase-numeric.ts so it can be tested: inline here it was
+    // unreachable by any test (the page's inner component is not exported and
+    // needs four data hooks plus a navigation context), and review demonstrated
+    // that reverting the whole conversion fix left the 3687-test suite
+    // bit-identical.
+    const getOI = (m: MergedMarket): bigint => openInterestOf(m, sanitizeOnChainValue);
+    const volumeSortKey = (m: MergedMarket): bigint =>
+      isSupabaseSentinel(m.supabase?.volume_24h) ? 0n : numericToBigInt(m.supabase?.volume_24h);
     // USD-aware OI sort key: converts raw token OI → USD using market price.
     // Markets with no valid price return 0 so they sort to the bottom in USD mode.
     // Fixes #1327: no-price markets with huge raw token OI were floating above real USD markets.
@@ -507,10 +509,12 @@ function MarketsPageInner() {
       switch (sortBy) {
         case "volume": {
           // Prefer Supabase volume, fall back to OI.
-          // Math.floor guards against fractional values from Supabase NUMERIC columns —
-          // BigInt() throws TypeError on non-integer input.
-          const volA = BigInt(Math.floor(a.supabase?.volume_24h ?? 0)) || getOI(a);
-          const volB = BigInt(Math.floor(b.supabase?.volume_24h ?? 0)) || getOI(b);
+          // Same conversion AND the same sentinel guard as getOI and the display
+          // path. This sort was the one place that skipped the sentinel check, so
+          // a u64::MAX volume_24h sorted to the top of the table while rendering
+          // as "—" — the exact "two conversions out of step" this consolidates.
+          const volA = volumeSortKey(a) || getOI(a);
+          const volB = volumeSortKey(b) || getOI(b);
           return volB > volA ? 1 : volB < volA ? -1 : 0;
         }
         case "oi": {
@@ -1054,9 +1058,12 @@ function MarketsPageInner() {
                   const oiTokensRaw = m.onChain && !m.onChain.configV17
                     ? sanitizeOnChainValue(m.onChain.engine.totalOpenInterest)
                     : (() => {
+                        // Same conversion the OI SORT uses (numericToBigInt), so the
+                        // displayed figure and the sort key cannot disagree. These were
+                        // Math.round while the sort floored: a fractional 99.6 would have
+                        // shown 100 and sorted as 99.
                         const v = m.supabase?.total_open_interest ?? ((m.supabase?.open_interest_long ?? 0) + (m.supabase?.open_interest_short ?? 0));
-                        const safe = isSentinelNum(v) ? 0 : Math.max(0, v);
-                        return BigInt(Math.round(safe));
+                        return isSentinelNum(v) ? 0n : numericToBigInt(v);
                       })();
                   // "Market LP" — the LP-vault collateral that actually backs trades on this
                   // market, NOT the (separately admin-managed) insurance fund. Same
@@ -1072,11 +1079,10 @@ function MarketsPageInner() {
                     ? sanitizeOnChainValue(m.onChain.engine.vault || m.onChain.engine.cTot)
                     : (() => {
                         const v = m.supabase?.vault_balance ?? m.supabase?.c_tot ?? 0;
-                        const safe = isSentinelNum(v) ? 0 : Math.max(0, v);
-                        return BigInt(Math.round(safe));
+                        return isSentinelNum(v) ? 0n : numericToBigInt(v);
                       })();
                   const volume24hRaw = m.supabase?.volume_24h != null && !isSentinelNum(m.supabase.volume_24h) && m.supabase.volume_24h > 0
-                    ? BigInt(Math.round(m.supabase.volume_24h))
+                    ? numericToBigInt(m.supabase.volume_24h)
                     : null;
                   
                   // Display values (USD or tokens) — cap token display at 2dp for table readability
