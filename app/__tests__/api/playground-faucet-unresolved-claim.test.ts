@@ -113,10 +113,17 @@ vi.mock('@solana/web3.js', () => {
 
   class Connection {}
 
+  class SendTransactionError extends Error {
+    constructor({ transactionMessage }: { transactionMessage: string }) {
+      super(transactionMessage);
+    }
+  }
+
   return {
     Connection,
     PublicKey,
     Transaction,
+    SendTransactionError,
     LAMPORTS_PER_SOL: 1_000_000_000,
   };
 });
@@ -245,5 +252,50 @@ describe('POST /api/playground/faucet claim safety after broadcast', () => {
     expect(body.retryable).toBe(true);
     expect(mocks.confirmServerSignature).not.toHaveBeenCalled();
     expect(mocks.releaseFaucetClaim).toHaveBeenCalledTimes(1);
+  });
+  describe('when sendRawTransaction itself throws', () => {
+    const presig = new Uint8Array(64).fill(7);
+    beforeEach(() => {
+      mocks.getDevnetMintSigner.mockReturnValue({
+        publicKey: () => 'MintAuthority1111111111111111111111111111',
+        signTransaction: () => ({ signature: presig, serialize: () => new Uint8Array(0) }),
+      });
+    });
+
+    it('fails closed on an ambiguous send error, reporting the pre-send signature', async () => {
+      const bs58 = (await import('bs58')).default;
+      mocks.sendRawTransaction.mockRejectedValueOnce(new TypeError('fetch failed'));
+
+      const { POST } = await import('@/app/api/playground/faucet/route');
+      const response = await POST(requestFor('WalletSendDrop111111111111111111111111111'));
+      const body = await response.json();
+
+      expect(response.status).toBe(503);
+      expect(body.pending).toBe(true);
+      expect(body.retryable).toBe(false);
+      expect(body.usdc_sig).toBe(bs58.encode(presig));
+      expect(mocks.releaseFaucetClaim).not.toHaveBeenCalled();
+    });
+
+    it('releases the claim when the RPC explicitly rejected the send', async () => {
+      const { SendTransactionError } = await import('@solana/web3.js');
+      mocks.sendRawTransaction.mockRejectedValueOnce(
+        new SendTransactionError({
+          action: 'simulate',
+          signature: '',
+          transactionMessage: 'Blockhash not found',
+          logs: [],
+        }),
+      );
+
+      const { POST } = await import('@/app/api/playground/faucet/route');
+      const response = await POST(requestFor('WalletRejected11111111111111111111111111'));
+      const body = await response.json();
+
+      expect(response.status).toBe(503);
+      expect(body.pending).not.toBe(true);
+      expect(body.retryable).toBe(true);
+      expect(mocks.releaseFaucetClaim).toHaveBeenCalledTimes(1);
+    });
   });
 });

@@ -39,7 +39,9 @@ import {
   PublicKey,
   Transaction,
   LAMPORTS_PER_SOL,
+  SendTransactionError,
 } from "@solana/web3.js";
+import bs58 from "bs58";
 import {
   getAssociatedTokenAddress,
   createAssociatedTokenAccountInstruction,
@@ -237,11 +239,23 @@ export async function POST(req: NextRequest) {
       tx.recentBlockhash = blockhash;
       tx.feePayer = mintAuthPk; // playground sponsors this transaction's fee
 
-      const signedTx = mintSigner.signTransaction(tx);
-      usdcSig = await connection.sendRawTransaction(
-        (signedTx as Transaction).serialize(),
-        { skipPreflight: false },
-      );
+      const signedTx = mintSigner.signTransaction(tx) as Transaction;
+      // The fee-payer signature IS the transaction id, and it exists before the
+      // send. Keep it so a send that throws ambiguously can still be resolved.
+      const preSendSig = signedTx.signature ? bs58.encode(signedTx.signature) : undefined;
+      try {
+        usdcSig = await connection.sendRawTransaction(signedTx.serialize(), {
+          skipPreflight: false,
+        });
+      } catch (sendErr) {
+        // A JSON-RPC error response (SendTransactionError — preflight/simulation
+        // rejection, bad blockhash) means the node refused it: nothing was
+        // broadcast. Anything else (dropped connection, timeout, 5xx) may have
+        // been forwarded to the leader before the response was lost, so treat
+        // it as broadcast-with-unknown-outcome rather than a safe retry.
+        if (!(sendErr instanceof SendTransactionError)) usdcSig = preSendSig;
+        throw sendErr;
+      }
 
       // Resolve the original signature after broadcast. Do not rebuild/re-mint
       // merely because its blockhash lifetime elapsed: a slow RPC may still be
