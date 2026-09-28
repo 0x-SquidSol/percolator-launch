@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   parsePortfolioV17: vi.fn(),
   getProgramAccounts: vi.fn(),
   getLivePriceSnapshot: vi.fn(),
+  invalidatePortfolio: vi.fn(),
 }));
 
 vi.mock("@/hooks/useWalletCompat", () => ({
@@ -42,6 +43,10 @@ vi.mock("@/lib/mock-mode", () => ({
 
 vi.mock("@/lib/mock-trade-data", () => ({
   isMockSlab: () => false,
+}));
+
+vi.mock("@/lib/portfolio-invalidation", () => ({
+  invalidatePortfolio: mocks.invalidatePortfolio,
 }));
 
 vi.mock("@/lib/errorMessages", () => ({
@@ -221,6 +226,38 @@ describe("useClosePosition fresh-state verification", () => {
 
     expect(mocks.getProgramAccounts).toHaveBeenCalled();
     expect(mocks.trade).not.toHaveBeenCalled();
+  });
+
+  it("notifies the portfolio bus after a successful close (site-wide PositionsBar)", async () => {
+    // Successful v12 close — the site-wide PositionsBar reads its own
+    // usePortfolio instance and would otherwise wait out the 30s poll before
+    // dropping the just-closed position from the header strip.
+    mocks.fetchSlab.mockResolvedValue(Buffer.alloc(1));
+    mocks.parseAccount.mockReturnValue({ positionSize: 2n });
+
+    const { result } = renderHook(() => useClosePosition(slabAddress));
+
+    await act(async () => {
+      await result.current.closePosition(100);
+    });
+
+    expect(mocks.trade).toHaveBeenCalled();
+    expect(mocks.invalidatePortfolio).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT notify the portfolio bus when the close is blocked (nothing changed on chain)", async () => {
+    // Fresh-read fails -> the close is blocked before `trade()`, so nothing
+    // changed on chain and the bus must not fire a needless expensive scan.
+    mocks.fetchSlab.mockRejectedValue(new Error("RPC fresh-state read failed"));
+
+    const { result } = renderHook(() => useClosePosition(slabAddress));
+
+    await act(async () => {
+      await expect(result.current.closePosition(100)).rejects.toThrow();
+    });
+
+    expect(mocks.trade).not.toHaveBeenCalled();
+    expect(mocks.invalidatePortfolio).not.toHaveBeenCalled();
   });
 
 });
