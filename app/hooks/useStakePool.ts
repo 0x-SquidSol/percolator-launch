@@ -148,6 +148,12 @@ export const STAKE_POOL_SIZE_V1 = 352;
 
 export interface StakePoolV1 {
   isInitialized: boolean;
+  /**
+   * The wrapper market this pool belongs to (`pool.slab`, offset 8). Stake v18.2
+   * (#290) requires it as a trailing account on Deposit/DepositJunior/AccrueFees
+   * and accepts it on Withdraw.
+   */
+  slab: PublicKey;
   lpMint: PublicKey;
   vault: PublicKey;
   cooldownSlots: bigint;
@@ -155,8 +161,8 @@ export interface StakePoolV1 {
 }
 
 /**
- * Decode the five fields the frontend needs from a raw StakePool account. The
- * offsets (lpMint@104, vault@136, cooldown@184, cap@192) are byte-identical
+ * Decode the fields the frontend needs from a raw StakePool account. The
+ * offsets (slab@8, lpMint@104, vault@136, cooldown@184, cap@192) are byte-identical
  * across the retired 352-byte and deployed 392-byte layouts, so this reader is
  * correct for both. The SDK's `decodeStakePool` also decodes the deployed
  * 392-byte account correctly and may be used where the full struct is needed.
@@ -168,6 +174,7 @@ export function decodeStakePoolV1(data: Uint8Array): StakePoolV1 {
   const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   return {
     isInitialized: bytes[0] === 1,
+    slab: new PublicKey(bytes.subarray(8, 40)),
     lpMint: new PublicKey(bytes.subarray(104, 136)),
     vault: new PublicKey(bytes.subarray(136, 168)),
     cooldownSlots: readU64LE(bytes, 184),

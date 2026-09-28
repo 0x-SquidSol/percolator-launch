@@ -113,7 +113,14 @@ export function useStakeDepositByPool({ slabAddress, collateralMint }: StakeDepo
         // Decode the fields needed (lpMint, vault) via decodeStakePoolV1 — offsets
         // are identical across the retired 352-byte and deployed 392-byte layouts
         // (see STAKE_POOL_SIZE_V1 comment in useStakePool.ts).
-        const { lpMint, vault } = decodeStakePoolV1(poolInfo.data);
+        const { lpMint, vault, slab: poolSlab } = decodeStakePoolV1(poolInfo.data);
+        // percolator-stake #290 (v18.2): the ix carries the pool's wrapper market
+        // (`pool.slab`) as a trailing account, and the program rejects any key other
+        // than pool.slab. The pool PDA is derived from slabPk, so these must agree;
+        // fail here with a clear message rather than on-chain.
+        if (!poolSlab.equals(slabPk)) {
+          throw new Error('Stake pool belongs to a different market (pool.slab mismatch).');
+        }
 
         // Get or create user's collateral ATA
         const userCollateralAta = await getAssociatedTokenAddress(collMintPk, wallet.publicKey);
@@ -160,6 +167,7 @@ export function useStakeDepositByPool({ slabAddress, collateralMint }: StakeDepo
           userLpAta,
           vaultAuth,
           depositPda,
+          slab: poolSlab,
         });
 
         instructions.push(

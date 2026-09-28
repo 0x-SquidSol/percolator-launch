@@ -31,10 +31,13 @@ vi.mock('@/lib/tx', () => ({
   sendTx: vi.fn(),
 }));
 
-vi.mock('@percolatorct/sdk', () => {
+vi.mock('@percolatorct/sdk', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
   const { PublicKey: PK } = require('@solana/web3.js');
   const devnetProgramId = new PK('6aJb1F9CDCVWCNYFwj8aQsVb696YnW6J1FznteHq4Q6k');
   return {
+    // Keep every real export the hook's import chain reads; override only what the test stubs.
+    ...actual,
     STAKE_PROGRAM_ID: devnetProgramId,
     // A vi.mock factory REPLACES the module, so anything the hook's import
     // chain reads must be listed. The hook now pulls in a module that reads
@@ -79,6 +82,7 @@ import { encodeStakeDeposit, depositAccounts } from '@percolatorct/sdk';
 function buildPoolAccountData(): Buffer {
   const buf = Buffer.alloc(384);
   buf[0] = 1; // is_initialized
+  new PublicKey(mockSlabAddress).toBuffer().copy(buf, 8); // pool.slab (#290)
   mockLpMint.toBuffer().copy(buf, 104);
   mockVault.toBuffer().copy(buf, 136);
   return buf;
@@ -133,6 +137,9 @@ describe('useStakeDepositByPool', () => {
     expect(result.current.error).toBeNull();
     expect(encodeStakeDeposit).toHaveBeenCalledWith(1_000_000n);
     expect(depositAccounts).toHaveBeenCalled();
+    // stake v18.2 (#290): pool.slab is passed through to the account builder.
+    const args = (depositAccounts as ReturnType<typeof vi.fn>).mock.calls[0][0] as { slab: PublicKey };
+    expect(args.slab.toBase58()).toBe(mockSlabAddress);
     expect(sendTx).toHaveBeenCalled();
   });
 
