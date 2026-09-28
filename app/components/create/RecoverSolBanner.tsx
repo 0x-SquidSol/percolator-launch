@@ -151,6 +151,17 @@ const StuckSlabCard: FC<{
     // NaN) the same defensive way loadAllInFlightMarkets() already treats malformed
     // entries — fall back to 1 rather than propagating a NaN resume target.
     const resumeFromStep = Number.isFinite(stuckSlab.lastStep) ? Math.max(stuckSlab.lastStep, 1) : 1;
+    // #2622: the rent is only reclaimable while the market is still EMPTY.
+    // Reclaim = CloseSlab, which the program allows only with no open user
+    // accounts and no capital — true only before Step 2 creates the LP portfolio
+    // (lastStep <= 2). Past that the rent is committed; and once the stake-pool
+    // step rotates marketauth to a keyless PDA, the slab can never be closed at
+    // all. So offer RECLAIM only in that window; otherwise the honest options are
+    // Continue (finish) or Discard. lastStep is the app's own progress record, so
+    // a stale value degrades safely: a wrong "reclaimable" just fails gracefully
+    // at closeSlab, and a wrong "not reclaimable" is near-impossible (lastStep>=3
+    // means the LP-portfolio tx already landed).
+    const reclaimable = resumeFromStep <= 2;
 
     return (
       <div className="mb-4 border border-[var(--accent)]/30 bg-[var(--accent)]/[0.04] p-4">
@@ -178,8 +189,20 @@ const StuckSlabCard: FC<{
               </button>
             </p>
             <p className="text-[10px] text-[var(--text-secondary)]">
-              The slab account is initialized ({rentSol} SOL in rent).
-              Resume to complete setup (oracle, LP, insurance).
+              {reclaimable ? (
+                <>
+                  The slab is initialized ({rentSol} SOL in rent) but holds no deposit yet —
+                  this is the <span className="text-[var(--text)]">last point the rent can be reclaimed</span>.
+                  Resume to finish it, or reclaim the rent now.
+                </>
+              ) : (
+                <>
+                  This market already holds a deposit or open account, so the {rentSol} SOL rent is{" "}
+                  <span className="text-[var(--text)]">committed and can no longer be reclaimed</span> — your
+                  only options are Continue or Discard, and the rent stays with the market either way.
+                  Completing it forfeits the rent permanently, once its admin authority rotates to a program address.
+                </>
+              )}
             </p>
           </div>
           <button
@@ -205,23 +228,29 @@ const StuckSlabCard: FC<{
               {resumeClicked ? "RESUMING…" : "RESUME CREATION →"}
             </button>
           )}
-          <button
-            type="button"
-            disabled={closeLoading}
-            onClick={async () => {
-              const result = await closeSlab(stuckSlab.publicKey.toBase58());
-              if (result) {
-                setReclaimResult({
-                  sig: result.signature,
-                  sol: result.reclaimedLamports / 1_000_000_000,
-                });
-                clearStuck();
-              }
-            }}
-            className="border border-[var(--accent)]/50 bg-[var(--accent)]/[0.08] px-4 py-2 text-[11px] font-bold uppercase tracking-[0.1em] text-[var(--accent)] hover:bg-[var(--accent)]/[0.15] transition-colors disabled:opacity-50"
-          >
-            {closeLoading ? "RECLAIMING..." : `RECLAIM ~${rentSol} SOL`}
-          </button>
+          {/* #2622: only offer RECLAIM while the market is still empty. Once it
+              holds a deposit/account (lastStep >= 3) CloseSlab can't run, so a
+              button here would only dead-end — the honest options are Continue
+              (Resume) or Discard, matching the status text above. */}
+          {reclaimable && (
+            <button
+              type="button"
+              disabled={closeLoading}
+              onClick={async () => {
+                const result = await closeSlab(stuckSlab.publicKey.toBase58());
+                if (result) {
+                  setReclaimResult({
+                    sig: result.signature,
+                    sol: result.reclaimedLamports / 1_000_000_000,
+                  });
+                  clearStuck();
+                }
+              }}
+              className="border border-[var(--accent)]/50 bg-[var(--accent)]/[0.08] px-4 py-2 text-[11px] font-bold uppercase tracking-[0.1em] text-[var(--accent)] hover:bg-[var(--accent)]/[0.15] transition-colors disabled:opacity-50"
+            >
+              {closeLoading ? "RECLAIMING..." : `RECLAIM ~${rentSol} SOL`}
+            </button>
+          )}
           {closeError && (
             <p className="w-full text-[10px] text-[var(--short)]">{closeError}</p>
           )}
