@@ -41,10 +41,12 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { RotaryDial } from "@/components/create/RotaryDial";
-
-/** What RotaryDial documents as the travel for a full min→max sweep. */
-const DOCUMENTED_SWEEP_PX = 190;
+import {
+  RotaryDial,
+  dragSweepPx,
+  DRAG_MIN_SWEEP_PX,
+  DRAG_MAX_SWEEP_PX,
+} from "@/components/create/RotaryDial";
 
 type Spec = { label: string; min: number; max: number; step: number };
 
@@ -182,7 +184,10 @@ describe("RotaryDial drag — controls (these pin the harness, not the fix)", ()
 describe("RotaryDial drag (A) — travel is carried, not discarded, on commit", () => {
   it.each([
     ["Leverage", LEVERAGE, 4],
-    ["Liquidity", LIQUIDITY, 1_000],
+    // Insurance, not Liquidity: at ~4px per detent (GH#2653) whole-pixel events
+    // quantise the half-detent (2px) / full-detent (4px) costs too coarsely to
+    // resolve a 1.5-2.6 ratio. Liquidity's carry is covered by the sweep test.
+    ["Insurance", INSURANCE, 500],
   ] as const)("%s holds a detent for ~twice the travel it took to leave the last", (_n, spec, from) => {
     // Mechanism-free form of "the remainder is carried": reverting to
     // `residue.current = 0` makes these two equal.
@@ -205,10 +210,12 @@ describe("RotaryDial drag (A) — travel is carried, not discarded, on commit", 
     // The lower bound allows one detent of slack, because the first detent off
     // `min` costs a half-step rather than a full one, so a sweep lands just
     // under the budget rather than exactly on it (measured 179 / 189 / 186).
+    // (GH#2653: the budget is now derived per dial by dragSweepPx.)
+    const documented = dragSweepPx(spec.min, spec.max, spec.step);
     const px = fullSweepPx(spec);
-    const oneDetent = DOCUMENTED_SWEEP_PX / detentsOf(spec);
-    expect(px).toBeGreaterThan(DOCUMENTED_SWEEP_PX - oneDetent - 1);
-    expect(px).toBeLessThanOrEqual(DOCUMENTED_SWEEP_PX + 1);
+    const oneDetent = documented / detentsOf(spec);
+    expect(px).toBeGreaterThan(documented - oneDetent - 1);
+    expect(px).toBeLessThanOrEqual(documented + 1);
   });
 });
 
@@ -299,5 +306,67 @@ describe("RotaryDial drag — an interrupted touch gesture ends", () => {
     expect(d.value).toBe(afterDrag);
     expect(d.commits).toBe(commitsAtCancel);
     d.end();
+  });
+});
+
+describe("RotaryDial drag (GH#2653) — gearing is a property of the control", () => {
+  const DIALS = [LEVERAGE, LIQUIDITY, INSURANCE];
+  const pxPerDetent = (s: Spec) => fullSweepPx(s) / detentsOf(s);
+
+  it("keeps a coarse dial at its documented floor (Leverage feel unchanged)", () => {
+    expect(dragSweepPx(LEVERAGE.min, LEVERAGE.max, LEVERAGE.step)).toBe(DRAG_MIN_SWEEP_PX);
+  });
+
+  it("never asks for more travel than fits on a small phone", () => {
+    for (const s of DIALS) {
+      expect(dragSweepPx(s.min, s.max, s.step)).toBeLessThanOrEqual(DRAG_MAX_SWEEP_PX);
+    }
+    // an extreme dial is capped, not unbounded
+    expect(dragSweepPx(0, 1_000_000, 1)).toBe(DRAG_MAX_SWEEP_PX);
+  });
+
+  it("narrows the feel spread across the three Control Room dials to <= ~3.2x (was ~6x)", () => {
+    const per = DIALS.map(pxPerDetent);
+    for (const v of per) expect(Number.isFinite(v)).toBe(true); // CONTROL
+    const spread = Math.max(...per) / Math.min(...per);
+    expect(spread).toBeLessThan(3.3);
+  });
+
+  it("a Liquidity detent is no longer within hand-jitter (>= 3px)", () => {
+    expect(pxPerDetent(LIQUIDITY)).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe("RotaryDial drag — listeners are not re-subscribed per detent", () => {
+  it("adds each window listener once per gesture, however many detents it crosses", () => {
+    const add = vi.spyOn(window, "addEventListener");
+    const remove = vi.spyOn(window, "removeEventListener");
+    try {
+      const d = driveDial(LEVERAGE, 2);
+      const before = add.mock.calls.filter(([t]) => t === "mousemove").length;
+      d.drag(150, 1); // crosses many detents, each one a re-render
+      expect(d.commits).toBeGreaterThan(8); // CONTROL: real detents happened
+      const during = add.mock.calls.filter(([t]) => t === "mousemove").length;
+      expect(during).toBe(before);
+      d.end();
+      const removed = remove.mock.calls.filter(([t]) => t === "mousemove").length;
+      expect(removed).toBeGreaterThanOrEqual(1);
+    } finally {
+      add.mockRestore();
+      remove.mockRestore();
+    }
+  });
+
+  it("a burst of moves between re-renders does not lose travel to a stale value", () => {
+    // React batches native-listener updates, so several mousemoves can land
+    // before the parent hands the new value back. Position must not depend on it.
+    cleanup();
+    const onChange = vi.fn();
+    render(<RotaryDial {...LEVERAGE} value={2} format={String} onChange={onChange} />);
+    const knob = screen.getByRole("slider", { name: "Leverage" });
+    fireEvent.mouseDown(knob, { clientY: 10_000 });
+    for (let y = 9_999; y >= 9_810; y--) fireEvent.mouseMove(window, { clientY: y }); // 190px, no rerender
+    fireEvent.mouseUp(window);
+    expect(onChange).toHaveBeenLastCalledWith(10); // full documented sweep reaches max
   });
 });

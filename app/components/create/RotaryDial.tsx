@@ -24,20 +24,38 @@ const R = 34;
 const A0 = Math.PI * 0.75;
 const A1 = Math.PI * 2.25;
 /**
- * Vertical pixels of drag for a full min→max sweep.
+ * Drag gearing (GH#2653). The travel budget is derived from the dial's detent
+ * count instead of being a flat constant, so how a dial FEELS is a property of
+ * the control and not of whoever renders it.
  *
- * This number now MEANS what it says. It always claimed to, but the handler
- * discarded its rounding remainder on every commit, so a full sweep actually
- * cost half of it — 96px on Leverage, 99px on Liquidity, 108px on Insurance.
+ * The old flat 190px per full sweep meant px-per-detent = 190 / detents: 11.9 on
+ * Leverage (16 detents) against 1.9 on Liquidity (99), a ~6x spread between dials
+ * sitting in one grid, and one pixel of hand jitter moving Liquidity by a whole
+ * step. Each detent now costs DRAG_PX_PER_DETENT of travel, bounded on both sides:
  *
- * Note that it budgets travel per DIAL, so px-per-detent remains a function of
- * the caller's range: 11.9 on Leverage's 16 detents against 1.92 on Liquidity's
- * 99, a ~6x spread across three dials sitting in one grid. That is a real
- * complaint about how the control feels and it is tracked separately in GH#2653
- * — it is a product decision about every dial on the panel, not a correctness
- * bug, and it does not belong in the same change as the two that are.
+ *  - the FLOOR keeps a coarse dial at the geared 190px it always had (Leverage
+ *    is unchanged: 16 detents * 8 = 128 -> 190);
+ *  - the CEILING keeps a fine dial reachable in one stroke on a small phone (the
+ *    create page leaves ~450px of usable band under the sticky header and the
+ *    bottom nav), so Liquidity's 99 detents get 400px (~4px each) rather than the
+ *    ~800px that a strict 8px-per-detent rule would need.
+ *
+ * Spread across the three Control Room dials: ~6x -> ~3x. It cannot reach 1x
+ * without an unusable sweep; a coarser Liquidity `step` or a non-linear scale is
+ * the remaining lever and is a caller/product decision.
  */
-const DRAG_RANGE_PX = 190;
+export const DRAG_PX_PER_DETENT = 8;
+export const DRAG_MIN_SWEEP_PX = 190;
+export const DRAG_MAX_SWEEP_PX = 400;
+
+/** Vertical pixels of drag for a full min->max sweep of a dial with this shape. */
+export function dragSweepPx(min: number, max: number, step: number): number {
+  const detents = step > 0 ? Math.abs(max - min) / step : 0;
+  return Math.min(
+    DRAG_MAX_SWEEP_PX,
+    Math.max(DRAG_MIN_SWEEP_PX, detents * DRAG_PX_PER_DETENT),
+  );
+}
 
 /**
  * A machined rotary dial — the Control Room's primary control.
@@ -64,11 +82,16 @@ export const RotaryDial: FC<RotaryDialProps> = ({
   disabled = false,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const dragging = useRef(false);
-  const lastY = useRef(0);
-  /** Accumulates sub-step drag so slow drags still move (and don't quantise to zero). */
-  const residue = useRef(0);
+  /**
+   * Tears down the window listeners of the drag in progress, if any. Listeners
+   * are attached when a drag STARTS and removed when it ends, so they are not
+   * re-subscribed on every detent (the "laggy drag" churn).
+   */
+  const stopDrag = useRef<(() => void) | null>(null);
   const lastDetent = useRef(value);
+  /** Latest props, read by the drag handlers so they never go stale mid-gesture. */
+  const live = useRef({ min, max, step, onChange });
+  live.current = { min, max, step, onChange };
 
   /** Needle position actually painted — lags `value` during the boot sweep. */
   const [painted, setPainted] = useState(min);
@@ -229,86 +252,78 @@ export const RotaryDial: FC<RotaryDialProps> = ({
   }, [painted, min, max]);
 
   // ── input ──────────────────────────────────────────────────────────────
+  const pulse = useCallback((v: number) => {
+    if (v !== lastDetent.current) {
+      lastDetent.current = v;
+      setTicking(true);
+      window.setTimeout(() => setTicking(false), 90);
+    }
+  }, []);
+
   const commit = useCallback(
     (next: number) => {
       const v = clamp(next);
-      if (v !== lastDetent.current) {
-        lastDetent.current = v;
-        setTicking(true);
-        window.setTimeout(() => setTicking(false), 90);
-      }
+      pulse(v);
       if (v !== value) onChange(v);
     },
-    [clamp, onChange, value],
+    [clamp, onChange, pulse, value],
   );
 
+  // A drag cannot outlive the dial: unmounting or disabling ends it.
+  useEffect(() => () => stopDrag.current?.(), []);
   useEffect(() => {
+    if (disabled) stopDrag.current?.();
+  }, [disabled]);
+
+  const start = (clientY: number) => {
     if (disabled) return;
+    stopDrag.current?.();
+
+    // `pos` is the dial's TRUE position in value units, tracked across events in
+    // a closure rather than reconstructed from `value + residue` on each move.
+    // That reconstruction read a `value` that could be a render stale (React
+    // batches updates from native listeners) and needed the listeners torn down
+    // and re-added on every detent to stay fresh.
+    //
+    // It is bounded to [min, max]: a dial resting against a mechanical stop
+    // stores no energy, so shoving past a stop banks no dead travel (GH#2648-C),
+    // and leaving a stop costs the same half detent as leaving any settled value.
+    let pos = value;
+    let emitted = value;
+    let lastY = clientY;
 
     const move = (e: MouseEvent | TouchEvent) => {
-      if (!dragging.current) return;
       e.preventDefault();
       const y = "touches" in e ? e.touches[0]!.clientY : (e as MouseEvent).clientY;
-      const dy = lastY.current - y; // up = increase, like a real dial
-      lastY.current = y;
-      residue.current += (dy / DRAG_RANGE_PX) * (max - min);
-      const next = value + residue.current;
-      const snapped = clamp(next);
-      if (snapped !== value) {
-        // Carry the remainder rather than discarding it. `clamp` snaps to
-        // NEAREST, so the value leaves `value` once the residue reaches
-        // step/2 — but it moves a whole step. Zeroing here threw away the
-        // half-step that had not been paid for, so every detent cost half
-        // what the pixel mapping intends and a full sweep took half the
-        // travel this control documents.
-        residue.current -= snapped - value;
-        commit(snapped);
+      const dy = lastY - y; // up = increase, like a real dial
+      lastY = y;
+      const { min: lo, max: hi, step: st, onChange: emit } = live.current;
+      pos = Math.min(hi, Math.max(lo, pos + (dy / dragSweepPx(lo, hi, st)) * (hi - lo)));
+      const snapped = Math.min(hi, Math.max(lo, Math.round(pos / st) * st));
+      if (snapped !== emitted) {
+        emitted = snapped;
+        pulse(snapped);
+        emit(snapped);
       }
-      // Whatever is left is a rounding remainder, bounded by step/2 by
-      // definition — EXCEPT at the stops, where `clamp` cannot move the value,
-      // so the unpaid part stays banked and grows without limit. Pushing 200px
-      // past max then reversing meant 206px of dead travel before the dial
-      // responded; a hard shove left it unresponsive entirely.
-      //
-      // Bound it by the travel PHYSICALLY REMAINING, which is 0 at a stop: a
-      // dial resting against a mechanical stop stores no energy. Clamping to
-      // ±step/2 instead also bounds it, but parks the residue AT the threshold,
-      // so leaving a stop costs a whole detent where an interior one costs
-      // half. This form is symmetric, and it has no `step` term — a negative
-      // step collapses `Math.max(-step/2, Math.min(step/2, r))` to a constant
-      // and freezes the drag after one detent.
-      residue.current = Math.max(min - value, Math.min(max - value, residue.current));
     };
-    const up = () => {
-      dragging.current = false;
-      residue.current = 0;
+    const end = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("touchmove", move);
+      window.removeEventListener("mouseup", end);
+      window.removeEventListener("touchend", end);
+      // The OS can take a touch (system gesture, incoming call, second finger)
+      // with no `touchend`; without this the dial stays armed with a stale anchor
+      // and `move`'s preventDefault stops the page scrolling.
+      window.removeEventListener("touchcancel", end);
+      if (stopDrag.current === end) stopDrag.current = null;
     };
 
     window.addEventListener("mousemove", move);
     window.addEventListener("touchmove", move, { passive: false });
-    window.addEventListener("mouseup", up);
-    window.addEventListener("touchend", up);
-    // `touchcancel` too, or an interrupted gesture never ends: the OS takes the
-    // touch (a system gesture, an incoming call, a second finger) and no
-    // `touchend` follows, so `dragging` stays true with a stale `lastY`. That
-    // leaves the dial armed — the next touch anywhere slews it by the distance
-    // to the old anchor — and, because `move` calls preventDefault while
-    // dragging, it also stops the PAGE scrolling until the component unmounts.
-    window.addEventListener("touchcancel", up);
-    return () => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("touchmove", move);
-      window.removeEventListener("mouseup", up);
-      window.removeEventListener("touchend", up);
-      window.removeEventListener("touchcancel", up);
-    };
-  }, [value, min, max, clamp, commit, disabled]);
-
-  const start = (clientY: number) => {
-    if (disabled) return;
-    dragging.current = true;
-    lastY.current = clientY;
-    residue.current = 0;
+    window.addEventListener("mouseup", end);
+    window.addEventListener("touchend", end);
+    window.addEventListener("touchcancel", end);
+    stopDrag.current = end;
   };
 
   return (
