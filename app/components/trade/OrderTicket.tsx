@@ -39,6 +39,7 @@ import { FC, memo, useState, useMemo, useCallback, useEffect, useRef } from "rea
 import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { computeNotionalNative } from "@/lib/notional";
+import { availableLeverage as availableLeverageFor, nextLeverageInputState, clampSliderLeverage, LEVERAGE_STEP } from "@/lib/leverage-control";
 import { useTrade, prewarmTradeSubmission } from "@/hooks/useTrade";
 import { useMarketFillCap } from "@/hooks/useMarketFillCap";
 import { remainingSideCapacityQ, wouldExceedInventoryCap, UNLIMITED_CAPACITY } from "@/lib/marketCapacity";
@@ -77,7 +78,6 @@ import { isOracleStaleBlocking } from "@/lib/oracle-stale-gate";
 import { invalidatePortfolio } from "@/lib/portfolio-invalidation";
 import { FEE_LEGS, legPercent, splitFeeAtoms } from "@/lib/fee-breakdown";
 
-const LEVERAGE_SNAP_POINTS = [1, 3, 5, 10, 20];
 const SIZE_PRESETS = [25, 50, 75, 100];
 const MAX_DISPLAY_LEVERAGE = 200;
 
@@ -441,11 +441,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const rawMaxLeverage = maxLeverageFromOnChain > 0 ? maxLeverageFromOnChain : supabaseLeverage || 1;
   const maxLeverage = Math.min(MAX_DISPLAY_LEVERAGE, rawMaxLeverage);
 
-  const availableLeverage = useMemo(() => {
-    const arr = LEVERAGE_SNAP_POINTS.filter((l) => l <= maxLeverage);
-    if (arr.length === 0 || arr[arr.length - 1] < maxLeverage) arr.push(maxLeverage);
-    return arr;
-  }, [maxLeverage]);
+  const availableLeverage = useMemo(() => availableLeverageFor(maxLeverage), [maxLeverage]);
   const capital = userAccount ? userAccount.account.capital : 0n;
   // Margin already "locked" by this market's existing open position (if
   // any), so balance/buying-power reflect what's actually free to size a
@@ -578,6 +574,23 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     (newLev: number) => {
       setLeverage(newLev);
       setLeverageText(formatLeverageValue(newLev));
+      if (sizeInput) recomputeFromSize(sizeInput, sizeUnit, newLev);
+    },
+    [sizeInput, sizeUnit, recomputeFromSize],
+  );
+
+  /**
+   * GH#2628: the same update, WITHOUT rewriting the text box.
+   *
+   * updateLeverage reformats leverageText on every call, which made a decimal
+   * impossible to type: "2" gave 2, then "." reformatted the field back to "2"
+   * (parseFloat("2.") is 2, and the dot was erased), so the next keystroke
+   * produced "25" — clamped to the market maximum. Typing 2.5 on a 10x market
+   * silently selected 10x. The blur handler still normalises the text.
+   */
+  const updateLeverageFromText = useCallback(
+    (newLev: number) => {
+      setLeverage(newLev);
       if (sizeInput) recomputeFromSize(sizeInput, sizeUnit, newLev);
     },
     [sizeInput, sizeUnit, recomputeFromSize],
@@ -1073,13 +1086,16 @@ setEngineLockError(null);
             <input
               id="order-leverage-input"
               type="text"
-              inputMode="numeric"
+              inputMode="decimal"
               value={leverageText}
               onChange={(e) => {
-                const raw = sanitizeDecimalInput(e.target.value);
-                setLeverageText(raw);
-                const parsed = parseFloat(raw);
-                if (!isNaN(parsed)) updateLeverage(Math.max(1, Math.min(maxLeverage, Math.round(parsed))));
+                // GH#2628. Both halves matter and both are in the helper:
+                // the text is kept verbatim so a "." survives long enough to
+                // finish typing, and the value is quantised DOWN rather than
+                // Math.round'ed up. See lib/leverage-control.ts.
+                const next = nextLeverageInputState(e.target.value, maxLeverage);
+                setLeverageText(next.text);
+                if (next.leverage !== null) updateLeverageFromText(next.leverage);
               }}
               onBlur={() => setLeverageText(formatLeverageValue(leverage))}
               style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}
@@ -1107,9 +1123,6 @@ setEngineLockError(null);
           };
 
           const thumbPct = valueToPct(leverage);
-          const snapRadius = n > 1
-            ? Math.floor(Math.min(...availableLeverage.slice(1).map((v, i) => v - availableLeverage[i])) / 2)
-            : 0;
 
           return (
             <div className="relative pb-1">
@@ -1136,13 +1149,16 @@ setEngineLockError(null);
                   type="range"
                   min={1}
                   max={maxLeverage}
-                  step={1}
+                  step={LEVERAGE_STEP}
                   value={leverage}
                   onChange={(e) => {
-                    const raw = Number(e.target.value);
-                    const nearest = availableLeverage.reduce((best, v) =>
-                      Math.abs(v - raw) < Math.abs(best - raw) ? v : best, raw);
-                    updateLeverage(Math.abs(nearest - raw) <= snapRadius ? nearest : raw);
+                    // GH#2628: the snap-to-preset this replaced never fired — its
+                    // reduce was seeded with `raw`, so no candidate could beat a
+                    // starting distance of 0. It is removed rather than repaired:
+                    // the computed radius was 1, which at a 0.5 step would pull
+                    // every half-step near a preset onto it and make the finer
+                    // step decorative. The presets are still one click away.
+                    updateLeverage(clampSliderLeverage(Number(e.target.value), maxLeverage));
                   }}
                   onFocus={() => setLeverageFocused(true)}
                   onBlur={() => setLeverageFocused(false)}
