@@ -1,13 +1,10 @@
 'use client';
 
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo } from 'react';
 import { VaultRow, VAULT_GRID_COLS } from './VaultRow';
 import { ShimmerSkeleton } from '@/components/ui/ShimmerSkeleton';
 import type { MarketVaultInfo } from '@/hooks/useEarnStats';
-
-type SortKey = 'tvl' | 'volume' | 'utilization';
-
-const PAGE_SIZE = 24;
+import { orderEarnVaults, type EarnSortKey } from '@/lib/earn-vault-order';
 
 interface VaultGridProps {
   markets: MarketVaultInfo[];
@@ -36,56 +33,24 @@ export function VaultGrid({
   onSelect,
   userDeposits,
 }: VaultGridProps) {
-  const [sortBy, setSortBy] = useState<SortKey>('tvl');
+  const [sortBy, setSortBy] = useState<EarnSortKey>('tvl');
   const [searchQuery, setSearchQuery] = useState('');
-  const [displayCount, setDisplayCount] = useState(PAGE_SIZE);
-  const observerTarget = useRef<HTMLDivElement>(null);
+  // "Mine" filter — show only the markets the wallet has a deposit in. A toggle
+  // the user can always flip back to; off shows every market with a usable
+  // vault (deposits floated to the top). Sort/filter live in the pure helper
+  // lib/earn-vault-order.ts (unit-tested).
+  const [mineOnly, setMineOnly] = useState(false);
 
-  const sorted = useMemo(() => {
-    let filtered = markets;
-
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      filtered = filtered.filter(
-        (m) =>
-          m.symbol.toLowerCase().includes(q) || m.name.toLowerCase().includes(q),
-      );
-    }
-
-    return [...filtered].sort((a, b) => {
-      switch (sortBy) {
-        case 'tvl':
-          return b.vaultBalance - a.vaultBalance;
-        case 'volume':
-          return b.volume24h - a.volume24h;
-        case 'utilization':
-          return b.oiUtilPct - a.oiUtilPct;
-        default:
-          return 0;
-      }
-    });
-  }, [markets, sortBy, searchQuery]);
-
-  useEffect(() => {
-    setDisplayCount(PAGE_SIZE);
-  }, [searchQuery, sortBy]);
-
-  // Scroll-triggered progressive loading — reveals the next page once the
-  // sentinel row enters the viewport.
-  useEffect(() => {
-    const target = observerTarget.current;
-    if (!target) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          setDisplayCount((prev) => Math.min(prev + PAGE_SIZE, sorted.length));
-        }
-      },
-      { threshold: 0.1 },
-    );
-    observer.observe(target);
-    return () => observer.unobserve(target);
-  }, [sorted.length]);
+  const sorted = useMemo(
+    () =>
+      orderEarnVaults(markets, {
+        query: searchQuery,
+        sortBy,
+        mineOnly,
+        depositOf: (slab) => userDeposits[slab] ?? 0,
+      }),
+    [markets, sortBy, searchQuery, mineOnly, userDeposits],
+  );
 
   return (
     <div>
@@ -121,7 +86,7 @@ export function VaultGrid({
               ['tvl', 'TVL'],
               ['volume', 'Volume'],
               ['utilization', 'Util'],
-            ] as [SortKey, string][]
+            ] as [EarnSortKey, string][]
           ).map(([key, label]) => (
             <button
               key={key}
@@ -136,6 +101,21 @@ export function VaultGrid({
               {label}
             </button>
           ))}
+          {/* "Mine" filter — toggle to show only markets you've deposited in.
+              Separated from the sort keys since it filters, not sorts. */}
+          <span className="mx-1 h-4 w-px bg-[var(--border)]" aria-hidden="true" />
+          <button
+            onClick={() => setMineOnly((v) => !v)}
+            aria-pressed={mineOnly}
+            title="Show only markets you've deposited in"
+            className={`rounded-sm border px-3 py-1.5 text-[11px] transition-all duration-150 ${
+              mineOnly
+                ? 'border-[var(--accent)]/40 bg-[var(--accent)]/[0.06] text-[var(--accent)]'
+                : 'border-[var(--border)] text-[var(--text-secondary)] hover:border-[var(--accent)]/20 hover:text-[var(--text)]'
+            }`}
+          >
+            Mine
+          </button>
         </div>
       </div>
 
@@ -185,19 +165,24 @@ export function VaultGrid({
                 className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-secondary)]"
                 style={{ fontFamily: 'var(--font-mono)' }}
               >
-                {searchQuery ? 'No matches' : error ? 'Unavailable' : 'No vaults'}
+                {mineOnly ? 'No deposits' : searchQuery ? 'No matches' : error ? 'Unavailable' : 'No vaults'}
               </div>
               <p className="mt-2 text-[13px] text-[var(--text-secondary)]">
-                {searchQuery
-                  ? `No vaults matching "${searchQuery}"`
-                  : error
-                    ? "Couldn't load vaults — please try again shortly"
-                    : 'No LP vaults are live yet.'}
+                {mineOnly
+                  ? "You haven't deposited in any vault yet."
+                  : searchQuery
+                    ? `No vaults matching "${searchQuery}"`
+                    : error
+                      ? "Couldn't load vaults — please try again shortly"
+                      : 'No LP vaults are live yet.'}
               </p>
             </div>
           ) : (
-            <>
-              {sorted.slice(0, displayCount).map((vault) => (
+            /* Capped at ~8 rows then scroll, so the section stays a fixed
+               height no matter how many vaults exist. The column header above
+               stays put. */
+            <div className="max-h-[400px] overflow-y-auto">
+              {sorted.map((vault) => (
                 <VaultRow
                   key={vault.slabAddress}
                   vault={vault}
@@ -208,19 +193,10 @@ export function VaultGrid({
                   onSelect={onSelect}
                 />
               ))}
-              {displayCount < sorted.length && <div ref={observerTarget} className="h-px w-full" />}
-            </>
+            </div>
           )}
         </div>
       </div>
-
-      {!loading && sorted.length > PAGE_SIZE && displayCount >= sorted.length && (
-        <div className="flex items-center justify-center gap-3 py-3">
-          <span className="text-[11px] text-[var(--text-dim)]" style={{ fontFamily: 'var(--font-mono)' }}>
-            all {sorted.length} vault{sorted.length !== 1 ? 's' : ''} loaded
-          </span>
-        </div>
-      )}
     </div>
   );
 }
