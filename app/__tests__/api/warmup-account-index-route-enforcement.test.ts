@@ -29,6 +29,9 @@ vi.mock("@percolatorct/sdk", async (importOriginal) => {
 });
 
 vi.mock("@/lib/config", () => ({
+  // getServerConnection() (lib/server-rpc) picks the cluster with getNetwork().
+  getNetwork: () => "devnet",
+  getRpcEndpoint: () => "http://localhost",
   // A non-v17 programId so the route doesn't 501; loopback rpc (fetchSlab is mocked).
   getConfig: () => ({ programId: "11111111111111111111111111111111", rpcUrl: "http://localhost" }),
   getAllProgramIds: () => [],

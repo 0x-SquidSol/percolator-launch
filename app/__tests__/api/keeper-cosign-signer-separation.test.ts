@@ -25,6 +25,9 @@ vi.mock("@/lib/config", () => ({
   getRpcEndpoint: vi.fn(
     () => "http://127.0.0.1:8899",
   ),
+  // getServerConnection() (lib/server-rpc) calls getNetwork() to pick the
+  // cluster; without it every request 500'd and these tests could not run.
+  getNetwork: vi.fn(() => "devnet"),
   getConfig: vi.fn(() => ({
     programId:
       "11111111111111111111111111111111",
@@ -94,6 +97,12 @@ describe("keeper-cosign signer-role separation", () => {
       Connection.prototype,
       "getLatestBlockhash",
     );
+    // v18: the route reads asset 0's market_id + control sequences from the
+    // slab. Unmocked, this was a real network call.
+    vi.spyOn(
+      Connection.prototype,
+      "getAccountInfo",
+    );
 
     ({ POST } = await import(
       "@/app/api/playground/keeper-cosign/route"
@@ -121,6 +130,17 @@ describe("keeper-cosign signer-role separation", () => {
       blockhash:
         Keypair.generate().publicKey.toBase58(),
       lastValidBlockHeight: 999999,
+    });
+    // A zeroed market at a live slab's size: the v18 readers see asset 0 with
+    // market_id 0 and both control lanes at 0.
+    vi.mocked(
+      Connection.prototype.getAccountInfo,
+    ).mockResolvedValue({
+      data: Buffer.alloc(24_600),
+      executable: false,
+      lamports: 1,
+      owner: Keypair.generate().publicKey,
+      rentEpoch: 0,
     });
   });
 
