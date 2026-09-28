@@ -5,11 +5,10 @@ import {
   parseMarketGroupV17OI,
   V17_HEADER_LEN,
   V17_MARKET_GROUP_OFF,
-  deriveStakePool,
 } from "@percolatorct/sdk";
 import { getServerConnection } from "@/lib/server-rpc";
 import { sanitizeOnChainValue } from "@/lib/health";
-import { getConfig } from "@/lib/config";
+import { isMarketauthComplete } from "@/lib/market-completeness";
 
 /**
  * Live per-market state, read straight from the slab account.
@@ -78,44 +77,10 @@ export interface LiveMarketState {
   isComplete: boolean;
 }
 
-/** Devnet-only today (percolator-stake has no mainnet deployment — see
- *  PERCOLATOR_ERRORS[60] StakeProgramNotPinned in @percolatorct/sdk). Read
- *  once per module load, not per-market — getConfig() is a pure function of
- *  the deployment's network. */
-const STAKE_PROGRAM_ID: PublicKey | null = (() => {
-  const vaultProgramId = (getConfig() as { vaultProgramId?: string }).vaultProgramId;
-  if (!vaultProgramId) return null;
-  try {
-    return new PublicKey(vaultProgramId);
-  } catch {
-    return null;
-  }
-})();
-
-/**
- * Completeness test from a slab's `marketauth` alone — the same signal
- * `parseLiveState` computes for `LiveMarketState.isComplete`, exposed so the
- * on-chain-discovery markets path (which parses the config for its own reasons
- * and never goes through `parseLiveState`) can filter unfinished markets too.
- *
- * A market is complete once the create-market wizard's FINAL on-chain step
- * (percolator-stake InitPool) has run, which irreversibly rotates `marketauth`
- * from the creator's wallet to the stake-pool PDA. So `marketauth ==
- * derive("stake_pool", slab)` is a zero-extra-RPC completeness signal.
- *
- * No stake program pinned for this network (mainnet today) ⇒ the stake step
- * doesn't gate anything here ⇒ every market is treated as complete. A PDA
- * derivation/compare failure fails closed (incomplete), matching parseLiveState.
- */
-export function isMarketauthComplete(marketauth: PublicKey, slabKey: PublicKey): boolean {
-  if (!STAKE_PROGRAM_ID) return true;
-  try {
-    const [expectedStakePoolPda] = deriveStakePool(slabKey, STAKE_PROGRAM_ID);
-    return marketauth.equals(expectedStakePoolPda);
-  } catch {
-    return false;
-  }
-}
+// isMarketauthComplete lives in lib/market-completeness.ts (client-safe: this
+// file pulls in the server-only RPC helper). Re-exported so server callers and
+// existing imports keep working.
+export { isMarketauthComplete };
 
 /**
  * MarketGroupV16HeaderAccount field offsets, relative to V17_MARKET_GROUP_OFF.
@@ -171,17 +136,9 @@ function parseLiveState(data: Uint8Array, slabKey: PublicKey): LiveMarketState |
     const e6 = cfg.markEwmaE6;
     if (e6 > 0n && e6 < MAX_SANE_PRICE_E6) markPriceUsd = Number(e6) / 1_000_000;
 
-    if (STAKE_PROGRAM_ID) {
-      try {
-        const [expectedStakePoolPda] = deriveStakePool(slabKey, STAKE_PROGRAM_ID);
-        isComplete = cfg.marketauth.equals(expectedStakePoolPda);
-      } catch {
-        // PDA derivation/compare failed for an unexpected reason — fail closed
-        // (not complete) rather than let an unproven slab through the filter.
-        // Independent of the price parse above, which already succeeded.
-        isComplete = false;
-      }
-    }
+    // Same signal the discovery path uses; no stake program pinned (mainnet
+    // today) => complete, PDA derivation failure => fail closed.
+    isComplete = isMarketauthComplete(cfg.marketauth, slabKey);
   } catch {
     // Config unreadable — the row keeps a null price rather than a wrong one.
     // Unreadable also means we can't prove completeness — fail closed (not
