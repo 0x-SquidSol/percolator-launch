@@ -45,6 +45,8 @@ import { useMarketFillCap } from "@/hooks/useMarketFillCap";
 import { remainingSideCapacityQ, wouldExceedInventoryCap, UNLIMITED_CAPACITY } from "@/lib/marketCapacity";
 import { isBlockedSlab } from "@/lib/blocklist";
 import { humanizeError, isEngineLockError, withTransientRetry } from "@/lib/errorMessages";
+import { PublicKey } from "@solana/web3.js";
+import { diagnoseTradeRejection } from "@/lib/tradeRejectDiagnosis";
 import { explorerTxUrl, getNetwork } from "@/lib/config";
 import { useUserAccount } from "@/hooks/useUserAccount";
 import { computeLimitPriceE6 } from "@/lib/slippage";
@@ -885,15 +887,24 @@ setEngineLockError(null);
       // PERC-onboarding-5: advisory-only wrong-network-wallet check on the
       // raw (pre-humanization) message — see useWalletNetworkGuard's header.
       reportTxError(msg);
-      // TX1: Custom(9) from THIS call site is always a trade() CPI — humanize
-      // it as the slippage/worst-fill-price rejection it actually is here,
-      // not the generic "invalid instruction" text (still correct for
-      // deposit/withdraw/NFT/market-creation call sites).
+      // TX1: Custom(9) from THIS call site is always a trade() CPI, so use the
+      // trade-context text (not the generic "invalid instruction" one, which is
+      // still correct for deposit/withdraw/NFT/market-creation call sites).
+      // Custom(9) is NOT always slippage — see the #2643 refinement below.
       const friendlyMsg = humanizeError(msg, "trade");
     if (isEngineLockError(msg)) {
       setEngineLockError(friendlyMsg);
     }
     setHumanError(friendlyMsg)
+      // #2643: Custom(9) is ambiguous (slippage vs an unusable market). Show the
+      // generic text immediately, then refine it from pre-trade state (matcher
+      // context / market completeness) if that proves the real cause. No-op for
+      // every other error code.
+      if (slabProgramId) {
+        void diagnoseTradeRejection(msg, connection, slabProgramId, new PublicKey(slabAddress))
+          .then((refined) => { if (refined) setHumanError(refined); })
+          .catch(() => { /* keep the generic message */ });
+      }
       // Brief "Failed" flash on the submit button itself (matches the
       // "Confirmed!" success flash below) before reverting to idle — the
       // detailed reason stays in the humanError banner underneath.

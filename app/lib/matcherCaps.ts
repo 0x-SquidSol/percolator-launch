@@ -254,3 +254,35 @@ export function getMatcherCaps(
   inflight.set(key, p);
   return p;
 }
+
+/**
+ * Is this market's matcher context in the state the wrapper's TradeCpi requires
+ * BEFORE it will call the matcher? (`handle_trade_cpi`, v18.2: the matcher ctx
+ * must be non-executable, owned by the matcher program, and at least 64 bytes —
+ * any violation returns `PercolatorError::InvalidInstruction` = Custom(9), the
+ * same code a limit-price (slippage) rejection uses.)
+ *
+ * "not-ready" is definitive (no enabled LP matcher config, ctx account missing,
+ * wrong owner, or too short); "unknown" means the read itself failed, so the
+ * caller must not draw a conclusion. Only meant for the post-failure diagnosis
+ * path — one or two RPC reads, never on the happy path.
+ */
+export async function readMatcherContextReadiness(
+  connection: Connection,
+  programId: PublicKey,
+  slabPk: PublicKey,
+  matcherProgramId: PublicKey,
+): Promise<"ready" | "not-ready" | "unknown"> {
+  try {
+    const ctx = await resolveCtxAddress(connection, programId, slabPk);
+    if (!ctx) return "not-ready";
+    const info = await connection.getAccountInfo(ctx, "confirmed");
+    if (!info) return "not-ready";
+    if (info.executable || !info.owner.equals(matcherProgramId) || info.data.length < 64) {
+      return "not-ready";
+    }
+    return "ready";
+  } catch {
+    return "unknown";
+  }
+}

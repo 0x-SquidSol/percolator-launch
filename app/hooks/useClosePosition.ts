@@ -17,6 +17,7 @@ import { isMockMode } from "@/lib/mock-mode";
 import { isMockSlab } from "@/lib/mock-trade-data";
 import { useWalletCompat } from "@/hooks/useWalletCompat";
 import { invalidatePortfolio } from "@/lib/portfolio-invalidation";
+import { diagnoseTradeRejection } from "@/lib/tradeRejectDiagnosis";
 
 export interface ClosePositionResult {
   signature: string | null;
@@ -395,6 +396,13 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
         const msg = e instanceof Error ? e.message : String(e);
         console.error("[useClosePosition] error:", msg);
         setError(humanizeError(msg, "trade"));
+        // #2643: refine an ambiguous Custom(9) from pre-trade state (no-op for
+        // any other error). The generic text above shows immediately.
+        if (programId) {
+          void diagnoseTradeRejection(msg, connection, programId, new PublicKey(slabAddress))
+            .then((refined) => { if (refined) setError(refined); })
+            .catch(() => { /* keep the generic message */ });
+        }
         setPhase("idle");
         throw e;
       } finally {
