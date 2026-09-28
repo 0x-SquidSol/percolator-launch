@@ -87,7 +87,6 @@ export const AccountsCard: FC = () => {
         ? computeMarkPnl(account.positionSize, account.entryPrice, oraclePrice)
         : safePnl;
       const computedPnl = hasValidMark ? computeMarkPnlCollateral(pnlNative, oraclePrice) : 0n;
-      const marginPct = liqHealthPct;
       const liqDisplay = describeLiqPrice({
         liqPriceE6: liqPrice,
         positionSize: account.positionSize,
@@ -96,6 +95,16 @@ export const AccountsCard: FC = () => {
         maintenanceMarginBps: maintBps,
         hasResolvedEntry: (account.entryPrice ?? 0n) > 0n,
       });
+      // liqHealthPct is a DISTANCE-to-liquidation figure and defaults to 100 when
+      // there is no liquidation price to be distant from. Beside a "20% mgn" cell
+      // that put a full green bar and a "100.0%" Margin column on the same row —
+      // three readouts of one position disagreeing (GH#2645, credited to
+      // @0x-SquidSol). Where the shared display shows margin health instead of a
+      // price, that is also what the Margin column sorts and colours on.
+      const marginPct =
+        liqDisplay.kind !== "price" && liqDisplay.marginHealthPct != null
+          ? liqDisplay.marginHealthPct
+          : liqHealthPct;
       return { idx, kind: account.kind, owner: account.owner.toBase58(), direction, positionSize: account.positionSize ?? 0n, entryPrice: account.entryPrice ?? 0n, liqPrice, liqHealthPct, liqDisplay, pnl: computedPnl, capital: account.capital ?? 0n, marginPct };
     });
   }, [accounts, maintBps, oraclePrice]);
@@ -217,9 +226,13 @@ export const AccountsCard: FC = () => {
                         {row.positionSize !== 0n ? (
                           <div className="flex items-center justify-end gap-1">
                             <LiqPriceValue display={row.liqDisplay} className="text-[var(--text)]" style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }} />
-                            <div className="h-1 w-8 shrink-0 bg-[var(--border)]/50">
-                              <div className={`h-1 ${liqBarColor(row.liqHealthPct)}`} style={{ width: `${Math.max(8, row.liqHealthPct)}%` }} />
-                            </div>
+                            {/* A distance bar only means something next to a real price;
+                                without one a full bar reads as "safe", not "n/a". */}
+                            {row.liqDisplay.kind === "price" && (
+                              <div className="h-1 w-8 shrink-0 bg-[var(--border)]/50">
+                                <div className={`h-1 ${liqBarColor(row.liqHealthPct)}`} style={{ width: `${Math.max(8, row.liqHealthPct)}%` }} />
+                              </div>
+                            )}
                           </div>
                         ) : "-"}
                       </td>
