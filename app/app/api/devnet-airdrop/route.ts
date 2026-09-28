@@ -50,7 +50,7 @@ import {
   getMinimumBalanceForRentExemptMint,
 } from "@solana/spl-token";
 import { getConfig } from "@/lib/config";
-import { getServerConnection } from "@/lib/server-rpc";
+import { getServerConnection, ServerSignatureTimeoutError } from "@/lib/server-rpc";
 import { getDevnetMintSigner } from "@/lib/devnet-signer";
 import type { getServiceClient as _GetServiceClient } from "@/lib/supabase";
 import * as Sentry from "@sentry/nextjs";
@@ -316,7 +316,12 @@ async function sendAndConfirmSignedTx(
   if (fs && !fs.err && (fs.confirmationStatus === "confirmed" || fs.confirmationStatus === "finalized")) {
     return sig;
   }
-  throw new Error(`Transaction ${sig} not confirmed within ${timeoutMs}ms`);
+  // #2629: a timeout is an UNKNOWN outcome — a finalized blockhash stays valid
+  // ~60-90s, so the mint may still land after this re-check. Throw the typed
+  // error so the caller KEEPS the rate-limit claim instead of releasing it and
+  // allowing a retry to double-airdrop. A definite on-chain failure (status.err)
+  // still throws the plain "Transaction failed" above and correctly releases.
+  throw new ServerSignatureTimeoutError(sig, timeoutMs);
 }
 
 /**
@@ -654,6 +659,10 @@ export async function POST(req: NextRequest) {
     // the mint try-catch (e.g. DexScreener fetch, ATA derivation) would
     // skip releaseClaim, locking the user out for 24h on a transient error.
     let mintSucceeded = false;
+    // #2629: an UNKNOWN (poll-timeout) mint outcome must KEEP the claim — the tx
+    // may land after the final re-check, so releasing would let a retry
+    // double-airdrop. Only a DEFINITE failure releases. Mirrors #2599.
+    let mintOutcomeUnknown = false;
     let sig: string;
     let rawAmount: bigint;
     try {
@@ -822,6 +831,9 @@ export async function POST(req: NextRequest) {
       try {
         sig = await sendAndConfirmSignedTx(connection, signedTx, 45_000);
       } catch (mintErr) {
+        // #2629: a poll-timeout (unknown outcome) must NOT release the claim — the
+        // mint may land after the re-check. Flag it so the finally keeps the claim.
+        if (mintErr instanceof ServerSignatureTimeoutError) mintOutcomeUnknown = true;
         // Convert mint-authority program errors (spl-token error 0x4 = OwnerMismatch) to 400.
         // Any other error (network, timeout) re-throws to surface as 500 via outer catch.
         // sendAndConfirmSignedTx skips preflight (see its doc comment), so this program
@@ -854,10 +866,11 @@ export async function POST(req: NextRequest) {
       }
       mintSucceeded = true;
     } finally {
-      // Release the claim slot on ANY failure so user isn't locked out 24h.
-      // Wrapped in try/catch so a releaseClaim() throw doesn't mask the original
-      // mint error and lose its stack trace from Sentry.
-      if (!mintSucceeded && claimId !== undefined && supabase) {
+      // Release the claim slot on a DEFINITE failure so the user isn't locked out
+      // 24h — but NOT on an unknown/timeout outcome (#2629): the mint may have
+      // landed, and releasing would let a retry double-airdrop. Wrapped in
+      // try/catch so a releaseClaim() throw doesn't mask the original mint error.
+      if (!mintSucceeded && !mintOutcomeUnknown && claimId !== undefined && supabase) {
         try {
           await releaseClaim(supabase, claimId);
         } catch (releaseErr) {
