@@ -1,11 +1,21 @@
 /**
- * mpl-token-metadata-stub.ts
+ * mpl-token-metadata-stub.ts (scripts/ copy)
  *
  * Minimal hand-rolled Borsh encoder for CreateMetadataAccountV3 (instruction #33).
  *
- * Replaces @metaplex-foundation/mpl-token-metadata@2.x to eliminate the transitive
- * bigint-buffer dependency (CVE-2025-3194, no upstream patch).  Only the two symbols
- * consumed by devnet-mint-content.tsx are exported:
+ * This is a verbatim copy of app/lib/mpl-token-metadata-stub.ts, duplicated here
+ * rather than imported across the app/ ⇄ scripts/ boundary: app/ has no "type"
+ * field in its package.json (CommonJS by Node's nearest-package.json resolution)
+ * while the repo root — and everything under scripts/ — is "type": "module". A
+ * relative import from scripts/ into app/lib/ crosses that boundary and tsx's
+ * CJS→ESM interop for on-the-fly-transpiled TS does not reliably re-export named
+ * bindings across it (`PROGRAM_ID` came back undefined). Keeping one small,
+ * dependency-free file colocated in each ESM subtree sidesteps that entirely.
+ *
+ * Replaces @metaplex-foundation/mpl-token-metadata@2.x to avoid its transitive
+ * bigint-buffer dependency (CVE-2025-3194, no upstream patch) — see the sibling
+ * file's header for the full rationale. Only the two symbols this repo's scripts
+ * need are exported:
  *   - PROGRAM_ID
  *   - createCreateMetadataAccountV3Instruction
  *
@@ -13,10 +23,8 @@
  * Verified against:
  *   https://github.com/metaplex-foundation/mpl-token-metadata/blob/main/clients/js-solita/src/generated/instructions/CreateMetadataAccountV3.ts
  *
- * GH#2617: there is a second, byte-identical copy at scripts/lib/mpl-token-metadata-stub.ts
- * for scripts/create-collateral-metadata.ts — not imported from here because app/ and
- * scripts/ resolve to different Node module types (see that copy's header). Keep both
- * in sync if you change this file.
+ * If you change this file, change app/lib/mpl-token-metadata-stub.ts to match
+ * (or vice versa) — they must stay byte-identical in behavior.
  */
 
 import {

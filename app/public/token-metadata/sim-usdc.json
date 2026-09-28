@@ -1,0 +1,20 @@
+{
+  "name": "Sim USDC",
+  "symbol": "sUSDC",
+  "description": "Devnet-only test collateral for the Percolator playground (percolator-playground.vercel.app). Has no monetary value and is not redeemable for USDC or any other asset. Minted freely from the playground faucet.",
+  "image": "https://percolator-playground.vercel.app/token-metadata/sim-usdc.svg",
+  "external_url": "https://percolator-playground.vercel.app",
+  "attributes": [
+    { "trait_type": "Network", "value": "Solana Devnet" },
+    { "trait_type": "Purpose", "value": "Test collateral — no monetary value" }
+  ],
+  "properties": {
+    "category": "fungible",
+    "files": [
+      {
+        "uri": "https://percolator-playground.vercel.app/token-metadata/sim-usdc.svg",
+        "type": "image/svg+xml"
+      }
+    ]
+  }
+}

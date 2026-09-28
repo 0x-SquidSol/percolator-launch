@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Sim USDC devnet test token">
+  <!--
+    Sim-USDC devnet test-token logo (GH#2617).
+
+    Deliberately NOT the real USDC/Circle mark — a distinct violet badge with a
+    "TEST" ribbon, so it can never be mistaken for real USDC in a wallet UI.
+    See the impersonation-concern note in GH#2466 / GH#2617.
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#7C5CFF"/>
+      <stop offset="100%" stop-color="#4B2FD6"/>
+    </linearGradient>
+  </defs>
+  <circle cx="64" cy="64" r="62" fill="url(#bg)" stroke="#2A1B8C" stroke-width="2"/>
+  <text x="64" y="76" text-anchor="middle" font-family="'SF Mono','Menlo',monospace" font-size="54" font-weight="700" fill="#F5F3FF">$</text>
+  <rect x="10" y="92" width="108" height="22" rx="11" fill="#1A1030" opacity="0.85"/>
+  <text x="64" y="108" text-anchor="middle" font-family="'SF Mono','Menlo',monospace" font-size="13" font-weight="700" letter-spacing="1.5" fill="#F5F3FF">DEVNET TEST</text>
+</svg>
