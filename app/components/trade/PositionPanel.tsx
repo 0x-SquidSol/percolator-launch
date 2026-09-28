@@ -10,7 +10,7 @@ import { useSlabState } from "@/components/providers/SlabProvider";
 import { useTokenMeta } from "@/hooks/useTokenMeta";
 import { useMarketInfo } from "@/hooks/useMarketInfo";
 import { AccountKind } from "@percolatorct/sdk";
-import { formatTokenAmount, formatUsdPriceE6, formatLiqPrice } from "@/lib/format";
+import { formatTokenAmount, formatUsdPriceE6 } from "@/lib/format";
 import { useLivePrice } from "@/hooks/useLivePrice";
 import {
   computeMarkPnl,
@@ -46,6 +46,8 @@ import { pollWhenVisible } from "@/lib/pollWhenVisible";
 import { parseHumanAmount } from "@/lib/parseAmount";
 import { isOracleStaleBlocking } from "@/lib/oracle-stale-gate";
 import { computeMarginHealthPct } from "@/lib/margin-health";
+import { describeLiqPrice } from "@/lib/liq-price-display";
+import { LiqPriceValue } from "./LiqPriceValue";
 import {
   formatLeverage,
   ORDER_LEVERAGE_TITLE,
@@ -427,6 +429,14 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // see the note above notionalE6 and lib/margin-health.ts.
   const marginHealthPct = computeMarginHealthPct(account.capital, absNominal, currentPriceE6);
   const marginHealthStr = marginHealthPct == null ? "N/A" : `${marginHealthPct.toFixed(1)}%`;
+  const liqDisplay = describeLiqPrice({
+    liqPriceE6,
+    positionSize: account.positionSize,
+    capital: account.capital,
+    markPriceE6: currentPriceE6,
+    maintenanceMarginBps: maintenanceBps,
+    hasResolvedEntry: entryPriceE6 > 0n,
+  });
 
   // 3.4: Funding rate /8h + countdown
   const SLOTS_PER_8H = 72_000n; // 9000 slots/hr * 8
@@ -649,13 +659,11 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
               </div>
               <div className="flex items-center justify-between py-1.5">
                 <span className="text-[10px] uppercase tracking-[0.15em] text-[var(--text)]">Liq. Price</span>
-                <span
+                <LiqPriceValue
+                  display={liqDisplay}
                   className={`text-[11px] font-medium ${liqPriceColor}`}
                   style={{ fontFamily: "var(--font-mono)" }}
-                  title={liqUnliquidatable ? "No liquidation price — collateral exceeds position notional; cannot be liquidated by price" : undefined}
-                >
-                  {formatLiqPrice(liqPriceE6, { hasPosition: liqUnliquidatable })}
-                </span>
+                />
               </div>
               <div className="flex items-center justify-between py-1.5">
                 <span className="text-[10px] uppercase tracking-[0.15em] text-[var(--text)]">Margin Health</span>

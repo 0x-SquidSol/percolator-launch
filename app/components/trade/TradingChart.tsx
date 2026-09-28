@@ -972,7 +972,16 @@ const TradingChartInner: FC<{ slabAddress: string; mintAddress?: string }> = ({
           title: "Mark",
         });
       }
-      // Liq price overlay
+      // Liq price overlay.
+      // Deliberately NOT routed through lib/liq-price-display (#2634): this draws
+      // a price LINE, only when a real liquidation price exists (useLiqPrice
+      // returns null for the covered case, so nothing is drawn — there is no
+      // "—" or "∞" to explain), and its title cannot carry the account's margin
+      // health without making this series-rebuild effect depend on the mark
+      // (health moves every tick; see the Phase 2 note on its dependency
+      // array). The exemption is recorded in
+      // __tests__/components/margin-health-surfaces.test.ts, which fails if
+      // this stops being true.
       const liqPriceNum = liqPriceE6 != null && liqPriceE6 > 0n ? Number(liqPriceE6) / 1e6 : null;
       if (overlayPrefs.liq && liqPriceNum != null && liqPriceNum > 0) {
         liqLineRef.current = s.createPriceLine({

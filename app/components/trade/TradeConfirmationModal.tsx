@@ -9,6 +9,8 @@ import { formatLeverage, ORDER_LEVERAGE_LABEL, ORDER_LEVERAGE_TITLE, RISK_LEVERA
 import { InfoIcon } from "@/components/ui/Tooltip";
 import { formatTokenAmount } from "@/lib/format";
 import { computeNotionalNative } from "@/lib/notional";
+import { describeLiqPrice, type LiqPriceDisplay } from "@/lib/liq-price-display";
+import { LiqPriceValue } from "./LiqPriceValue";
 
 interface TradeConfirmationModalProps {
   direction: "long" | "short";
@@ -16,6 +18,13 @@ interface TradeConfirmationModalProps {
   margin: bigint;
   leverage: number;
   estimatedLiqPrice: bigint;
+  /**
+   * The liquidation-price cell as `describeLiqPrice` built it — margin health
+   * where collateral covers the resulting position (#2634). Optional so a
+   * caller that only has the raw price still renders; it then falls back to
+   * the same helper with no health inputs.
+   */
+  estimatedLiqDisplay?: LiqPriceDisplay;
   tradingFee: bigint;
   /**
    * Worst-acceptable fill price (limit_price_e6) the trade will be signed
@@ -51,6 +60,7 @@ export const TradeConfirmationModal: FC<TradeConfirmationModalProps> = ({
   margin,
   leverage,
   estimatedLiqPrice,
+  estimatedLiqDisplay,
   tradingFee,
   worstFillPriceE6,
   accountEquity,
@@ -76,6 +86,17 @@ export const TradeConfirmationModal: FC<TradeConfirmationModalProps> = ({
   // the original crash, and a confirmation screen that silently disagrees with
   // the order it submits would be worse than crashing.
   const notional = computeNotionalNative(margin, leverage);
+  const liqDisplay =
+    estimatedLiqDisplay ??
+    describeLiqPrice({
+      liqPriceE6: estimatedLiqPrice,
+      positionSize,
+      capital: accountEquity,
+      markPriceE6: null,
+      maintenanceMarginBps: 500n,
+      hasResolvedEntry: true,
+      formatPrice: (e6) => `$${formatTokenAmount(e6, 6)}`,
+    });
   const riskLeverage = accountEquity != null && accountEquity > 0n
     ? Number(notional) / Number(accountEquity)
     : null;
@@ -251,9 +272,10 @@ export const TradeConfirmationModal: FC<TradeConfirmationModalProps> = ({
           </div>
           <div className="flex justify-between border-t border-[var(--border)]/30 pt-2">
             <span className="text-[var(--text-secondary)]">Est. Liquidation Price:</span>
-            <span className="font-mono font-medium text-[var(--short)]">
-              {estimatedLiqPrice <= 0n ? "N/A" : `$${formatTokenAmount(estimatedLiqPrice, 6)}`}
-            </span>
+            <LiqPriceValue
+              display={liqDisplay}
+              className={`font-mono font-medium ${liqDisplay.kind === "price" ? "text-[var(--short)]" : "text-[var(--text-secondary)]"}`}
+            />
           </div>
           {worstFillPriceE6 != null && worstFillPriceE6 > 0n && (
             <div className="flex justify-between">

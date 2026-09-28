@@ -4,6 +4,8 @@ import Link from "next/link";
 import { usePortfolio, getLiquidationSeverity, isOpenPosition, type PortfolioPosition } from "@/hooks/usePortfolio";
 import { formatTokenAmount, formatUsdPriceE6 } from "@/lib/format";
 import { useMultiTokenMeta } from "@/hooks/useMultiTokenMeta";
+import { describeLiqPrice } from "@/lib/liq-price-display";
+import { LiqPriceValue } from "@/components/trade/LiqPriceValue";
 
 import { GlowButton } from "@/components/ui/GlowButton";
 import { useWalletCompat } from "@/hooks/useWalletCompat";
@@ -32,6 +34,19 @@ function PositionCard({ pos, symbol, decimals = 6 }: { pos: PortfolioPosition; s
   const hasPosition = posSize !== 0n;
   // PERC-297: Guard PnL display when oracle price is unavailable
   const hasValidOracle = pos.oraclePriceE6 > 0n;
+  // Cross-margin: where collateral covers the position there is no liquidation
+  // price, and a bare "—" says nothing about risk. Show margin health instead
+  // (#2634 / #2558) — one shared derivation, see lib/liq-price-display.ts.
+  const liqDisplay = describeLiqPrice({
+    liqPriceE6: pos.liquidationPriceE6,
+    positionSize: pos.account?.positionSize ?? 0n,
+    capital: pos.account?.capital ?? 0n,
+    markPriceE6: pos.oraclePriceE6,
+    maintenanceMarginBps: pos.maintenanceMarginBps,
+    hasResolvedEntry: pos.entryPriceSource !== "unknown",
+    formatPrice: formatUsdPriceE6,
+    unknownText: "—",
+  });
 
   return (
     <Link
@@ -126,14 +141,13 @@ function PositionCard({ pos, symbol, decimals = 6 }: { pos: PortfolioPosition; s
           </div>
           <div>
             <span className="text-[var(--text-secondary)]">Liq: </span>
-            <span
+            <LiqPriceValue
+              display={liqDisplay}
               className={`${
                 severity === "danger" ? "font-semibold text-[var(--short)]" : severity === "warning" ? "text-[var(--warning)]" : "text-[var(--text-secondary)]"
               }`}
               style={{ fontFamily: "var(--font-jetbrains-mono)" }}
-            >
-              {hasPosition && pos.liquidationPriceE6 > 0n ? formatUsdPriceE6(pos.liquidationPriceE6) : "—"}
-            </span>
+            />
           </div>
         </div>
 

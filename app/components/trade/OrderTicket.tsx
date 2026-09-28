@@ -67,6 +67,7 @@ import { isMockSlab, getMockUserAccountIdle } from "@/lib/mock-trade-data";
 import { sanitizeSymbol } from "@/lib/symbol-utils";
 import { useMarketInfo } from "@/hooks/useMarketInfo";
 import { formatTokenAmount, formatUsdPriceE6, toE6, normalizeTokenDecimals } from "@/lib/format";
+import { describeLiqPrice, type LiqPriceDisplay } from "@/lib/liq-price-display";
 import { formatLeverageValue } from "@/lib/leverage-display";
 import { saveEntryPrice, getEntryPrice, clearEntryPrice } from "@/lib/entry-price";
 import { isSentinelValue } from "@/lib/health";
@@ -366,6 +367,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     positionSize: bigint;
     marginNative: bigint;
     estimatedLiqPrice: bigint;
+    estimatedLiqDisplay: LiqPriceDisplay;
     tradingFee: bigint;
     worstFillPriceE6: bigint;
   } | null>(null);
@@ -676,6 +678,29 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const beforeLiqPrice = userAccount && userAccount.account.positionSize !== 0n && existingEntryPriceE6 > 0n
     ? computeLiqPrice(existingEntryPriceE6, capital, userAccount.account.positionSize, maintenanceMarginBps)
     : 0n;
+  // Cross-margin: where the account's collateral covers the resulting position
+  // there is no liquidation price, and a "—" is not a risk number. The shared
+  // display shows margin health instead (#2634 / #2558).
+  const afterLiqDisplay = describeLiqPrice({
+    liqPriceE6: afterLiqPrice,
+    positionSize: hasOrder ? combinedSignedSize : 0n,
+    capital,
+    markPriceE6: livePriceE6 ?? 0n,
+    maintenanceMarginBps,
+    hasResolvedEntry: combinedEntryPriceE6 > 0n,
+    formatPrice: formatUsdPriceE6,
+    unknownText: "—",
+  });
+  const beforeLiqDisplay = describeLiqPrice({
+    liqPriceE6: beforeLiqPrice,
+    positionSize: existingPositionSize,
+    capital,
+    markPriceE6: livePriceE6 ?? 0n,
+    maintenanceMarginBps,
+    hasResolvedEntry: existingEntryPriceE6 > 0n,
+    formatPrice: formatUsdPriceE6,
+    unknownText: "—",
+  });
   // BUG 9 fix + copy clarity: opening a position RESERVES margin from
   // existing capital — it is not a deposit. The old receipt row was labeled
   // "Margin req." but actually showed capital -> capital-minus-margin (a
@@ -1203,10 +1228,14 @@ setEngineLockError(null);
             <DiffRow label="Entry" before="—" after={formatUsdPriceE6(estEntry)} />
             <DiffRow
               label="Liq price"
-              before={beforeLiqPrice > 0n ? formatUsdPriceE6(beforeLiqPrice) : "—"}
-              after={afterLiqPrice > 0n ? formatUsdPriceE6(afterLiqPrice) : "—"}
-              valueClass={direction === "long" ? "text-[var(--short)]" : "text-[var(--long)]"}
-              tooltip="Estimated liquidation price if this order fills at the estimated entry."
+              before={beforeLiqDisplay.text}
+              after={afterLiqDisplay.text}
+              valueClass={
+                afterLiqDisplay.kind !== "price"
+                  ? "text-[var(--text-secondary)]"
+                  : direction === "long" ? "text-[var(--short)]" : "text-[var(--long)]"
+              }
+              tooltip={`Estimated liquidation price if this order fills at the estimated entry.${afterLiqDisplay.title ? ` ${afterLiqDisplay.title}` : ""}`}
             />
             {detailsVisible && (
               <>
@@ -1406,6 +1435,7 @@ setEngineLockError(null);
               positionSize,
               marginNative,
               estimatedLiqPrice: afterLiqPrice,
+              estimatedLiqDisplay: afterLiqDisplay,
               tradingFee: fee,
               worstFillPriceE6,
             });
@@ -1518,6 +1548,7 @@ setEngineLockError(null);
           margin={confirmSnapshot.marginNative}
           leverage={leverage}
           estimatedLiqPrice={confirmSnapshot.estimatedLiqPrice}
+          estimatedLiqDisplay={confirmSnapshot.estimatedLiqDisplay}
           tradingFee={confirmSnapshot.tradingFee}
           worstFillPriceE6={confirmSnapshot.worstFillPriceE6}
           accountEquity={userAccount ? capital : null}

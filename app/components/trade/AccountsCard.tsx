@@ -5,12 +5,14 @@ import { useSlabState } from "@/components/providers/SlabProvider";
 import { useEngineState } from "@/hooks/useEngineState";
 import { useTokenMeta } from "@/hooks/useTokenMeta";
 import { useLivePrice } from "@/hooks/useLivePrice";
-import { formatTokenAmount, formatUsdPriceE6, formatPnl, formatLiqPrice, shortenAddress } from "@/lib/format";
+import { formatTokenAmount, formatUsdPriceE6, formatPnl, shortenAddress } from "@/lib/format";
 import { AccountKind, computeMarkPnl, computeLiqPrice } from "@percolatorct/sdk";
 import { computeMarkPnlCollateral } from "@/lib/trading";
 import { LIQ_PRICE_UNLIQUIDATABLE } from "@/lib/format";
 import { applyInvert, sanitizePriceE6 } from "@/lib/oraclePrice";
 import { isSentinelValue } from "@/lib/health";
+import { describeLiqPrice, type LiqPriceDisplay } from "@/lib/liq-price-display";
+import { LiqPriceValue } from "./LiqPriceValue";
 
 type SortKey = "idx" | "owner" | "direction" | "position" | "entry" | "liqPrice" | "pnl" | "capital" | "margin";
 type SortDir = "asc" | "desc";
@@ -25,6 +27,8 @@ interface AccountRow {
   entryPrice: bigint;
   liqPrice: bigint;
   liqHealthPct: number;
+  /** Liq price, or the margin-health figure where no price exists (#2634). */
+  liqDisplay: LiqPriceDisplay;
   pnl: bigint;
   capital: bigint;
   marginPct: number;
@@ -84,7 +88,15 @@ export const AccountsCard: FC = () => {
         : safePnl;
       const computedPnl = hasValidMark ? computeMarkPnlCollateral(pnlNative, oraclePrice) : 0n;
       const marginPct = liqHealthPct;
-      return { idx, kind: account.kind, owner: account.owner.toBase58(), direction, positionSize: account.positionSize ?? 0n, entryPrice: account.entryPrice ?? 0n, liqPrice, liqHealthPct, pnl: computedPnl, capital: account.capital ?? 0n, marginPct };
+      const liqDisplay = describeLiqPrice({
+        liqPriceE6: liqPrice,
+        positionSize: account.positionSize,
+        capital: account.capital,
+        markPriceE6: oraclePrice,
+        maintenanceMarginBps: maintBps,
+        hasResolvedEntry: (account.entryPrice ?? 0n) > 0n,
+      });
+      return { idx, kind: account.kind, owner: account.owner.toBase58(), direction, positionSize: account.positionSize ?? 0n, entryPrice: account.entryPrice ?? 0n, liqPrice, liqHealthPct, liqDisplay, pnl: computedPnl, capital: account.capital ?? 0n, marginPct };
     });
   }, [accounts, maintBps, oraclePrice]);
 
@@ -204,7 +216,7 @@ export const AccountsCard: FC = () => {
                       <td className="whitespace-nowrap px-2 py-1.5 text-right">
                         {row.positionSize !== 0n ? (
                           <div className="flex items-center justify-end gap-1">
-                            <span className="text-[var(--text)]" style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}>{formatLiqPrice(row.liqPrice)}</span>
+                            <LiqPriceValue display={row.liqDisplay} className="text-[var(--text)]" style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }} />
                             <div className="h-1 w-8 shrink-0 bg-[var(--border)]/50">
                               <div className={`h-1 ${liqBarColor(row.liqHealthPct)}`} style={{ width: `${Math.max(8, row.liqHealthPct)}%` }} />
                             </div>

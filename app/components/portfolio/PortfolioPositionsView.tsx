@@ -14,7 +14,8 @@ import { clearEntryPrice } from "@/lib/entry-price";
 import { useWalletCompat } from "@/hooks/useWalletCompat";
 import { usePortfolio, getLiquidationSeverity, getLiquidationSeverityForState, type PortfolioPosition } from "@/hooks/usePortfolio";
 import { classifyLiquidation } from "@/lib/liquidation-state";
-import { computeMarginHealthPct, unliquidatableHealthThresholdPct } from "@/lib/margin-health";
+import { describeLiqPrice } from "@/lib/liq-price-display";
+import { LiqPriceValue } from "@/components/trade/LiqPriceValue";
 import { useLiveSlabPrices } from "@/hooks/useLiveSlabPrices";
 import { useLpPositions } from "@/hooks/useLpPositions";
 import { AtRiskBanner } from "@/components/portfolio/AtRiskBanner";
@@ -239,12 +240,16 @@ function PositionCard({
   // threshold at exactly the collateral level where the liq price disappears,
   // so the row can say which side of that line the position is on rather than
   // rendering a dash. Nominal size — see lib/margin-health.ts and #2558.
-  const marginHealthPct = computeMarginHealthPct(
-    pos.account?.capital ?? 0n,
-    pos.account?.positionSize ?? 0n,
-    markE6,
-  );
-  const healthThresholdPct = unliquidatableHealthThresholdPct(pos.maintenanceMarginBps);
+  const liqDisplay = describeLiqPrice({
+    liqPriceE6: liquidationPriceE6,
+    positionSize: pos.account?.positionSize ?? 0n,
+    capital: pos.account?.capital ?? 0n,
+    markPriceE6: markE6,
+    maintenanceMarginBps: pos.maintenanceMarginBps,
+    hasResolvedEntry: pos.entryPriceSource !== "unknown",
+    formatPrice: formatUsdPriceE6,
+    unknownText: "—",
+  });
   const livePriceUsd = getSnapshot(pos.slabAddress).priceUsd ?? (markE6 > 0n ? Number(markE6) / 1e6 : null);
 
   return (
@@ -403,15 +408,11 @@ function PositionCard({
                   }`}
                   style={{ fontFamily: "var(--font-jetbrains-mono)", fontVariantNumeric: "tabular-nums" }}
                 >
-                  {hasPosition && liquidationPriceE6 > 0n
-                    ? formatUsdPriceE6(liquidationPriceE6)
-                    : liveLiquidationState.kind === "unliquidatable" && marginHealthPct != null
-                      ? `${marginHealthPct.toFixed(0)}% mgn`
-                      : "—"}
+                  <LiqPriceValue display={liqDisplay} />
                 </p>
-                {liveLiquidationState.kind === "unliquidatable" && marginHealthPct != null && (
+                {liqDisplay.kind === "covered" && (
                   <p className="mt-0.5 text-[9px] text-[var(--text-dim)]">
-                    no liq price above {healthThresholdPct}%
+                    no liq price above {liqDisplay.healthThresholdPct}%
                   </p>
                 )}
               </div>
