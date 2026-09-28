@@ -6,11 +6,18 @@
 // test-environment artifact __tests__/setup.ts documents for tweetnacl.
 // Nothing in this file touches the DOM.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { Keypair } from "@solana/web3.js";
+import { Keypair, Transaction } from "@solana/web3.js";
+import bs58 from "bs58";
+
+// The network sendTx sees via getNetwork(). Defaults to "mainnet" so every
+// pre-existing test keeps its meaning: before the devnet gate existed, sendTx
+// took the atomic signAndSendTransaction path on every network.
+const netState = vi.hoisted(() => ({ network: "mainnet" as "mainnet" | "devnet" }));
 
 // Mock getConfig before importing tx module
 vi.mock("@/lib/config", () => ({
   getConfig: () => ({ network: "devnet", rpcUrl: "https://api.devnet.solana.com" }),
+  getNetwork: () => netState.network,
 }));
 
 import { TransactionExpiredBlockheightExceededError } from "@solana/web3.js";
@@ -56,6 +63,7 @@ describe("sendTx", () => {
     vi.resetModules();
     vi.mock("@/lib/config", () => ({
       getConfig: () => ({ network: "devnet", rpcUrl: "https://api.devnet.solana.com" }),
+      getNetwork: () => netState.network,
     }));
     const { sendTx: freshSendTx } = await import("@/lib/tx");
 
@@ -153,6 +161,82 @@ describe("extractTxErrorMessage", () => {
     expect(lines.length).toBe(13);
     expect(lines[1]).toBe("Program log: failed check 0");
     expect(lines[12]).toBe("Program log: failed check 11");
+  });
+});
+
+describe("sendTx — who submits: never the wallet on devnet (Solflare 'Network mismatch')", () => {
+  // Tester report 2026-09-28: Solflare blocked "Initialize LP" and "Deposit &
+  // finalize" with "Network mismatch — your network is devnet, but this
+  // transaction is for mainnet", while the multi-signer steps and Reclaim went
+  // through. Those two are the single-signer txs, i.e. the ones that reached the
+  // atomic signAndSendTransaction branch, where the WALLET chooses the cluster it
+  // submits to. We pass chain "solana:devnet" (PrivyProviderClient) and Privy
+  // forwards it; Solflare still resolves the submit to mainnet.
+  const SIG = bs58.encode(new Uint8Array(64).fill(7));
+
+  afterEach(() => {
+    netState.network = "mainnet";
+  });
+
+  const makeConn = () => {
+    const sendRawTransaction = vi.fn().mockResolvedValue(SIG);
+    const conn = {
+      // The playground's real browser endpoint: no "devnet" in it.
+      rpcEndpoint: "https://percolator-playground.vercel.app/api/rpc",
+      getRecentPrioritizationFees: vi.fn().mockResolvedValue([]),
+      getBalance: vi.fn().mockResolvedValue(1_000_000_000),
+      getLatestBlockhash: vi.fn().mockResolvedValue({
+        blockhash: "11111111111111111111111111111111",
+        lastValidBlockHeight: 10_000_000,
+      }),
+      getBlockHeight: vi.fn().mockResolvedValue(1),
+      simulateTransaction: vi.fn().mockResolvedValue({ value: { err: null, logs: [] } }),
+      sendRawTransaction,
+      getSignatureStatuses: vi
+        .fn()
+        .mockResolvedValue({ value: [{ confirmationStatus: "confirmed", err: null }] }),
+    } as any;
+    return { conn, sendRawTransaction };
+  };
+
+  // A Privy-bridged wallet exposes BOTH methods — that's what made the atomic
+  // branch reachable for every single-signer tx.
+  const makeWallet = () => {
+    const kp = Keypair.generate();
+    return {
+      publicKey: kp.publicKey,
+      signTransaction: vi.fn(async (tx: Transaction) => {
+        tx.partialSign(kp);
+        return tx;
+      }),
+      signAndSendTransaction: vi.fn().mockResolvedValue(bs58.decode(SIG)),
+    };
+  };
+
+  it("devnet: a single-signer tx is signed by the wallet and submitted by US — the wallet never submits", async () => {
+    netState.network = "devnet";
+    const { conn, sendRawTransaction } = makeConn();
+    const wallet = makeWallet();
+
+    const sig = await sendTx({ connection: conn, wallet, instructions: [] });
+
+    expect(wallet.signAndSendTransaction).not.toHaveBeenCalled();
+    expect(wallet.signTransaction).toHaveBeenCalledTimes(1);
+    expect(sendRawTransaction).toHaveBeenCalledTimes(1);
+    expect(sig).toBe(SIG);
+  });
+
+  it("mainnet: PERC-8388's atomic path is unchanged — the wallet signs AND submits", async () => {
+    netState.network = "mainnet";
+    const { conn, sendRawTransaction } = makeConn();
+    const wallet = makeWallet();
+
+    const sig = await sendTx({ connection: conn, wallet, instructions: [] });
+
+    expect(wallet.signAndSendTransaction).toHaveBeenCalledTimes(1);
+    expect(wallet.signTransaction).not.toHaveBeenCalled();
+    expect(sendRawTransaction).not.toHaveBeenCalled();
+    expect(sig).toBe(SIG);
   });
 });
 

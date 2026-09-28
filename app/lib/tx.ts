@@ -1,6 +1,7 @@
 import { Connection, Transaction, TransactionInstruction, ComputeBudgetProgram, SendTransactionError, SystemProgram, TransactionExpiredBlockheightExceededError, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import type { PublicKey, Signer } from "@solana/web3.js";
+import { getNetwork } from "@/lib/config";
 
 /**
  * PERC-8388: Lighthouse v2 program ID — Blowfish/Phantom wallet middleware injects
@@ -611,7 +612,19 @@ export async function sendTx({
       //   nothing that fails simulation is ever broadcast — but the popup
       //   appears one full RPC round-trip sooner, and the user's reading/
       //   approval time absorbs the simulation latency entirely.
-      const usesAtomicSend = !!wallet.signAndSendTransaction && signers.length === 0;
+      //
+      // The atomic path is MAINNET-ONLY. With signAndSendTransaction the wallet
+      // picks the cluster it SUBMITS to, and Solflare resolves that to mainnet
+      // even when we pass chain "solana:devnet" — its popup blocks with "Network
+      // mismatch … this transaction is for mainnet", and only on the steps that
+      // reach this branch (single-signer: Initialize LP, Deposit & finalize),
+      // never on the multi-signer steps that sign-then-we-submit below. On devnet
+      // we therefore always sign, then submit through our own RPC — the path every
+      // multi-signer step already takes on devnet. PERC-8388's reason for the
+      // atomic path (no post-sign window for Lighthouse/Blowfish to inject
+      // assertion instructions) is a mainnet wallet-guard concern.
+      const usesAtomicSend =
+        !!wallet.signAndSendTransaction && signers.length === 0 && getNetwork() !== "devnet";
       const runSimulation = async (): Promise<void> => {
         try {
           // Simulate with replaceRecentBlockhash so the preflight can't
@@ -669,7 +682,7 @@ export async function sendTx({
       // The wallet signs and broadcasts atomically — there is no post-sign
       // window for middleware to inject assertion instructions.
       // ================================================================
-      if (wallet.signAndSendTransaction && signers.length === 0) {
+      if (usesAtomicSend && wallet.signAndSendTransaction) {
         // Only use atomic sign+send when there are no extra signers.
         // signAndSendTransaction may drop partial signatures from keypair signers.
         try {
