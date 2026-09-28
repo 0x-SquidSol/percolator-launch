@@ -1,0 +1,305 @@
+"use client";
+
+import { FC, useMemo, useState } from "react";
+import { formatTokenAmount, formatUsdPriceE6 } from "@/lib/format";
+import { computeMarkPnl, computeMarkPnlCollateral, clampClosePercent } from "@/lib/trading";
+
+/**
+ * The body of the close-position UI: position banner, close-amount slider + %
+ * presets, the Est. PnL / Trading Fee / Est. Receive preview, and the close
+ * button. Shared by:
+ *  - ClosePositionModal (`variant="modal"`) — wraps this in a dialog with a
+ *    title, an X, and a Cancel button.
+ *  - OrderTicketClosePanel (`variant="inline"`) — renders it directly in the
+ *    order ticket, so closing looks like the modal without the popup.
+ *
+ * All close math (PnL/fee/receive) lives here ONCE so the modal and the inline
+ * panel can never drift. Pure presentation + a `percent` slider; the actual
+ * close is the caller's `onConfirm(percent)` (which reuses useClosePosition).
+ */
+export interface ClosePositionFormProps {
+  positionSize: bigint;
+  entryPrice: bigint;
+  currentPrice: bigint;
+  capital: bigint;
+  /** Index asset symbol for position size (e.g. "SOL"). */
+  symbol: string;
+  /** Collateral symbol for PnL/receive (e.g. "USDC"). Falls back to symbol. */
+  collateralSymbol?: string;
+  decimals: number;
+  priceUsd: number | null;
+  isLong: boolean;
+  loading: boolean;
+  tradingFeeBps?: bigint;
+  /** Blocks close + shows the oracle-stale warning. */
+  oracleStale?: boolean;
+  error?: string | null;
+  /** Per-fill cap — a close bigger than this executes as several batch legs. */
+  maxFillAbs?: bigint | null;
+  onConfirm: (percent: number) => void;
+  /** Modal chrome only (title + X + Cancel). Omit for inline. */
+  onCancel?: () => void;
+  variant?: "modal" | "inline";
+  /** Extra block beyond loading/oracleStale (no mark, engine stale, LP underfunded…). */
+  submitDisabled?: boolean;
+  /** Button label to show when `submitDisabled` (overrides "Close N%"). */
+  submitDisabledLabel?: string;
+  /** Tooltip explaining why the close is blocked. */
+  submitTitle?: string;
+}
+
+function abs(n: bigint): bigint {
+  return n < 0n ? -n : n;
+}
+
+const PRESETS = [25, 50, 75, 100];
+
+export const ClosePositionForm: FC<ClosePositionFormProps> = ({
+  positionSize,
+  entryPrice,
+  currentPrice,
+  capital,
+  symbol,
+  collateralSymbol,
+  decimals,
+  priceUsd,
+  isLong,
+  loading,
+  tradingFeeBps = 0n,
+  oracleStale = false,
+  error = null,
+  maxFillAbs = null,
+  onConfirm,
+  onCancel,
+  variant = "modal",
+  submitDisabled = false,
+  submitDisabledLabel,
+  submitTitle,
+}) => {
+  const [percent, setPercent] = useState(100);
+  const updatePercent = (value: number) => setPercent(clampClosePercent(value));
+  const isModal = variant === "modal";
+
+  const colSym = collateralSymbol ?? symbol;
+  const absPosition = abs(positionSize);
+
+  const closeAbsForFills =
+    percent >= 100 ? absPosition : (absPosition * BigInt(clampClosePercent(percent))) / 100n;
+  const fillCount =
+    maxFillAbs != null && maxFillAbs > 0n && closeAbsForFills > 0n
+      ? Number((closeAbsForFills + maxFillAbs - 1n) / maxFillAbs)
+      : 1;
+
+  const preview = useMemo(() => {
+    const closeAbs = percent >= 100 ? absPosition : (absPosition * BigInt(percent)) / 100n;
+    const remainingAbs = absPosition - closeAbs;
+
+    const closePositionSigned = isLong ? closeAbs : -closeAbs;
+    const pnlNative =
+      currentPrice > 0n && entryPrice > 0n
+        ? computeMarkPnl(closePositionSigned, entryPrice, currentPrice)
+        : 0n;
+    const pnl = currentPrice > 0n ? computeMarkPnlCollateral(pnlNative, currentPrice) : 0n;
+
+    const closeCapital = percent >= 100 ? capital : (capital * BigInt(percent)) / 100n;
+
+    const closeNotional = currentPrice > 0n ? (closeAbs * currentPrice) / 1_000_000n : 0n;
+    const closeFee = tradingFeeBps > 0n ? (closeNotional * tradingFeeBps) / 10_000n : 0n;
+
+    const rawReceive = closeCapital + pnl - closeFee;
+    const receive = rawReceive > 0n ? rawReceive : 0n;
+
+    const pnlUsd =
+      priceUsd !== null && currentPrice > 0n
+        ? (Number(pnlNative) / 10 ** decimals) * priceUsd
+        : null;
+
+    return { closeAbs, remainingAbs, pnl, pnlUsd, closeFee, receive };
+  }, [percent, absPosition, isLong, entryPrice, currentPrice, capital, priceUsd, tradingFeeBps, decimals]);
+
+  const pnlColor =
+    preview.pnl === 0n
+      ? "text-[var(--text-muted)]"
+      : preview.pnl > 0n
+        ? "text-[var(--long)]"
+        : "text-[var(--short)]";
+
+  const closeBlocked = loading || oracleStale || submitDisabled;
+
+  return (
+    <>
+      {isModal && (
+        <div className="mb-4 flex items-center justify-between">
+          <h2 id="close-position-title" className="text-sm font-bold uppercase tracking-[0.15em] text-[var(--text)]">
+            Close Position
+          </h2>
+          <button
+            onClick={onCancel}
+            className="text-[var(--text-muted)] transition-colors hover:text-[var(--text)]"
+            aria-label="Close"
+          >
+            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      )}
+
+      {/* Position info banner */}
+      <div
+        className={`mb-4 rounded-none border p-3 ${
+          isLong ? "border-[var(--long)]/30 bg-[var(--long)]/5" : "border-[var(--short)]/30 bg-[var(--short)]/5"
+        }`}
+      >
+        <p className="text-[10px] font-medium uppercase tracking-[0.15em]" style={{ color: isLong ? "var(--long)" : "var(--short)" }}>
+          Closing {isLong ? "Long" : "Short"} Position
+        </p>
+        <p className="mt-1 text-[10px] text-[var(--text-secondary)]">
+          <span style={{ fontFamily: "var(--font-mono)" }}>{formatTokenAmount(absPosition, decimals)}</span> {symbol} at{" "}
+          <span style={{ fontFamily: "var(--font-mono)" }}>{formatUsdPriceE6(entryPrice)}</span> entry
+        </p>
+      </div>
+
+      {/* Percentage slider */}
+      <div className="mb-4">
+        <div className="mb-1.5 flex items-center justify-between">
+          <label className="text-[10px] uppercase tracking-[0.15em] text-[var(--text-dim)]">Close Amount</label>
+          <span className="text-[11px] font-medium text-[var(--text)]" style={{ fontFamily: "var(--font-mono)" }}>{percent}%</span>
+        </div>
+        <input
+          type="range"
+          min={1}
+          max={100}
+          step={1}
+          value={percent}
+          onChange={(e) => updatePercent(Number(e.target.value))}
+          style={{
+            background: `linear-gradient(to right, var(--short) 0%, var(--short) ${percent}%, rgba(255,255,255,0.03) ${percent}%, rgba(255,255,255,0.03) 100%)`,
+            backgroundSize: "100% 2px",
+            backgroundPosition: "center",
+            backgroundRepeat: "no-repeat",
+            height: "20px",
+          }}
+          className="mb-2 h-1 w-full cursor-pointer appearance-none [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:bg-[var(--short)] [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:appearance-none [&::-moz-range-thumb]:rounded-none [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-[var(--short)] [&::-moz-range-track]:bg-transparent"
+        />
+        <div className="flex gap-1">
+          {PRESETS.map((p) => (
+            <button
+              key={p}
+              onClick={() => updatePercent(p)}
+              className={`flex-1 rounded-none py-1 text-[10px] font-medium transition-colors duration-150 ${
+                percent === p
+                  ? "bg-[var(--short)] text-white"
+                  : "border border-[var(--border)]/30 text-[var(--text-muted)] hover:border-[var(--short)]/30 hover:text-[var(--text-secondary)]"
+              }`}
+            >
+              {p}%
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Preview details */}
+      <div className="mb-6 space-y-2 text-xs">
+        <div className="flex justify-between">
+          <span className="text-[var(--text-dim)]">Close Size:</span>
+          <span className="font-mono font-medium text-[var(--text)]">
+            {formatTokenAmount(preview.closeAbs, decimals)} {symbol}
+          </span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-[var(--text-dim)]">Remaining:</span>
+          <span className="font-mono font-medium text-[var(--text)]">
+            {formatTokenAmount(preview.remainingAbs, decimals)} {symbol}
+          </span>
+        </div>
+        <div className="flex justify-between border-t border-[var(--border)]/30 pt-2">
+          <span className="text-[var(--text-dim)]">Est. PnL:</span>
+          <span className={`font-mono font-medium ${pnlColor}`}>
+            {preview.pnl > 0n ? "+" : preview.pnl < 0n ? "-" : ""}
+            {formatTokenAmount(abs(preview.pnl), decimals)} {colSym}
+            {preview.pnlUsd !== null && (
+              <span className="ml-1 text-[10px]">
+                ({preview.pnl > 0n ? "+" : preview.pnl < 0n ? "-" : ""}${Math.abs(preview.pnlUsd).toFixed(2)})
+              </span>
+            )}
+          </span>
+        </div>
+        {preview.closeFee > 0n && (
+          <div className="flex justify-between">
+            <span className="text-[var(--text-dim)]">Trading Fee:</span>
+            <span className="font-mono font-medium text-[var(--text-secondary)]">
+              −{formatTokenAmount(preview.closeFee, decimals)} {colSym}
+            </span>
+          </div>
+        )}
+        <div className="flex justify-between">
+          <span className="text-[var(--text-dim)]">Est. Receive:</span>
+          <span className="font-mono font-medium text-[var(--text)]">
+            ~{formatTokenAmount(preview.receive, decimals)} {colSym}
+          </span>
+        </div>
+      </div>
+
+      {oracleStale && (
+        <div className="mb-4 rounded-none border border-[var(--warning)]/30 bg-[var(--warning)]/[0.07] p-2.5">
+          <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--warning)]">⚠ Oracle Stale</p>
+          <p className="mt-1 text-[9px] text-[var(--text-secondary)] leading-relaxed">
+            The oracle price has not been updated recently. Closing is temporarily disabled to prevent failed transactions.
+          </p>
+        </div>
+      )}
+
+      {fillCount > 1 && (
+        <div className="mb-4 rounded-none border border-[var(--border)] bg-[var(--bg)] p-2.5">
+          <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--text-secondary)]">
+            Closes as {fillCount} fills
+          </p>
+          <p className="mt-1 text-[9px] text-[var(--text-secondary)] leading-relaxed">
+            This close is larger than the market fills in one trade, so it executes as {fillCount} back-to-back
+            fills inside a single transaction — one signature, no extra steps.
+          </p>
+        </div>
+      )}
+
+      {error && (
+        <div className="mb-4 rounded-none border border-[var(--short)]/20 bg-[var(--short)]/5 px-3 py-2">
+          <p className="text-[10px] text-[var(--short)]">{error}</p>
+        </div>
+      )}
+
+      {/* Action buttons */}
+      <div className="flex gap-3">
+        {isModal && (
+          <button
+            onClick={onCancel}
+            disabled={loading}
+            className="flex-1 rounded-none border border-[var(--border)] py-2.5 text-[11px] font-medium uppercase tracking-[0.1em] text-[var(--text-secondary)] transition-colors hover:border-[var(--text-muted)] hover:text-[var(--text)] disabled:opacity-50"
+          >
+            Cancel
+          </button>
+        )}
+        <button
+          onClick={() => onConfirm(percent)}
+          disabled={closeBlocked}
+          title={submitTitle}
+          className="flex-1 rounded-none bg-[var(--short)] py-2.5 text-[11px] font-medium uppercase tracking-[0.1em] text-white transition-[filter,opacity] duration-150 hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {loading ? (
+            <span className="inline-flex items-center gap-2">
+              <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              Closing...
+            </span>
+          ) : submitDisabled && submitDisabledLabel ? (
+            submitDisabledLabel
+          ) : (
+            `Close ${percent}%`
+          )}
+        </button>
+      </div>
+    </>
+  );
+};

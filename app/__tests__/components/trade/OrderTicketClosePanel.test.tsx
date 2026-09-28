@@ -1,11 +1,14 @@
 /**
  * OrderTicketClosePanel (GH#2651) — the money path of the ticket's Close mode.
  *
- * The panel must (a) close ONLY through useClosePosition (which re-reads the
- * on-chain size, so a stale UI size cannot flip/increase the position), (b) hand
- * the ClosePositionModal the position's own signed size and side untouched, (c)
- * apply the same block gates as PositionsDock, and (d) show PnL in COLLATERAL
- * units, not the raw native on-chain figure.
+ * Now renders the FULL close form INLINE (shared ClosePositionForm), not a
+ * button that opens a modal. The panel must (a) close ONLY through
+ * useClosePosition (which re-reads the on-chain size, so a stale UI size can't
+ * flip/increase the position), with the slider's chosen percent, (b) apply the
+ * same block gates as PositionsDock, and (c) show PnL in COLLATERAL units.
+ *
+ * The real ClosePositionForm is rendered (pure presentation + lib math) so the
+ * assertions exercise the actual inline UI.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, act } from "@testing-library/react";
@@ -14,23 +17,11 @@ const closePosition = vi.fn();
 const prewarmClose = vi.fn();
 let hookState = { loading: false, error: null as string | null };
 let live: { priceE6: bigint | null; priceUsd: number | null } = { priceE6: 110_000_000n, priceUsd: 110 };
-let lastModalProps: Record<string, unknown> | null = null;
 
 vi.mock("@/hooks/useClosePosition", () => ({
   useClosePosition: () => ({ closePosition, prewarmClose, ...hookState }),
 }));
 vi.mock("@/hooks/useLivePrice", () => ({ useLivePrice: () => live }));
-vi.mock("@/components/trade/ClosePositionModal", () => ({
-  ClosePositionModal: (props: Record<string, unknown> & { onConfirm: (p: number) => void; onCancel: () => void }) => {
-    lastModalProps = props;
-    return (
-      <div data-testid="modal">
-        <button onClick={() => props.onConfirm(50)}>confirm50</button>
-        <button onClick={() => props.onConfirm(100)}>confirm100</button>
-      </div>
-    );
-  },
-}));
 
 import { OrderTicketClosePanel, type OrderTicketClosePanelProps } from "@/components/trade/OrderTicketClosePanel";
 
@@ -58,93 +49,87 @@ beforeEach(() => {
   prewarmClose.mockReset();
   hookState = { loading: false, error: null };
   live = { priceE6: 110_000_000n, priceUsd: 110 };
-  lastModalProps = null;
 });
 
-const open = () => fireEvent.click(screen.getByRole("button", { name: /close position/i }));
+const closeBtn = () => screen.getByRole("button", { name: /^close \d+%$/i }) as HTMLButtonElement;
 
-describe("OrderTicketClosePanel", () => {
+describe("OrderTicketClosePanel (inline form)", () => {
   it("shows an empty state and no close button when there is no position", () => {
     render(<OrderTicketClosePanel {...base({ positionSize: 0n })} />);
     expect(screen.getByText("No open position")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /close position/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^close \d+%$/i })).toBeNull();
   });
 
-  it("closes only through useClosePosition, with the chosen percent, then reports it", async () => {
-    const p = base();
-    render(<OrderTicketClosePanel {...p} />);
-    open();
+  it("prewarms the close on mount (no click needed)", () => {
+    render(<OrderTicketClosePanel {...base()} />);
     expect(prewarmClose).toHaveBeenCalledTimes(1);
-    expect(closePosition).not.toHaveBeenCalled(); // opening the modal closes nothing
-    await act(async () => fireEvent.click(screen.getByText("confirm50")));
-    expect(closePosition).toHaveBeenCalledTimes(1);
-    expect(closePosition).toHaveBeenCalledWith(50);
-    expect(p.onClosed).toHaveBeenCalledWith(50);
-    expect(screen.queryByTestId("modal")).toBeNull();
   });
 
-  it("reports a full close as 100 (so the caller clears the entry cache)", async () => {
+  it("closes through useClosePosition at the default 100%, then reports it", async () => {
     const p = base();
     render(<OrderTicketClosePanel {...p} />);
-    open();
-    await act(async () => fireEvent.click(screen.getByText("confirm100")));
+    await act(async () => fireEvent.click(closeBtn()));
+    expect(closePosition).toHaveBeenCalledTimes(1);
+    expect(closePosition).toHaveBeenCalledWith(100);
     expect(p.onClosed).toHaveBeenCalledWith(100);
   });
 
-  it("a failed close keeps the modal open and does not report success", async () => {
-    closePosition.mockRejectedValueOnce(new Error("boom"));
+  it("respects a chosen preset percent", async () => {
     const p = base();
     render(<OrderTicketClosePanel {...p} />);
-    open();
-    await act(async () => fireEvent.click(screen.getByText("confirm50")));
-    expect(p.onClosed).not.toHaveBeenCalled();
-    expect(screen.getByTestId("modal")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "50%" }));
+    await act(async () => fireEvent.click(closeBtn()));
+    expect(closePosition).toHaveBeenCalledWith(50);
+    expect(p.onClosed).toHaveBeenCalledWith(50);
   });
 
-  it("passes a SHORT's negative size and side through untouched (no flip)", () => {
-    render(<OrderTicketClosePanel {...base({ positionSize: -2_000_000n })} />);
-    expect(screen.getByText(/short position/i)).toBeTruthy();
-    open();
-    expect(lastModalProps?.positionSize).toBe(-2_000_000n);
-    expect(lastModalProps?.isLong).toBe(false);
-  });
-
-  it("passes a LONG's size and side, and surfaces the hook error into the modal", () => {
+  it("a failed close does not report success but surfaces the error", async () => {
+    closePosition.mockRejectedValueOnce(new Error("boom"));
     hookState = { loading: false, error: "Could not verify current on-chain position." };
-    render(<OrderTicketClosePanel {...base()} />);
-    open();
-    expect(lastModalProps?.positionSize).toBe(1_000_000n);
-    expect(lastModalProps?.isLong).toBe(true);
-    expect(lastModalProps?.error).toBe("Could not verify current on-chain position.");
+    const p = base();
+    render(<OrderTicketClosePanel {...p} />);
+    await act(async () => fireEvent.click(closeBtn()));
+    expect(p.onClosed).not.toHaveBeenCalled();
+    expect(screen.getByText("Could not verify current on-chain position.")).toBeTruthy();
   });
 
-  it.each([
-    ["engine stale (crank behind)", { engineStale: true }, /crank behind/i],
-    ["LP underfunded", { lpUnderfunded: true }, /close position/i],
-  ] as const)("disables Close when %s", (_n, over, label) => {
-    render(<OrderTicketClosePanel {...base(over)} />);
-    const btn = screen.getByRole("button", { name: label }) as HTMLButtonElement;
+  it("renders a SHORT's side untouched (fresh size read happens in the hook)", () => {
+    render(<OrderTicketClosePanel {...base({ positionSize: -2_000_000n })} />);
+    expect(screen.getByText(/closing short position/i)).toBeTruthy();
+  });
+
+  it("disables + relabels the close button when the engine crank is behind", () => {
+    render(<OrderTicketClosePanel {...base({ engineStale: true })} />);
+    const btn = screen.getByRole("button", { name: /crank behind/i }) as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
     fireEvent.click(btn);
-    expect(screen.queryByTestId("modal")).toBeNull();
-    expect(prewarmClose).not.toHaveBeenCalled();
+    expect(closePosition).not.toHaveBeenCalled();
   });
 
-  it("disables Close until a valid mark exists", () => {
+  it("disables + relabels the close button when there is no valid mark", () => {
     live = { priceE6: null, priceUsd: null };
     render(<OrderTicketClosePanel {...base()} />);
-    expect((screen.getByRole("button", { name: /awaiting price/i }) as HTMLButtonElement).disabled).toBe(true);
+    const btn = screen.getByRole("button", { name: /awaiting price/i }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    fireEvent.click(btn);
+    expect(closePosition).not.toHaveBeenCalled();
   });
 
-  it("blocks Confirm in the modal when the oracle is blocked or the engine goes stale", () => {
+  it("disables the close when the LP is underfunded", () => {
+    render(<OrderTicketClosePanel {...base({ lpUnderfunded: true })} />);
+    expect(closeBtn().disabled).toBe(true);
+    fireEvent.click(closeBtn());
+    expect(closePosition).not.toHaveBeenCalled();
+  });
+
+  it("blocks the close (oracle-stale) when the oracle is blocked", () => {
     render(<OrderTicketClosePanel {...base({ oracleBlocked: true })} />);
-    open();
-    expect(lastModalProps?.oracleStale).toBe(true);
+    expect(closeBtn().disabled).toBe(true);
+    expect(screen.getByText(/oracle stale/i)).toBeTruthy();
   });
 
-  it("shows PnL in collateral units (mark-to-market), not the raw native figure", () => {
-    // 1 SOL long, entry $100, mark $110 -> ~ +$10. The native coin-margined
-    // number is ~0.09, which is what raw account.pnl would have shown.
+  it("shows Est. PnL in collateral units (mark-to-market), not the raw native figure", () => {
+    // 1 SOL long, entry $100, mark $110 -> ~ +$10. Native coin-margined ~0.09.
     render(<OrderTicketClosePanel {...base()} />);
     expect(screen.getByText(/\+9\.99\d* USDC/)).toBeTruthy();
     expect(screen.queryByText(/\+0\.09/)).toBeNull();
