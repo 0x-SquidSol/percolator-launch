@@ -50,10 +50,16 @@ vi.mock("next/link", () => ({
 
 vi.mock("@/hooks/usePrivySafe", () => ({
   usePrivyAvailable: () => privyAvailable,
+  // PR#2620 (GH#2618): WalletPageInner now also calls usePrivyLogin() as the
+  // fallback login trigger when useConnectWallet() is unavailable.
+  usePrivyLogin: () => vi.fn(),
 }));
 
 vi.mock("@privy-io/react-auth", () => ({
   usePrivy: () => privyState,
+  // PR#2620 (GH#2618): WalletPageInner now also calls useConnectWallet() so
+  // "Connect another wallet" can promote the newly connected wallet to active.
+  useConnectWallet: () => ({ connectWallet: vi.fn() }),
 }));
 
 vi.mock("@privy-io/react-auth/solana", () => ({
