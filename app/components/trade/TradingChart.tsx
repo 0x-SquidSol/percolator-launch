@@ -1449,7 +1449,10 @@ const TradingChartInner: FC<{ slabAddress: string; mintAddress?: string }> = ({
             dominant center" means it should use the space available, not be
             capped below it. Mobile keeps a fixed 45svh (no grid row to fill
             there — the mobile layout is a stacked flex column). */}
-        <div ref={containerRef} className="w-full h-[45svh] lg:h-full" />
+        {/* Mobile height is CLAMPED so the chart can't overrun a small screen
+            or collapse on a short one (min 300px, prefers 45svh, caps at
+            540px); desktop fills the grid's clamped Chart row via lg:h-full. */}
+        <div ref={containerRef} className="w-full h-[clamp(300px,45svh,540px)] lg:h-full" />
 
         {/* Box-zoom drag selection: translucent rectangle shown while the
             user drags with "drag to zoom" toggled on (useChartZoomControls
