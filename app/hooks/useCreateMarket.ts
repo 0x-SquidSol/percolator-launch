@@ -1724,26 +1724,16 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     updateInFlightStep(slabPk.toBase58(), 6);
 
 
-    // Post-creation hook — devnet token airdrop, fired without awaiting.
+    // #2608/#2610: this used to fire a background POST /api/devnet-airdrop here,
+    // duplicating the claim the "GET SIM-USDC & TRADE" button on the success
+    // screen already makes on click (LaunchSuccess.tsx's handleMintAndTrade) —
+    // every failure mode of that duplicate call (500, 429, network error) put an
+    // unreportable error banner or a permanently-stuck spinner on the most
+    // important screen in the product. Removed: the button beside it does the
+    // identical job, and the creator clicks it to reach the trade page anyway,
+    // so nothing is lost. Still set devnetMint synchronously so that button renders.
     if (isDevnetEnv) {
-      void fetch("/api/devnet-airdrop", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mintAddress: params.mint.toBase58(), walletAddress: walletPk.toBase58() }),
-      }).then(async (resp) => {
-        const data = await resp.json().catch(() => ({} as Record<string, unknown>));
-        if (resp.ok || resp.status === 429) {
-          setState((s) => ({
-            ...s, devnetMint: params.mint.toBase58(),
-            devnetAirdropAmount: (data as { amount?: number }).amount ?? null,
-            devnetAirdropSymbol: (data as { symbol?: string }).symbol ?? null,
-          }));
-        } else {
-          setState((s) => ({ ...s, devnetMint: params.mint.toBase58(), devnetMintError: (data as { error?: string }).error ?? `HTTP ${resp.status}` }));
-        }
-      }).catch((mintErr) => {
-        setState((s) => ({ ...s, devnetMint: params.mint.toBase58(), devnetMintError: mintErr instanceof Error ? mintErr.message : "Airdrop request failed" }));
-      });
+      setState((s) => ({ ...s, devnetMint: params.mint.toBase58() }));
     }
 
     clearInFlightMarket(slabPk.toBase58());
@@ -3736,47 +3726,17 @@ export function useCreateMarket() {
           // PERC-465: mainnet_ca is already written to the markets table via /api/markets POST above.
           // The oracle keeper auto-discovers new markets from Supabase every 30s.
 
-          // Mint devnet token + airdrop $500 to creator.
-          // Use the devnet-airdrop endpoint (not devnet-mint-token) because the
-          // mirror mint was already created by StepTokenSelect → devnet-mirror-mint.
-          // devnet-mint-token expected a mainnet CA but received the devnet mirror
-          // address, causing DexScreener lookup to fail → no tokens → untradeable market.
-          setState((s) => ({ ...s, stepLabel: "Airdropping devnet tokens..." }));
-          try {
-            const airdropResp = await fetch("/api/devnet-airdrop", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                mintAddress: mintAddr,
-                walletAddress: wallet.publicKey.toBase58(),
-              }),
-            });
-            const airdropData = await airdropResp.json();
-            if (airdropResp.ok || airdropResp.status === 429) {
-              // 429 = already claimed, which is fine — user has tokens
-              setState((s) => ({
-                ...s,
-                devnetMint: mintAddr,
-                devnetAirdropAmount: airdropData.amount ?? null,
-                devnetAirdropSymbol: airdropData.symbol ?? null,
-              }));
-            } else {
-              console.warn("Devnet airdrop failed:", airdropData.error ?? airdropResp.status);
-              // Non-fatal — market is live, user can use faucet button on trade page
-              setState((s) => ({
-                ...s,
-                devnetMint: mintAddr, // Still set devnetMint so "Mint & Trade" works
-                devnetMintError: airdropData.error ?? `HTTP ${airdropResp.status}`,
-              }));
-            }
-          } catch (mintErr) {
-            console.warn("Devnet airdrop error:", mintErr);
-            setState((s) => ({
-              ...s,
-              devnetMint: mintAddr, // Still set so "Mint & Trade" button appears
-              devnetMintError: mintErr instanceof Error ? mintErr.message : "Airdrop request failed",
-            }));
-          }
+          // #2608/#2610: this used to await POST /api/devnet-airdrop here,
+          // duplicating the claim the "GET SIM-USDC & TRADE" button on the
+          // success screen already makes on click (LaunchSuccess.tsx's
+          // handleMintAndTrade) — every failure mode of that duplicate call put
+          // an unreportable error banner or a permanently-stuck spinner on the
+          // most important screen in the product. Removed: the button beside it
+          // does the identical job, and the creator clicks it to reach the trade
+          // page anyway, so nothing is lost. Still set devnetMint so that
+          // button renders (it's the Sim-USDC collateral mint, not a devnet
+          // mirror of `mintAddr` — see LaunchSuccess.tsx's doc comment).
+          setState((s) => ({ ...s, devnetMint: mintAddr }));
         }
 
         // Done! Clear in-memory keypair ref + in-flight recovery state.

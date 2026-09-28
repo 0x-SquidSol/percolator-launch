@@ -34,9 +34,12 @@ vi.mock("@/hooks/useWalletCompat", () => ({
   }),
 }));
 
-// Mock next/navigation — LaunchSuccess calls useRouter() for post-mint navigation
+// Mock next/navigation — LaunchSuccess calls useRouter() for post-mint navigation.
+// mockPush is a single hoisted fn (not a fresh vi.fn() per render) so the
+// GH#2610 tests below can assert on whether/how it was called.
+const { mockPush } = vi.hoisted(() => ({ mockPush: vi.fn() }));
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), prefetch: vi.fn(), back: vi.fn() }),
+  useRouter: () => ({ push: mockPush, replace: vi.fn(), prefetch: vi.fn(), back: vi.fn() }),
   usePathname: () => "/",
   useSearchParams: () => new URLSearchParams(),
 }));
@@ -360,6 +363,85 @@ describe("LaunchSuccess", () => {
       );
       expect(screen.queryByText("MINT & TRADE →")).toBeNull();
       expect(screen.getByText(/SIM-USDC/)).toBeDefined();
+    });
+  });
+
+  describe("GH#2610: post-creation Sim-USDC claim failure handling", () => {
+    const mint = "DJ54k4wH92NTtNP8RuHAwG8si1bevXEknzctDdqYN8eC";
+    let fetchMock: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      fetchMock = vi.fn();
+      global.fetch = fetchMock as unknown as typeof fetch;
+    });
+
+    it("defect 2: shows no permanent 'in progress' status when there is no claim result yet", () => {
+      // The automatic background claim that used to populate this status line is
+      // gone (see useCreateMarket.ts) — with only devnetMint set (the normal
+      // post-creation state now), there is nothing in flight to report.
+      render(<LaunchSuccess {...defaultProps} devnetMint={mint} />);
+      expect(screen.queryByText(/Sending Sim-USDC/)).toBeNull();
+    });
+
+    it("defect 1: shows the actual devnetMintError text, not a fixed sentence", () => {
+      render(
+        <LaunchSuccess
+          {...defaultProps}
+          devnetMint={mint}
+          devnetMintError="Server not configured for devnet minting"
+        />
+      );
+      expect(screen.getByText(/Server not configured for devnet minting/)).toBeDefined();
+      // The old fixed sentence stood in for all ~16 of the route's failure exits —
+      // that's what made #2608 take devtools work to extract a real reason.
+      expect(screen.queryByText(/use the faucet on the trade page\./)).toBeNull();
+    });
+
+    it("defect 3: a genuine claim failure does NOT navigate away, and shows the real reason with an actionable path", async () => {
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: async () => ({ error: "Server not configured for devnet minting" }),
+      });
+      render(<LaunchSuccess {...defaultProps} devnetMint={mint} />);
+      fireEvent.click(screen.getByText("GET SIM-USDC & TRADE →"));
+
+      await screen.findByText(/Server not configured for devnet minting/);
+      // GH#1266 made this ALWAYS navigate, so the message above never had a
+      // chance to render before the component unmounted — pin the opposite.
+      expect(mockPush).not.toHaveBeenCalled();
+
+      const continueLink = screen.getByText("Continue to trade page without claiming →");
+      fireEvent.click(continueLink);
+      expect(mockPush).toHaveBeenCalledWith(`/trade/${defaultProps.marketAddress}`);
+    });
+
+    it("a 429 (rate-limited or already-claimed) still navigates to the trade page", async () => {
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 429,
+        json: async () => ({ error: "Already claimed — try again in 23h 59m" }),
+      });
+      render(<LaunchSuccess {...defaultProps} devnetMint={mint} />);
+      fireEvent.click(screen.getByText("GET SIM-USDC & TRADE →"));
+
+      await vi.waitFor(() => {
+        expect(mockPush).toHaveBeenCalledWith(`/trade/${defaultProps.marketAddress}`);
+      });
+    });
+
+    it("a successful claim navigates to the trade page", async () => {
+      fetchMock.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ amount: 500, symbol: "USDC", signature: "sig123" }),
+      });
+      render(<LaunchSuccess {...defaultProps} devnetMint={mint} />);
+      fireEvent.click(screen.getByText("GET SIM-USDC & TRADE →"));
+
+      await vi.waitFor(() => {
+        expect(mockPush).toHaveBeenCalledWith(`/trade/${defaultProps.marketAddress}`);
+      });
     });
   });
 });
