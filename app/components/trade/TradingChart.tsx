@@ -48,6 +48,7 @@ import { useChartDrawingTool } from "@/hooks/useChartDrawingTool";
 import { useChartDrawings } from "@/hooks/useChartDrawings";
 import { pollWhenVisible } from "@/lib/pollWhenVisible";
 import { useChartZoomControls } from "@/hooks/useChartZoomControls";
+import { shouldFitViewport } from "@/lib/chart-fit";
 import { ChartZoomControls } from "./ChartZoomControls";
 import { ChartZoomOverlay } from "./ChartZoomOverlay";
 import {
@@ -358,6 +359,17 @@ const TradingChartInner: FC<{ slabAddress: string; mintAddress?: string }> = ({
   // wipes out any user pan/zoom — the chart snaps back to "all bars visible"
   // and the user can't stay zoomed in.
   const fitKeyRef = useRef<string>("");
+  // The active series-data array (candleData or lineData) that fitKeyRef was
+  // last committed against. A timeframe switch re-renders synchronously while
+  // useTokenChart is still serving the PREVIOUS timeframe's data (its fetch
+  // runs in a post-render effect), so the fit effect fires once with stale
+  // data still in candleData/lineData. Fitting + committing fitKeyRef on that
+  // transitional render would fit the viewport to the wrong bar count and then
+  // suppress the real fit once the new data lands — leaving the series squished
+  // (a 1d chart drawn at 4h bar-spacing). Requiring the data ref to have
+  // advanced past this snapshot gates the fit onto the render that actually
+  // carries the new timeframe's data.
+  const fitDataRef = useRef<unknown>(null);
 
   // Crosshair-hover OHLCV readout. Populated via chart.subscribeCrosshairMove;
   // rendered as a floating tooltip overlay inside the chart container.
@@ -1190,10 +1202,25 @@ const TradingChartInner: FC<{ slabAddress: string; mintAddress?: string }> = ({
     // series as the new oracle series and mutate it before the effect runs.
     activeDataSourceRef.current = activeDataSource;
     const fitKey = `${chartDataKind(chartStyle)}:${timeframe}:${activeDataSource}`;
-    if (fitKeyRef.current !== fitKey) {
+    // The data feeding the series we just (re)built for this fitKey.
+    const activeSeriesData = chartDataKind(chartStyle) === "single" ? lineData : candleData;
+    // Fit ONLY on the render that carries this fitKey's real data — not the
+    // transitional render where `timeframe` has changed but candleData/lineData
+    // is still the previous frame. The decision (and why each gate exists) lives
+    // in shouldFitViewport, unit-tested in __tests__/lib/chart-fit.test.ts.
+    if (
+      shouldFitViewport({
+        prevFitKey: fitKeyRef.current,
+        nextFitKey: fitKey,
+        built: hasRenderableData(chartStyle, candleData, lineData).ready,
+        prevFitData: fitDataRef.current,
+        nextFitData: activeSeriesData,
+      })
+    ) {
       chart.timeScale().fitContent();
       fitKeyRef.current = fitKey;
     }
+    fitDataRef.current = activeSeriesData;
 
     // Signal the drawing overlay that the series it projects through was
     // just swapped — see seriesEpoch's declaration comment.
