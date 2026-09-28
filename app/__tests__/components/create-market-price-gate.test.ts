@@ -63,6 +63,18 @@ describe("every price path goes through the representability check", () => {
     expect(body).toContain("hyperp_ema");
     expect(body).toContain("dexPool");
   });
+
+  it("the disabled-reason surfaces above-maximum, not just below-minimum (#2606)", () => {
+    // The helper reports BOTH below-minimum and above-maximum, but the cascade
+    // only surfaced below-minimum — so a price > $1,000,000/token fell through to
+    // the literal "Waiting on price feed", a message that can never clear. A
+    // pure-helper suite can't see this: initial-price.test.ts proves the helper
+    // returns above-maximum, but only the WIRING here decides whether the user
+    // is told. code() strips comments so this binds to the branch, not the prose.
+    const body = code(slice(WIZARD, "const priceBelowMinimum", "Waiting on price feed"));
+    expect(body).toMatch(/reason === "above-maximum"/);
+    expect(body).toContain("above the $1,000,000 maximum a market can price");
+  });
 });
 
 describe("a late-arriving price reaches the wizard", () => {
