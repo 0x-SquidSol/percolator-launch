@@ -93,6 +93,31 @@ const STAKE_PROGRAM_ID: PublicKey | null = (() => {
 })();
 
 /**
+ * Completeness test from a slab's `marketauth` alone — the same signal
+ * `parseLiveState` computes for `LiveMarketState.isComplete`, exposed so the
+ * on-chain-discovery markets path (which parses the config for its own reasons
+ * and never goes through `parseLiveState`) can filter unfinished markets too.
+ *
+ * A market is complete once the create-market wizard's FINAL on-chain step
+ * (percolator-stake InitPool) has run, which irreversibly rotates `marketauth`
+ * from the creator's wallet to the stake-pool PDA. So `marketauth ==
+ * derive("stake_pool", slab)` is a zero-extra-RPC completeness signal.
+ *
+ * No stake program pinned for this network (mainnet today) ⇒ the stake step
+ * doesn't gate anything here ⇒ every market is treated as complete. A PDA
+ * derivation/compare failure fails closed (incomplete), matching parseLiveState.
+ */
+export function isMarketauthComplete(marketauth: PublicKey, slabKey: PublicKey): boolean {
+  if (!STAKE_PROGRAM_ID) return true;
+  try {
+    const [expectedStakePoolPda] = deriveStakePool(slabKey, STAKE_PROGRAM_ID);
+    return marketauth.equals(expectedStakePoolPda);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * MarketGroupV16HeaderAccount field offsets, relative to V17_MARKET_GROUP_OFF.
  *
  * Verified against the engine's own `#[repr(C)]` via `cargo run --example
