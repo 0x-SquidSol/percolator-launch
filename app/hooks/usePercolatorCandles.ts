@@ -297,6 +297,15 @@ export function usePercolatorCandles(
           }
           return prev; // stale trade, ignore
         });
+        // A live fill just landed, so this market now has a Percolator bar to
+        // show. `status` is otherwise only written by fetchData, so it stays
+        // "empty" for a market that had no indexed candles — and
+        // chart-source-select only picks Percolator on status === "success"
+        // (chart-source-select.ts), so the fill would sit in `candles` invisibly
+        // until the next (slab, timeframe) refetch. Marking it success here
+        // surfaces the user's own trade live. ff35005 cleared the empty-cache so
+        // a click surfaces it; this closes the live render gap it left (#2609).
+        setStatus("success");
       } catch {
         /* swallow — malformed msg */
       }
