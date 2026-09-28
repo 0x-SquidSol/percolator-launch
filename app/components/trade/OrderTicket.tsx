@@ -38,6 +38,7 @@
 import { FC, memo, useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
+import { computeNotionalNative } from "@/lib/notional";
 import { useTrade, prewarmTradeSubmission } from "@/hooks/useTrade";
 import { useMarketFillCap } from "@/hooks/useMarketFillCap";
 import { remainingSideCapacityQ, wouldExceedInventoryCap, UNLIMITED_CAPACITY } from "@/lib/marketCapacity";
@@ -600,10 +601,10 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   );
 
   const marginNative = marginInput ? parsePercToNative(marginInput, decimals) : 0n;
-  // Fractional-safe (leverage may be 6.66): scale by 100 instead of BigInt(leverage),
-  // which throws on a non-integer. Round is safe because every reachable leverage
-  // value (integers, or the 2-decimal max) has at most 2 decimals.
-  const notionalNative = (marginNative * BigInt(Math.round(leverage * 100))) / 100n;
+  // GH#2616: shared with TradeConfirmationModal, which renders the confirmation
+  // for this very quote. It was a second copy of this expression and did not get
+  // the fractional-safe fix, so it threw on any fractional leverage.
+  const notionalNative = computeNotionalNative(marginNative, leverage);
   const rawPositionSize = livePriceE6 && livePriceE6 > 0n ? (notionalNative * 1_000_000n) / livePriceE6 : 0n;
   const positionSize = rawPositionSize < 0n ? 0n : rawPositionSize;
   const exceedsBalance = marginNative > 0n && marginNative > effectiveBalance;

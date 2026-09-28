@@ -463,7 +463,11 @@ export function getMockPortfolioPositions(): PortfolioPosition[] {
     const leverage = capitalNum > 0 ? notional / capitalNum : 0;
     const pnlNum = Number(pnl) / 1e6;
     const pnlPercent = capitalNum > 0 ? (pnlNum / capitalNum) * 100 : 0;
-    const maintenanceBps = BigInt(m.initialMarginBps / 2);
+    // Math.floor to match the sibling at the top of this file: BigInt() throws
+    // RangeError on a non-integer, and the create dial produces odd bps (3x ->
+    // 3333, 3.5x -> 2857, 6x -> 1667). Unreachable while this map hard-codes
+    // 1000, but the guard costs nothing and the two siblings already disagreed.
+    const maintenanceBps = BigInt(Math.floor(m.initialMarginBps / 2));
     // Mock liquidation: assume liq at 80% loss for longs, 120% gain for shorts
     const liqFactor = isLong ? 0.2 : 1.8;
     const liquidationPriceE6 = BigInt(Math.round(m.priceUsd * liqFactor * 1_000_000));
@@ -597,7 +601,7 @@ export function getMockMyMarkets() {
       } as any,
       params: {
         initialMarginBps: BigInt(m.initialMarginBps),
-        maintenanceMarginBps: BigInt(m.initialMarginBps / 2),
+        maintenanceMarginBps: BigInt(Math.floor(m.initialMarginBps / 2)),
         tradingFeeBps: BigInt(m.tradingFeeBps),
         riskReductionThreshold: 0n,
       } as any,
