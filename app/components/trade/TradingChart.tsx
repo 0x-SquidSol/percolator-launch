@@ -44,6 +44,7 @@ import { useIndicatorOscillatorPane } from "./useIndicatorOscillatorPane";
 import { ChartIndicatorMenu } from "./ChartIndicatorMenu";
 import { ChartDrawingOverlay } from "./ChartDrawingOverlay";
 import { ChartDrawingToolbar } from "./ChartDrawingToolbar";
+import { ChartZoomControls } from "./ChartZoomControls";
 import { useChartDrawingTool } from "@/hooks/useChartDrawingTool";
 import { useChartDrawings } from "@/hooks/useChartDrawings";
 import { pollWhenVisible } from "@/lib/pollWhenVisible";
@@ -1308,6 +1309,12 @@ const TradingChartInner: FC<{ slabAddress: string; mintAddress?: string }> = ({
             capped below it. Mobile keeps a fixed 45svh (no grid row to fill
             there — the mobile layout is a stacked flex column). */}
         <div ref={containerRef} className="w-full h-[45svh] lg:h-full" />
+
+        {/* On-screen zoom controls (+/−/fit). Native wheel/drag/pinch stay live;
+            these add the visible, trackpad-friendly buttons traders expect from
+            other platforms. Hidden while the empty-state overlay is up (nothing
+            to zoom). */}
+        {chartReady && !showEmptyOverlay && <ChartZoomControls chartRef={chartRef} />}
 
         {/* User-drawing overlay: transparent canvas tracking the chart
             container's dimensions, layered above the chart canvas via DOM
