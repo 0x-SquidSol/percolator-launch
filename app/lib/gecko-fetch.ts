@@ -16,6 +16,36 @@
  */
 const GECKO_HEADERS = { Accept: "application/json", "User-Agent": "percolator-chart-proxy/1.0" };
 
+/** Keyless GeckoTerminal endpoint (30 calls/min per IP, shared by the whole deployment). */
+export const GECKO_FREE_BASE = "https://api.geckoterminal.com/api/v2/networks/solana";
+/** CoinGecko on-chain API (same data/shape as GeckoTerminal), documented at
+ *  docs.coingecko.com: Demo = api.coingecko.com + `x-cg-demo-api-key`,
+ *  Pro = pro-api.coingecko.com + `x-cg-pro-api-key`; on-chain endpoints add `/onchain`. */
+export const GECKO_DEMO_BASE = "https://api.coingecko.com/api/v3/onchain/networks/solana";
+export const GECKO_PRO_BASE = "https://pro-api.coingecko.com/api/v3/onchain/networks/solana";
+
+export interface GeckoConfig {
+  base: string;
+  /** Extra auth header; empty on the free path. SERVER-ONLY — never forward to a client. */
+  authHeaders: Record<string, string>;
+}
+
+/**
+ * #2578: optional server-side API key. `COINGECKO_API_KEY` set -> authenticated
+ * CoinGecko on-chain API (higher quota); unset/blank -> the free keyless endpoint,
+ * exactly the previous behaviour. `COINGECKO_API_TIER` = "pro" selects the Pro
+ * host/header; anything else (default) is "demo". Read per call so env changes and
+ * tests apply without a module reload.
+ */
+export function getGeckoConfig(env: Record<string, string | undefined> = process.env): GeckoConfig {
+  const key = (env.COINGECKO_API_KEY ?? "").trim();
+  if (!key) return { base: GECKO_FREE_BASE, authHeaders: {} };
+  const tier = (env.COINGECKO_API_TIER ?? "").trim().toLowerCase();
+  return tier === "pro"
+    ? { base: GECKO_PRO_BASE, authHeaders: { "x-cg-pro-api-key": key } }
+    : { base: GECKO_DEMO_BASE, authHeaders: { "x-cg-demo-api-key": key } };
+}
+
 export const GECKO_ATTEMPTS = 3; // 1 initial + 2 retries
 export const GECKO_ATTEMPT_TIMEOUT_MS = 5_000;
 export const GECKO_MAX_BACKOFF_MS = 1_500;
@@ -49,6 +79,7 @@ export function geckoBackoffMs(
  * null on a network/timeout error with no attempts left. Never throws.
  */
 export async function geckoFetch(url: string): Promise<Response | null> {
+  const headers = { ...GECKO_HEADERS, ...getGeckoConfig().authHeaders };
   const startedAt = Date.now();
   for (let attempt = 0; attempt < GECKO_ATTEMPTS; attempt++) {
     // Hard-bound each attempt's timeout by the remaining total budget so the
@@ -60,7 +91,7 @@ export async function geckoFetch(url: string): Promise<Response | null> {
     const attemptTimeout = Math.min(GECKO_ATTEMPT_TIMEOUT_MS, Math.max(1, remaining));
     try {
       const res = await fetch(url, {
-        headers: GECKO_HEADERS,
+        headers,
         signal: AbortSignal.timeout(attemptTimeout),
       });
       // Success, or a non-retryable 4xx (400/404/…): hand back as-is.

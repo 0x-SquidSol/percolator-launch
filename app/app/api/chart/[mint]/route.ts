@@ -2,7 +2,8 @@
  * GET /api/chart/[mint]?timeframe=hour&aggregate=1&limit=24[&before=<unixSeconds>]
  *
  * Fetches OHLCV candle data directly from GeckoTerminal's public API (no key
- * required). This route used to proxy to percolator-api's GET /chart/:mint,
+ * required). Optional: set COINGECKO_API_KEY (+ COINGECKO_API_TIER=demo|pro) to use
+ * the authenticated CoinGecko on-chain API instead — see lib/gecko-fetch.ts (#2578). This route used to proxy to percolator-api's GET /chart/:mint,
  * but that Railway service is down/deprecated ("Application not found") —
  * every trade-page chart rendered empty axes because the proxy target no
  * longer exists. GeckoTerminal fetch now lives here instead, mirroring the
@@ -39,7 +40,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { PublicKey } from "@solana/web3.js";
 import { boundedSet } from "@/lib/bounded-map";
-import { geckoFetch } from "@/lib/gecko-fetch";
+import { geckoFetch, getGeckoConfig } from "@/lib/gecko-fetch";
 
 export const dynamic = "force-dynamic";
 
@@ -54,7 +55,6 @@ export interface CandleData {
   volume: number;
 }
 
-const GECKOTERMINAL_BASE = "https://api.geckoterminal.com/api/v2/networks/solana";
 
 const CACHE_HEADERS = {
   "Cache-Control": "public, s-maxage=60, stale-while-revalidate=120",
@@ -165,7 +165,7 @@ async function resolveTopPool(mint: string): Promise<string | null> {
 
 async function resolveTopPoolUncached(mint: string): Promise<string | null> {
   try {
-    const res = await geckoFetch(`${GECKOTERMINAL_BASE}/tokens/${mint}?include=top_pools`);
+    const res = await geckoFetch(`${getGeckoConfig().base}/tokens/${mint}?include=top_pools`);
     if (!res || !res.ok) return null;
     const json = await res.json();
 
@@ -203,7 +203,7 @@ async function fetchCandles(
 ): Promise<CandleData[]> {
   try {
     const url =
-      `${GECKOTERMINAL_BASE}/pools/${encodeURIComponent(pool)}/ohlcv/${timeframe}` +
+      `${getGeckoConfig().base}/pools/${encodeURIComponent(pool)}/ohlcv/${timeframe}` +
       `?aggregate=${encodeURIComponent(aggregate)}&limit=${encodeURIComponent(limit)}` +
       (before ? `&before_timestamp=${encodeURIComponent(before)}` : "");
     const res = await geckoFetch(url);
