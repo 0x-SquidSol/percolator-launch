@@ -74,6 +74,8 @@ vi.mock("@solana/web3.js", () => {
       this.instructions.push(...ix);
       return this;
     }
+    // The fee-payer signature (= tx id) exists before the send (#2629 follow-up).
+    signature: Buffer | null = Buffer.alloc(64, 1);
     partialSign(): this {
       return this;
     }
@@ -109,7 +111,10 @@ vi.mock("@solana/web3.js", () => {
     createAccount: vi.fn(() => ({ keys: [], programId: systemProgramId, data: Buffer.alloc(0) })),
   };
 
-  return { PublicKey, Transaction, VersionedTransaction, Keypair, SystemProgram };
+  // A JSON-RPC rejection — the only send error that means "not broadcast".
+  class SendTransactionError extends Error {}
+
+  return { PublicKey, Transaction, VersionedTransaction, Keypair, SystemProgram, SendTransactionError };
 });
 
 vi.mock("@/lib/config", () => ({
@@ -184,9 +189,14 @@ const fakeConnection = {
   getSignatureStatus: vi.fn(async () => ({ value: { err: null, confirmationStatus: "confirmed" } })),
 };
 
-vi.mock("@/lib/server-rpc", () => ({
-  getServerConnection: () => fakeConnection,
-}));
+vi.mock("@/lib/server-rpc", async (importOriginal) => {
+  // Keep the REAL typed errors: the route discriminates on instanceof.
+  const actual = await importOriginal<typeof import("@/lib/server-rpc")>();
+  return {
+    ServerSignatureTimeoutError: actual.ServerSignatureTimeoutError,
+    getServerConnection: () => fakeConnection,
+  };
+});
 
 let POST: typeof import("@/app/api/devnet-airdrop/route").POST;
 
@@ -260,7 +270,10 @@ describe("POST /api/devnet-airdrop — #2608 send/confirm fix", () => {
   });
 
   it("surfaces the real error message on failure instead of a bare 'Internal server error' (#2608's outer-catch ask)", async () => {
-    fakeConnection.sendRawTransaction.mockRejectedValueOnce(new Error("Blockhash not found"));
+    // web3.js surfaces an RPC rejection as SendTransactionError (= not broadcast);
+    // a plain Error would now be an ambiguous send (#2629 follow-up).
+    const { SendTransactionError } = await import("@solana/web3.js");
+    fakeConnection.sendRawTransaction.mockRejectedValueOnce(new SendTransactionError("Blockhash not found"));
     const res = await POST(createRequest());
     const body = await res.json();
     expect(res.status).toBe(500);
@@ -290,10 +303,29 @@ describe("POST /api/devnet-airdrop — #2608 send/confirm fix", () => {
       await vi.advanceTimersByTimeAsync(46_000);
       const res = await resPromise;
       const body = await res.json();
-      expect(res.status).toBe(500);
-      expect(body.error).toMatch(/not confirmed within/);
+      // #2629: an unknown outcome is a 503 pending (claim kept), not a bare 500.
+      expect(res.status).toBe(503);
+      expect(body.pending).toBe(true);
+      expect(body.retryable).toBe(false);
+      expect(typeof body.signature).toBe("string");
     } finally {
       vi.useRealTimers();
     }
   }, 15_000);
+
+  it("an ambiguous send failure is unknown-outcome (503 pending), not a retryable 500", async () => {
+    fakeConnection.sendRawTransaction.mockRejectedValueOnce(new Error("fetch failed"));
+    const res = await POST(createRequest());
+    const body = await res.json();
+    expect(res.status).toBe(503);
+    expect(body.pending).toBe(true);
+    expect(body.signature).toBeTruthy();
+  });
+
+  it("a JSON-RPC rejection (SendTransactionError) was not broadcast: plain 500", async () => {
+    const { SendTransactionError } = await import("@solana/web3.js");
+    fakeConnection.sendRawTransaction.mockRejectedValueOnce(new SendTransactionError("Blockhash not found"));
+    const res = await POST(createRequest());
+    expect(res.status).toBe(500);
+  });
 });
