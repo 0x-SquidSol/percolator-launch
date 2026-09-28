@@ -48,7 +48,11 @@ import {
   getMint,
 } from "@solana/spl-token";
 import { getConfig } from "@/lib/config";
-import { getServerConnection, sendAndConfirmServerTx } from "@/lib/server-rpc";
+import {
+  getServerConnection,
+  sendAndConfirmServerTx,
+  ServerSignatureTimeoutError,
+} from "@/lib/server-rpc";
 import * as Sentry from "@sentry/nextjs";
 // GH#2335: the fallback limiter used when Supabase is unavailable must itself be
 // cross-instance safe — a module-level Map is per-lambda-instance on Vercel and lets
@@ -431,8 +435,9 @@ export async function POST(req: NextRequest) {
     // NOTE the disarm is on CONFIRMATION, not on broadcast: sendAndConfirmServerTx
     // throws if it has not seen `confirmed` within 45s while the blockhash stays
     // valid for ~60-90s, so a tx can land after that throw. The release below is
-    // therefore still reachable for a mint that ultimately succeeds. That is
-    // pre-existing behaviour and is filed separately rather than papered over.
+    // therefore still reachable for a mint that ultimately succeeds — except for
+    // the confirmation-timeout case, which the mint catch below now treats as an
+    // unknown outcome and keeps the claim for (GH#2599).
     //
     // Best-effort by construction: a Supabase hiccup during cleanup must not turn
     // a 500 into a worse one.
@@ -598,6 +603,31 @@ export async function POST(req: NextRequest) {
       // 500 on the create-market pre-fund / sim-USDC-claim step.
       sig = await sendAndConfirmServerTx(connection, tx, [mintAuthority], { timeoutMs: 45_000 });
     } catch (txErr) {
+      // Broadcast, but no status within the timeout: NOT proof the mint failed —
+      // the blockhash outlives the 45s wait, so it can still land. Giving the
+      // claim back here would let an immediate retry mint a second time. Keep
+      // both claims (disarm the releases) and tell the caller not to retry; this
+      // mirrors the playground faucet's unresolved-outcome handling (#2602).
+      if (txErr instanceof ServerSignatureTimeoutError) {
+        releaseGateClaimOnExit = null;
+        reservedFallbackClaim = false;
+        Sentry.captureException(txErr, {
+          tags: { endpoint: "/api/devnet-pre-fund", step: "mint", outcome: "unknown" },
+          extra: { signature: txErr.signature },
+        });
+        return NextResponse.json(
+          {
+            error:
+              "Sim-USDC mint was broadcast but not yet confirmed. It may still arrive — " +
+              "check your balance before retrying.",
+            pending: true,
+            retryable: false,
+            signature: txErr.signature,
+          },
+          { status: 503 },
+        );
+      }
+
       // TX failed — release DB gate if available.
       if (releaseGateClaimOnExit) {
         try {

@@ -60,6 +60,11 @@ const getAccount = vi.fn();
 const getMint = vi.fn();
 const createMintToInstruction = vi.fn();
 const sendAndConfirmServerTx = vi.fn();
+class ServerSignatureTimeoutError extends Error {
+  constructor(readonly signature: string, readonly timeoutMs: number) {
+    super(`Transaction ${signature} not confirmed within ${timeoutMs}ms`);
+  }
+}
 const tryFaucetGate = vi.fn();
 const releaseFaucetClaim = vi.fn();
 const reserveClaim = vi.fn();
@@ -91,6 +96,7 @@ async function loadPostHandler() {
   vi.doMock("@/lib/server-rpc", () => ({
     getServerConnection: () => ({}),
     sendAndConfirmServerTx: (...a: unknown[]) => sendAndConfirmServerTx(...a),
+    ServerSignatureTimeoutError,
   }));
   vi.doMock("@sentry/nextjs", () => ({ captureMessage: vi.fn(), captureException: vi.fn() }));
 
@@ -206,6 +212,23 @@ describe("the claim is kept only when it was actually spent", () => {
     expect(res.status).toBe(500);
     expect(releaseFaucetClaim).toHaveBeenCalledTimes(1);
     expect(releaseFaucetClaim).toHaveBeenCalledWith(SUPABASE, 4242);
+  });
+
+  it("GH#2599: a broadcast mint with no confirmation yet KEEPS the claim", async () => {
+    // Unknown outcome, not a failure: the tx can still land after the 45s wait,
+    // so releasing would let an immediate retry mint twice.
+    sendAndConfirmServerTx.mockRejectedValue(new ServerSignatureTimeoutError("SIG-PENDING", 45_000));
+
+    const POST = await loadPostHandler();
+    const res = await POST(post());
+    const body = await res.json();
+
+    expect(res.status).toBe(503);
+    expect(body.pending).toBe(true);
+    expect(body.retryable).toBe(false);
+    expect(body.signature).toBe("SIG-PENDING");
+    expect(releaseFaucetClaim).not.toHaveBeenCalled();
+    expect(releaseClaim).not.toHaveBeenCalled();
   });
 
   it("CONTROL: the happy path mints and keeps the claim", async () => {
