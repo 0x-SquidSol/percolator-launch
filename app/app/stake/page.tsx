@@ -14,6 +14,7 @@ import { unpackAccount, getMint } from "@solana/spl-token";
 import { useStakeDepositByPool } from "@/hooks/useStakeDepositByPool";
 import { useStakeWithdrawByPool } from "@/hooks/useStakeWithdrawByPool";
 import { parseHumanAmount, formatHumanAmount } from "@/lib/parseAmount";
+import { orderStakePools } from "@/lib/stake-pool-order";
 import { subscribeSlab, getSnapshot } from "@/lib/priceStore/priceStore";
 import { formatMarkPrice } from "@/lib/format";
 import { ProgressBar } from "@/components/ui/ProgressBar";
@@ -1129,6 +1130,16 @@ function PoolTable({
 }) {
   const positionByPoolId = new Map(positions.map((p) => [p.poolId, p]));
 
+  // Search + "my stakes first" ordering (pure helper in lib/stake-pool-order.ts).
+  // A pool the wallet has staked in (lpBalanceRaw > 0) sorts above the rest by
+  // staked value; everything else keeps its incoming order. Declared before the
+  // early loading/empty returns below so the hook order stays stable.
+  const [query, setQuery] = useState("");
+  const visiblePools = orderStakePools(pools, query, (id) => {
+    const pos = positionByPoolId.get(id);
+    return pos && pos.lpBalanceRaw > 0n ? pos.estimatedValue : 0;
+  });
+
   const header = (
     <div className="mb-3 flex items-center justify-between">
       <h2 className="text-sm font-medium text-[var(--text)]" style={{ fontFamily: "var(--font-display)" }}>
@@ -1190,19 +1201,41 @@ function PoolTable({
   return (
     <section id="pools">
       {header}
+      {/* Search — filter by symbol/name so a specific market stays quick to
+          find as the pool count grows. */}
+      <div className="mb-2">
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search pools…"
+          aria-label="Search insurance pools"
+          className="w-full border border-[var(--border)] bg-[var(--panel-bg)] px-3 py-2 text-[12px] text-[var(--text)] placeholder:text-[var(--text-secondary)] focus:border-[var(--accent)] focus:outline-none"
+        />
+      </div>
       <div className="overflow-x-auto border border-[var(--border)] bg-[var(--panel-bg)]">
         <div className="min-w-[520px]">
           {columnHeader}
-          {pools.map((pool) => (
-            <PoolRow
-              key={pool.id}
-              pool={pool}
-              position={positionByPoolId.get(pool.id)}
-              connected={connected}
-              selected={pool.id === selectedPool}
-              onSelect={onSelect}
-            />
-          ))}
+          {/* Cap the list at ~8 rows then scroll, so the section stays a fixed
+              height no matter how many pools exist (keeps the page from growing
+              unbounded). The column header above stays put. */}
+          <div className="max-h-[360px] overflow-y-auto">
+            {visiblePools.map((pool) => (
+              <PoolRow
+                key={pool.id}
+                pool={pool}
+                position={positionByPoolId.get(pool.id)}
+                connected={connected}
+                selected={pool.id === selectedPool}
+                onSelect={onSelect}
+              />
+            ))}
+            {visiblePools.length === 0 && (
+              <div className="px-3 py-4 text-[11px] text-[var(--text-secondary)]">
+                No pools match “{query.trim()}”.
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </section>
