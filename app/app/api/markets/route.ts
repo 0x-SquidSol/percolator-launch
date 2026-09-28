@@ -20,6 +20,7 @@ import { isSaneMarketValue, isActiveMarket, isZombieMarket } from "@/lib/activeM
 import { resolveTokenLogo } from "@/lib/token-logo";
 import { getKnownMarketLpCapitals, scanEnabledMarketLpCapitals } from "@/lib/lp-portfolio";
 import { loadMergedMarketRows } from "@/lib/market-registry";
+import { isMarketauthComplete } from "@/lib/live-market-state";
 import { isPhantomOpenInterest, MIN_VAULT_FOR_OI } from "@/lib/phantom-oi";
 import { computeDisplayOiUsd } from "@/lib/oi-display";
 import { validateSymbol, validateName } from "@/lib/market-metadata-validation";
@@ -314,6 +315,13 @@ function discoveredToApiRow(
       created_at: null,
       stats_updated_at: null,
       is_zombie: false,
+      // Completeness signal for the on-chain-discovery path (the Supabase path
+      // gets this from loadMergedMarketRows). A market that died mid-creation
+      // still has marketauth == creator wallet, not the stake-pool PDA — see
+      // isMarketauthComplete / LiveMarketState.isComplete. onChainOrStaticResponse
+      // filters out `is_complete === false` so unfinished markets don't render as
+      // tradeable, mirroring the Supabase path's completeOnly filter.
+      is_complete: isMarketauthComplete(cfg.marketauth, m.slabAddress),
       last_price: markPriceUsd,
       mark_price: markPriceUsd,
       index_price: null,
@@ -478,6 +486,15 @@ async function onChainOrStaticResponse(request: NextRequest, reason: string): Pr
         .filter(m => !BLOCKED_SLAB_ADDRESSES.has(m.slab_address as string))
         // Playground: hide the ~80 leftover devnet test markets — show curated seeds ∪ user-created.
         .filter(m => !PLAYGROUND_CURATED_ONLY || getPlaygroundAllowedSlabs().has(m.slab_address as string) || blobSlabs.has(m.slab_address as string))
+        // Hide markets that never finished the create-market wizard (marketauth
+        // never rotated to the stake-pool PDA — is_complete === false). Without
+        // this, a creation that died before StakeInitPool rendered as a normal
+        // "Healthy" market, and trading it reverted with Custom(9). Mirrors the
+        // Supabase path's completeOnly filter (loadMergedMarketRows sets
+        // is_complete there); curated seeds are never hidden (proven complete out
+        // of band, and is_complete only flips false on an EXPLICIT proof). Only an
+        // explicit false is dropped — undefined (legacy v12 / unknown) is kept.
+        .filter(m => m.is_complete !== false || PLAYGROUND_SLAB_META[m.slab_address as string])
         .filter(m => !programIdParam || m.program_id === programIdParam)
         .filter(m => {
           if (!searchTrimmed) return true;
