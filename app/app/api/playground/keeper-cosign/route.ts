@@ -59,6 +59,20 @@ import { readAssetMarketId, readAssetControlSeqs } from "@/lib/v18-wire";
 import { MAX_PRICE_E6 } from "@/lib/oraclePrice";
 import { requirePlaygroundKeeperSigner } from "@/lib/playground-keeper-signer";
 
+/**
+ * Asset 0's co-sign inputs on a market whose only prior tx is the launch's M1
+ * (createAccount + InitMarket + SetNftProgramId), used when `fresh: true` and the
+ * slab doesn't exist yet. Each is fixed by the program, not guessed:
+ *   - marketId 1: the engine header starts `next_market_id` at 1 and the first
+ *     asset activation (InitMarket's asset 0) takes it.
+ *   - oracleObservation 0 / authorityEpoch 0: nothing in M1 advances either lane
+ *     (SetNftProgramId only writes the NFT-registry PDA).
+ * Measured on fresh markets: marketId=1 authEpoch=0 after InitMarket, and
+ * ConfigureAuthMark then lands with observationSequence 1. If they were ever
+ * wrong, the CAS makes this tx fail on-chain — it can't mis-apply.
+ */
+const FRESH_ASSET0 = { marketId: 1n, oracleObservation: 0n, authorityEpoch: 0n } as const;
+
 export const dynamic = "force-dynamic";
 
 const NETWORK = process.env.NEXT_PUBLIC_DEFAULT_NETWORK?.trim() ?? process.env.NEXT_PUBLIC_SOLANA_NETWORK?.trim();
@@ -101,11 +115,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { deployer, slabAddress, initialPriceE6, assetIndex } = body as {
+  const { deployer, slabAddress, initialPriceE6, assetIndex, fresh } = body as {
     deployer?: string;
     slabAddress?: string;
     initialPriceE6?: string;
     assetIndex?: number;
+    fresh?: boolean;
   };
 
   if (!deployer || typeof deployer !== "string") {
@@ -147,6 +162,9 @@ export async function POST(req: NextRequest) {
   if (assetIdx < 0 || assetIdx > 13) {
     return NextResponse.json({ error: "assetIndex out of range [0, 13]" }, { status: 400 });
   }
+  if (fresh === true && assetIdx !== 0) {
+    return NextResponse.json({ error: "fresh co-sign is only valid for asset 0" }, { status: 400 });
+  }
 
   try {
     const connection = getServerConnection("confirmed");
@@ -184,12 +202,23 @@ export async function POST(req: NextRequest) {
     // CURRENT value (not +1). ConfigureAuthMark advances the oracle-observation lane
     // but NOT the authority-epoch lane, so both reads come from one pre-tx snapshot.
     const slabInfo = await connection.getAccountInfo(slabPk, "confirmed");
-    if (!slabInfo?.data) {
+    let cosignMarketId: bigint;
+    let cosignSeqs: { oracleObservation: bigint; authorityEpoch: bigint };
+    if (slabInfo?.data) {
+      // The market exists: always bind to its live state.
+      const slabData = new Uint8Array(slabInfo.data);
+      cosignMarketId = readAssetMarketId(slabData, assetIdx);
+      cosignSeqs = readAssetControlSeqs(slabData, assetIdx);
+    } else if (fresh === true) {
+      // One-approval launch: the client signs [M1, this co-sign tx, M2, …] in a
+      // single wallet approval BEFORE M1 (createAccount + InitMarket +
+      // SetNftProgramId) has landed, so there is no slab to read yet. This tx
+      // lands right after M1, when asset 0's values are fixed by construction.
+      cosignMarketId = FRESH_ASSET0.marketId;
+      cosignSeqs = FRESH_ASSET0;
+    } else {
       return NextResponse.json({ error: "market account not found" }, { status: 404 });
     }
-    const slabData = new Uint8Array(slabInfo.data);
-    const cosignMarketId = readAssetMarketId(slabData, assetIdx);
-    const cosignSeqs = readAssetControlSeqs(slabData, assetIdx);
 
     // ── Instruction 1: ConfigureAuthMark ──────────────────────────────────────
     // Sets oracle to AUTH_MARK mode (mode=3) and records initial mark price.

@@ -889,6 +889,11 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
             slabAddress: slabPk.toBase58(),
             initialPriceE6: params.initialPriceE6.toString(),
             assetIndex: 0,
+            // The slab doesn't exist yet — this request is made before M1 is even
+            // signed. Without `fresh` the route read the (missing) slab, returned
+            // 404 "market account not found", and every launch fell back to six
+            // approvals. With it the route uses asset 0's fixed post-M1 values.
+            fresh: true,
           }),
         })
       : Promise.resolve(null);
