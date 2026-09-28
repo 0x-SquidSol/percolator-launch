@@ -96,6 +96,8 @@ import {
   isBlockhashExpiredError,
   isConfirmationTimeoutError,
   checkSignatureLanded,
+  TxCancelledError,
+  isTxCancelledError,
 } from "@/lib/tx";
 import { getConfig, getNetwork } from "@/lib/config";
 import { resolveMarketOracleMode } from "@/lib/resolveMarketOracleMode";
@@ -683,6 +685,14 @@ interface FreshBatchContext {
   isHyperpOracle: boolean;
   oracleMode: "pyth" | "hyperp" | "admin" | "keeper";
   setState: (updater: (s: CreateMarketState) => CreateMarketState) => void;
+  /**
+   * GH#2623: set by `create()` from a fresh `AbortController` and aborted by
+   * `cancelInFlightLaunch()` (called on CreateMarketWizard unmount). Checked
+   * before `broadcastTailTx` re-signs the tail (`recoverTailFrom`) so leaving
+   * `/create` stops the wallet-popup loop instead of it continuing on a page
+   * the user is no longer looking at.
+   */
+  abortSignal?: AbortSignal;
 }
 
 /**
@@ -816,7 +826,7 @@ function buildMarketRegistrationPayload(args: {
 }
 
 async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshBatchOutcome> {
-  const { connection, wallet, programId, slabKp, params, isDevnetEnv, isKeeperOracle, isAdminOracle, isHyperpOracle, oracleMode, setState } = ctx;
+  const { connection, wallet, programId, slabKp, params, isDevnetEnv, isKeeperOracle, isAdminOracle, isHyperpOracle, oracleMode, setState, abortSignal } = ctx;
   const walletPk = wallet.publicKey;
   const slabPk = slabKp.publicKey;
   let broadcastStarted = false;
@@ -1456,6 +1466,15 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
      * signs first, then keypairs — see the partial-sign comment above).
      */
     const recoverTailFrom = async (startIdx: number): Promise<void> => {
+      // GH#2623: the direct gate against the "keeps popping up after
+      // navigating away" complaint — this is the ONLY place in the batched
+      // fast path that prompts a fresh wallet signature outside the user's
+      // own initiating click. Checked before anything else so an aborted
+      // caller never sees another popup, and before blockhashRecoveries is
+      // incremented so an aborted attempt doesn't spend the recovery budget.
+      if (abortSignal?.aborted) {
+        throw new TxCancelledError("Market creation cancelled — you navigated away before this step finished.");
+      }
       blockhashRecoveries += 1;
       setState((s) => ({
         ...s,
@@ -1761,7 +1780,17 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       );
       return { status: "fallback", reason };
     }
-    const msg = parseMarketCreationError(err);
+    // GH#2623: distinct from a real failure — the launch was abandoned (the
+    // wizard unmounted), not rejected or errored. parseMarketCreationError's
+    // "User rejected"/"Transaction cancelled" branch reads as a wallet
+    // decline and tells the user to click Retry; that is the wrong message
+    // for a page they already left. "fatal" is still the right STATUS (never
+    // fall back to the sequential path here — something is already
+    // broadcast; resuming goes through RecoverSolBanner like any other
+    // abandoned launch), just with an accurate reason.
+    const msg = isTxCancelledError(err)
+      ? "Market creation cancelled — navigated away before it finished."
+      : parseMarketCreationError(err);
     setState((s) => ({ ...s, loading: false, error: msg }));
     return { status: "fatal" };
   }
@@ -1813,6 +1842,21 @@ export function useCreateMarket() {
   // keypair back in explicitly (belt-and-suspenders for the same-session resume path).
   const slabKpRef = useRef<Keypair | null>(null);
 
+  /**
+   * GH#2623: a fresh controller per `create()` call — never re-abort a
+   * previous, already-finished launch's controller, and never leave a NEW
+   * launch permanently aborted because an earlier one was cancelled. See
+   * `cancelInFlightLaunch` (below) and CreateMarketWizard's unmount cleanup,
+   * the only current caller: leaving `/create` mid-launch must stop the
+   * wallet-popup retry loop (see `sendTx`'s and `recoverTailFrom`'s abort
+   * checks in lib/tx.ts / above) instead of it continuing on a page the user
+   * is no longer looking at.
+   */
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const cancelInFlightLaunch = useCallback(() => {
+    abortControllerRef.current?.abort();
+  }, []);
+
   useEffect(() => {
     if (slabKpRef.current) return; // already have a keypair this session — don't clobber it
     if (!wallet.publicKey) return; // wait for wallet connection so we can verify ownership
@@ -1850,6 +1894,15 @@ export function useCreateMarket() {
         setState((s) => ({ ...s, error: "Wallet not connected" }));
         return;
       }
+
+      // GH#2623: a fresh controller for THIS call. Threaded into every
+      // wallet-signing primitive below (attemptFreshBatchedLaunch's
+      // recoverTailFrom, and every sequential sendTx call) so
+      // cancelInFlightLaunch() — called on CreateMarketWizard unmount — stops
+      // any FUTURE signing prompt without touching a step already broadcast.
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+      const abortSignal = abortController.signal;
 
       // Every risk parameter for this market, derived from the creator's
       // leverage and LP seed (see lib/market-params.ts). Shared by the
@@ -2020,6 +2073,7 @@ export function useCreateMarket() {
           isHyperpOracle,
           oracleMode,
           setState,
+          abortSignal,
         });
         if (outcome.status === "success") {
           slabKpRef.current = null;
@@ -2190,6 +2244,7 @@ export function useCreateMarket() {
 
               const sig = await sendTx({
                 connection, wallet,
+                abortSignal,
                 instructions: [createAtaIx, initMarketIx],
                 computeUnits: 250_000,
               });
@@ -2305,6 +2360,7 @@ export function useCreateMarket() {
             const sig = await sendTx({
               connection,
               wallet,
+              abortSignal,
               instructions: [createAccountIx, createAtaIx, initMarketIx],
               computeUnits: 300_000,
               signers: [slabKp],
@@ -2524,6 +2580,7 @@ export function useCreateMarket() {
           if (instructions.length > 0) {
             const sig = await sendTx({
               connection, wallet, instructions, computeUnits: 500_000,
+              abortSignal,
             });
             setState((s) => ({ ...s, txSigs: [...s.txSigs, sig] }));
           }
@@ -2636,6 +2693,7 @@ export function useCreateMarket() {
               const signature = await sendTx({
                 connection,
                 wallet,
+                abortSignal,
                 instructions: [initMatcherCtxIx],
                 computeUnits: 200_000,
               });
@@ -2805,6 +2863,7 @@ export function useCreateMarket() {
               const contextSignature = await sendTx({
                 connection,
                 wallet,
+                abortSignal,
                 instructions: [createCtxIx],
                 signers: [matcherCtxKp],
                 computeUnits: 150_000,
@@ -2845,6 +2904,7 @@ export function useCreateMarket() {
               const configSignature = await sendTx({
                 connection,
                 wallet,
+                abortSignal,
                 instructions: [setMatcherConfigIx],
                 computeUnits: 200_000,
               });
@@ -2919,6 +2979,7 @@ export function useCreateMarket() {
               const portfolioSignature = await sendTx({
                 connection,
                 wallet,
+                abortSignal,
                 instructions: [createPortfolioIx, initPortfolioIx],
                 signers: [lpPortfolioKp],
                 computeUnits: 200_000,
@@ -3187,6 +3248,7 @@ export function useCreateMarket() {
             const depositIx = buildIx({ programId, keys: depositKeys, data: depositData });
             const depositSig = await sendTx({
               connection, wallet,
+              abortSignal,
               instructions: [depositIx],
               computeUnits: 200_000,
             });
@@ -3282,6 +3344,7 @@ export function useCreateMarket() {
               }
               const backingSig = await sendTx({
                 connection, wallet,
+                abortSignal,
                 instructions: backingIxs,
                 computeUnits: 200_000,
               });
@@ -3409,6 +3472,7 @@ export function useCreateMarket() {
             if (finalInstructions.length > 0) {
               const sig = await sendTx({
                 connection, wallet,
+                abortSignal,
                 instructions: finalInstructions,
                 computeUnits: 450_000,
               });
@@ -3538,6 +3602,7 @@ export function useCreateMarket() {
             const sigLpVault = await sendTx({
               connection,
               wallet,
+              abortSignal,
               instructions: [createLpVaultIx],
               computeUnits: 250_000,
             });
@@ -3692,6 +3757,7 @@ export function useCreateMarket() {
             const sigStake = await sendTx({
               connection,
               wallet,
+              abortSignal,
               // Order is load-bearing (see orderStakeTailInstructions): fee split BEFORE
               // InitPool, Bind AFTER InitPool.
               instructions: orderStakeTailInstructions(
@@ -3810,5 +3876,5 @@ export function useCreateMarket() {
     [wallet],
   );
 
-  return { state, create, reset, restoreSlabKeypair, retryKeeperRegistration };
+  return { state, create, reset, restoreSlabKeypair, retryKeeperRegistration, cancelInFlightLaunch };
 }

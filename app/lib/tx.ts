@@ -513,6 +513,24 @@ function getAccountCreationLamports(instructions: TransactionInstruction[]): num
   return total;
 }
 
+/**
+ * GH#2623: thrown by `sendTx` (and the create-market batch pipeline in
+ * useCreateMarket.ts) instead of prompting a fresh wallet signature once the
+ * caller's `abortSignal` has fired. Distinct from a plain `Error` so a caller
+ * can choose not to surface it as a failure (the operation was abandoned, not
+ * rejected) — see `isTxCancelledError`.
+ */
+export class TxCancelledError extends Error {
+  constructor(message = "Transaction cancelled — the page was left before this step started.") {
+    super(message);
+    this.name = "TxCancelledError";
+  }
+}
+
+export function isTxCancelledError(err: unknown): boolean {
+  return err instanceof TxCancelledError;
+}
+
 export async function sendTx({
   connection,
   wallet,
@@ -526,6 +544,17 @@ export async function sendTx({
 }: SendTxParams): Promise<string> {
   if (!wallet.publicKey || (!wallet.signTransaction && !wallet.signAndSendTransaction)) {
     throw new Error("Wallet not connected");
+  }
+  // GH#2623: a caller (the create-market wizard, on unmount) may cancel a
+  // multi-step chain BETWEEN steps. Without this, `create()`'s sequential
+  // per-step flow kept calling sendTx for the NEXT step after the component
+  // had already unmounted — a wallet popup for a market the user had already
+  // navigated away from. Checked before any tx is built or signed; a step
+  // already broadcast when the signal fires is left to confirm normally (see
+  // the retry-loop check below and pollConfirmation's own abort check — both
+  // stop FUTURE signatures, never an already-submitted one).
+  if (abortSignal?.aborted) {
+    throw new TxCancelledError();
   }
 
   // Check clock drift — genuinely non-blocking now (it was awaited serially
@@ -834,6 +863,15 @@ export async function sendTx({
           throw lastError;
         }
 
+        // GH#2623: re-checked here (not just at entry) because the signal can
+        // fire WHILE this attempt was in flight — e.g. the component unmounted
+        // during the R2-S7 status check above. Without this, a blockhash-expiry
+        // retry would rebuild and re-sign (a fresh wallet popup) for a step the
+        // caller has already abandoned.
+        if (abortSignal?.aborted) {
+          throw new TxCancelledError();
+        }
+
         await new Promise((r) => setTimeout(r, 2000));
         continue;
       }
@@ -905,21 +943,39 @@ export function isConfirmationTimeoutError(err: unknown): boolean {
  *  - "not-found" → genuinely absent (dropped): safe to rebuild against a fresh blockhash.
  *  - "unknown"   → on-chain error, or an RPC failure that leaves it indeterminate:
  *                  caller must NOT rebuild (could double-execute) and should propagate.
+ *
+ * GH#2623: a "not-found" verdict authorizes the caller to rebuild + re-sign
+ * (a fresh wallet popup), so a false negative here is not free — it re-prompts
+ * the user for a step that already landed. On the load-balanced devnet RPC
+ * (the same "BlockhashNotFound" propagation-lag gremlin as eb10959 / #2603 /
+ * #2598 / #2400), a single query can land on a backend node that has not yet
+ * indexed a signature confirmed moments earlier by a DIFFERENT node. One
+ * short-delay retry before concluding "not-found" — cheap (one extra read)
+ * and only taken on the rare path where the first query already missed.
  */
 export async function checkSignatureLanded(
   connection: Connection,
   signature: string,
 ): Promise<"landed" | "not-found" | "unknown"> {
-  try {
-    const resp = await connection.getSignatureStatuses([signature], { searchTransactionHistory: true });
-    const st = resp.value[0];
-    if (st?.err) return "unknown"; // failed on-chain — a rebuild would just fail again
-    if (st && (st.confirmationStatus === "confirmed" || st.confirmationStatus === "finalized")) return "landed";
-    if (!st) return "not-found";
-    return "unknown"; // processed-but-not-yet-confirmed — indeterminate, don't rebuild
-  } catch {
-    return "unknown"; // RPC hiccup — indeterminate, fail safe
-  }
+  const queryOnce = async (): Promise<"landed" | "not-found" | "unknown"> => {
+    try {
+      const resp = await connection.getSignatureStatuses([signature], { searchTransactionHistory: true });
+      const st = resp.value[0];
+      if (st?.err) return "unknown"; // failed on-chain — a rebuild would just fail again
+      if (st && (st.confirmationStatus === "confirmed" || st.confirmationStatus === "finalized")) return "landed";
+      if (!st) return "not-found";
+      return "unknown"; // processed-but-not-yet-confirmed — indeterminate, don't rebuild
+    } catch {
+      return "unknown"; // RPC hiccup — indeterminate, fail safe
+    }
+  };
+  const first = await queryOnce();
+  if (first !== "not-found") return first;
+  // Give a lagging RPC backend a moment to catch up, then ask once more.
+  // Still "not-found" after this is treated as genuinely absent — unchanged
+  // behaviour for the actually-dropped case this function exists to detect.
+  await new Promise((r) => setTimeout(r, 800));
+  return queryOnce();
 }
 
 // ============================================================================

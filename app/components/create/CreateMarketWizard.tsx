@@ -92,7 +92,19 @@ const DEFAULT_STATE: WizardState = {
 export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }) => {
   const { publicKey } = useWalletCompat();
   const { connection } = useConnectionCompat();
-  const { state: createState, create, reset: resetCreate, restoreSlabKeypair, retryKeeperRegistration } = useCreateMarket();
+  const { state: createState, create, reset: resetCreate, restoreSlabKeypair, retryKeeperRegistration, cancelInFlightLaunch } = useCreateMarket();
+  // GH#2623: leaving this page mid-launch must stop the tail-broadcast retry
+  // loop from prompting further wallet signatures — without this, a market
+  // creation begun here kept re-signing (new popups) "even while out of the
+  // create window" because create()'s async chain has no tie to this
+  // component's lifecycle. Unmount-only: cancelInFlightLaunch is a stable
+  // useCallback ([]), so this never fires mid-session, only on navigation
+  // away. Safe to call even when nothing is in flight (a no-op abort).
+  // Optional-chained: several existing tests mock useCreateMarket() with an
+  // older shape that doesn't include this field.
+  useEffect(() => {
+    return () => cancelInFlightLaunch?.();
+  }, [cancelInFlightLaunch]);
   // BUG 7 fix: RecoverSolBanner's onResume callback only forwards (slabAddress, fromStep) —
   // it's a shared component out of this fix's scope, so rather than changing its signature,
   // call useStuckSlabs() here too (same hook RecoverSolBanner uses internally) to get our own

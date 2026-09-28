@@ -21,7 +21,7 @@ vi.mock("@/lib/config", () => ({
 }));
 
 import { TransactionExpiredBlockheightExceededError } from "@solana/web3.js";
-import { sendTx, estimateFees, getClockDriftWarning, isBlockhashExpiredError, isConfirmationTimeoutError, checkSignatureLanded, extractTxErrorMessage } from "@/lib/tx";
+import { sendTx, estimateFees, getClockDriftWarning, isBlockhashExpiredError, isConfirmationTimeoutError, checkSignatureLanded, extractTxErrorMessage, TxCancelledError, isTxCancelledError } from "@/lib/tx";
 import type { SendTxParams, FeeEstimate } from "@/lib/tx";
 
 describe("sendTx", () => {
@@ -49,6 +49,48 @@ describe("sendTx", () => {
         instructions: [],
       })
     ).rejects.toThrow("Wallet not connected");
+  });
+
+  it("GH#2623: throws TxCancelledError instead of signing when abortSignal is already aborted", async () => {
+    // The create-market wizard's unmount cleanup aborts BETWEEN sequential
+    // steps. Without this check, sendTx would build a tx and call
+    // wallet.signTransaction (a fresh wallet popup) for a step the user has
+    // already navigated away from. Checked before wallet.signTransaction is
+    // ever reached — a bare `{}` connection proves nothing else is touched.
+    const wallet = { publicKey: Keypair.generate().publicKey, signTransaction: vi.fn() };
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      sendTx({
+        connection: {} as any,
+        wallet: wallet as any,
+        instructions: [],
+        abortSignal: controller.signal,
+      })
+    ).rejects.toThrow(TxCancelledError);
+    expect(wallet.signTransaction).not.toHaveBeenCalled();
+  });
+
+  it("CONTROL: an abortSignal that has NOT fired does not block sendTx", async () => {
+    // Distinguishes `abortSignal?.aborted` from a check that fires on the
+    // mere PRESENCE of an abortSignal — every sequential create-market step
+    // now passes one on every call (see useCreateMarket.ts), so a check that
+    // fired unconditionally would block every step, not just cancelled ones.
+    // A valid wallet reaches past the FIRST guard (unlike the null-publicKey
+    // wallet used elsewhere in this file) so this exercises the abort check
+    // specifically; `connection: {}` then fails for an UNRELATED reason
+    // (no RPC methods), which is fine — the point is it's not TxCancelledError.
+    const wallet = { publicKey: Keypair.generate().publicKey, signTransaction: vi.fn() };
+    const controller = new AbortController(); // never aborted
+    let threw: unknown;
+    try {
+      await sendTx({ connection: {} as any, wallet: wallet as any, instructions: [], abortSignal: controller.signal });
+    } catch (e) {
+      threw = e;
+    }
+    expect(threw).toBeDefined();
+    expect(isTxCancelledError(threw)).toBe(false);
+    expect(wallet.signTransaction).not.toHaveBeenCalled(); // failed before signing, for the unrelated reason
   });
 
   it("BUG 24: no longer performs the dead genesis-hash network check", async () => {
@@ -463,5 +505,59 @@ describe("checkSignatureLanded", () => {
   it('returns "unknown" when the RPC call throws (fail safe — never rebuild on uncertainty)', async () => {
     const throwing = { getSignatureStatuses: vi.fn().mockRejectedValue(new Error("rpc down")) } as never;
     expect(await checkSignatureLanded(throwing, "s")).toBe("unknown");
+  });
+
+  describe("GH#2623: retries once before a false-negative not-found triggers a re-sign", () => {
+    it('a first "not-found" that turns "landed" on retry returns "landed", not "not-found"', async () => {
+      // Simulates a load-balanced RPC backend that hasn't indexed the
+      // signature yet on the first query but has by the second — the
+      // documented "BlockhashNotFound propagation lag" gremlin (eb10959 /
+      // #2603 / #2598 / #2400). Before this fix, the caller
+      // (attemptFreshBatchedLaunch's broadcastTailTx) would have treated the
+      // FIRST "not-found" as authoritative and rebuilt + re-signed a step
+      // that had, in fact, already landed.
+      const getSignatureStatuses = vi
+        .fn()
+        .mockResolvedValueOnce({ value: [null] })
+        .mockResolvedValueOnce({ value: [{ err: null, confirmationStatus: "confirmed" }] });
+      const conn = { getSignatureStatuses } as never;
+      expect(await checkSignatureLanded(conn, "s")).toBe("landed");
+      expect(getSignatureStatuses).toHaveBeenCalledTimes(2);
+    });
+
+    it('queries only ONCE when the first query already resolves (landed/unknown) — no needless delay', async () => {
+      // CONTROL distinguishing "retries on not-found specifically" from "always
+      // queries twice": a definitive first answer must not incur the retry's
+      // ~800ms delay at all.
+      const getSignatureStatuses = vi.fn().mockResolvedValue({ value: [{ err: null, confirmationStatus: "confirmed" }] });
+      const conn = { getSignatureStatuses } as never;
+      expect(await checkSignatureLanded(conn, "s")).toBe("landed");
+      expect(getSignatureStatuses).toHaveBeenCalledTimes(1);
+    });
+
+    it('a signature that is STILL "not-found" on retry returns "not-found" — genuinely dropped, safe to rebuild', async () => {
+      // CONTROL for the retry not silently converting every case to "landed":
+      // consistently absent must still return "not-found" so a truly dropped
+      // tx remains safe to rebuild.
+      const getSignatureStatuses = vi.fn().mockResolvedValue({ value: [null] });
+      const conn = { getSignatureStatuses } as never;
+      expect(await checkSignatureLanded(conn, "s")).toBe("not-found");
+      expect(getSignatureStatuses).toHaveBeenCalledTimes(2);
+    });
+  });
+});
+
+describe("TxCancelledError / isTxCancelledError (GH#2623)", () => {
+  it("isTxCancelledError is true only for a TxCancelledError instance", () => {
+    expect(isTxCancelledError(new TxCancelledError())).toBe(true);
+    expect(isTxCancelledError(new Error("Transaction cancelled — you rejected the signing request."))).toBe(false);
+    expect(isTxCancelledError("Transaction cancelled")).toBe(false);
+    expect(isTxCancelledError(null)).toBe(false);
+    expect(isTxCancelledError(undefined)).toBe(false);
+  });
+
+  it("carries a default message when none is given, and the given one otherwise", () => {
+    expect(new TxCancelledError().message).toMatch(/cancelled/i);
+    expect(new TxCancelledError("custom reason").message).toBe("custom reason");
   });
 });
