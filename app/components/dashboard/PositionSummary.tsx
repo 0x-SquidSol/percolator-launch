@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { computeMarginHealthPct, unliquidatableHealthThresholdPct } from "@/lib/margin-health";
 import { usePortfolio, getLiquidationSeverity, isOpenPosition, type PortfolioPosition } from "@/hooks/usePortfolio";
 import { formatTokenAmount, formatUsdPriceE6 } from "@/lib/format";
 import { useMultiTokenMeta } from "@/hooks/useMultiTokenMeta";
@@ -30,6 +31,36 @@ function PositionCard({ pos, symbol, decimals = 6 }: { pos: PortfolioPosition; s
   const sizeAbs = posSize < 0n ? -posSize : posSize;
   const severity = getLiquidationSeverity(pos.liquidationDistancePct);
   const hasPosition = posSize !== 0n;
+  // GH#2634 (following #2558): cross-margin collateral removes a position's
+  // liquidation price, and this card rendered a bare "—" at exactly that
+  // point — the symptom #2558 was filed about, on a surface its fix did not
+  // reach. Margin health needs no entry or liquidation price, so it is defined
+  // precisely when the liquidation price is not. Same helper and the same
+  // per-market threshold as the four surfaces #2558 covered.
+  const marginHealthPct = computeMarginHealthPct(
+    pos.account?.capital ?? 0n,
+    pos.account?.positionSize ?? 0n,
+    pos.oraclePriceE6,
+  );
+  const healthThresholdPct = unliquidatableHealthThresholdPct(pos.maintenanceMarginBps);
+  // Derived per market, never the literal 105 — that figure is only correct at
+  // a 500 bps maintenance margin, and a market with a different one gets a
+  // different line.
+  // GH#2634: a resolved ENTRY is required, not just a zero liquidation price.
+  // computeLiqPrice returns 0n for two unrelated reasons — the long
+  // over-collateralisation clamp, and entryPrice === 0n, which means "no data".
+  // lib/liquidation-state.ts names this exact distinction and says it "is the
+  // same condition the three position components already use". Gating on the
+  // bare zero asserted "cannot be liquidated by price" over a gap in the data,
+  // which is a false safety claim in the dangerous direction — and for a SHORT
+  // it is always that case, since computeLiqPrice never returns 0n for a short
+  // with a resolved entry.
+  const hasResolvedEntry = (pos.account?.entryPrice ?? 0n) > 0n;
+  const showMarginHealth = hasPosition && hasResolvedEntry && pos.liquidationPriceE6 <= 0n && marginHealthPct != null;
+  const liqTitle =
+    showMarginHealth && marginHealthPct != null
+      ? `No liquidation price: collateral is ${marginHealthPct.toFixed(1)}% of this position's notional, past the ${healthThresholdPct}% at which it cannot be liquidated by price. Withdrawing collateral below that brings a liquidation price back.`
+      : undefined;
   // PERC-297: Guard PnL display when oracle price is unavailable
   const hasValidOracle = pos.oraclePriceE6 > 0n;
 
@@ -127,12 +158,17 @@ function PositionCard({ pos, symbol, decimals = 6 }: { pos: PortfolioPosition; s
           <div>
             <span className="text-[var(--text-secondary)]">Liq: </span>
             <span
+              title={liqTitle}
               className={`${
                 severity === "danger" ? "font-semibold text-[var(--short)]" : severity === "warning" ? "text-[var(--warning)]" : "text-[var(--text-secondary)]"
               }`}
               style={{ fontFamily: "var(--font-jetbrains-mono)" }}
             >
-              {hasPosition && pos.liquidationPriceE6 > 0n ? formatUsdPriceE6(pos.liquidationPriceE6) : "—"}
+              {hasPosition && pos.liquidationPriceE6 > 0n
+                ? formatUsdPriceE6(pos.liquidationPriceE6)
+                : showMarginHealth && marginHealthPct != null
+                  ? `${marginHealthPct.toFixed(0)}% mgn`
+                  : "—"}
             </span>
           </div>
         </div>

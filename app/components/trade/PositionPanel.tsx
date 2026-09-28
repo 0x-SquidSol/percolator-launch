@@ -45,7 +45,7 @@ import { getBackendUrl } from "@/lib/config";
 import { pollWhenVisible } from "@/lib/pollWhenVisible";
 import { parseHumanAmount } from "@/lib/parseAmount";
 import { isOracleStaleBlocking } from "@/lib/oracle-stale-gate";
-import { computeMarginHealthPct } from "@/lib/margin-health";
+import { computeMarginHealthPct, unliquidatableHealthThresholdPct } from "@/lib/margin-health";
 import {
   formatLeverage,
   ORDER_LEVERAGE_TITLE,
@@ -426,7 +426,12 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // was the only one computing it. Nominal size, not ADL-reduced exposure:
   // see the note above notionalE6 and lib/margin-health.ts.
   const marginHealthPct = computeMarginHealthPct(account.capital, absNominal, currentPriceE6);
-  const marginHealthStr = marginHealthPct == null ? "N/A" : `${marginHealthPct.toFixed(1)}%`;
+  // GH#2634: `!= null`, matching the other six surfaces. The inverted form was
+  // the only reason this file was carved out of the coverage test, and the
+  // carve-out cost it its guard — a dead computeMarginHealthPct call plus a
+  // hard-coded dash passed, on the reference surface #2558 was filed about.
+  const marginHealthStr = marginHealthPct != null ? `${marginHealthPct.toFixed(1)}%` : "N/A";
+  const healthThresholdPct = unliquidatableHealthThresholdPct(maintenanceBps);
 
   // 3.4: Funding rate /8h + countdown
   const SLOTS_PER_8H = 72_000n; // 9000 slots/hr * 8
@@ -652,7 +657,15 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
                 <span
                   className={`text-[11px] font-medium ${liqPriceColor}`}
                   style={{ fontFamily: "var(--font-mono)" }}
-                  title={liqUnliquidatable ? "No liquidation price — collateral exceeds position notional; cannot be liquidated by price" : undefined}
+                  title={
+                    liqUnliquidatable
+                      ? marginHealthPct != null
+                        // Derived per market: 105 is only correct at a 500 bps
+                        // maintenance margin.
+                        ? `No liquidation price: collateral is ${marginHealthPct.toFixed(1)}% of this position's notional, past the ${healthThresholdPct}% at which it cannot be liquidated by price.`
+                        : "No liquidation price — collateral exceeds position notional; cannot be liquidated by price"
+                      : undefined
+                  }
                 >
                   {formatLiqPrice(liqPriceE6, { hasPosition: liqUnliquidatable })}
                 </span>

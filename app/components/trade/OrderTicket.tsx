@@ -39,6 +39,7 @@ import { FC, memo, useState, useMemo, useCallback, useEffect, useRef } from "rea
 import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { computeNotionalNative } from "@/lib/notional";
+import { computeMarginHealthPct, unliquidatableHealthThresholdPct } from "@/lib/margin-health";
 import { availableLeverage as availableLeverageFor, nextLeverageInputState, clampSliderLeverage, LEVERAGE_STEP } from "@/lib/leverage-control";
 import { useTrade, prewarmTradeSubmission } from "@/hooks/useTrade";
 import { useMarketFillCap } from "@/hooks/useMarketFillCap";
@@ -673,6 +674,30 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const afterLiqPrice = hasOrder && combinedSignedSize !== 0n && combinedEntryPriceE6 > 0n
     ? computeLiqPrice(combinedEntryPriceE6, capital, combinedSignedSize, maintenanceMarginBps)
     : 0n;
+  // GH#2634 (following #2558): this preview showed a bare "-" whenever the
+  // combined position has no liquidation price, which is the common case once
+  // cross-margin collateral exceeds the notional. Margin health needs neither
+  // an entry nor a liquidation price, so it is defined exactly then — and it
+  // crosses its threshold at the same collateral level where the liq price
+  // disappears. Projected on the SAME combined size the liq price above uses,
+  // so the two readouts cannot disagree.
+  const afterMarginHealthPct = computeMarginHealthPct(capital, combinedSignedSize, livePriceE6);
+  const healthThresholdPct = unliquidatableHealthThresholdPct(maintenanceMarginBps);
+  // GH#2634: a resolved ENTRY is required, not just a zero liquidation price.
+  // computeLiqPrice returns 0n for two unrelated reasons — the long
+  // over-collateralisation clamp, and entryPrice === 0n, which means "no data".
+  // lib/liquidation-state.ts names this exact distinction and says it "is the
+  // same condition the three position components already use". Gating on the
+  // bare zero asserted "cannot be liquidated by price" over a gap in the data,
+  // which is a false safety claim in the dangerous direction — and for a SHORT
+  // it is always that case, since computeLiqPrice never returns 0n for a short
+  // with a resolved entry.
+  const showAfterMarginHealth =
+    hasOrder && afterLiqPrice <= 0n && combinedEntryPriceE6 > 0n && combinedSignedSize !== 0n;
+  const afterLiqTitle =
+    showAfterMarginHealth && afterMarginHealthPct != null
+      ? `No liquidation price after this order: collateral would be ${afterMarginHealthPct.toFixed(1)}% of the combined notional, past the ${healthThresholdPct}% at which it cannot be liquidated by price.`
+      : undefined;
   const beforeLiqPrice = userAccount && userAccount.account.positionSize !== 0n && existingEntryPriceE6 > 0n
     ? computeLiqPrice(existingEntryPriceE6, capital, userAccount.account.positionSize, maintenanceMarginBps)
     : 0n;
@@ -1204,9 +1229,15 @@ setEngineLockError(null);
             <DiffRow
               label="Liq price"
               before={beforeLiqPrice > 0n ? formatUsdPriceE6(beforeLiqPrice) : "—"}
-              after={afterLiqPrice > 0n ? formatUsdPriceE6(afterLiqPrice) : "—"}
+              after={
+                afterLiqPrice > 0n
+                  ? formatUsdPriceE6(afterLiqPrice)
+                  : showAfterMarginHealth && afterMarginHealthPct != null
+                    ? `${afterMarginHealthPct.toFixed(0)}% mgn`
+                    : "—"
+              }
               valueClass={direction === "long" ? "text-[var(--short)]" : "text-[var(--long)]"}
-              tooltip="Estimated liquidation price if this order fills at the estimated entry."
+              tooltip={afterLiqTitle ?? "Estimated liquidation price if this order fills at the estimated entry."}
             />
             {detailsVisible && (
               <>

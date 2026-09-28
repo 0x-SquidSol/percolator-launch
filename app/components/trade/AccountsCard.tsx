@@ -9,6 +9,7 @@ import { formatTokenAmount, formatUsdPriceE6, formatPnl, formatLiqPrice, shorten
 import { AccountKind, computeMarkPnl, computeLiqPrice } from "@percolatorct/sdk";
 import { computeMarkPnlCollateral } from "@/lib/trading";
 import { LIQ_PRICE_UNLIQUIDATABLE } from "@/lib/format";
+import { computeMarginHealthPct, unliquidatableHealthThresholdPct } from "@/lib/margin-health";
 import { applyInvert, sanitizePriceE6 } from "@/lib/oraclePrice";
 import { isSentinelValue } from "@/lib/health";
 
@@ -24,6 +25,8 @@ interface AccountRow {
   positionSize: bigint;
   entryPrice: bigint;
   liqPrice: bigint;
+  marginHealthPct: number | null;
+  showMarginHealth: boolean;
   liqHealthPct: number;
   pnl: bigint;
   capital: bigint;
@@ -83,8 +86,33 @@ export const AccountsCard: FC = () => {
         ? computeMarkPnl(account.positionSize, account.entryPrice, oraclePrice)
         : safePnl;
       const computedPnl = hasValidMark ? computeMarkPnlCollateral(pnlNative, oraclePrice) : 0n;
-      const marginPct = liqHealthPct;
-      return { idx, kind: account.kind, owner: account.owner.toBase58(), direction, positionSize: account.positionSize ?? 0n, entryPrice: account.entryPrice ?? 0n, liqPrice, liqHealthPct, pnl: computedPnl, capital: account.capital ?? 0n, marginPct };
+      // GH#2634: liqHealthPct is a DISTANCE-to-liquidation figure and defaults
+      // to 100 when there is no liquidation price to be distant from. Leaving it
+      // there put a full green bar and a "100.0%" margin column beside a
+      // "20% mgn" cell — three readouts of one position disagreeing. Where the
+      // margin-health figure is what we show, it is also what we sort and bar on.
+      const marginHealthPct = computeMarginHealthPct(
+        account.capital ?? 0n,
+        account.positionSize ?? 0n,
+        oraclePrice,
+      );
+      const showMarginHealth =
+        liqPrice <= 0n && (account.entryPrice ?? 0n) > 0n && (account.positionSize ?? 0n) !== 0n;
+      const marginPct = showMarginHealth && marginHealthPct != null ? marginHealthPct : liqHealthPct;
+      // GH#2634 (following #2558): when cross-margin collateral removes the
+      // liquidation price this column showed only a dash and a full bar, which
+      // reads as "safe" rather than "not applicable". Margin health needs no
+      // entry or liquidation price, so it is defined exactly when they are not.
+  // GH#2634: a resolved ENTRY is required, not just a zero liquidation price.
+  // computeLiqPrice returns 0n for two unrelated reasons — the long
+  // over-collateralisation clamp, and entryPrice === 0n, which means "no data".
+  // lib/liquidation-state.ts names this exact distinction and says it "is the
+  // same condition the three position components already use". Gating on the
+  // bare zero asserted "cannot be liquidated by price" over a gap in the data,
+  // which is a false safety claim in the dangerous direction — and for a SHORT
+  // it is always that case, since computeLiqPrice never returns 0n for a short
+  // with a resolved entry.
+      return { idx, kind: account.kind, showMarginHealth, owner: account.owner.toBase58(), direction, positionSize: account.positionSize ?? 0n, entryPrice: account.entryPrice ?? 0n, liqPrice, liqHealthPct, marginHealthPct, pnl: computedPnl, capital: account.capital ?? 0n, marginPct };
     });
   }, [accounts, maintBps, oraclePrice]);
 
@@ -204,10 +232,27 @@ export const AccountsCard: FC = () => {
                       <td className="whitespace-nowrap px-2 py-1.5 text-right">
                         {row.positionSize !== 0n ? (
                           <div className="flex items-center justify-end gap-1">
-                            <span className="text-[var(--text)]" style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}>{formatLiqPrice(row.liqPrice)}</span>
-                            <div className="h-1 w-8 shrink-0 bg-[var(--border)]/50">
-                              <div className={`h-1 ${liqBarColor(row.liqHealthPct)}`} style={{ width: `${Math.max(8, row.liqHealthPct)}%` }} />
-                            </div>
+                            <span
+                              title={
+                                row.showMarginHealth && row.marginHealthPct != null
+                                  ? `No liquidation price: collateral is ${row.marginHealthPct.toFixed(1)}% of this position's notional, past the ${unliquidatableHealthThresholdPct(maintBps)}% at which it cannot be liquidated by price.`
+                                  : undefined
+                              }
+                              className="text-[var(--text)]"
+                              style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}
+                            >
+                              {row.showMarginHealth && row.marginHealthPct != null
+                                ? `${row.marginHealthPct.toFixed(0)}% mgn`
+                                : formatLiqPrice(row.liqPrice)}
+                            </span>
+                            {/* No liquidation price means no distance to one —
+                                a full bar there reads as "safe" rather than
+                                "not applicable" (GH#2634). */}
+                            {!row.showMarginHealth && (
+                              <div className="h-1 w-8 shrink-0 bg-[var(--border)]/50">
+                                <div className={`h-1 ${liqBarColor(row.liqHealthPct)}`} style={{ width: `${Math.max(8, row.liqHealthPct)}%` }} />
+                              </div>
+                            )}
                           </div>
                         ) : "-"}
                       </td>
