@@ -1,5 +1,5 @@
 /**
- * GET /api/chart/[mint]?timeframe=hour&aggregate=1&limit=24
+ * GET /api/chart/[mint]?timeframe=hour&aggregate=1&limit=24[&before=<unixSeconds>]
  *
  * Fetches OHLCV candle data directly from GeckoTerminal's public API (no key
  * required). This route used to proxy to percolator-api's GET /chart/:mint,
@@ -15,8 +15,18 @@
  *      mint's most-liquid pool (highest reserve_in_usd among the returned
  *      `included` pool objects).
  *   2. GET /networks/solana/pools/{pool}/ohlcv/{timeframe}?aggregate=&limit=
- *      — fetch candles for that pool. GeckoTerminal returns rows
- *      newest-first; we reverse to ascending (oldest → newest) for the chart.
+ *      [&before_timestamp=] — fetch candles for that pool. GeckoTerminal
+ *      returns rows newest-first; we reverse to ascending (oldest → newest)
+ *      for the chart.
+ *
+ * `before` (optional, unix SECONDS, integer): scroll-back paging (#2581).
+ * GeckoTerminal's OHLCV endpoint accepts `before_timestamp` and pages straight
+ * past the single window this route used to fetch — two requests retrieve a
+ * token's ENTIRE history back to pool creation. Validated as a plain digit
+ * string before being forwarded; an invalid/missing value is silently treated
+ * as "no paging" (page 1) rather than erroring, matching how `aggregate`/
+ * `limit` already degrade. It also joins the cache key below — without that,
+ * page 2 would be served page 1's cached bars.
  *
  * Degrades gracefully on any failure (no pool found, upstream error, bad
  * data): returns `{ candles: [], poolAddress: null }` with a 200 status so
@@ -49,6 +59,16 @@ const GECKOTERMINAL_BASE = "https://api.geckoterminal.com/api/v2/networks/solana
 const CACHE_HEADERS = {
   "Cache-Control": "public, s-maxage=60, stale-while-revalidate=120",
 } as const;
+/** A `before`-paged (historical) batch is IMMUTABLE — a closed time window's
+ *  OHLCV bars never change, unlike the live page which grows a new bar every
+ *  tick — so both the in-process cache (see HISTORICAL_CANDLE_TTL below) and
+ *  the CDN may hold it far longer than a page-1 response. This is also the
+ *  #2578 mitigation: once one viewer pages a (mint, timeframe, before) back,
+ *  every other viewer (and a reload of the same one) is served for free
+ *  instead of spending another GeckoTerminal call. */
+const HISTORICAL_CACHE_HEADERS = {
+  "Cache-Control": "public, s-maxage=604800, immutable",
+} as const;
 /** Failure responses must NOT be CDN-cached: a GeckoTerminal 429/error would
  *  otherwise pin an EMPTY chart for 60s+ even though a retry seconds later
  *  would succeed — one rate-limit blip blanked every viewer's chart. */
@@ -78,6 +98,12 @@ const POOL_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const POOL_MISS_TTL_MS = 60 * 1000;
 const CANDLE_CACHE_TTL_MS = 45 * 1000;
 const CANDLE_STALE_MAX_MS = 15 * 60 * 1000;
+/** A `before`-paged batch never goes stale by definition (see
+ *  HISTORICAL_CACHE_HEADERS above) — the in-process cache entry is valid
+ *  until it's evicted by candleCache's LRU cap, not on a timer. Modeled as
+ *  "never expires on TTL grounds" rather than a very-long finite TTL so the
+ *  stale-if-error fallback path below never has a reason to fire for it. */
+const HISTORICAL_CANDLE_TTL_MS = Infinity;
 // Hard entry cap per cache. The route validates `mint` only as a well-formed
 // pubkey (not a real token), and resolveTopPool caches even NULL misses — so a
 // warm/long-lived instance hit with millions of distinct random pubkeys would
@@ -165,17 +191,21 @@ async function resolveTopPoolUncached(mint: string): Promise<string | null> {
   }
 }
 
-/** Fetch + parse OHLCV candles for a resolved pool. Empty array on any failure/no-data. */
+/** Fetch + parse OHLCV candles for a resolved pool. Empty array on any failure/no-data.
+ *  `before` (unix seconds, already validated by the caller) pages backward via
+ *  GeckoTerminal's `before_timestamp` — omitted entirely for a page-1 request. */
 async function fetchCandles(
   pool: string,
   timeframe: string,
   aggregate: string,
   limit: string,
+  before?: string,
 ): Promise<CandleData[]> {
   try {
     const url =
       `${GECKOTERMINAL_BASE}/pools/${encodeURIComponent(pool)}/ohlcv/${timeframe}` +
-      `?aggregate=${encodeURIComponent(aggregate)}&limit=${encodeURIComponent(limit)}`;
+      `?aggregate=${encodeURIComponent(aggregate)}&limit=${encodeURIComponent(limit)}` +
+      (before ? `&before_timestamp=${encodeURIComponent(before)}` : "");
     const res = await geckoFetch(url);
     if (!res || !res.ok) return [];
     const json = await res.json();
@@ -222,33 +252,48 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ mint
   const limitParam = sp.get("limit") ?? "100";
   const limitParsed = parseInt(limitParam, 10);
   const limit = String(Number.isFinite(limitParsed) ? Math.min(Math.max(limitParsed, 1), 1000) : 100);
+  // Scroll-back paging (#2581). A plain non-zero digit string, or undefined —
+  // never rejects the request; an invalid value just falls back to page 1.
+  const beforeParam = sp.get("before");
+  const before =
+    beforeParam && /^\d+$/.test(beforeParam) && Number(beforeParam) > 0 ? beforeParam : undefined;
 
   try {
     const pool = await resolveTopPool(canonicalMint);
     if (!pool) return emptyResponse();
 
-    const cacheKey = `${pool}:${timeframe}:${aggregate}:${limit}`;
+    // `before` joins the key — otherwise page 2 would read (and pollute) page
+    // 1's cache entry.
+    const cacheKey = `${pool}:${timeframe}:${aggregate}:${limit}:${before ?? "-"}`;
     const cached = candleCache.get(cacheKey);
     const age = cached ? Date.now() - cached.at : Infinity;
+    const ttl = before ? HISTORICAL_CANDLE_TTL_MS : CANDLE_CACHE_TTL_MS;
+    const cacheHeaders = before ? HISTORICAL_CACHE_HEADERS : CACHE_HEADERS;
 
     // Fresh enough — serve without spending a GeckoTerminal call. This is
-    // what keeps N open charts + the client's 60s poll inside GT's quota.
-    if (cached && age < CANDLE_CACHE_TTL_MS) {
+    // what keeps N open charts + the client's 60s poll inside GT's quota
+    // (page 1), and — for a `before` page — makes every repeat/other-viewer
+    // request of a page some earlier viewer already scrolled to completely
+    // free (see HISTORICAL_CACHE_HEADERS).
+    if (cached && age < ttl) {
       return NextResponse.json(
         { candles: cached.candles, poolAddress: pool, cached: true },
-        { headers: CACHE_HEADERS },
+        { headers: cacheHeaders },
       );
     }
 
-    const candles = await fetchCandles(pool, timeframe, aggregate, limit);
+    const candles = await fetchCandles(pool, timeframe, aggregate, limit, before);
     if (candles.length > 0) {
       boundedSet(candleCache, cacheKey, { candles, at: Date.now() }, CACHE_MAX_ENTRIES);
-      return NextResponse.json({ candles, poolAddress: pool, cached: false }, { headers: CACHE_HEADERS });
+      return NextResponse.json({ candles, poolAddress: pool, cached: false }, { headers: cacheHeaders });
     }
 
-    // Empty fetch = usually a GT 429, not "this pool has no history".
-    // Stale-if-error: serve the last good batch (up to 15min old) instead of
-    // blanking a chart that rendered fine a minute ago.
+    // Empty fetch = usually a GT 429, not "this pool has no history" — for
+    // page 1. Stale-if-error: serve the last good batch (up to 15min old)
+    // instead of blanking a chart that rendered fine a minute ago. (Never
+    // reached for a `before` page: its ttl is infinite, so a still-cached
+    // entry already returned above; this only runs for a `before` page whose
+    // entry was evicted, where there's nothing to fall back to anyway.)
     if (cached && age < CANDLE_STALE_MAX_MS && cached.candles.length > 0) {
       return NextResponse.json(
         { candles: cached.candles, poolAddress: pool, cached: true },
