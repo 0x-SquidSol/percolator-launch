@@ -60,7 +60,40 @@ const RATE_LIMIT_HOURS = 24;
 // Public devnet RPC for airdrop (Helius may not forward airdrop requests)
 const PUBLIC_DEVNET_RPC = "https://api.devnet.solana.com";
 
+/** Wrap a promise with a timeout; rejects after `ms` milliseconds. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`Operation timed out after ${ms}ms`)), ms),
+    ),
+  ]);
+}
+
 export async function POST(req: NextRequest) {
+  /**
+   * GH#2600: gives back the Supabase faucet claim reserved by tryFaucetGate when
+   * this request funds nothing.
+   *
+   * Before this, the ONLY release site was the "nothing funded" branch below, so
+   * any THROW between the gate succeeding and that branch — connection.getBalance()
+   * (RPC), getServerConnection(), or `new PublicKey(usdcMintAddr)` on a malformed
+   * env value — fell straight to this function's outer catch and left the claim
+   * reserved. The caller got a 500, no funds, and a 24h lockout from a server-side
+   * problem they cannot see or fix. Same defect class as #2597 (devnet-pre-fund)
+   * and the very shape #2521 fixed on this route's RETURN paths — this closes the
+   * THROW gap #2521 missed, which is what #2600 reported.
+   *
+   * Armed once the gate reserves, self-disarming (safe to call more than once —
+   * from the "nothing funded" branch AND the outer catch), and disarmed for good
+   * the instant funding is confirmed, so a later throw (e.g. in response
+   * construction) can never claw back a claim that was legitimately spent.
+   * Releasing an already-spent claim would let a wallet immediately re-request and
+   * double-fund from the shared DEVNET_MINT_AUTHORITY_KEYPAIR — worse than the leak
+   * this fixes, so that disarm is not optional.
+   */
+  let releaseGateClaimOnExit: (() => Promise<void>) | null = null;
+
   try {
     // Only works on devnet
     if (NETWORK !== "devnet") {
@@ -123,6 +156,31 @@ export async function POST(req: NextRequest) {
         { error: "Already funded in the last 24 hours", funded: false, nextClaimAt: gate.nextClaimAt },
         { status: 429 },
       );
+    }
+
+    // `gate.claimId` is only set when the Supabase path actually reserved a slot —
+    // NOT whenever `supabase` is non-null. The catch above can leave a stale
+    // truthy `supabase` (assigned before the throwing tryFaucetGate call) while
+    // `gate` was reassigned from the in-memory fallback, which reserves nothing
+    // and carries no claimId. Arming on `supabase` alone would build a closure
+    // that deletes by `id = undefined`.
+    if (supabase && gate.claimId != null) {
+      const claimId = gate.claimId;
+      const sb = supabase;
+      // Self-disarming: at most one delete per request however many exits reach it.
+      let outstanding = true;
+      releaseGateClaimOnExit = async () => {
+        if (!outstanding) return;
+        outstanding = false;
+        try {
+          const { releaseFaucetClaim } = await import("@/lib/faucet-rate-gate");
+          // Bounded: supabase-js uses fetch with no default timeout, and the
+          // try/catch below catches rejections, not hangs.
+          await withTimeout(releaseFaucetClaim(sb, claimId), 3_000);
+        } catch (releaseErr) {
+          console.warn("[auto-fund] failed to release faucet claim:", releaseErr);
+        }
+      };
     }
 
     const cfg = getConfig();
@@ -232,6 +290,12 @@ export async function POST(req: NextRequest) {
 
     // Record in-memory claim on success
     if (results.sol_airdropped || results.usdc_minted) {
+      // GH#2600: the claim was SPENT on funding that actually happened, so it must
+      // not be given back. Disarm before anything else that could throw — the
+      // outer catch below calls releaseGateClaimOnExit() on ANY thrown error, and
+      // without this a throw during the analytics insert or response construction
+      // would wrongly release a real claim, letting the wallet immediately re-fund.
+      releaseGateClaimOnExit = null;
       _autoFundRecord(walletAddress);
       // Analytics-only DB insert — best-effort, skip when supabase unavailable
       if (supabase) {
@@ -250,13 +314,8 @@ export async function POST(req: NextRequest) {
         }
       }
     } else {
-      // Nothing funded — release gate so user can retry
-      if (supabase && gate.claimId) {
-        try {
-          const { releaseFaucetClaim } = await import("@/lib/faucet-rate-gate");
-          await releaseFaucetClaim(supabase, gate.claimId);
-        } catch { /* best-effort */ }
-      }
+      // Nothing funded — release gate so user can retry.
+      await releaseGateClaimOnExit?.();
     }
 
     return NextResponse.json({
@@ -264,6 +323,15 @@ export async function POST(req: NextRequest) {
       ...results,
     });
   } catch (error) {
+    // GH#2600: any throw between the gate reserving and a confirmed fund also
+    // gives the claim back. Self-disarming, so this is a no-op when the
+    // "nothing funded" branch above already released it, and it never fires once
+    // funding succeeded (disarmed above).
+    try {
+      await releaseGateClaimOnExit?.();
+    } catch {
+      /* best-effort */
+    }
     Sentry.captureException(error, {
       tags: { endpoint: "/api/auto-fund", method: "POST" },
     });

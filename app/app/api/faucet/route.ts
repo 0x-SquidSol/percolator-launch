@@ -77,7 +77,38 @@ const DEVNET_RPC_POOL = [
   "https://rpc.ankr.com/solana_devnet",
 ];
 
+/** Wrap a promise with a timeout; rejects after `ms` milliseconds. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`Operation timed out after ${ms}ms`)), ms),
+    ),
+  ]);
+}
+
 export async function POST(req: NextRequest) {
+  /**
+   * GH#2600: gives back the Supabase faucet claim reserved by tryFaucetGate when
+   * this request funds nothing.
+   *
+   * Every RETURN after the gate already releases (the manual `if (supabase &&
+   * gate.claimId) { ... }` blocks below), and the mint tx's own catch releases
+   * then rethrows. But four USDC-path statements between the gate and that tx
+   * try/catch are unwrapped: getConfig(), `new PublicKey(usdcMintAddr)`,
+   * `new PublicKey(mintSigner.publicKey())`, and getServerConnection() — a THROW
+   * from any of them (a malformed env value, for instance) fell straight to this
+   * function's outer catch, which never released. Same defect class as #2597.
+   *
+   * Armed once the gate reserves, self-disarming (safe to call from more than one
+   * place — an existing manual release AND the outer catch, redundantly), and
+   * disarmed for good the instant a claim is legitimately spent, so a later throw
+   * can never claw back a claim that funded the wallet. Releasing an
+   * already-spent claim would let a wallet immediately re-request and double-fund
+   * from the shared DEVNET_MINT_AUTHORITY_KEYPAIR — worse than the leak this fixes.
+   */
+  let releaseGateClaimOnExit: (() => Promise<void>) | null = null;
+
   try {
     if (NETWORK !== "devnet") {
       return NextResponse.json(
@@ -174,6 +205,31 @@ export async function POST(req: NextRequest) {
         },
         { status: 429 },
       );
+    }
+
+    // `gate.claimId` is only set when the Supabase path actually reserved a slot —
+    // NOT whenever `supabase` is non-null. The catch above can leave a stale
+    // truthy `supabase` (assigned before the throwing tryFaucetGate call) while
+    // `gate` was reassigned from the in-memory fallback, which reserves nothing
+    // and carries no claimId. Arming on `supabase` alone would build a closure
+    // that deletes by `id = undefined`.
+    if (supabase && gate.claimId != null) {
+      const claimId = gate.claimId;
+      const sb = supabase;
+      // Self-disarming: at most one delete per request however many exits reach it.
+      let outstanding = true;
+      releaseGateClaimOnExit = async () => {
+        if (!outstanding) return;
+        outstanding = false;
+        try {
+          const { releaseFaucetClaim } = await import("@/lib/faucet-rate-gate");
+          // Bounded: supabase-js uses fetch with no default timeout, and the
+          // try/catch below catches rejections, not hangs.
+          await withTimeout(releaseFaucetClaim(sb, claimId), 3_000);
+        } catch (releaseErr) {
+          console.warn("[faucet] failed to release faucet claim:", releaseErr);
+        }
+      };
     }
 
     // ── SOL airdrop path ──────────────────────────────────────────────────────
@@ -274,6 +330,10 @@ export async function POST(req: NextRequest) {
           { status: 503 },
         );
       }
+
+      // GH#2600: the claim was SPENT on an airdrop that landed, so it must not be
+      // given back — disarm before anything else here can throw.
+      releaseGateClaimOnExit = null;
 
       // Record in-memory + analytics (analytics-only, best-effort)
       _faucetRecord(rateKey);
@@ -456,6 +516,10 @@ export async function POST(req: NextRequest) {
       throw chainErr;
     }
 
+    // GH#2600: the claim was SPENT on a mint that landed, so it must not be given
+    // back — disarm before anything else here can throw.
+    releaseGateClaimOnExit = null;
+
     // Record in-memory + analytics (best-effort)
     _faucetRecord(rateKey);
     if (supabase) {
@@ -479,6 +543,16 @@ export async function POST(req: NextRequest) {
       nextClaimAt,
     });
   } catch (error) {
+    // GH#2600: any throw between the gate reserving and a landed fund also gives
+    // the claim back. Self-disarming, so this is a no-op when an existing manual
+    // release above already fired (a redundant delete-by-id is a harmless no-op —
+    // Postgres never reuses a BIGSERIAL id), and it never fires once funding
+    // succeeded (disarmed above).
+    try {
+      await releaseGateClaimOnExit?.();
+    } catch {
+      /* best-effort */
+    }
     Sentry.captureException(error, {
       tags: { endpoint: "/api/faucet", method: "POST" },
     });

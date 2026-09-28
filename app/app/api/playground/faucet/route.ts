@@ -108,7 +108,38 @@ function recordClaim(wallet: string): string {
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
+/** Wrap a promise with a timeout; rejects after `ms` milliseconds. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`Operation timed out after ${ms}ms`)), ms),
+    ),
+  ]);
+}
+
 export async function POST(req: NextRequest) {
+  /**
+   * GH#2600: gives back the Supabase faucet claim reserved by tryFaucetGate when
+   * this request funds nothing.
+   *
+   * The mint section below already releases on its own failure (see the
+   * `catch (mintErr)` block) — that stays untouched here. But getDevnetMintSigner(),
+   * `new PublicKey(mintSigner.publicKey())`, `new PublicKey(SIM_USDC_MINT)`, and
+   * getServerConnection() run BETWEEN the gate succeeding and that mint try/catch,
+   * unwrapped — a THROW from any of them (a malformed env value, for instance)
+   * fell straight to this function's outer catch, which never released. Same
+   * defect class as #2597.
+   *
+   * Armed once the gate reserves, self-disarming (safe to call redundantly with
+   * the mint section's own release), and disarmed for good the instant the mint
+   * confirms, so a later throw can never claw back a claim that was legitimately
+   * spent. Releasing an already-spent claim would let a wallet immediately
+   * re-request and double-fund from the shared DEVNET_MINT_AUTHORITY_KEYPAIR —
+   * worse than the leak this fixes.
+   */
+  let releaseGateClaimOnExit: (() => Promise<void>) | null = null;
+
   try {
     if (NETWORK !== "devnet") {
       return NextResponse.json(
@@ -175,6 +206,31 @@ export async function POST(req: NextRequest) {
         { error: "Already claimed in the last hour. Come back later.", nextClaimAt: gate.nextClaimAt },
         { status: 429 },
       );
+    }
+
+    // `gate.claimId` is only set when the Supabase path actually reserved a slot —
+    // NOT whenever `supabase` is non-null. The catch above can leave a stale
+    // truthy `supabase` (assigned before the throwing tryFaucetGate call) while
+    // `gate` was reassigned from the in-memory fallback, which reserves nothing
+    // and carries no claimId. Arming on `supabase` alone would build a closure
+    // that deletes by `id = undefined`.
+    if (supabase && gate.claimId != null) {
+      const claimId = gate.claimId;
+      const sb = supabase;
+      // Self-disarming: at most one delete per request however many exits reach it.
+      let outstanding = true;
+      releaseGateClaimOnExit = async () => {
+        if (!outstanding) return;
+        outstanding = false;
+        try {
+          const { releaseFaucetClaim } = await import("@/lib/faucet-rate-gate");
+          // Bounded: supabase-js uses fetch with no default timeout, and the
+          // try/catch below catches rejections, not hangs.
+          await withTimeout(releaseFaucetClaim(sb, claimId), 3_000);
+        } catch (releaseErr) {
+          console.warn("[playground/faucet] failed to release faucet claim:", releaseErr);
+        }
+      };
     }
 
     // Load mint signer — required for USDC mint
@@ -326,6 +382,11 @@ export async function POST(req: NextRequest) {
       throw new Error("USDC mint completed without a transaction signature");
     }
 
+    // GH#2600: the claim was SPENT on a mint that landed, so it must not be given
+    // back — disarm before the SOL-airdrop loop or response construction below
+    // could otherwise let an unrelated throw claw it back.
+    releaseGateClaimOnExit = null;
+
     // Confirmed mint: record the process-local claim timestamp. Unknown
     // post-broadcast outcomes are retained in the catch path above instead.
     const nextClaimAt = recordClaim(walletAddress);
@@ -373,6 +434,15 @@ export async function POST(req: NextRequest) {
       nextClaimAt,
     });
   } catch (err) {
+    // GH#2600: any throw between the gate reserving and a landed mint also gives
+    // the claim back. Self-disarming, so this is a no-op when the mint section's
+    // own release above already fired (a redundant delete-by-id is a harmless
+    // no-op), and it never fires once the mint confirmed (disarmed above).
+    try {
+      await releaseGateClaimOnExit?.();
+    } catch {
+      /* best-effort */
+    }
     Sentry.captureException(err, {
       tags: { endpoint: "/api/playground/faucet", method: "POST" },
     });
