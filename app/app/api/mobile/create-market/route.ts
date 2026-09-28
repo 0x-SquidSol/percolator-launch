@@ -3,22 +3,28 @@
  *
  * Server-assisted transaction builder for mobile market creation (GH #80).
  *
- * The slab, LP portfolio, and matcher-context accounts are derived from
- * the deployer so every transaction requires only the deployer signature.
+ * The slab, LP portfolio, and matcher-context accounts are derived from the
+ * deployer via `PublicKey.createWithSeed` (deployer pubkey + a per-request random
+ * seed) so their addresses are deterministic without the server ever generating
+ * or holding a keypair for them — no keypair is created, and the server never
+ * signs anything.
  *
  * Flow:
  *  1. Client posts { deployer, mint, tier, name, oracle_mode, initial_price_e6 }
- *  2. Server generates slab keypair + matcher-context keypair
- *  3. Server builds and partially-signs all 5 transactions (server signs with generated
- *     keypairs; deployer signature is left blank for mobile wallet to fill in)
- *  4. Returns base64-encoded partially-signed txs + slab_address
- *  5. Mobile signs each tx with MWA (adds deployer signature) and sends in order
+ *  2. Server derives the slab, LP-portfolio, and matcher-context addresses with
+ *     createWithSeed (unsigned, deterministic — no keypairs involved)
+ *  3. Server builds 5 UNSIGNED transactions (no server signature of any kind —
+ *     every account, including the derived ones above, is authorized by the
+ *     deployer's own signature via createAccountWithSeed)
+ *  4. Returns base64-encoded unsigned txs + slab_address
+ *  5. Mobile signs each tx with MWA (adds the deployer signature) and sends in order
  *  6. Mobile calls POST /api/markets to register the new market in the dashboard DB
  *
- * Security: no account private keys are generated or persisted. The deployer field
- * is validated as a valid Solana pubkey. The endpoint uses an allowlist guard — only
- * NEXT_PUBLIC_DEFAULT_NETWORK (or NEXT_PUBLIC_SOLANA_NETWORK) === "devnet" is
- * accepted; all other values (mainnet, staging, unset) return 403 (GH#1950).
+ * Security: no account private keys are generated or persisted, and the server never
+ * partially-signs a transaction. The deployer field is validated as a valid Solana
+ * pubkey. The endpoint uses an allowlist guard — only NEXT_PUBLIC_DEFAULT_NETWORK (or
+ * NEXT_PUBLIC_SOLANA_NETWORK) === "devnet" is accepted; all other values (mainnet,
+ * staging, unset) return 403 (GH#1950).
  */
 import { randomBytes } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
@@ -26,7 +32,6 @@ import {
   PublicKey,
   SystemProgram,
   Transaction,
-  TransactionInstruction,
   ComputeBudgetProgram,
 } from "@solana/web3.js";
 import {
@@ -37,26 +42,20 @@ import {
 import {
   encodeInitMarket,
   type InitMarketV17Args,
-  encodeDepositCollateral,
-  encodeTopUpInsurance,
-  encodeTopUpBackingBucket,
-  encodePermissionlessCrank,
-  encodeMatcherInitPassive,
+  encodeSetNftProgramId,
+  encodeInitMatcherCtx,
   encodeSetMatcherConfig,
   encodeInitUser,
   ACCOUNTS_INIT_MARKET,
-  ACCOUNTS_DEPOSIT_COLLATERAL,
-  ACCOUNTS_TOPUP_INSURANCE,
-  ACCOUNTS_TOP_UP_BACKING_BUCKET,
-  ACCOUNTS_PERMISSIONLESS_CRANK_BASE,
   ACCOUNTS_SET_MATCHER_CONFIG,
+  ACCOUNTS_INIT_MATCHER_CTX,
   ACCOUNTS_INIT_USER,
   buildAccountMetas,
   WELL_KNOWN,
   buildIx,
   deriveVaultAuthority,
   deriveMatcherDelegate,
-  deriveLpBackingLedger,
+  deriveNftRegistry,
   MATCHER_CONTEXT_LEN,
   MAX_BACKING_BUCKET_EXPIRY_SLOT,
   v17MarketAccountLen,
@@ -65,7 +64,7 @@ import {
 } from "@percolatorct/sdk";
 import { getConfig } from "@/lib/config";
 import { getServerConnection } from "@/lib/server-rpc";
-import { defaultCrankObservations } from "@/lib/v18-wire";
+import { PERCOLATOR_NFT_PROGRAM_ID } from "@/lib/nft-program";
 import { getClientIp } from "@/lib/get-client-ip";
 import {
   checkCreateMarketRateLimit,
@@ -345,25 +344,43 @@ export async function POST(req: NextRequest) {
     };
     const initMarketData = encodeInitMarket(v17InitArgs);
 
-    const initMarketKeys = buildAccountMetas(ACCOUNTS_INIT_MARKET, [
-      deployerPk,
-      slabPk,
-      mintPk,
-      vaultAta,
-      WELL_KNOWN.tokenProgram,
-      WELL_KNOWN.clock,
-      WELL_KNOWN.rent,
-      vaultPda,
-      WELL_KNOWN.systemProgram,
-    ]);
+    // v18 InitMarket takes exactly 3 accounts [admin, slab, mint] — the vault ATA,
+    // token program, clock, rent, vault PDA and system program that v17 required
+    // were dropped (see ACCOUNTS_INIT_MARKET in the v18 SDK, and hooks/useCreateMarket.ts
+    // M1). Passing the old 9-account array tripped the SDK's "Account count
+    // mismatch: expected 3, got 9" guard at step 1 (GH#2542).
+    const initMarketKeys = buildAccountMetas(ACCOUNTS_INIT_MARKET, {
+      admin: deployerPk,
+      slab: slabPk,
+      mint: mintPk,
+    });
     const initMarketIx = buildIx({ programId, keys: initMarketKeys, data: initMarketData });
+
+    // SetNftProgramId (tag 73, marketauth-gated) creates the per-market nft_registry
+    // PDA. Without it, MintPositionNft/BurnPositionNft fail on-chain with Custom(26)
+    // "nft_registry not owned by the percolator program" for every market this route
+    // creates — the web launch wizard runs this in its M1 step (useCreateMarket.ts)
+    // right after InitMarket; this route never did (GH#2542 follow-up). Unconditional
+    // here (unlike the wizard's resume path) because this route always creates a
+    // brand-new market — the registry can never already exist.
+    const [nftRegistryPda] = deriveNftRegistry(programId, slabPk);
+    const setNftProgramIdIx = buildIx({
+      programId,
+      keys: [
+        { pubkey: deployerPk, isSigner: true, isWritable: true },
+        { pubkey: slabPk, isSigner: false, isWritable: false },
+        { pubkey: nftRegistryPda, isSigner: false, isWritable: true },
+        { pubkey: WELL_KNOWN.systemProgram, isSigner: false, isWritable: false },
+      ],
+      data: encodeSetNftProgramId({ nftProgramId: PERCOLATOR_NFT_PROGRAM_ID }),
+    });
 
     const tx0 = new Transaction({ recentBlockhash: blockhash, feePayer: deployerPk });
     // v17 wrapper installs a custom 128KB heap allocator and aborts unless the tx
     // requests the full heap frame. Must be the FIRST instruction. (issue #176)
     tx0.add(ComputeBudgetProgram.requestHeapFrame({ bytes: 131072 }));
     tx0.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }));
-    tx0.add(createSlabIx, createVaultAtaIx, seedTransferIx, initMarketIx);
+    tx0.add(createSlabIx, createVaultAtaIx, seedTransferIx, initMarketIx, setNftProgramIdIx);
 
     // ═══════════════════════════════════════════════════════════════════════════
     // TX 1: LP Portfolio Init (v17 replacement for pre-LP crank)
@@ -387,11 +404,11 @@ export async function POST(req: NextRequest) {
     });
     const initPortfolioIx = buildIx({
       programId,
-      keys: buildAccountMetas(ACCOUNTS_INIT_USER, [
-        deployerPk,
-        slabPk,
-        lpPortfolioPk,
-      ]),
+      keys: buildAccountMetas(ACCOUNTS_INIT_USER, {
+        owner: deployerPk,
+        market: slabPk,
+        portfolio: lpPortfolioPk,
+      }),
       data: encodeInitUser({}),
     });
 
@@ -403,10 +420,11 @@ export async function POST(req: NextRequest) {
     tx1.add(createPortfolioIx, initPortfolioIx);
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // TX 2: createAccount(matcherCtx) + matcher init passive + SetMatcherConfig
+    // TX 2: createAccount(matcherCtx) + SetMatcherConfig + InitMatcherCtx
     // v17: encodeInitLP (tag 2) is REMOVED — throws removedInstruction().
-    // Replacement: create matcher context account + call matcher program (InitPassive) +
-    // call wrapper SetMatcherConfig (tag 68) on the LP portfolio created in TX1.
+    // Replacement: create matcher context account + call wrapper SetMatcherConfig
+    // (tag 68) on the LP portfolio created in TX1 + call wrapper InitMatcherCtx
+    // (tag 83), which CPIs into the matcher program itself (see the note below).
     // Signed by: deployer only
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -425,31 +443,20 @@ export async function POST(req: NextRequest) {
       programId: matcherProgramId,
     });
 
-    // Call matcher program: [delegate(ro), ctx(w)] + encodeMatcherInitPassive
-    const matcherInitIx = new TransactionInstruction({
-      programId: matcherProgramId,
-      keys: [
-        { pubkey: delegatePk, isSigner: false, isWritable: false },
-        { pubkey: matcherCtxPk, isSigner: false, isWritable: true },
-      ],
-      // Bounded fill, sized to LP capital — NOT u128::MAX (see derivedParams above).
-      // v18: MatcherInitPassive binds the LP account id (must be non-zero). On this
-      // brand-new market the LP is the first portfolio, so its portfolioId is 1.
-      data: Buffer.from(encodeMatcherInitPassive({ maxFillAbs: derivedParams.maxFillAbs, lpAccountId: 1n })),
-    });
-
-    // SetMatcherConfig (tag 68) on the LP portfolio
-    // Accounts: [lpOwner(s), market(ro), lpPortfolio(w), matcherProg(ro), matcherCtx(ro), delegate(ro)]
+    // SetMatcherConfig (tag 68) on the LP portfolio. MUST run before InitMatcherCtx
+    // below — InitMatcherCtx verifies the (matcherProg, matcherCtx, matcherDelegate)
+    // triple it's given against what SetMatcherConfig stored (see IX_TAG.InitMatcherCtx
+    // in the SDK). Named-map form, matching hooks/useCreateMarket.ts M2.
     const setMatcherConfigIx = buildIx({
       programId,
-      keys: buildAccountMetas(ACCOUNTS_SET_MATCHER_CONFIG, [
-        deployerPk,
-        slabPk,
-        lpPortfolioPk,
-        matcherProgramId,
-        matcherCtxPk,
-        delegatePk,
-      ]),
+      keys: buildAccountMetas(ACCOUNTS_SET_MATCHER_CONFIG, {
+        lpOwner: deployerPk,
+        market: slabPk,
+        lpPortfolio: lpPortfolioPk,
+        matcherProg: matcherProgramId,
+        matcherCtx: matcherCtxPk,
+        matcherDelegate: delegatePk,
+      }),
       // v18 fresh-market: LP is the first portfolio (portfolioId 1), matcher-seq 0
       // (InitUser just ran in TX1). assetGenerationFrontier = maxPortfolioAssets(14)
       // + 1 = 15; tradeFeeCapBps 10000 = no practical cap; expirySlot born-immortal.
@@ -463,13 +470,47 @@ export async function POST(req: NextRequest) {
       }),
     });
 
+    // InitMatcherCtx (tag 83) bootstraps the matcher context by CPIing into the
+    // matcher program, signing as the matcherDelegate PDA via invoke_signed — that's
+    // the ONLY way to satisfy the matcher program's lp_pda.is_signer check, since a
+    // PDA can never sign a client-submitted instruction directly. This route
+    // previously built a raw TransactionInstruction targeting the matcher program
+    // (matcherProgramId) with delegatePk as a non-signer key, which cannot pass
+    // that check on-chain — replaced with the wrapper CPI, matching
+    // hooks/useCreateMarket.ts M2's initMatcherCtxIx (GH#2542 follow-up).
+    const initMatcherCtxIx = buildIx({
+      programId,
+      keys: buildAccountMetas(ACCOUNTS_INIT_MATCHER_CTX, {
+        lpOwner: deployerPk,
+        market: slabPk,
+        lpPortfolio: lpPortfolioPk,
+        matcherCtx: matcherCtxPk,
+        matcherProg: matcherProgramId,
+        matcherDelegate: delegatePk,
+      }),
+      // Bounded fill/inventory, sized to LP capital — NOT u128::MAX (see derivedParams
+      // above; this replaced the unlimited-LP config that drained devnet-1 markets).
+      data: encodeInitMatcherCtx({
+        kind: 0,
+        tradingFeeBps: 30,
+        baseSpreadBps: 50,
+        maxTotalBps: 200,
+        impactKBps: 0,
+        liquidityNotionalE6: 0n,
+        maxFillAbs: derivedParams.maxFillAbs,
+        maxInventoryAbs: derivedParams.maxInventoryAbs,
+        feeToInsuranceBps: 0,
+        skewSpreadMultBps: derivedParams.skewSpreadMultBps,
+      }),
+    });
+
     const tx2 = new Transaction({ recentBlockhash: blockhash, feePayer: deployerPk });
     // Contains SetMatcherConfig (wrapper tag 68). The v17 wrapper installs a custom
     // 128KB heap allocator and aborts unless the tx requests the full heap frame.
     // Must be the FIRST instruction. (issue #176)
     tx2.add(ComputeBudgetProgram.requestHeapFrame({ bytes: 131072 }));
     tx2.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }));
-    tx2.add(createCtxIx, matcherInitIx, setMatcherConfigIx);
+    tx2.add(createCtxIx, setMatcherConfigIx, initMatcherCtxIx);
 
     // ═══════════════════════════════════════════════════════════════════════════
     // TX 3: DepositCollateral + TopUpBackingBucket x2 + TopUpInsurance + Crank
