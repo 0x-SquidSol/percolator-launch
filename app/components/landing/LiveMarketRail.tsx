@@ -154,6 +154,38 @@ const RailRow: FC<RailRowProps> = ({
 };
 
 /**
+ * Column header row. Without it the three stat columns read as bare, unlabeled
+ * numbers — "10x" looks like an ambiguous badge, a lone "$3.3M" on one row
+ * looks like an error rather than "the only market with 24h volume so far", and
+ * nothing names the price. Mirrors RailRow's flex layout EXACTLY (same gap, the
+ * 24px logo-width lead spacer, per-column minWidths, and the sm:/md: reveal
+ * breakpoints) so each label sits above its column and appears/disappears with
+ * it. Non-interactive and aria-hidden — screen readers get each value from the
+ * row links themselves; this is a visual key only.
+ */
+const RailHeader: FC = () => (
+  <div
+    aria-hidden="true"
+    className="flex items-center gap-3 border-b border-[var(--border)] bg-[var(--accent)]/[0.02] px-4 py-2 font-mono text-[10px] uppercase tracking-[0.1em] text-[var(--text-dim)] sm:gap-4"
+  >
+    {/* lead spacer = MarketLogo size "sm" (24px) so "Market" aligns to the symbol */}
+    <div className="shrink-0" style={{ width: 24 }} />
+    <div className="min-w-0 flex-1">Market</div>
+    <div className="hidden shrink-0 text-right sm:block" style={{ minWidth: 28 }}>
+      Lev
+    </div>
+    <div className="hidden shrink-0 text-right md:block" style={{ minWidth: 68 }}>
+      24h Vol
+    </div>
+    <div className="shrink-0 text-right" style={{ minWidth: 84 }}>
+      Price
+    </div>
+    {/* trailing spacer = the row's hover arrow (h-3.5 w-3.5, sm+ only) */}
+    <div className="hidden h-3.5 w-3.5 shrink-0 sm:block" />
+  </div>
+);
+
+/**
  * The landing page's live market rail — real devnet markets, real ticking
  * prices, zero decoration. Row identity/order is fixed (RAIL_SLABS) so
  * arriving stats/ticks never reflow the list; only price text + color update.
@@ -169,6 +201,7 @@ export function LiveMarketRail() {
 
   return (
     <GlassCard padding="none" elevation="md" className="overflow-hidden" hover={false}>
+      <RailHeader />
       {RAIL_SLABS.map((slab, i) => {
         const meta = PLAYGROUND_SLAB_META[slab];
         const stats = statsMap.get(slab);
