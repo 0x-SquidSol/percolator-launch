@@ -18,12 +18,6 @@ interface LaunchSuccessProps {
   mainnetCA?: string;
   /** Devnet mint address (different from mainnet CA) */
   devnetMint?: string | null;
-  /** Number of tokens airdropped */
-  devnetAirdropAmount?: number | null;
-  /** Token symbol for airdrop */
-  devnetAirdropSymbol?: string | null;
-  /** Error from devnet mint attempt */
-  devnetMintError?: string | null;
   /**
    * GH#1761: Insurance LP Mint (step 5) failed but market is live.
    * Shows a soft warning on the success screen; does not block trading.
@@ -61,9 +55,6 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
   onDeployAnother,
   mainnetCA,
   devnetMint,
-  devnetAirdropAmount,
-  devnetAirdropSymbol,
-  devnetMintError,
   insuranceMintFailed,
   backingSeedFailed,
   keeperDelegated,
@@ -90,10 +81,11 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
    *
    * GH#2610 (defect 3): GH#1266 made this ALWAYS navigate regardless of outcome,
    * so a genuine claim failure's message (`mintError`, rendered below) never had a
-   * chance to be seen — the component unmounted on the very next line. Now: a 429
-   * still navigates (the wallet either already has funds, or can get them from the
-   * faucet on the trade page either way), but a real failure stays here and shows
-   * the actual reason, with an explicit way to continue anyway instead of a dead end.
+   * chance to be seen — the component unmounted on the very next line. Now only a
+   * SUCCESS or an already-claimed 429 navigates; every other outcome stays here and
+   * shows the actual reason, with an explicit way to continue anyway instead of a
+   * dead end. (This used to read "a 429 still navigates" — too broad; see the 429
+   * note inside the handler.)
    */
   const handleMintAndTrade = useCallback(async () => {
     if (!publicKey || !devnetMint || mintLoading) return;
@@ -108,11 +100,39 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
           walletAddress: publicKey.toBase58(),
         }),
       });
-      if (resp.ok || resp.status === 429) {
+      if (resp.ok) {
         router.push(`/trade/${marketAddress}`);
         return;
       }
-      const d = await resp.json().catch(() => ({}));
+      const d = (await resp.json().catch(() => ({}))) as { error?: string; nextClaimAt?: string };
+      // A 429 can arrive from three places, and only ONE means a claim was
+      // actually made:
+      //
+      //   - the route's daily claim gate — 429 WITH `nextClaimAt`, so the gate
+      //     has a claim on record for this wallet;
+      //   - the route's per-IP fund limiter — Retry-After, no `nextClaimAt`,
+      //     mints NOTHING;
+      //   - middleware.ts's global per-IP API limiter, which 429s any /api/*
+      //     path before this route runs at all. No `nextClaimAt` either, and it
+      //     is arguably the 429 a real creator is most likely to hit.
+      //
+      // `resp.status === 429` alone treated all three as success and sent a
+      // rate-limited creator to the trade page with no collateral and no
+      // message. Discriminating on `nextClaimAt` classifies all three correctly
+      // and fails closed for any 429 we have not anticipated — including a
+      // non-JSON one from a CDN or WAF, where the parse falls back to `{}`.
+      //
+      // Note what the pass actually means: "the gate says this wallet already
+      // claimed", NOT "the wallet holds tokens". A claim can be on record while
+      // the balance is zero — tokens spent, or a claim leaked by a failed mint
+      // (the GH#2597 class). That was equally true before this change, and
+      // navigating on is still right: the trade page is where they would go to
+      // check a balance anyway.
+      const alreadyHasTokens = resp.status === 429 && typeof d.nextClaimAt === "string";
+      if (alreadyHasTokens) {
+        router.push(`/trade/${marketAddress}`);
+        return;
+      }
       setMintLoading(false);
       setMintError(d.error ?? `Sim-USDC claim failed (HTTP ${resp.status})`);
     } catch (e) {
@@ -266,22 +286,27 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
               that fired the instant the market landed (see useCreateMarket.ts).
               That call is gone — it duplicated the "GET SIM-USDC & TRADE" button
               below, and every one of its failure modes (500, 429, stuck spinner)
-              was unreportable here. `devnetAirdropAmount`/`devnetMintError` are
-              now only ever set by a result this component itself produced, so
-              there is nothing to show until there's an actual outcome — no more
-              permanent "in progress" spinner (defect 2). When there IS an error,
-              show the real reason instead of a fixed sentence (defect 1). */}
-          {devnetAirdropAmount && devnetAirdropSymbol ? (
-            <p className="text-[11px] text-[var(--text)]">
-              <span className="text-[var(--long)]">✓</span>{" "}
-              Sent <strong>{devnetAirdropAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })} {devnetAirdropSymbol}</strong>{" "}
-              <span className="text-[var(--text-secondary)]">of Sim-USDC to your wallet</span>
-            </p>
-          ) : devnetMintError ? (
-            <p className="text-[11px] text-[var(--short)]">
-              ✗ Sim-USDC claim failed: {devnetMintError}
-            </p>
-          ) : null}
+              was unreportable here.
+
+              287f0c7 kept a two-way branch here on devnetAirdropAmount /
+              devnetMintError and fixed the "show the real reason" defect inside
+              it. But removing the automatic claim removed the only writer of
+              those props: the hook set them to null at its two initial-state
+              sites and nowhere else, and this component has no local state for
+              them — they arrived from CreateMarketWizard as `createState.*`.
+              Both arms were therefore unreachable, so the reason-printing fix
+              was dead code and this panel rendered NOTHING above the disclosure:
+              a creator saw no statement of what Sim-USDC is or where to get it.
+              The props are deleted rather than left permanently null, so the
+              branch cannot come back by a caller passing them again.
+
+              The claim's outcome belongs to the button that makes it, which
+              reports it through this component's own `mintError` state below. */}
+          <p className="text-[11px] text-[var(--text-secondary)]">
+            <strong className="text-[var(--text)]">Sim-USDC</strong> is your collateral —
+            claim it any time from the{" "}
+            <Link href="/faucet" className="text-[var(--accent)] underline underline-offset-2">faucet</Link>.
+          </p>
 
           <details className="mt-3 group">
             <summary className="cursor-pointer list-none text-[10px] uppercase tracking-[0.12em] text-[var(--text-dim)] transition-colors hover:text-[var(--text-secondary)]">

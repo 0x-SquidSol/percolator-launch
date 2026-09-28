@@ -346,12 +346,6 @@ export interface CreateMarketState {
   loading: boolean;
   /** Devnet mint address (different from mainnet CA) */
   devnetMint: string | null;
-  /** Number of tokens airdropped to creator */
-  devnetAirdropAmount: number | null;
-  /** Token symbol for devnet airdrop */
-  devnetAirdropSymbol: string | null;
-  /** Error from devnet mint attempt */
-  devnetMintError: string | null;
   /**
    * GH#1761 (legacy): previously set to true when the old "Insurance LP Mint" step
    * failed after exhausting retries. That instruction was removed (see the Step 4/5
@@ -1793,9 +1787,6 @@ export function useCreateMarket() {
     error: null,
     loading: false,
     devnetMint: null,
-    devnetAirdropAmount: null,
-    devnetAirdropSymbol: null,
-    devnetMintError: null,
     insuranceMintFailed: false,
     backingSeedFailed: false,
     keeperDelegated: false,
@@ -3781,9 +3772,6 @@ export function useCreateMarket() {
       loading: false,
       batchFallbackReason: null,
       devnetMint: null,
-      devnetAirdropAmount: null,
-      devnetAirdropSymbol: null,
-      devnetMintError: null,
       insuranceMintFailed: false,
       backingSeedFailed: false,
       keeperDelegated: false,
