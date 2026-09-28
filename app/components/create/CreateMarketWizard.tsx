@@ -475,6 +475,14 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
     priceProblem != null && !priceProblem.ok && priceProblem.reason === "below-minimum"
       ? priceProblem
       : null;
+  // The pricing helper also reports `above-maximum` (> $1,000,000/token), but the
+  // disabled-reason cascade only surfaced below-minimum — so an above-maximum
+  // price fell through to the literal feed-wait fallback, a message that can
+  // never clear because no feed update makes such a price representable (#2606).
+  const priceAboveMaximum =
+    priceProblem != null && !priceProblem.ok && priceProblem.reason === "above-maximum"
+      ? priceProblem
+      : null;
 
   /**
    * Can the keeper actually PRICE this market once it exists?
@@ -582,7 +590,9 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
             : !oraclePriceValid
               ? (priceBelowMinimum
                   ? `${wizard.tokenMeta?.symbol ?? "This token"} trades at ${formatMarkPrice(priceBelowMinimum.price)}, below the $0.000001 minimum a market can price`
-                  : "Waiting on price feed")
+                  : priceAboveMaximum
+                    ? `${wizard.tokenMeta?.symbol ?? "This token"} trades at ${formatMarkPrice(priceAboveMaximum.price)}, above the $1,000,000 maximum a market can price`
+                    : "Waiting on price feed")
               : !mockBypass && !hasSufficientSol
                 ? `Need ~${requiredSol.toFixed(3)} SOL`
                 : devnetFaucetCeilingExceeded
