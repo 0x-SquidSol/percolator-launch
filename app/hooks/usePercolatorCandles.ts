@@ -263,7 +263,14 @@ export function usePercolatorCandles(
         const size = Math.abs(Number(msg.size));
         const ts = Math.floor((msg.timestamp ?? Date.now()) / 1000);
         const bucket = Math.floor(ts / bucketSec) * bucketSec;
-        if (!Number.isFinite(price) || !Number.isFinite(size)) return;
+        // A liquidation marker carries a null/0 price (the indexer contract:
+        // insertTradeRow writes NULL price for is_liquidation markers). Number()
+        // coerces that to a finite 0, which would otherwise pass the finite check
+        // and append an o=h=l=c=0 bar that renders as a -100% drop to $0. Reject a
+        // non-positive price here — the live twin of the server-side bucketCandles
+        // guard (#2543/#2604). Volume is dropped with the row (we return before
+        // accumulating it), so a priceless marker can't inflate the bucket either.
+        if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(size)) return;
 
         // A trade just happened, so "this market has no candles" is now false
         // no matter how recently we recorded it. Without this, a user who
