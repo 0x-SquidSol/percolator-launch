@@ -21,7 +21,8 @@ const SRC = fs.readFileSync(
 
 describe("Stake Insurance Pools — search + capped scroll", () => {
   it("orders/filters the list through orderStakePools(pools, query, …)", () => {
-    expect(SRC).toContain('import { orderStakePools } from "@/lib/stake-pool-order"');
+    expect(SRC).toContain('import { orderStakePools, stakedOrderValue } from "@/lib/stake-pool-order"');
+    expect(SRC).toMatch(/stakedOrderValue\(pos\.lpBalanceRaw, pos\.estimatedValue\)/);
     expect(SRC).toMatch(/orderStakePools\(\s*pools\s*,\s*query\s*,/);
     // the list renders the derived array, not the raw prop
     expect(SRC).toContain("visiblePools.map((pool) => (");

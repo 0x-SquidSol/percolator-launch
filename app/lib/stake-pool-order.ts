@@ -48,3 +48,16 @@ export function orderStakePools<T extends StakeOrderable>(
     })
     .map(({ p }) => p);
 }
+
+/**
+ * The sort weight for a wallet's position in a pool. "Staked" is defined by
+ * holding LP tokens (`lpBalanceRaw > 0`), NOT by `estimatedValue > 0`: the
+ * estimate is `(lp / supply) * tvl` and is 0 for an empty/drained pool or a pool
+ * with no supply yet, where the wallet still holds LP and must still float to the
+ * top. Such a position gets the smallest positive weight (ranked last among
+ * staked pools, still above every unstaked one).
+ */
+export function stakedOrderValue(lpBalanceRaw: bigint, estimatedValue: number): number {
+  if (lpBalanceRaw <= 0n) return 0;
+  return Number.isFinite(estimatedValue) && estimatedValue > 0 ? estimatedValue : Number.MIN_VALUE;
+}

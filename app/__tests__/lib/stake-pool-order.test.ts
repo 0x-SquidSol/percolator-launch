@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { orderStakePools, type StakeOrderable } from "../../lib/stake-pool-order";
+import { orderStakePools, stakedOrderValue, type StakeOrderable } from "../../lib/stake-pool-order";
 
 const P = (id: string, symbol: string, name = symbol): StakeOrderable => ({ id, symbol, name });
 
@@ -70,5 +70,24 @@ describe("orderStakePools", () => {
     const before = POOLS.map((p) => p.id);
     orderStakePools(POOLS, "", staked);
     expect(POOLS.map((p) => p.id)).toEqual(before);
+  });
+});
+
+describe("stakedOrderValue (GH#2646 follow-up)", () => {
+  it("holding LP with a zero estimate (empty/drained pool) still counts as staked", () => {
+    expect(stakedOrderValue(5n, 0)).toBeGreaterThan(0);
+    expect(stakedOrderValue(5n, NaN)).toBeGreaterThan(0);
+  });
+  it("no LP is never staked, whatever the estimate says", () => {
+    expect(stakedOrderValue(0n, 123)).toBe(0);
+  });
+  it("floats an empty-pool holding above unstaked pools, below valued stakes", () => {
+    const pools = [
+      { id: "a", symbol: "A", name: "A" },
+      { id: "b", symbol: "B", name: "B" },
+      { id: "c", symbol: "C", name: "C" },
+    ];
+    const w: Record<string, number> = { a: 0, b: stakedOrderValue(3n, 0), c: stakedOrderValue(3n, 50) };
+    expect(orderStakePools(pools, "", (id) => w[id]!).map((p) => p.id)).toEqual(["c", "b", "a"]);
   });
 });

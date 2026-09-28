@@ -14,7 +14,7 @@ import { unpackAccount, getMint } from "@solana/spl-token";
 import { useStakeDepositByPool } from "@/hooks/useStakeDepositByPool";
 import { useStakeWithdrawByPool } from "@/hooks/useStakeWithdrawByPool";
 import { parseHumanAmount, formatHumanAmount } from "@/lib/parseAmount";
-import { orderStakePools } from "@/lib/stake-pool-order";
+import { orderStakePools, stakedOrderValue } from "@/lib/stake-pool-order";
 import { subscribeSlab, getSnapshot } from "@/lib/priceStore/priceStore";
 import { formatMarkPrice } from "@/lib/format";
 import { ProgressBar } from "@/components/ui/ProgressBar";
@@ -1137,7 +1137,7 @@ function PoolTable({
   const [query, setQuery] = useState("");
   const visiblePools = orderStakePools(pools, query, (id) => {
     const pos = positionByPoolId.get(id);
-    return pos && pos.lpBalanceRaw > 0n ? pos.estimatedValue : 0;
+    return pos ? stakedOrderValue(pos.lpBalanceRaw, pos.estimatedValue) : 0;
   });
 
   const header = (
