@@ -104,4 +104,14 @@ describe("StepControlRoom — creator-settable contract", () => {
     expect(body).toMatch(/liquidity/i);
     expect(body).toMatch(/insurance/i);
   });
+
+  it("GH#2622: states the rent-reclaim rule up front, before launch", () => {
+    // Issue #2622's "set expectations up front" ask: a creator should learn
+    // the reclaim window BEFORE they hit RecoverSolBanner's gated RECLAIM
+    // button after already getting stuck, not only after the fact.
+    renderStep({ rentSol: 0.185 });
+    const body = document.body.textContent ?? "";
+    expect(body).toMatch(/reclaimable only if you stop before any deposit/i);
+    expect(body).toMatch(/commits this rent permanently/i);
+  });
 });

@@ -191,6 +191,19 @@ export const StepControlRoom: FC<StepControlRoomProps> = ({
           <Readout k="Start price" v={startPrice} />
           <Readout k="Slab" v={`${slabBytes.toLocaleString()} B · max capacity`} />
           <Readout k="Rent" v={rentSol === null ? "—" : `${rentSol.toFixed(3)} SOL`} />
+          {/* GH#2622: set expectations UP FRONT, before launch — not only after
+              a creator gets stuck (RecoverSolBanner's gated RECLAIM handles that
+              case). Rent is reclaimable only if setup stops before any deposit
+              or account is created; completing the market commits it
+              permanently (marketauth rotates to a keyless PDA — see the
+              CloseSlab admin-signer requirement in useCloseMarket.ts). */}
+          {/* --text-muted, NOT --text-dim: globals.css measures dim at 2.55:1
+              against --bg (fails WCAG AA); muted clears it at 4.62:1. See the
+              identical note in LaunchProgress.tsx's BatchFallbackNote. */}
+          <p className="pt-1 text-[9px] leading-relaxed text-[var(--text-muted)]">
+            Reclaimable only if you stop before any deposit is made — completing the
+            market commits this rent permanently.
+          </p>
           {/* NOT "same on every market": the fee is derived from the token's
               liquidity tier in useQuickLaunch (20 / 10 / 5 bps) and that value
               is what reaches the chain, so this line used to render e.g.
