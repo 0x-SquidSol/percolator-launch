@@ -142,6 +142,15 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 export async function POST(req: NextRequest) {
   let releaseFallbackClaimOnError: (() => Promise<void>) | null = null;
+  /**
+   * Gives back the Supabase faucet claim reserved by tryFaucetGate (GH#2597).
+   *
+   * Declared out here, beside its Blob-claim counterpart, so the OUTER catch can
+   * reach it. An earlier version of this fix declared it inside the try, which
+   * meant the outer catch could not see it and every `throw` between arming and
+   * the mint still leaked the claim — while the comment claimed otherwise.
+   */
+  let releaseGateClaimOnExit: (() => Promise<void>) | null = null;
 
   try {
     // Allow if: explicitly on devnet network OR the mint is a mirror mint (DB-gated)
@@ -407,6 +416,72 @@ export async function POST(req: NextRequest) {
       const { limited, nextClaimAt } = await peekClaim(rateKey);
       gate = { allowed: !limited, nextClaimAt };
     }
+    // GH#2597: the Supabase gate is check-AND-reserve, so from here the claim is
+    // already spent. Three server-misconfiguration paths below used to `return` a
+    // 500 without giving it back, so a deployment problem cost the caller their
+    // 24h window and funded nothing — and because they `return` rather than throw,
+    // the outer catch that releases the Blob fallback claim never ran either.
+    //
+    // Armed here, disarmed only once a mint has CONFIRMED, and called from the
+    // outer catch as well, so the DEFAULT is "release unless the claim was spent"
+    // rather than "leak unless someone remembered". Releasing at each early return
+    // was the alternative, and it is the shape that already failed once: #2521
+    // fixed this on /api/auto-fund and its own text assumed the siblings were clean.
+    //
+    // NOTE the disarm is on CONFIRMATION, not on broadcast: sendAndConfirmServerTx
+    // throws if it has not seen `confirmed` within 45s while the blockhash stays
+    // valid for ~60-90s, so a tx can land after that throw. The release below is
+    // therefore still reachable for a mint that ultimately succeeds. That is
+    // pre-existing behaviour and is filed separately rather than papered over.
+    //
+    // Best-effort by construction: a Supabase hiccup during cleanup must not turn
+    // a 500 into a worse one.
+    // `gate.claimId != null` is the term doing the work here, NOT `supabaseForGate`:
+    // that is assigned BEFORE the throwing tryFaucetGate call, so in fallback mode
+    // it is usually non-null. Fallback mode reassigns `gate` from peekClaim, which
+    // reserves nothing and carries no claimId, so the closure correctly stays null.
+    // Simplifying this condition to `gate.allowed && supabaseForGate` would arm a
+    // closure that deletes by `id = undefined`.
+    // A reserved claim with NO id is unreleasable, and silent. tryFaucetGate
+    // returns `claimId: data?.id`, so an INSERT that commits while `.select()`
+    // returns no representation yields allowed:true with claimId undefined — the
+    // row exists, the claim is spent, and nothing can give it back. The closure
+    // below cannot arm, so every path leaks exactly as it did before this fix.
+    // Cannot be repaired from here (there is no handle), so make it visible
+    // instead of letting it look like a working release.
+    if (gate.allowed && gate.claimId == null && !usingFallbackGate) {
+      console.warn(
+        "[devnet-pre-fund] faucet claim reserved without an id — it cannot be released if this request fails",
+      );
+      Sentry.captureMessage("devnet-pre-fund: faucet claim reserved with no claimId", {
+        level: "warning",
+        tags: { endpoint: "/api/devnet-pre-fund" },
+      });
+    }
+
+    if (gate.allowed && supabaseForGate && gate.claimId != null) {
+      const claimId = gate.claimId;
+      const sb = supabaseForGate;
+      // Self-disarming, which is what makes calling it from the outer catch safe:
+      // at most one delete per request however many exits reach it.
+      let outstanding = true;
+      releaseGateClaimOnExit = async () => {
+        if (!outstanding) return;
+        outstanding = false;
+        try {
+          const { releaseFaucetClaim } = await import("@/lib/faucet-rate-gate");
+          // Bounded: supabase-js uses fetch with no default timeout, and the
+          // try/catch below catches rejections, not hangs. Without this a Supabase
+          // incident turns an instant, actionable 500 into a request that holds the
+          // function until the platform kills it — and cases 1 and 2 are
+          // deployment-wide, so that would be every caller.
+          await withTimeout(releaseFaucetClaim(sb, claimId), 3_000);
+        } catch (releaseErr) {
+          console.warn("[devnet-pre-fund] failed to release faucet claim:", releaseErr);
+        }
+      };
+    }
+
     if (!gate.allowed) {
       return NextResponse.json(
         { error: "Already pre-funded recently", nextClaimAt: gate.nextClaimAt },
@@ -417,6 +492,7 @@ export async function POST(req: NextRequest) {
     // Load mint authority
     const mintAuthKeyJson = process.env.DEVNET_MINT_AUTHORITY_KEYPAIR;
     if (!mintAuthKeyJson) {
+      await releaseGateClaimOnExit?.();
       return NextResponse.json(
         { error: "Server not configured for devnet minting (DEVNET_MINT_AUTHORITY_KEYPAIR missing)" },
         { status: 500 },
@@ -428,6 +504,7 @@ export async function POST(req: NextRequest) {
         Uint8Array.from(JSON.parse(mintAuthKeyJson)),
       );
     } catch {
+      await releaseGateClaimOnExit?.();
       return NextResponse.json(
         { error: "Server keypair configuration is invalid" },
         { status: 500 },
@@ -451,6 +528,7 @@ export async function POST(req: NextRequest) {
           `Mint authority mismatch for ${mintAddress}: configured=${configuredAuth}… on-chain=${onChainAuth}…`,
           { level: "error", tags: { endpoint: "/api/devnet-pre-fund" } },
         );
+        await releaseGateClaimOnExit?.();
         return NextResponse.json(
           {
             error: "Mint authority mismatch — server keypair is not the authority for this mint. Contact team.",
@@ -521,10 +599,9 @@ export async function POST(req: NextRequest) {
       sig = await sendAndConfirmServerTx(connection, tx, [mintAuthority], { timeoutMs: 45_000 });
     } catch (txErr) {
       // TX failed — release DB gate if available.
-      if (supabaseForGate && gate.claimId != null) {
+      if (releaseGateClaimOnExit) {
         try {
-          const { releaseFaucetClaim } = await import("@/lib/faucet-rate-gate");
-          await releaseFaucetClaim(supabaseForGate, gate.claimId);
+          await releaseGateClaimOnExit();
         } catch {
           /* best-effort */
         }
@@ -549,6 +626,13 @@ export async function POST(req: NextRequest) {
     // exactly what a genuine successful mint should do. Nothing further to write:
     // reserveClaim() above already durably persisted the claim.
     reservedFallbackClaim = false;
+    // GH#2597: the claim was SPENT on a mint that CONFIRMED, so it must not be
+    // given back. Without this, a throw anywhere after here — building the
+    // response, or any code added later — would reach the outer catch and release
+    // a claim that was legitimately used, handing back a 24h window that had been
+    // consumed. That is a rate-limit bypass, i.e. worse than the leak this change
+    // fixes, so it is the one disarm that has to exist.
+    releaseGateClaimOnExit = null;
 
     return NextResponse.json({
       status: "funded",
@@ -559,6 +643,13 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     try {
       await releaseFallbackClaimOnError?.();
+    } catch {
+      /* best-effort */
+    }
+    // GH#2597: any throw between arming and a landed mint also gives the claim
+    // back. Self-disarming, so this is a no-op when an early return already did.
+    try {
+      await releaseGateClaimOnExit?.();
     } catch {
       /* best-effort */
     }
