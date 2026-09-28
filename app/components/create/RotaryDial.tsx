@@ -1,6 +1,6 @@
 "use client";
 
-import { FC, useCallback, useEffect, useRef, useState } from "react";
+import { FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export interface RotaryDialProps {
   label: string;
@@ -23,8 +23,27 @@ const R = 34;
 /** Sweep runs from 7:30 to 4:30 — a real instrument's dead-zone at the bottom. */
 const A0 = Math.PI * 0.75;
 const A1 = Math.PI * 2.25;
-/** Vertical pixels of drag for a full min→max sweep. Tuned to feel geared, not twitchy. */
-const DRAG_RANGE_PX = 190;
+/**
+ * Vertical drag travel, budgeted per DETENT rather than per dial.
+ *
+ * This used to be a flat 190px for a full min→max sweep whatever the range,
+ * which made the feel a property of the CALLER rather than of the control: the
+ * notches are supplied by whoever renders the dial, so px-per-detent came out
+ * as 190/detents. The three dials in the Control Room sit in one grid and
+ * answered the same gesture ~6x differently, and Liquidity — 99 detents over
+ * 100..10,000 — moved a full 100 sim-USDC per pixel of mouse travel, which is
+ * below the noise floor of an ordinary drag.
+ *
+ * It also meant widening a range silently degraded its own dial: GH#2621 took
+ * Leverage from 2..6.5 to 2..10 and cut its travel from 11.0 to 6.0 px/detent.
+ *
+ * The floor keeps a coarse dial from becoming a twitch, and the ceiling keeps a
+ * 99-detent one reachable in a single gesture — at the cost of a finer feel
+ * there, which is what the arrow keys and scroll wheel are for.
+ */
+const PX_PER_DETENT = 20;
+const DRAG_RANGE_MIN_PX = 190;
+const DRAG_RANGE_MAX_PX = 600;
 
 /**
  * A machined rotary dial — the Control Room's primary control.
@@ -66,6 +85,19 @@ export const RotaryDial: FC<RotaryDialProps> = ({
     (v: number) => Math.min(max, Math.max(min, Math.round(v / step) * step)),
     [min, max, step],
   );
+
+  /**
+   * Pixels of drag for a full min→max sweep, budgeted per detent.
+   *
+   * Guards a zero/negative/non-finite step, which would make `detents` Infinity
+   * or NaN and take the drag with it. The dial is a controlled component and
+   * these come from props, so it cannot assume they are sane.
+   */
+  const dragRangePx = useMemo(() => {
+    const detents = step > 0 ? (max - min) / step : 0;
+    if (!Number.isFinite(detents) || detents <= 0) return DRAG_RANGE_MIN_PX;
+    return Math.min(DRAG_RANGE_MAX_PX, Math.max(DRAG_RANGE_MIN_PX, PX_PER_DETENT * detents));
+  }, [min, max, step]);
 
   // ── power-on self-test: sweep min → max → settle on value ──────────────
   useEffect(() => {
@@ -238,13 +270,26 @@ export const RotaryDial: FC<RotaryDialProps> = ({
       const y = "touches" in e ? e.touches[0]!.clientY : (e as MouseEvent).clientY;
       const dy = lastY.current - y; // up = increase, like a real dial
       lastY.current = y;
-      residue.current += (dy / DRAG_RANGE_PX) * (max - min);
+      residue.current += (dy / dragRangePx) * (max - min);
       const next = value + residue.current;
       const snapped = clamp(next);
       if (snapped !== value) {
-        residue.current = 0;
+        // Carry the remainder rather than discarding it. `clamp` snaps to
+        // NEAREST, so the value leaves `value` once the residue reaches
+        // step/2 — but it moves a whole step. Zeroing here threw away the
+        // half-step that had not been paid for, so every detent cost half
+        // what the pixel mapping intends and a full sweep took half the
+        // travel this control documents.
+        residue.current -= snapped - value;
         commit(snapped);
       }
+      // Whatever is left is a rounding remainder, which is bounded by step/2
+      // by definition — EXCEPT at the stops, where `clamp` cannot move the
+      // value and the residue would otherwise grow without limit. Pushing 200px
+      // past max then reversing meant 206px of dead travel before the dial
+      // responded; a hard shove left it unresponsive entirely.
+      const slack = step / 2;
+      residue.current = Math.max(-slack, Math.min(slack, residue.current));
     };
     const up = () => {
       dragging.current = false;
@@ -261,7 +306,7 @@ export const RotaryDial: FC<RotaryDialProps> = ({
       window.removeEventListener("mouseup", up);
       window.removeEventListener("touchend", up);
     };
-  }, [value, min, max, clamp, commit, disabled]);
+  }, [value, min, max, step, clamp, commit, disabled, dragRangePx]);
 
   const start = (clientY: number) => {
     if (disabled) return;
