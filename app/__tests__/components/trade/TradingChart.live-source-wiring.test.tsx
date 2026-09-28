@@ -26,6 +26,9 @@ const harness = vi.hoisted(() => {
 
   const timeScale = {
     fitContent: vi.fn(),
+    // #2581: the range-change subscription used for scroll-back paging.
+    subscribeVisibleLogicalRangeChange: vi.fn(),
+    unsubscribeVisibleLogicalRangeChange: vi.fn(),
   };
 
   const pane = {
@@ -161,6 +164,10 @@ vi.mock('@/hooks/useTokenChart', () => ({
     candles: harness.sources.dexCandles,
     status: harness.sources.dexStatus,
     poolAddress: null,
+    // #2581
+    loadOlder: vi.fn(),
+    isLoadingOlder: false,
+    hasMoreHistory: true,
   }),
 }));
 

@@ -383,7 +383,17 @@ const TradingChartInner: FC<{ slabAddress: string; mintAddress?: string }> = ({
     candles: externalCandles,
     status: externalStatus,
     poolAddress,
+    // #2581: scroll-back paging. Only this (DEX/GeckoTerminal) source
+    // supports `before_timestamp` paging today — see the range-change
+    // effect below for why the other sources are excluded.
+    loadOlder: loadOlderExternal,
   } = useTokenChart(mintAddress ?? null, timeframe);
+  // Read through a ref inside the chart-level range-change handler below —
+  // that subscription is registered once per chart lifetime (keyed off
+  // chartReady, not timeframe/mint), so it must not close over a stale
+  // render's loadOlder identity.
+  const loadOlderExternalRef = useRef(loadOlderExternal);
+  loadOlderExternalRef.current = loadOlderExternal;
 
   // Tier-0: Percolator's own internal-trade candles. Preferred when the slab
   // has active match-engine volume, because these reflect OUR fills rather
@@ -758,6 +768,49 @@ const TradingChartInner: FC<{ slabAddress: string; mintAddress?: string }> = ({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // #2581: page in older history when the user scrolls/pans to the chart's
+  // left edge. Registered once for the chart's lifetime (keyed off
+  // chartReady, NOT timeframe/activeDataSource/etc.) so ordinary panning
+  // never tears down and reattaches this subscription — it reads current
+  // values through refs instead, same pattern as the "Live tick -> chart"
+  // effect above.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !chartReady) return;
+
+    // How close (in bars) the visible left edge must come to the first
+    // loaded bar before firing a page request. Small enough that a fetch
+    // lands before the user has actually panned off the end of the loaded
+    // data (which would show a hard cliff), large enough that ordinary
+    // zooming/panning within the middle of a long series never fires it.
+    const LEFT_EDGE_THRESHOLD_BARS = 20;
+
+    const handleVisibleLogicalRangeChange = (
+      range: Parameters<Parameters<ReturnType<IChartApi["timeScale"]>["subscribeVisibleLogicalRangeChange"]>[0]>[0],
+    ) => {
+      if (!range) return;
+      // Only the DEX/GeckoTerminal source (useTokenChart) supports
+      // before_timestamp paging today. Pyth Benchmarks has no equivalent
+      // param, the oracle-aggregated fallback isn't paginated at all, and
+      // Percolator's own UDF route would need its own wiring (see #2581's
+      // "not to be confused with" note) — gate on the active source so
+      // panning any of those never fires a GeckoTerminal request.
+      if (activeDataSourceRef.current !== "dex") return;
+      // Logical index 0 is the first loaded bar; `range.from` goes negative
+      // as the user pans past it. loadOlder() itself de-dupes in-flight
+      // requests and latches once GeckoTerminal confirms there's no more
+      // history, so it's safe to call on every tick while parked at the edge.
+      if (range.from > LEFT_EDGE_THRESHOLD_BARS) return;
+      loadOlderExternalRef.current();
+    };
+
+    const timeScale = chart.timeScale();
+    timeScale.subscribeVisibleLogicalRangeChange(handleVisibleLogicalRangeChange);
+    return () => {
+      timeScale.unsubscribeVisibleLogicalRangeChange(handleVisibleLogicalRangeChange);
+    };
+  }, [chartReady]);
 
   // Apply theme changes to existing chart without recreating it
   useEffect(() => {
