@@ -119,17 +119,18 @@ export function buildMobileFundingIxs(p: FundingIxParams): MobileFundingIxs {
 
   // v17 Deposit: [owner(s,w), market(w), portfolio(w), sourceToken(w), vaultToken(w), tokenProgram]
   // v18 fresh-market: LP portfolioId 1; matcher-seq is 1 (SetMatcherConfig in TX2
-  // advanced it 0 -> 1).
+  // advanced it 0 -> 1). Named-map form (GH#2542 follow-up) — order already matched
+  // the spec, but positional form silently breaks on any future SDK reorder.
   const depositIx = buildIx({
     programId,
-    keys: buildAccountMetas(ACCOUNTS_DEPOSIT_COLLATERAL, [
-      deployer,
+    keys: buildAccountMetas(ACCOUNTS_DEPOSIT_COLLATERAL, {
+      owner: deployer,
       market,
-      lpPortfolio,
-      userAta,
-      vaultAta,
-      WELL_KNOWN.tokenProgram,
-    ]),
+      portfolio: lpPortfolio,
+      sourceToken: userAta,
+      vaultToken: vaultAta,
+      tokenProgram: WELL_KNOWN.tokenProgram,
+    }),
     data: encodeDepositCollateral({
       portfolioId: 1n,
       expectedSequence: 1n,
@@ -190,13 +191,13 @@ export function buildMobileFundingIxs(p: FundingIxParams): MobileFundingIxs {
   // already-consumed lane is itself rejected as a replay.
   const insuranceIx = buildIx({
     programId,
-    keys: buildAccountMetas(ACCOUNTS_TOPUP_INSURANCE, [
-      deployer,
+    keys: buildAccountMetas(ACCOUNTS_TOPUP_INSURANCE, {
+      signer: deployer,
       market,
-      userAta,
-      vaultAta,
-      WELL_KNOWN.tokenProgram,
-    ]),
+      sourceToken: userAta,
+      vaultToken: vaultAta,
+      tokenProgram: WELL_KNOWN.tokenProgram,
+    }),
     data: encodeTopUpInsurance({
       marketId: 1n,
       intentId: 1n,
@@ -209,11 +210,11 @@ export function buildMobileFundingIxs(p: FundingIxParams): MobileFundingIxs {
   // tail for an admin-oracle market.
   const crankIx = buildIx({
     programId,
-    keys: buildAccountMetas(ACCOUNTS_PERMISSIONLESS_CRANK_BASE, [
-      deployer,
+    keys: buildAccountMetas(ACCOUNTS_PERMISSIONLESS_CRANK_BASE, {
+      owner: deployer,
       market,
-      lpPortfolio,
-    ]),
+      portfolio: lpPortfolio,
+    }),
     data: encodePermissionlessCrank({ nowSlot: 0n, observations: defaultCrankObservations(0) }),
   });
 
