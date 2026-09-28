@@ -49,17 +49,22 @@ const EMPTY: Omit<CreatorClaimData, "decimals"> = {
  * healthy, and the number next to it was never creator revenue in the first
  * place.
  *
- * The deployed wrapper (`DhSkE7uTb8HBUYYWF1xkxMYBGtLYJEoDq1tfBD7SnHcj`) now
- * accrues the creator fee leg into a dedicated market-level counter,
- * `creator_fee_claimable_atoms` (u64 LE, WrapperConfig byte 568 / absolute
- * 584), and pays it out with `WithdrawCreatorFee` (tag 90). Tag 90 cannot
- * touch a domain budget and tag 57 cannot touch this counter — they are
- * disjoint by construction. This hook therefore:
+ * The deployed wrapper accrues the creator fee leg per asset, into
+ * `AssetOracleProfileV16.creator_fee_claimable_atoms` (GH#420,
+ * `a327b4b0`) — plus, for asset 0 only, whatever sits in the legacy
+ * market-level counter that predates GH#420 (`WrapperConfigV16
+ * .creator_fee_claimable_atoms`, u64 LE, config byte 568 / absolute 584).
+ * `WithdrawCreatorFee` (tag 90) pays out exactly that sum for `assetIndex: 0`
+ * and this hook mirrors it. Tag 90 cannot touch a domain budget and tag 57
+ * cannot touch either counter — they are disjoint by construction. This hook
+ * therefore:
  *
- *   1. reads the balance through `lib/v17-creator-fee.ts`, which delegates the
- *      decode to the SDK's `parseWrapperConfigV17` so byte 568 has exactly one
- *      owner in this repo (app-local copies of layout constants going stale is
- *      what caused the 496→576 outage);
+ *   1. reads the balance through `lib/v17-creator-fee.ts`, which delegates both
+ *      decodes to the SDK's `parseWrapperConfigV17` / `parseAssetOracleProfileV17`
+ *      so neither byte offset has more than one owner in this repo (app-local
+ *      copies of layout constants going stale is what caused the 496→576
+ *      outage, and reading only the legacy counter is what caused the frontend
+ *      to under-report post-GH#420 fees, percolator-prog#507);
  *   2. gates on asset 0's `asset_admin` and ONLY that — deliberately NOT
  *      `insurance_operator` (re-gated on-chain 2026-07-23) nor `marketauth`. The
  *      wizard's full create flow rotates `marketauth`, `insurance_authority` AND
@@ -69,10 +74,11 @@ const EMPTY: Omit<CreatorClaimData, "decimals"> = {
  *   3. builds + sends the 17-byte tag-90 instruction and re-reads the account
  *      so the displayed claimable drops after a successful claim.
  *
- * SHAPE CHANGE: the old flow was PER-ASSET (it summed each asset's long+short
- * budget and looped assets). The new counter is a SINGLE MARKET-LEVEL value —
- * there is no per-asset creator revenue on-chain any more, so there is no
- * per-asset breakdown to show.
+ * SHAPE: this hook only ever targets asset 0 — the claim flow hardcodes
+ * `assetIndex: 0` (`lib/creator-fee-claim-ix.ts`) — so there is still no
+ * per-asset breakdown surfaced here even though the on-chain accrual is now
+ * per-asset. A multi-asset market's assets 1..N accrue their own claimable
+ * balances that this hook does not read or expose.
  *
  * NO COOLDOWN: tag 57's `insurance_withdraw_cooldown_slots` / ceiling gates
  * exist to rate-limit backstop withdrawals. `handle_withdraw_creator_fee`

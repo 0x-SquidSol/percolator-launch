@@ -55,9 +55,10 @@ async function withOnChainMarketLp(
 /**
  * Creator-fee claim balance, for the Supabase-backed path.
  *
- * `creator_fee_claimable_atoms` lives ONLY in the market account's wrapper
- * config (bytes 584..592 — see lib/v17-creator-fee.ts). Supabase has no column
- * for it, so the Supabase branch of GET used to return no creator-fee fields at
+ * `creator_fee_claimable_atoms` lives in the market account itself — asset 0's
+ * per-asset profile (GH#420) PLUS the legacy wrapper-config counter (bytes
+ * 584..592) — see lib/v17-creator-fee.ts. Supabase has no column for either,
+ * so the Supabase branch of GET used to return no creator-fee fields at
  * all. Verified against the playground: every market answered 200 with
  * `creator_fee_claimable_atoms` and `creator_fee_authority` as ABSENT KEYS.
  * The creator dashboard reads `detail?.creator_fee_claimable_atoms ? … : 0n`,

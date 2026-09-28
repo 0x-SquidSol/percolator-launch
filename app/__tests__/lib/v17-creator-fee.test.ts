@@ -20,7 +20,16 @@
  *    fixtures mirror the live staked market 7FBXdrm…, where the wizard rotated
  *    marketauth / insurance_authority / insurance_operator to PDAs while
  *    asset_admin stayed the creator wallet; a read that still used
- *    insurance_operator would return the PDA and fail these assertions.
+ *    insurance_operator would return the PDA and fail these assertions;
+ *  - dcccrypto/percolator-prog#507: since GH#420 the creator leg accrues PER
+ *    ASSET, and only asset 0's admin can still draw down the legacy pot. A
+ *    LIVE devnet fixture (`Azagguvr.market.json`, a real SOL market with legacy
+ *    pot 0n and a real non-zero per-asset balance) pins the actual regression —
+ *    reading the legacy pot alone silently returns 0n on this exact market,
+ *    which is what shipped to production. Ground truth cross-checked three
+ *    independent ways: the prog repo owner reading the deployed binary
+ *    on-chain, a raw `DataView` read at absolute 1750, and the SDK's
+ *    `parseAssetOracleProfileV17` — all agree on 4,358,743 atoms.
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
@@ -105,6 +114,22 @@ const fixture = JSON.parse(
 ) as { market: string; owner: string; dataLen: number; dataBase64: string };
 const fixtureData = new Uint8Array(Buffer.from(fixture.dataBase64, "base64"));
 
+// ── Real LIVE devnet market, captured 2026-09-28 (post-GH#420: the legacy
+// config counter is 0, the per-asset counter is not) — pins the regression
+// this fixes (dcccrypto/percolator-prog#507). Ground truth independently
+// confirmed by the prog repo owner reading the same market with the deployed
+// `a9318945` binary: asset 0 = 4,358,743 atoms.
+const liveFixture = JSON.parse(
+  readFileSync(join(__dirname, "..", "fixtures", "Azagguvr.market.json"), "utf-8"),
+) as { market: string; owner: string; dataLen: number; dataBase64: string };
+const liveFixtureData = new Uint8Array(Buffer.from(liveFixture.dataBase64, "base64"));
+/** Ground truth for `liveFixtureData`, verified independently three ways: the
+ * deployed wrapper's own on-chain state (percolator-prog#507 issue thread),
+ * a raw DataView read at absolute offset 1750, and the SDK's
+ * `parseAssetOracleProfileV17`. See lib/v17-creator-fee.ts's module doc. */
+const LIVE_PER_ASSET_ATOMS = 4_358_743n;
+const LIVE_LEGACY_POT_ATOMS = 0n;
+
 describe("layout — the field is additive IN PLACE (nothing downstream moved)", () => {
   it("sits at config-relative 568 / absolute 584", () => {
     expect(V17_CREATOR_FEE_CLAIMABLE_OFF).toBe(568);
@@ -184,6 +209,102 @@ describe("readCreatorFeeClaimable — synthetic account with poisoned neighbours
   it("formats to an exact decimal string for display (no float rounding)", () => {
     const claim = readCreatorFeeClaimable(data)!;
     expect(formatTokenAmount(claim.atoms, 6)).toBe("9007199254.740993");
+  });
+});
+
+describe("readCreatorFeeClaimable — GH#420: sums asset 0's per-asset counter + the legacy pot", () => {
+  /** `AssetOracleProfileV16.creator_fee_claimable_atoms` — profile-relative 400,
+   * absolute 1750 for asset 0 (PROFILE_OFF + 400). The field this fix adds. */
+  const PROFILE_CREATOR_FEE_REL = 400;
+
+  function withPerAssetAccrual(data: Uint8Array, perAssetAtoms: bigint): Uint8Array {
+    const buf = Buffer.from(data);
+    buf.writeBigUInt64LE(perAssetAtoms, PROFILE_OFF + PROFILE_CREATOR_FEE_REL);
+    return new Uint8Array(buf);
+  }
+
+  it("sits at absolute 1750 for asset 0", () => {
+    expect(PROFILE_OFF + PROFILE_CREATOR_FEE_REL).toBe(1750);
+  });
+
+  it("adds the per-asset counter to a NONZERO legacy pot", () => {
+    const LEGACY = 100n;
+    const PER_ASSET = 9_000_000_000_000n; // > 2^32, catches a 32-bit-truncating regression too
+    const data = withPerAssetAccrual(makeV17Market(LEGACY), PER_ASSET);
+    const claim = readCreatorFeeClaimable(data)!;
+    expect(claim.atoms).toBe(LEGACY + PER_ASSET);
+  });
+
+  it("is exactly the per-asset counter when the legacy pot is zero — the common post-GH#420 case", () => {
+    // This is THE regression: every market seeded after GH#420 has legacy
+    // pot 0n and all its real creator revenue in the per-asset counter. The
+    // pre-fix code read `cfg.creatorFeeClaimableAtoms` alone here and would
+    // have returned 0n — "nothing claimable" — while this balance sat unclaimed.
+    const PER_ASSET = 4_358_743n; // the live SOL-market figure, see the fixture test below
+    const data = withPerAssetAccrual(makeV17Market(0n), PER_ASSET);
+    const claim = readCreatorFeeClaimable(data)!;
+    expect(claim.atoms).toBe(PER_ASSET);
+    expect(claim.atoms).not.toBe(0n);
+  });
+
+  it("keeps full u64 precision on the per-asset leg (bigint, never Number)", () => {
+    const maxU64 = (1n << 64n) - 1n;
+    const data = withPerAssetAccrual(makeV17Market(0n), maxU64);
+    const claim = readCreatorFeeClaimable(data)!;
+    expect(claim.atoms).toBe(maxU64);
+  });
+});
+
+describe("readCreatorFeeClaimable — real LIVE devnet market (post-GH#420, percolator-prog#507)", () => {
+  it("the fixture reproduces the bug's precondition: legacy pot is 0, per-asset counter is not", () => {
+    const dv = new DataView(
+      liveFixtureData.buffer,
+      liveFixtureData.byteOffset,
+      liveFixtureData.byteLength,
+    );
+    expect(dv.getBigUint64(V17_CREATOR_FEE_CLAIMABLE_ABS_OFF, true)).toBe(LIVE_LEGACY_POT_ATOMS);
+    expect(dv.getBigUint64(PROFILE_OFF + 400, true)).toBe(LIVE_PER_ASSET_ATOMS);
+  });
+
+  it("reads the real per-asset balance, matching ground truth independently confirmed on-chain", () => {
+    const claim = readCreatorFeeClaimable(liveFixtureData);
+    expect(claim).not.toBeNull();
+    expect(claim!.atoms).toBe(LIVE_PER_ASSET_ATOMS + LIVE_LEGACY_POT_ATOMS);
+    expect(claim!.atoms).toBe(4_358_743n);
+  });
+
+  it("NEGATIVE CONTROL — the pre-fix read (legacy pot alone) is 0n on this market: an all-zero claimable would be the bug, not a coincidence", () => {
+    // Pins the exact regression this fixes: reading ONLY
+    // `cfg.creatorFeeClaimableAtoms` (what `readCreatorFeeClaimable` used to
+    // return in full) is 0n here, even though the market has real unclaimed
+    // creator revenue. If a future edit reverts to reading the legacy pot
+    // alone, this fixture makes that regression fail loudly instead of
+    // silently shipping a "$0.00 claimable" UI again.
+    const dv = new DataView(
+      liveFixtureData.buffer,
+      liveFixtureData.byteOffset,
+      liveFixtureData.byteLength,
+    );
+    const legacyPotAlone = dv.getBigUint64(V17_CREATOR_FEE_CLAIMABLE_ABS_OFF, true);
+    const claim = readCreatorFeeClaimable(liveFixtureData)!;
+    expect(legacyPotAlone).toBe(0n);
+    expect(claim.atoms).not.toBe(legacyPotAlone);
+    expect(claim.atoms).toBeGreaterThan(0n);
+  });
+
+  it("resolves the real on-chain asset_admin as claim authority", () => {
+    const claim = readCreatorFeeClaimable(liveFixtureData)!;
+    expect(claim.claimAuthority).not.toBeNull();
+    expect(claim.claimAuthority!.toBase58()).toBe(
+      "FbTbDeGWQpjrEqJdqoBHX3sTWHoAmU2xywD7wyxH6WC7",
+    );
+  });
+
+  it("reports the collateral mint the payout is denominated in", () => {
+    const claim = readCreatorFeeClaimable(liveFixtureData)!;
+    expect(claim.collateralMint.toBase58()).toBe(
+      "DJ54k4wH92NTtNP8RuHAwG8si1bevXEknzctDdqYN8eC",
+    );
   });
 });
 
