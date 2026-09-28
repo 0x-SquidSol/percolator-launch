@@ -30,8 +30,19 @@ export const MIN_LEVERAGE = MIN_LEVERAGE_X;
 
 export const leverageToMarginBps = (lev: number): number =>
   Math.round(10_000 / lev);
-export const marginBpsToLeverage = (bps: number): number =>
-  Math.round((10_000 / Math.max(1, bps)) * 2) / 2;
+/**
+ * Clamped to the dial's own range on purpose. RotaryDial does NOT clamp its
+ * incoming `value` prop (only `commit` clamps), so an out-of-range value paints
+ * the needle past the end of the arc: a stored 0 bps would read "10000x".
+ * CreateMarketWizard restores wizard state from localStorage with a bare spread
+ * and does not sanitise initialMarginBps. Non-finite first: Math.max(MIN, NaN)
+ * is NaN, so a clamp alone does not close it; fall back to the conservative end.
+ * (Contributed by @0x-SquidSol in #2625.)
+ */
+export const marginBpsToLeverage = (bps: number): number => {
+  if (!Number.isFinite(bps) || bps <= 0) return MIN_LEVERAGE;
+  return Math.min(MAX_LEVERAGE, Math.max(MIN_LEVERAGE, Math.round((10_000 / bps) * 2) / 2));
+};
 
 /**
  * Insurance seed floor. Insurance is written ONCE at market creation and is

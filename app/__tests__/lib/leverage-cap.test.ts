@@ -108,4 +108,17 @@ describe("GH#2621 — the dial's leverage ceiling matches the real protocol boun
       expect(marginBpsToLeverage(bps)).toBe(lev);
     }
   });
+
+  it("never reports a value outside the dial's own range (#2625)", () => {
+    // RotaryDial does not clamp its incoming `value` prop, and the wizard restores
+    // initialMarginBps from localStorage unsanitised.
+    for (const bps of [0, -1, 1, 500, 999, 20_000, Number.NaN]) {
+      const lev = marginBpsToLeverage(bps);
+      expect(lev).toBeGreaterThanOrEqual(MIN_LEVERAGE);
+      expect(lev).toBeLessThanOrEqual(MAX_LEVERAGE);
+    }
+    // CONTROL: in-range inputs are untouched by the clamp.
+    expect(marginBpsToLeverage(1000)).toBe(10);
+    expect(marginBpsToLeverage(2000)).toBe(5);
+  });
 });
