@@ -70,9 +70,9 @@ const DEFAULT_STATE: WizardState = {
   dexPool: null,
   pythFeed: null,
   tradingFeeBps: 30,
-  // The dial's leverage range floors to MIN_SAFE_INITIAL_MARGIN_BPS (1500 = 6.67x) —
-  // 2000 bps (5x) is the highest default we can promise without it being a lie once
-  // create() applies that floor on-chain. See StepControlRoom's MAX_LEVERAGE comment.
+  // 5x. A product default, not a limit: since GH#2621 the dial runs to 10x, and
+  // nothing floors this on-chain. Kept deliberately conservative — a creator who
+  // wants more turns the dial.
   initialMarginBps: 2000,
   lpCollateral: "",
   insuranceAmount: "100",
@@ -273,12 +273,12 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
       ...prev,
       tradingFeeBps: quickLaunch.config!.tradingFeeBps,
       // Normalise through the dial's own quantisation so the number ON the dial is
-      // exactly the number written on-chain. quick-launch still supplies 1000 bps
-      // ("10x"); create() floors that to MIN_SAFE_INITIAL_MARGIN_BPS (1500 = 6.67x),
-      // but the dial snaps to 0.5x and can only render 6.5x — so storing either the
-      // raw 1000 or a plain floor of 1500 would display 6.5x while actually creating
-      // a 6.67x market. Round-tripping bps → leverage → bps lands on 1538 bps, which
-      // IS 6.5x. Same class of lie as the old "10x" readout; closed here.
+      // exactly the number written on-chain — the dial snaps to 0.5x, so a bps
+      // value between detents would display as one leverage and create another.
+      //
+      // GH#2621: this used to also absorb the dial's 1500-bps floor, which turned
+      // quick-launch's 1000 bps ("10x") into 1538 (6.5x). With the floor gone the
+      // round-trip is lossless and quick-launch gets the 10x it asks for.
       initialMarginBps: prev.marginSetByUser
         ? prev.initialMarginBps
         : leverageToMarginBps(marginBpsToLeverage(quickLaunch.config!.initialMarginBps)),
@@ -297,9 +297,13 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
 
   // Derived values
   const mintValid = isValidBase58Pubkey(wizard.mintAddress) && wizard.mintAddress.length >= 32;
-  // BUG 16 fix: use the FLOORED margin (what create() actually enforces on-chain via
-  // MIN_SAFE_INITIAL_MARGIN_BPS) so the success screen advertises real leverage, not the
-  // raw requested value the dial produced.
+  // BUG 16 fix: report the margin create() will ACTUALLY write (deriveMarketParams
+  // clamps leverage and rounds margin up), so the success screen advertises real
+  // leverage rather than the raw requested value. The 1500-bps floor this once
+  // compensated for is gone — see GH#2621.
+  //
+  // NOTE (pre-existing, not GH#2621): Math.floor truncates, so a 4.5x market is
+  // advertised here as "4x". Unrelated to the cap and left alone deliberately.
   const maxLeverage = Math.floor(10000 / flooredInitialMarginBps(wizard.initialMarginBps));
   const feeConflict = wizard.tradingFeeBps >= wizard.initialMarginBps;
   const hasTokens = wizard.walletBalance !== null && wizard.walletBalance > 0n;

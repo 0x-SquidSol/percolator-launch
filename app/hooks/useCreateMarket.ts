@@ -240,6 +240,18 @@ export const MIN_INIT_MARKET_SEED = 500_000_000n;
  * both come from deriveMarketParams(), which makes them coherent by
  * construction.
  */
+/**
+ * HISTORY ONLY — do not use this as a bound.
+ *
+ * This was a live clamp in create(). It is not one now, and it has already been
+ * mistaken for live behaviour once: StepControlRoom imported it as the leverage
+ * dial's ceiling and told creators the protocol enforced a 15% margin floor,
+ * capping every market at 6.5x when the engine accepts 10x (GH#2621).
+ *
+ * Kept because the number appears in older markets and in the commit history
+ * that explains them. The authority on what a leverage becomes is
+ * deriveMarketParams; the authority on the range is MIN/MAX_LEVERAGE_X.
+ */
 export const MIN_SAFE_INITIAL_MARGIN_BPS = 1500n;
 
 /**

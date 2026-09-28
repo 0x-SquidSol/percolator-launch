@@ -3,24 +3,49 @@
 import { FC, useMemo } from "react";
 import { RotaryDial } from "./RotaryDial";
 import { HoldToLaunch } from "./HoldToLaunch";
-import { MIN_SAFE_INITIAL_MARGIN_BPS } from "@/hooks/useCreateMarket";
+import { MAX_LEVERAGE_X, MIN_LEVERAGE_X } from "@/lib/market-params";
 import { FeeBreakdown } from "@/components/FeeBreakdown";
 
 /**
- * The protocol floors initial margin at MIN_SAFE_INITIAL_MARGIN_BPS (1500 bps
- * = 15%), so the highest leverage a market can ACTUALLY be created with is
- * 10000/1500 ≈ 6.67x. The dial stops at 6.5x rather than offering leverage the
- * program would silently floor — the old wizard defaulted to 1000 bps and told
- * the user "10x" while create() quietly wrote 1500 bps (6.67x) on-chain.
+ * GH#2621. The dial used to stop at 6.5x, deriving its ceiling from
+ * MIN_SAFE_INITIAL_MARGIN_BPS (1500 bps = 15%) and telling the creator the
+ * protocol enforced a 15% margin floor.
+ *
+ * It does not. That floor was removed after the July bisection behind it was
+ * re-tested and recorded as a misdiagnosis: "10x fails only when paired with the
+ * old 1x500 budget ... With a compatible budget (4 x 100 = 400) 10x is accepted.
+ * Leverage was never the problem" (market-params.ts). `create()` applies no such
+ * clamp, `flooredInitialMarginBps(1000)` returns 1000, form validation accepts
+ * down to 1000 bps, and InitMarket does not bound initial_margin_bps at all.
+ * This dial was the last thing still enforcing it.
+ *
+ * The bounds now come from the same constants everything else uses, so there is
+ * one authority on the range rather than two that can drift apart. The real
+ * constraint — the price-move budget a given maintenance margin allows — stays
+ * where it belongs, in deriveMarketParams' on-chain-bisected table.
  */
-const MIN_MARGIN_BPS = Number(MIN_SAFE_INITIAL_MARGIN_BPS); // 1500
-export const MAX_LEVERAGE = 6.5;
-export const MIN_LEVERAGE = 2;
+export const MAX_LEVERAGE = MAX_LEVERAGE_X;
+export const MIN_LEVERAGE = MIN_LEVERAGE_X;
 
-export const leverageToMarginBps = (lev: number): number =>
-  Math.max(MIN_MARGIN_BPS, Math.round(10_000 / lev));
-export const marginBpsToLeverage = (bps: number): number =>
-  Math.round((10_000 / Math.max(MIN_MARGIN_BPS, bps)) * 2) / 2;
+export const leverageToMarginBps = (lev: number): number => Math.round(10_000 / lev);
+
+/**
+ * Clamped to the dial's own range on purpose. The old 1500-bps floor happened to
+ * guarantee this — it could never return more than 6.67, which was inside the
+ * range — and removing it took the guarantee with it. RotaryDial does NOT clamp
+ * its incoming `value` prop (only `commit` clamps), so an out-of-range value
+ * paints the needle past the end of the arc and renders a nonsense readout: a
+ * stored 0 bps would have read "10000x". Nothing produces one today, but
+ * CreateMarketWizard restores wizard state from localStorage with a bare spread
+ * and does not sanitise initialMarginBps, so the guarantee is worth keeping
+ * explicitly rather than by accident.
+ */
+export const marginBpsToLeverage = (bps: number): number => {
+  // Non-finite first: Math.max(MIN, NaN) is NaN, so a clamp alone does not close
+  // this. Fall back to the conservative end rather than the aggressive one.
+  if (!Number.isFinite(bps) || bps <= 0) return MIN_LEVERAGE;
+  return Math.min(MAX_LEVERAGE, Math.max(MIN_LEVERAGE, Math.round((10_000 / bps) * 2) / 2));
+};
 
 /**
  * Insurance seed floor. Insurance is written ONCE at market creation and is
@@ -156,8 +181,8 @@ export const StepControlRoom: FC<StepControlRoomProps> = ({
         <p className="mt-6 text-[11px] leading-relaxed text-[var(--text-muted)]">
           <span className="text-[var(--text-secondary)]">Leverage</span> sets how far price can move
           before a position liquidates. <span className="text-[var(--text-secondary)]">Liquidity</span> is
-          what traders trade against — deeper means less slippage. Max leverage is capped at{" "}
-          {MAX_LEVERAGE}× by the protocol&apos;s {MIN_MARGIN_BPS / 100}% margin floor.
+          what traders trade against — deeper means less slippage. Leverage runs from{" "}
+          {MIN_LEVERAGE}× to {MAX_LEVERAGE}×.
         </p>
       </div>
 
