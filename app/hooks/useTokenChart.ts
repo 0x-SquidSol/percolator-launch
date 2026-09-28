@@ -291,7 +291,17 @@ export function useTokenChart(
         // (before_timestamp's exact inclusive/exclusive boundary isn't a
         // contract worth trusting blindly); a boundary bar landing in both
         // pages must not double the chart.
-        const merged = mergeCandles(older, known);
+        //
+        // Re-read the held series NOW, after the await — NOT the `known`
+        // snapshot taken before the fetch. A page-1 poll (fetchData) can land
+        // during this request's flight and merge fresh live bars into the
+        // cache/candlesRef; merging `older` against the pre-fetch snapshot and
+        // writing that back would clobber those bars out until the next 60s
+        // poll. fetchKeyRef is still `key` (checked above), so candlesRef.current
+        // is this key's live series and the cache is its backing store. This
+        // mirrors fetchData, which likewise re-reads the cache at merge time.
+        const knownNow = chartCache.get(key)?.candles ?? candlesRef.current;
+        const merged = mergeCandles(older, knownNow);
         candlesRef.current = merged;
         lastGoodKeyRef.current = key;
         setCandles(merged);

@@ -20,6 +20,7 @@ const MINT_A = "So11111111111111111111111111111111111111112";
 const MINT_B = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const MINT_C = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263";
 const MINT_D = "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R";
+const MINT_E = "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So";
 
 function candle(timestampMs: number) {
   return { timestamp: timestampMs, open: 1, high: 2, low: 0.5, close: 1.5, volume: 10 };
@@ -169,6 +170,62 @@ describe("useTokenChart loadOlder (#2581)", () => {
     // replaced the whole series with just the fresh 2-bar page-1 response.
     await waitFor(() =>
       expect(result.current.candles.map((c) => c.timestamp)).toEqual([1_000_000, 10_000_000, 11_000_000]),
+    );
+  });
+
+  it("a page-1 poll landing DURING a loadOlder fetch is not clobbered by the older-page merge (#2631)", async () => {
+    // Regression for the race: loadOlder() must merge its fetched older page
+    // against the series as it stands WHEN THE FETCH RESOLVES, not a snapshot
+    // taken before the await. If a 60s poll adds a fresh live bar mid-flight,
+    // merging against the stale snapshot would write that bar back out.
+    let resolveOlder: ((v: unknown) => void) | null = null;
+    // page-1 payload the poll returns; grows a bar mid-flight below.
+    let pollCandles = [candle(10_000_000), candle(11_000_000)];
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("before=")) {
+        // Hold the older-page request open so a poll can land underneath it.
+        return new Promise((resolve) => {
+          resolveOlder = resolve;
+        });
+      }
+      return {
+        ok: true,
+        json: async () => ({ candles: pollCandles, poolAddress: "pool1" }),
+      } as unknown as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useTokenChart(MINT_E, "1h"));
+    await waitFor(() => expect(result.current.status).toBe("success"));
+    expect(result.current.candles.map((c) => c.timestamp)).toEqual([10_000_000, 11_000_000]);
+
+    // Begin paging older — its request stays pending (resolveOlder unfired).
+    act(() => result.current.loadOlder());
+    await waitFor(() => expect(result.current.isLoadingOlder).toBe(true));
+
+    // While the older request is in flight, the periodic poll lands a brand-new
+    // live bar (12_000_000). This updates the cache/rendered series underneath
+    // the pending loadOlder request.
+    pollCandles = [candle(10_000_000), candle(11_000_000), candle(12_000_000)];
+    act(() => result.current.refresh());
+    await waitFor(() =>
+      expect(result.current.candles.map((c) => c.timestamp)).toEqual([
+        10_000_000, 11_000_000, 12_000_000,
+      ]),
+    );
+
+    // Now the older page resolves. Its merge must re-read the current series
+    // (with the poll's 12M bar), not the pre-fetch snapshot — so 12M survives.
+    await act(async () => {
+      resolveOlder?.({
+        ok: true,
+        json: async () => ({ candles: [candle(1_000_000)], poolAddress: "pool1" }),
+      });
+    });
+    await waitFor(() =>
+      expect(result.current.candles.map((c) => c.timestamp)).toEqual([
+        1_000_000, 10_000_000, 11_000_000, 12_000_000,
+      ]),
     );
   });
 });
