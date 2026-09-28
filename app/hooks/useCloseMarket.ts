@@ -11,12 +11,14 @@ import {
   V17_HEADER_LEN,
   encodeCloseSlab,
   ACCOUNTS_CLOSE_SLAB,
+  encodeResolveMarket,
+  ACCOUNTS_RESOLVE_MARKET,
   buildAccountMetas,
   buildIx,
   deriveVaultAuthority,
 } from "@percolatorct/sdk";
 import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
-import { readAssetControlSeqs } from "@/lib/v18-wire";
+import { planCloseMarket } from "@/lib/close-market-plan";
 import { parseMarketCreationError } from "@/lib/parseMarketError";
 
 /**
@@ -139,6 +141,37 @@ export function useCloseMarket() {
         const [vaultAuthority] = deriveVaultAuthority(programId, slabPk);
         const destAta = await getAssociatedTokenAddress(collateralMint, walletCompat.publicKey);
 
+        // v18: a Live market (every half-created one) must be resolved before
+        // CloseSlab will accept it — see lib/close-market-plan.ts. v12 slabs have
+        // no such lifecycle (and no authority-epoch lane: 0n).
+        let authorityEpoch = 0n;
+        let resolveIx: ReturnType<typeof buildIx> | null = null;
+        if (isV17Account(data)) {
+          const plan = planCloseMarket(data);
+          if (!plan.ok) {
+            setError(
+              "Cannot reclaim: this market already holds user capital or open accounts, so it " +
+              "can't be closed from here. Resume creation to finish it instead."
+            );
+            setLoading(false);
+            return null;
+          }
+          authorityEpoch = plan.authorityEpoch;
+          if (plan.resolve) {
+            resolveIx = buildIx({
+              programId,
+              keys: buildAccountMetas(ACCOUNTS_RESOLVE_MARKET, {
+                admin: walletCompat.publicKey,
+                market: slabPk,
+              }),
+              data: encodeResolveMarket({
+                assetGenerationFrontier: plan.resolve.assetGenerationFrontier,
+                authorityEpoch,
+              }),
+            });
+          }
+        }
+
         // Build CloseSlab instruction via SDK encode helpers
         const ix = buildIx({
           programId,
@@ -152,7 +185,7 @@ export function useCloseMarket() {
           }),
           // v18: CloseSlab is CAS-bound to asset 0's authority_epoch lane — pass
           // the LIVE current value (not +1). v12 slabs have no such lane (0n).
-          data: encodeCloseSlab(isV17Account(data) ? readAssetControlSeqs(data, 0).authorityEpoch : 0n),
+          data: encodeCloseSlab(authorityEpoch),
         });
 
         const { blockhash } = await connection.getLatestBlockhash("confirmed");
@@ -164,6 +197,7 @@ export function useCloseMarket() {
         // tx requests the full heap frame. Must be the FIRST instruction. (issue #176)
         tx.add(ComputeBudgetProgram.requestHeapFrame({ bytes: 131072 }));
         tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }));
+        if (resolveIx) tx.add(resolveIx);
         tx.add(ix);
 
         const signed = await walletCompat.signTransaction(tx);
@@ -192,18 +226,15 @@ export function useCloseMarket() {
         } else if (msg.includes("User rejected") || msg.includes("WalletSign")) {
           setError("Transaction cancelled.");
         } else if (/custom program error:\s*0x15\b/i.test(msg) || msg.includes("EngineLockActive")) {
-          // BUG FIX (2026-09-25, tester-reported): 0x15 = Custom(21) = EngineLockActive
-          // (see PERCOLATOR_ERRORS in @percolatorct/sdk). This used to fall through to
-          // the raw "Failed to close slab: Simulation failed: ..." dump below. It is a
-          // genuine on-chain precondition failure, not a client bug or an RPC flake —
-          // the slab's engine lock hasn't cleared (a prior close/recovery attempt on
-          // this same slab didn't finish), so CloseSlab correctly refuses. A fresh
-          // blockhash won't help; surface the real, actionable reason instead.
+          // 0x15 = Custom(21) = EngineLockActive: CloseSlab's preconditions aren't met.
+          // It is not a transient lock — waiting never helps. The Live-market case is
+          // handled above (ResolveMarket is prepended), and capital/portfolios are
+          // caught before sending, so what remains is the LP-vault backing floor a
+          // market gets once its Earn vault exists — CloseSlab refuses that by design.
           setError(
-            "Cannot close yet: this market's engine lock is still active — a previous close " +
-            "or recovery on this slab hasn't finished clearing. This is a real on-chain state " +
-            "block, not a network hiccup, so retrying immediately won't help. Wait a few " +
-            "minutes and try again; if it still won't clear, contact a maintainer."
+            "Cannot reclaim: this market got far enough to create its Earn vault, and the " +
+            "program permanently blocks closing a market once that exists. Resume creation " +
+            "to finish it instead."
           );
         } else {
           // Any other custom-program-error code: reuse the same decoder the create-market

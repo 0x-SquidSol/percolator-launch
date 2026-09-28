@@ -43,6 +43,47 @@ function readU64LE(data: Uint8Array, off: number): bigint {
   return (BigInt(view.getUint32(off + 4, true)) << 32n) | BigInt(view.getUint32(off, true));
 }
 
+/**
+ * Offsets into `MarketGroupV16HeaderAccount` (engine c141d47f, `#[repr(C)]`
+ * bytemuck::Pod over align-1 byte-array fields — no padding), relative to
+ * V17_MARKET_GROUP_OFF. Summed from the struct and cross-checked two ways:
+ * `insurance` lands at 301 (= the SDK's V17_HEADER_INSURANCE_OFF) and the header
+ * totals 758 B (= V17_MARKET_GROUP_LEN); then read off live slabs (a seeded
+ * market's c_tot equals its 50k LP deposit; a Live market's mode is 0).
+ */
+const HDR_C_TOT = 317; // u128
+const HDR_MATERIALIZED_PORTFOLIO_COUNT = 517; // u64
+const HDR_NEXT_MARKET_ID = 581; // u64 — the asset generation frontier
+const HDR_MODE = 626; // u8 — 0 Live, 1 Resolved
+
+export interface MarketGroupHeaderState {
+  /** 0 = Live, 1 = Resolved. CloseSlab requires 1. */
+  mode: number;
+  /**
+   * `next_market_id` — the `asset_generation_frontier` ResolveMarket (and
+   * SetMatcherConfig) are CAS-bound to. It is max_market_slots + 1 after
+   * InitMarket, so it depends on the market's slot count — read it, never assume.
+   */
+  nextMarketId: bigint;
+  /** Total user capital. CloseSlab refuses while non-zero. */
+  cTot: bigint;
+  /** Live portfolios. CloseSlab refuses while non-zero. */
+  materializedPortfolioCount: bigint;
+}
+
+export function readMarketGroupHeader(slabData: Uint8Array): MarketGroupHeaderState {
+  const g = V17_MARKET_GROUP_OFF;
+  if (slabData.length < g + V17_MARKET_GROUP_LEN) {
+    throw new Error(`slab too short for the market-group header @ ${g}`);
+  }
+  return {
+    mode: slabData[g + HDR_MODE],
+    nextMarketId: readU64LE(slabData, g + HDR_NEXT_MARKET_ID),
+    cTot: readU64LE(slabData, g + HDR_C_TOT) | (readU64LE(slabData, g + HDR_C_TOT + 8) << 64n),
+    materializedPortfolioCount: readU64LE(slabData, g + HDR_MATERIALIZED_PORTFOLIO_COUNT),
+  };
+}
+
 /** The live portfolio identity + CAS watermarks bound by the v18 write wire. */
 export interface PortfolioIdentity {
   /** Program-assigned stable portfolio id (`portfolioId` on the wire). */
