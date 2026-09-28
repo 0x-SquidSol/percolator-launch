@@ -338,8 +338,6 @@ describe("LaunchSuccess", () => {
           {...defaultProps}
           mainnetCA="9cRCn9rGT8V2imeM2BaKs13yhMEais3ruM3rPvTGpump"
           devnetMint={simUsdcMint}
-          devnetAirdropAmount={500}
-          devnetAirdropSymbol="USDC"
         />
       );
       // The "COLLATERAL & PRICING" heading is gone — that whole explainer now
@@ -383,15 +381,24 @@ describe("LaunchSuccess", () => {
       expect(screen.queryByText(/Sending Sim-USDC/)).toBeNull();
     });
 
-    it("defect 1: shows the actual devnetMintError text, not a fixed sentence", () => {
-      render(
-        <LaunchSuccess
-          {...defaultProps}
-          devnetMint={mint}
-          devnetMintError="Server not configured for devnet minting"
-        />
-      );
-      expect(screen.getByText(/Server not configured for devnet minting/)).toBeDefined();
+    it("defect 1: the panel states what Sim-USDC is and where to get it", () => {
+      // This test used to render `devnetMintError="Server not configured…"` and
+      // assert the real reason appeared instead of a fixed sentence. That fix was
+      // correct but UNREACHABLE: removing the automatic claim removed the only
+      // writer of devnetAirdropAmount/devnetMintError, which the hook then set to
+      // null at its two initial-state sites and nowhere else. Supplying the prop
+      // by hand was the only way the branch rendered, so the test passed while
+      // production always took the `: null` arm — and the panel showed nothing at
+      // all above the Details disclosure.
+      //
+      // The props are deleted now. Printing the route's real reason is still
+      // pinned, on the path that can actually reach it: the button's own failure,
+      // in "defect 3" below.
+      render(<LaunchSuccess {...defaultProps} devnetMint={mint} />);
+
+      expect(screen.getByText(/is your collateral/i)).toBeDefined();
+      const faucet = screen.getByText(/faucet/i).closest("a");
+      expect(faucet).toHaveAttribute("href", "/faucet");
       // The old fixed sentence stood in for all ~16 of the route's failure exits —
       // that's what made #2608 take devtools work to extract a real reason.
       expect(screen.queryByText(/use the faucet on the trade page\./)).toBeNull();
@@ -416,11 +423,19 @@ describe("LaunchSuccess", () => {
       expect(mockPush).toHaveBeenCalledWith(`/trade/${defaultProps.marketAddress}`);
     });
 
-    it("a 429 (rate-limited or already-claimed) still navigates to the trade page", async () => {
+    it("an ALREADY-CLAIMED 429 still navigates — a claim is on record", async () => {
+      // The daily claim gate's 429 always carries nextClaimAt — built from
+      // `retryAfterSecs` at that exit, and the only paths where retryAfterSecs is
+      // null return 503, not 429. (RATE_LIMIT_WINDOW_MS builds the SUCCESS body's
+      // nextClaimAt, a different exit.) A claim is on record, so navigating on is
+      // right, and this must keep working.
       fetchMock.mockResolvedValue({
         ok: false,
         status: 429,
-        json: async () => ({ error: "Already claimed — try again in 23h 59m" }),
+        json: async () => ({
+          error: "Already claimed — try again in 23h 59m",
+          nextClaimAt: "2026-01-01T00:00:00Z",
+        }),
       });
       render(<LaunchSuccess {...defaultProps} devnetMint={mint} />);
       fireEvent.click(screen.getByText("GET SIM-USDC & TRADE →"));
@@ -428,6 +443,54 @@ describe("LaunchSuccess", () => {
       await vi.waitFor(() => {
         expect(mockPush).toHaveBeenCalledWith(`/trade/${defaultProps.marketAddress}`);
       });
+    });
+
+    it("a MIDDLEWARE 429 does not navigate — the route never ran", async () => {
+      // middleware.ts rate-limits every /api/* path before the route is reached,
+      // so this 429 has a different body and no nextClaimAt. It is the 429 a real
+      // creator is most likely to hit, and nothing was minted.
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 429,
+        json: async () => ({ error: "Too many requests. Please try again later." }),
+      });
+      render(<LaunchSuccess {...defaultProps} devnetMint={mint} />);
+      fireEvent.click(screen.getByText("GET SIM-USDC & TRADE →"));
+
+      await screen.findByText(/Too many requests. Please try again later./);
+      expect(mockPush).not.toHaveBeenCalled();
+    });
+
+    it("a 429 with a non-JSON body does not navigate — it fails closed", async () => {
+      // A CDN/WAF 429 returns HTML, so resp.json() rejects and the parse falls
+      // back to {}. `nextClaimAt` is then undefined, which must read as "no claim
+      // on record" rather than throwing or silently navigating.
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 429,
+        json: async () => { throw new SyntaxError("Unexpected token < in JSON"); },
+      });
+      render(<LaunchSuccess {...defaultProps} devnetMint={mint} />);
+      fireEvent.click(screen.getByText("GET SIM-USDC & TRADE →"));
+
+      await screen.findByText(/Sim-USDC claim failed \(HTTP 429\)/);
+      expect(mockPush).not.toHaveBeenCalled();
+    });
+
+    it("a RATE-LIMITED 429 does not navigate — nothing was minted", async () => {
+      // The route's per-IP fund limiter: Retry-After, no nextClaimAt, mints
+      // nothing. `resp.status === 429` alone treated it as success and sent the
+      // creator to the trade page with no collateral and no message.
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 429,
+        json: async () => ({ error: "Too many requests. Please slow down and try again shortly." }),
+      });
+      render(<LaunchSuccess {...defaultProps} devnetMint={mint} />);
+      fireEvent.click(screen.getByText("GET SIM-USDC & TRADE →"));
+
+      await screen.findByText(/Too many requests/);
+      expect(mockPush).not.toHaveBeenCalled();
     });
 
     it("a successful claim navigates to the trade page", async () => {

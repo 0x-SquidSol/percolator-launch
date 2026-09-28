@@ -49,8 +49,15 @@ export function DevnetTokenFaucetButton({ mintAddress, symbol }: DevnetTokenFauc
 
       const data = await resp.json();
 
-      if (resp.status === 429) {
+      // Only the daily claim gate's 429 carries nextClaimAt. The route's per-IP
+      // fund limiter and middleware.ts's global /api/* limiter both 429 without
+      // it and mint nothing — and `new Date(undefined).getTime()` is NaN, so
+      // this countdown rendered "NaNh NaNm" for them. Show the real reason
+      // instead; the sibling handling on the launch screen does the same.
+      if (resp.status === 429 && typeof data.nextClaimAt === "string") {
         setRateLimited({ nextClaimAt: data.nextClaimAt });
+      } else if (resp.status === 429) {
+        setError(data.error ?? "Too many requests — try again shortly.");
       } else if (resp.status === 400 && data.error?.includes("not a known devnet mirror mint")) {
         // GH#1367: Token is not a devnet mirror mint — switch to faucet link UI
         setIsNonMirrorMint(true);
