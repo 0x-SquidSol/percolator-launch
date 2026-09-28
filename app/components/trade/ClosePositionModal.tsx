@@ -6,7 +6,7 @@ import gsap from "gsap";
 import { usePrefersReducedMotion } from "@/hooks/usePrefersReducedMotion";
 import { useLockBodyScroll } from "@/hooks/useLockBodyScroll";
 import { formatTokenAmount, formatUsdPriceE6 } from "@/lib/format";
-import { computeMarkPnl, computeMarkPnlCollateral, clampClosePercent } from "@/lib/trading";
+import { computeMarkPnl, computeMarkPnlCollateral, clampClosePercent, UNKNOWN_ENTRY_TOOLTIP } from "@/lib/trading";
 
 interface ClosePositionModalProps {
   positionSize: bigint;
@@ -212,6 +212,11 @@ export const ClosePositionModal: FC<ClosePositionModalProps> = ({
     return { closeAbs, remainingAbs, pnl, pnlUsd, closeFee, receive };
   }, [percent, absPosition, isLong, entryPrice, currentPrice, capital, priceUsd, tradingFeeBps]);
 
+  // #2660: callers pass entryPrice = 0n when the entry is unknown (v17/v18
+  // store none on-chain and nothing was cached/derivable). Then the PnL is
+  // not "0" and Est. Receive cannot include it — say so instead of showing a
+  // confident zero or the mark as the entry.
+  const entryKnown = entryPrice > 0n;
   const pnlColor =
     preview.pnl === 0n
       ? "text-[var(--text-muted)]"
@@ -261,7 +266,11 @@ export const ClosePositionModal: FC<ClosePositionModalProps> = ({
           </p>
           <p className="mt-1 text-[10px] text-[var(--text-secondary)]">
             <span style={{ fontFamily: "var(--font-mono)" }}>{formatTokenAmount(absPosition, decimals)}</span> {symbol} at{" "}
-            <span style={{ fontFamily: "var(--font-mono)" }}>{formatUsdPriceE6(entryPrice)}</span> entry
+            {entryKnown ? (
+              <><span style={{ fontFamily: "var(--font-mono)" }}>{formatUsdPriceE6(entryPrice)}</span> entry</>
+            ) : (
+              <span title={UNKNOWN_ENTRY_TOOLTIP}>unknown entry</span>
+            )}
           </p>
         </div>
 
@@ -320,6 +329,11 @@ export const ClosePositionModal: FC<ClosePositionModalProps> = ({
           </div>
           <div className="flex justify-between border-t border-[var(--border)]/30 pt-2">
             <span className="text-[var(--text-dim)]">Est. PnL:</span>
+            {!entryKnown ? (
+              <span className="font-mono font-medium text-[var(--text-muted)]" title={UNKNOWN_ENTRY_TOOLTIP} data-testid="close-pnl-unknown">
+                --
+              </span>
+            ) : (
             <span className={`font-mono font-medium ${pnlColor}`}>
               {preview.pnl > 0n ? "+" : preview.pnl < 0n ? "-" : ""}
               {formatTokenAmount(abs(preview.pnl), decimals)} {colSym}
@@ -335,6 +349,7 @@ export const ClosePositionModal: FC<ClosePositionModalProps> = ({
                 </span>
               )}
             </span>
+            )}
           </div>
           {preview.closeFee > 0n && (
             <div className="flex justify-between">
@@ -346,8 +361,9 @@ export const ClosePositionModal: FC<ClosePositionModalProps> = ({
           )}
           <div className="flex justify-between">
             <span className="text-[var(--text-dim)]">Est. Receive:</span>
-            <span className="font-mono font-medium text-[var(--text)]">
+            <span className="font-mono font-medium text-[var(--text)]" title={entryKnown ? undefined : "Excludes unrealized PnL — the entry price is unknown, so the PnL settled on close can't be previewed."}>
               ~{formatTokenAmount(preview.receive, decimals)} {colSym}
+              {!entryKnown && <span className="ml-1 text-[10px] text-[var(--text-muted)]">excl. PnL</span>}
             </span>
           </div>
         </div>

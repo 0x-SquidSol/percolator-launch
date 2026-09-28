@@ -435,7 +435,8 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     capital: account.capital,
     markPriceE6: currentPriceE6,
     maintenanceMarginBps: maintenanceBps,
-    hasResolvedEntry: entryPriceE6 > 0n,
+    // #2660: `entryPriceE6 > 0n` is always true — on "unknown" it is the mark.
+    hasResolvedEntry: pnlIsKnown,
   });
 
   // 3.4: Funding rate /8h + countdown
@@ -759,7 +760,7 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       {showCloseModal && hasPosition && (
         <ClosePositionModal
           positionSize={account.positionSize}
-          entryPrice={entryPriceE6}
+          entryPrice={pnlIsKnown ? entryPriceE6 : 0n}
           currentPrice={currentPriceE6}
           capital={account.capital}
           symbol={symbol}

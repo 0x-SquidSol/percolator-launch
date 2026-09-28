@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { subscribeSlab, getSnapshot } from "@/lib/priceStore/priceStore";
-import { computeLivePositionPnl } from "@/lib/trading";
+import { computeLivePositionPnl, UNKNOWN_ENTRY_TOOLTIP } from "@/lib/trading";
+import { describeEntryPrice, displayEntryE6 } from "@/lib/entry-price-display";
 import { adlReductionTooltip } from "@/lib/v17-adl";
 import { computeLiquidationDistancePct } from "@/lib/liquidation-distance";
 import { SlabProvider } from "@/components/providers/SlabProvider";
@@ -138,7 +139,7 @@ function PortfolioCloseFlow({
   return (
     <ClosePositionModal
       positionSize={posSize}
-      entryPrice={pos.effectiveEntryPrice}
+      entryPrice={displayEntryE6(pos.effectiveEntryPrice, pos.entryPriceSource)}
       currentPrice={markE6}
       capital={pos.account?.capital ?? 0n}
       symbol={baseSymbol}
@@ -196,7 +197,12 @@ function PositionCard({
   // markets that never deleveraged. See lib/v17-adl.ts.
   const posSize = pos.effectiveSize;
   const posCapital = pos.account?.capital ?? 0n;
-  const posEntry = pos.effectiveEntryPrice;
+  // #2660: on source "unknown" `effectiveEntryPrice` IS the polled mark. It
+  // must not be shown as the entry, nor feed the live PnL (live mark − polled
+  // mark is drift, not PnL) — `displayEntryE6` returns 0n there, which
+  // computeLivePositionPnl already treats as "no entry".
+  const entryDisplay = describeEntryPrice({ entryE6: pos.effectiveEntryPrice, source: pos.entryPriceSource });
+  const posEntry = displayEntryE6(pos.effectiveEntryPrice, pos.entryPriceSource);
   const side = posSize > 0n ? "Long" : posSize < 0n ? "Short" : "Flat";
   const sizeAbs = posSize < 0n ? -posSize : posSize;
   const { liquidationPriceE6, leverage } = pos;
@@ -308,17 +314,30 @@ function PositionCard({
             </div>
             <div className="flex items-center gap-3">
               <div className="text-right">
-                <span
-                  className={`text-sm font-bold ${pnlPositive ? "text-[var(--long)]" : "text-[var(--short)]"}`}
-                  style={{ fontFamily: "var(--font-jetbrains-mono)", fontVariantNumeric: "tabular-nums" }}
-                >
-                  {formatPnl(pnlTokens, decimals)}
-                </span>
-                <span
-                  className={`ml-2 text-[10px] font-medium ${pnlPositive ? "text-[var(--long)]/70" : "text-[var(--short)]/70"}`}
-                >
-                  {formatPnlPct(pnlPct)}
-                </span>
+                {entryDisplay.known || !hasPosition ? (
+                  <>
+                    <span
+                      className={`text-sm font-bold ${pnlPositive ? "text-[var(--long)]" : "text-[var(--short)]"}`}
+                      style={{ fontFamily: "var(--font-jetbrains-mono)", fontVariantNumeric: "tabular-nums" }}
+                    >
+                      {formatPnl(pnlTokens, decimals)}
+                    </span>
+                    <span
+                      className={`ml-2 text-[10px] font-medium ${pnlPositive ? "text-[var(--long)]/70" : "text-[var(--short)]/70"}`}
+                    >
+                      {formatPnlPct(pnlPct)}
+                    </span>
+                  </>
+                ) : (
+                  <span
+                    className="inline-flex items-center gap-1 text-sm font-bold text-[var(--text-secondary)]"
+                    style={{ fontFamily: "var(--font-jetbrains-mono)" }}
+                    data-testid="pnl-unknown"
+                  >
+                    --
+                    <InfoIcon tooltip={UNKNOWN_ENTRY_TOOLTIP} />
+                  </span>
+                )}
               </div>
               <button
                 type="button"
@@ -359,8 +378,8 @@ function PositionCard({
             </div>
             <div>
               <p className="text-[9px] font-medium uppercase tracking-[0.15em] text-[var(--text)]">Entry</p>
-              <p className="text-[12px] text-[var(--text-secondary)]" style={{ fontFamily: "var(--font-jetbrains-mono)", fontVariantNumeric: "tabular-nums" }}>
-                {formatUsdPriceE6(posEntry)}
+              <p className="text-[12px] text-[var(--text-secondary)]" style={{ fontFamily: "var(--font-jetbrains-mono)", fontVariantNumeric: "tabular-nums" }} title={entryDisplay.title}>
+                {entryDisplay.text}
               </p>
             </div>
             <div>
@@ -594,9 +613,11 @@ export function PortfolioPositionsView() {
           // (posSize === 0n) fall straight through to `pos.unrealizedPnl`
           // (always 0 for a flat account), so this sum is safe over
           // `activePositions` (open + idle), not just `openPositions`.
+          // #2660: an unknown entry contributes its polled placeholder (0),
+          // not live-minus-polled mark drift.
           const { pnl } = computeLivePositionPnl(
             posSize,
-            pos.effectiveEntryPrice,
+            displayEntryE6(pos.effectiveEntryPrice, pos.entryPriceSource),
             markE6,
             pos.initialMarginBps,
             pos.account?.capital ?? 0n,

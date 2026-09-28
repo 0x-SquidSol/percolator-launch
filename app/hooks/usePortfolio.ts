@@ -322,7 +322,7 @@ export function isOpenPosition(pos: PortfolioPosition): boolean {
  * leverage). Shared by the owner-scan path and the NFT-wrapped recovery scan so
  * both surface identical rows. `nftWrapped` flags escrowed positions for the UI.
  */
-function buildV17Position(
+export function buildV17Position(
   portfolio: ReturnType<typeof parsePortfolioV17>,
   oraclePriceE6: bigint,
   maintenanceMarginBps: bigint,

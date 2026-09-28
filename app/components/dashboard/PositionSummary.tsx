@@ -5,6 +5,8 @@ import { usePortfolio, getLiquidationSeverity, isOpenPosition, type PortfolioPos
 import { formatTokenAmount, formatUsdPriceE6 } from "@/lib/format";
 import { useMultiTokenMeta } from "@/hooks/useMultiTokenMeta";
 import { describeLiqPrice } from "@/lib/liq-price-display";
+import { describeEntryPrice } from "@/lib/entry-price-display";
+import { UNKNOWN_ENTRY_TOOLTIP } from "@/lib/trading";
 import { LiqPriceValue } from "@/components/trade/LiqPriceValue";
 
 import { GlowButton } from "@/components/ui/GlowButton";
@@ -34,6 +36,12 @@ function PositionCard({ pos, symbol, decimals = 6 }: { pos: PortfolioPosition; s
   const hasPosition = posSize !== 0n;
   // PERC-297: Guard PnL display when oracle price is unavailable
   const hasValidOracle = pos.oraclePriceE6 > 0n;
+  // #2660: v17/v18 store no entry on-chain — `account.entryPrice` is always 0n,
+  // so reading it rendered "—" for every position. Use the resolved entry and
+  // its source; on "unknown" the resolved value is the MARK and the hook's
+  // unrealizedPnl is a 0 placeholder, so neither may be shown as a number.
+  const entryDisplay = describeEntryPrice({ entryE6: pos.effectiveEntryPrice, source: pos.entryPriceSource });
+  const pnlIsKnown = hasValidOracle && entryDisplay.known;
   // Cross-margin: where collateral covers the position there is no liquidation
   // price, and a bare "—" says nothing about risk. Show margin health instead
   // (#2634 / #2558) — one shared derivation, see lib/liq-price-display.ts.
@@ -97,7 +105,7 @@ function PositionCard({ pos, symbol, decimals = 6 }: { pos: PortfolioPosition; s
             )}
           </div>
           <div className="text-right">
-            {hasValidOracle ? (
+            {pnlIsKnown ? (
               <>
                 <span
                   className={`text-[11px] font-bold ${pos.unrealizedPnl >= 0n ? "text-[var(--long)]" : "text-[var(--short)]"}`}
@@ -112,7 +120,11 @@ function PositionCard({ pos, symbol, decimals = 6 }: { pos: PortfolioPosition; s
                 </span>
               </>
             ) : (
-              <span className="text-[11px] font-bold text-[var(--text-secondary)]" style={{ fontFamily: "var(--font-jetbrains-mono)" }}>
+              <span
+                className="text-[11px] font-bold text-[var(--text-secondary)]"
+                style={{ fontFamily: "var(--font-jetbrains-mono)" }}
+                title={hasValidOracle ? UNKNOWN_ENTRY_TOOLTIP : undefined}
+              >
                 --
               </span>
             )}
@@ -129,8 +141,8 @@ function PositionCard({ pos, symbol, decimals = 6 }: { pos: PortfolioPosition; s
           </div>
           <div>
             <span className="text-[var(--text-secondary)]">Entry: </span>
-            <span className="text-[var(--text-secondary)]" style={{ fontFamily: "var(--font-jetbrains-mono)" }}>
-              {pos.account?.entryPrice != null ? formatUsdPriceE6(pos.account.entryPrice) : "—"}
+            <span className="text-[var(--text-secondary)]" style={{ fontFamily: "var(--font-jetbrains-mono)" }} title={entryDisplay.title}>
+              {entryDisplay.text}
             </span>
           </div>
           <div>

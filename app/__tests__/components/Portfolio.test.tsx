@@ -235,6 +235,11 @@ describe("Portfolio Component Tests", () => {
             leverage: 5,
             liquidationPriceE6: 80000000n,
             liquidationDistancePct: 20,
+            // #2660: the card reads the RESOLVED entry + its source, never the
+            // (always-0n on v17/v18) account.entryPrice. A loss worth showing
+            // needs a known entry; with source "unknown" the card shows "--".
+            effectiveEntryPrice: 100000000n,
+            entryPriceSource: "cache",
           },
         ],
         totalPnl: -500000n,

@@ -46,6 +46,7 @@ import {
   computePositionInitialMargin,
   UNKNOWN_ENTRY_TOOLTIP,
 } from "@/lib/trading";
+import { displayEntryE6 } from "@/lib/entry-price-display";
 import {
   formatTokenAmount,
   formatUsdPriceE6,
@@ -95,7 +96,7 @@ const CloseFlow: FC<{
   return (
     <ClosePositionModal
       positionSize={posSize}
-      entryPrice={pos.effectiveEntryPrice}
+      entryPrice={displayEntryE6(pos.effectiveEntryPrice, pos.entryPriceSource)}
       currentPrice={markE6}
       capital={pos.account?.capital ?? 0n}
       symbol={symbol}
@@ -188,7 +189,8 @@ const OtherMarketRow: FC<{
     capital: pos.account?.capital ?? 0n,
     markPriceE6: markE6,
     maintenanceMarginBps: pos.maintenanceMarginBps,
-    hasResolvedEntry: entryE6 > 0n,
+    // #2660: `entryE6 > 0n` is always true — on "unknown" it is the mark.
+    hasResolvedEntry: pnlIsKnown,
   });
   const pnlColor = pnlTokens === 0n ? "text-[var(--text-muted)]" : pnlTokens > 0n ? "text-[var(--long)]" : "text-[var(--short)]";
   const roeColor = roe === 0 ? "text-[var(--text-muted)]" : roe > 0 ? "text-[var(--long)]" : "text-[var(--short)]";

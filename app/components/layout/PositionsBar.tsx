@@ -6,7 +6,8 @@ import { PublicKey } from "@solana/web3.js";
 import { parseWrapperConfigV17, isV17Account, V17_HEADER_LEN } from "@percolatorct/sdk";
 import { subscribeSlab, getSnapshot, applyOnChainPoll } from "@/lib/priceStore/priceStore";
 import { sanitizePriceE6 } from "@/lib/oraclePrice";
-import { computeLivePositionPnl } from "@/lib/trading";
+import { computeLivePositionPnl, UNKNOWN_ENTRY_TOOLTIP } from "@/lib/trading";
+import { displayEntryE6, isEntryKnown } from "@/lib/entry-price-display";
 import { usePortfolio, type PortfolioPosition } from "@/hooks/usePortfolio";
 import { useConnectionCompat, useWalletCompat } from "@/hooks/useWalletCompat";
 import { useMultiTokenMeta } from "@/hooks/useMultiTokenMeta";
@@ -32,7 +33,10 @@ function PositionChip({ pos, decimals }: { pos: PortfolioPosition; decimals: num
   // Exposure actually carried (ADL-adjusted); equals nominal basis on
   // markets that never deleveraged. See lib/v17-adl.ts.
   const posSize = pos.effectiveSize;
-  const posEntry = pos.effectiveEntryPrice;
+  // #2660: on source "unknown" effectiveEntryPrice is the polled MARK — using
+  // it here painted live-minus-polled drift as PnL. No entry → no PnL figure.
+  const entryKnown = isEntryKnown(pos.effectiveEntryPrice, pos.entryPriceSource);
+  const posEntry = displayEntryE6(pos.effectiveEntryPrice, pos.entryPriceSource);
   const markE6 = livePriceE6 != null && livePriceE6 > 0n ? livePriceE6 : pos.oraclePriceE6;
 
   // Same live-mark PnL/ROE chain as the portfolio cards (PositionCard) — see
@@ -67,14 +71,20 @@ function PositionChip({ pos, decimals }: { pos: PortfolioPosition; decimals: num
       <span className="text-[11px] font-semibold text-[var(--text-secondary)] transition-colors group-hover:text-[var(--text)]">
         {symbol.replace(/-PERP$/i, "")}
       </span>
-      <span className={`text-[11px] font-bold ${colorClass}`}>
-        {sign}{formatTokenAmount(abs, decimals)}
-      </span>
-      {/* ROE — smaller + dimmed so the dollar figure stays the loud number;
-          no extra sign (color + the main value already carry direction). */}
-      <span className={`text-[10px] font-medium opacity-60 ${colorClass}`}>
-        {Math.abs(pnlPct).toFixed(1)}%
-      </span>
+      {entryKnown ? (
+        <>
+          <span className={`text-[11px] font-bold ${colorClass}`}>
+            {sign}{formatTokenAmount(abs, decimals)}
+          </span>
+          {/* ROE — smaller + dimmed so the dollar figure stays the loud number;
+              no extra sign (color + the main value already carry direction). */}
+          <span className={`text-[10px] font-medium opacity-60 ${colorClass}`}>
+            {Math.abs(pnlPct).toFixed(1)}%
+          </span>
+        </>
+      ) : (
+        <span className="text-[11px] font-bold text-[var(--text-dim)]" title={UNKNOWN_ENTRY_TOOLTIP}>--</span>
+      )}
     </Link>
   );
 }

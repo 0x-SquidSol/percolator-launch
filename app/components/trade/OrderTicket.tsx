@@ -59,7 +59,7 @@ import { getLivePriceSnapshot } from "@/lib/priceStore/priceStore";
 import { useOracleFreshness } from "@/hooks/useOracleFreshness";
 import { useEngineFreshness } from "@/hooks/useEngineFreshness";
 import { AccountKind, computeLiqPrice } from "@percolatorct/sdk";
-import { computeEstimatedEntryPrice, computeTradingFee, computePositionInitialMargin, estimateEntryFromPnl } from "@/lib/trading";
+import { computeEstimatedEntryPrice, computeTradingFee, computePositionInitialMargin, resolveEntryPrice } from "@/lib/trading";
 import { TradeConfirmationModal } from "@/components/trade/TradeConfirmationModal";
 import { InfoIcon } from "@/components/ui/Tooltip";
 import { usePrivyLogin, usePrivyAvailable } from "@/hooks/usePrivySafe";
@@ -475,13 +475,21 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const safeExistingPnl = userAccount && !isSentinelValue(userAccount.account.pnl)
     ? userAccount.account.pnl
     : 0n;
-  const existingEntryPriceE6 = rawExistingEntryPrice > 0n
-    ? rawExistingEntryPrice
-    : cachedExistingEntryPrice > 0n
-      ? cachedExistingEntryPrice
-      : userAccount
-        ? estimateEntryFromPnl(existingPositionSize, safeExistingPnl, livePriceE6 ?? 0n)
-        : 0n;
+  // #2660: resolve through resolveEntryPrice (same numbers as the old inline
+  // on-chain → cache → estimateEntryFromPnl chain) so the ticket also knows
+  // the SOURCE. On "unknown" the value is the mark: fine for locked-margin
+  // math, but it must not be shown as the entry (close panel) nor make the
+  // "before" liq read as a statement about safety.
+  const existingResolved = userAccount
+    ? resolveEntryPrice(
+        existingPositionSize,
+        rawExistingEntryPrice > 0n ? rawExistingEntryPrice : cachedExistingEntryPrice,
+        safeExistingPnl,
+        livePriceE6 ?? 0n,
+      )
+    : null;
+  const existingEntryPriceE6 = existingResolved?.entry ?? 0n;
+  const existingEntryKnown = existingResolved != null && existingResolved.source !== "unknown" && existingEntryPriceE6 > 0n;
   const lockedMargin = computePositionInitialMargin(existingPositionSize, existingEntryPriceE6, initialMarginBps);
   const availableBalance = userAccount ? (capital > lockedMargin ? capital - lockedMargin : 0n) : 0n;
   const effectiveBalance = userAccount ? availableBalance : (walletAtaBalance ?? 0n);
@@ -695,7 +703,11 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     capital,
     markPriceE6: livePriceE6 ?? 0n,
     maintenanceMarginBps,
-    hasResolvedEntry: combinedEntryPriceE6 > 0n,
+    // The combined entry inherits the existing one unless there is none, or
+    // this order flips through it (the residual takes this fill's price).
+    hasResolvedEntry:
+      combinedEntryPriceE6 > 0n &&
+      (existingPositionSize === 0n || existingEntryKnown || (!sameDirection && positionSize >= existingAbsSize)),
     formatPrice: formatUsdPriceE6,
     unknownText: "—",
   });
@@ -705,7 +717,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     capital,
     markPriceE6: livePriceE6 ?? 0n,
     maintenanceMarginBps,
-    hasResolvedEntry: existingEntryPriceE6 > 0n,
+    hasResolvedEntry: existingEntryKnown,
     formatPrice: formatUsdPriceE6,
     unknownText: "—",
   });
@@ -963,7 +975,7 @@ setEngineLockError(null);
         <OrderTicketClosePanel
           slabAddress={slabAddress}
           positionSize={existingPositionSize}
-          entryPriceE6={existingEntryPriceE6}
+          entryPriceE6={existingEntryKnown ? existingEntryPriceE6 : 0n}
           capital={capital}
           symbol={symbol}
           collateralSymbol={collateralSymbol}

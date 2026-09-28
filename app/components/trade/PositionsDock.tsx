@@ -310,7 +310,8 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
     capital: account.capital,
     markPriceE6: currentPriceE6,
     maintenanceMarginBps: maintenanceBps,
-    hasResolvedEntry: entryPriceE6 > 0n,
+    // #2660: `entryPriceE6 > 0n` is always true — on "unknown" it is the mark.
+    hasResolvedEntry: pnlIsKnown,
   });
   const liqPriceColor = (() => {
     if (liqUnliquidatable) return "text-[var(--text-secondary)]";
@@ -500,7 +501,7 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
       {showCloseModal && (
         <ClosePositionModal
           positionSize={account.positionSize}
-          entryPrice={entryPriceE6}
+          entryPrice={pnlIsKnown ? entryPriceE6 : 0n}
           currentPrice={currentPriceE6}
           capital={account.capital}
           symbol={symbol}
