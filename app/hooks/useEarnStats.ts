@@ -544,19 +544,27 @@ export function buildMarketVaultInfo(
  * on-chain LP Vault Registry yet (no Earn vault created for it) is excluded
  * rather than shown as a fabricated $0 entry.
  */
-function buildLiveMarkets(
+export function buildLiveMarkets(
   liveMarkets: LiveMarketMeta[],
   liveSlabSet: Set<string>,
   curatedVaults: Record<string, CuratedVaultOnChain> = {},
   supabaseBySlab: Map<string, Record<string, unknown>> = new Map(),
   registeredMarkets: RegisteredMarketMeta[] = [],
   onChainMaxLeverage: Record<string, number> = {},
+  /**
+   * False when the batched registry read FAILED this cycle. `curatedVaults` then
+   * holds the `found: false` DEFAULTS, which say nothing about whether a vault
+   * exists — so `hasVault` must be left unknown (shown), or one RPC hiccup on a
+   * cold start hides every market from the grid.
+   */
+  vaultsTrusted = true,
 ): MarketVaultInfo[] {
   const live = liveMarkets
     .filter((m) => !isBlockedSlab(m.slabAddress))
-    .map((m) =>
-      buildMarketVaultInfo(m.slabAddress, m.symbol, m.name, m.mainnetCa, curatedVaults, supabaseBySlab, onChainMaxLeverage),
-    );
+    .map((m) => {
+      const info = buildMarketVaultInfo(m.slabAddress, m.symbol, m.name, m.mainnetCa, curatedVaults, supabaseBySlab, onChainMaxLeverage);
+      return vaultsTrusted ? info : { ...info, hasVault: undefined };
+    });
 
   // Dedup registered markets against the live list (live wins) and against
   // duplicate registry rows, in one pass.
@@ -705,6 +713,7 @@ export function useEarnStats() {
         supabaseBySlab,
         registeredMarkets,
         onChainMaxLeverage,
+        curatedVaultsResult.ok,
       );
       setStats({ markets, ...computeAggregates(markets) });
 
