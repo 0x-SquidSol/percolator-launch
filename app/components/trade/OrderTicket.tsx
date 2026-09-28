@@ -49,8 +49,7 @@ import { PublicKey } from "@solana/web3.js";
 import { diagnoseTradeRejection } from "@/lib/tradeRejectDiagnosis";
 import { explorerTxUrl, getNetwork } from "@/lib/config";
 import { useUserAccount } from "@/hooks/useUserAccount";
-import { useClosePosition } from "@/hooks/useClosePosition";
-import { ClosePositionModal } from "@/components/trade/ClosePositionModal";
+import { OrderTicketClosePanel } from "@/components/trade/OrderTicketClosePanel";
 import { computeLimitPriceE6 } from "@/lib/slippage";
 import { bindConfirmedLimitPrice } from "@/lib/confirmedTrade";
 import { useEngineState } from "@/hooks/useEngineState";
@@ -350,14 +349,11 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       : false;
 
   const [direction, setDirection] = useState<"long" | "short">("long");
-  // Open/Close mode for the ticket. "Close" swaps the order form for a compact
-  // close panel + the shared ClosePositionModal, so a trader can close the
-  // market they're looking at without scrolling to PositionsDock. Close reuses
-  // useClosePosition (same hook the dock uses) — no logic drift, and it inherits
-  // the fresh-read guard + portfolio-bus refresh.
+  // Open/Close mode (GH#2651). "Close" swaps the order form for
+  // OrderTicketClosePanel, which reuses useClosePosition + ClosePositionModal.
+  // That panel is a separate component so this ticket stays non-reactive to the
+  // live price and does not mount the close hook while the trader is opening.
   const [ticketMode, setTicketMode] = useState<"open" | "close">("open");
-  const [showCloseModal, setShowCloseModal] = useState(false);
-  const { closePosition, loading: closeLoading, error: closeError, prewarmClose } = useClosePosition(slabAddress);
   // USD is the default sizing unit — traders think in dollar notional first;
   // the chip next to the input switches to token units for those who don't.
   const [sizeUnit, setSizeUnit] = useState<"token" | "usd">("usd");
@@ -930,26 +926,12 @@ setEngineLockError(null);
     positionSize <= 0n ||
     !!blockingIssue;
 
-  // ── Close-mode derived values + shared bits ─────────────────────────────
-  const hasOpenPosition = existingPositionSize !== 0n;
-  const closeIsLong = existingPositionSize > 0n;
-  const closeAbsPosition = existingPositionSize < 0n ? -existingPositionSize : existingPositionSize;
-  const closeAbsPnl = safeExistingPnl < 0n ? -safeExistingPnl : safeExistingPnl;
-  const closePnlColor =
-    safeExistingPnl > 0n ? "text-[var(--long)]" : safeExistingPnl < 0n ? "text-[var(--short)]" : "text-[var(--text-secondary)]";
-  const closePnlSign = safeExistingPnl > 0n ? "+" : safeExistingPnl < 0n ? "-" : "";
-
-  const handleConfirmClose = async (percent: number) => {
-    try {
-      await closePosition(percent);
-      if (percent === 100 && userAccount) clearEntryPrice(slabAddress, userAccount.idx, publicKey?.toBase58());
-      setShowCloseModal(false);
-      // Refresh this ticket's own position readout past the RPC cache window;
-      // useClosePosition already fired invalidatePortfolio() for the header bar.
-      setTimeout(() => refreshSlab(), 1200);
-    } catch {
-      // Failure surfaced via `closeError` inside the modal.
-    }
+  // ── Close mode ──────────────────────────────────────────────────────────
+  const handleClosed = (percent: number) => {
+    if (percent === 100 && userAccount) clearEntryPrice(slabAddress, userAccount.idx, publicKey?.toBase58());
+    // Refresh this ticket's own position readout past the RPC cache window;
+    // useClosePosition already fired invalidatePortfolio() for the header bar.
+    setTimeout(() => refreshSlab(), 1200);
   };
 
   // Open/Close segmented toggle — above Long/Short, shared by both modes.
@@ -960,10 +942,7 @@ setEngineLockError(null);
           key={m}
           role="tab"
           aria-selected={ticketMode === m}
-          onClick={() => {
-            setTicketMode(m);
-            if (m === "close" && hasOpenPosition) prewarmClose();
-          }}
+          onClick={() => setTicketMode(m)}
           className={`flex-1 rounded-none border py-2 text-[11px] font-bold uppercase tracking-[0.1em] transition-colors duration-150 ${
             ticketMode === m
               ? "border-[var(--accent)] bg-[var(--accent)]/[0.08] text-[var(--accent)]"
@@ -976,87 +955,26 @@ setEngineLockError(null);
     </div>
   );
 
-  const closePositionModal =
-    showCloseModal && hasOpenPosition ? (
-      <ClosePositionModal
-        positionSize={existingPositionSize}
-        entryPrice={existingEntryPriceE6}
-        currentPrice={livePriceE6 ?? 0n}
-        capital={capital}
-        symbol={symbol}
-        collateralSymbol={collateralSymbol}
-        decimals={decimals}
-        priceUsd={priceUsd}
-        isLong={closeIsLong}
-        loading={closeLoading}
-        tradingFeeBps={tradingFeeBps}
-        oracleStale={oracleStale}
-        maxFillAbs={fillCaps?.maxFillAbs ?? null}
-        onConfirm={handleConfirmClose}
-        onCancel={() => setShowCloseModal(false)}
-      />
-    ) : null;
-
   // ── Close mode — swap the order form for a compact close panel ───────────
   if (ticketMode === "close") {
     return (
       <div className="relative p-3.5">
         {openCloseToggle}
-        {hasOpenPosition ? (
-          <div className="min-w-0">
-            {/* Position summary — side, size, entry, live PnL. */}
-            <div
-              className={`mb-3 rounded-none border px-3 py-2.5 ${
-                closeIsLong ? "border-[var(--long)]/25 bg-[var(--long)]/[0.04]" : "border-[var(--short)]/25 bg-[var(--short)]/[0.04]"
-              }`}
-            >
-              <div className="flex items-center justify-between">
-                <span className={`text-[11px] font-bold uppercase tracking-[0.1em] ${closeIsLong ? "text-[var(--long)]" : "text-[var(--short)]"}`}>
-                  {closeIsLong ? "Long" : "Short"} Position
-                </span>
-                <span className="text-[10px] text-[var(--text-secondary)]" style={{ fontFamily: "var(--font-mono)" }}>
-                  Entry {formatUsdPriceE6(existingEntryPriceE6)}
-                </span>
-              </div>
-              <div className="mt-1.5 flex items-center justify-between gap-2">
-                <span className="truncate text-[13px] font-semibold text-[var(--text)]" style={{ fontFamily: "var(--font-mono)" }}>
-                  {formatTokenAmount(closeAbsPosition, decimals)} {symbol}
-                </span>
-                <span className={`shrink-0 text-[12px] font-semibold ${closePnlColor}`} style={{ fontFamily: "var(--font-mono)" }}>
-                  {closePnlSign}{formatTokenAmount(closeAbsPnl, decimals)} {collateralSymbol}
-                </span>
-              </div>
-            </div>
-
-            {closeError && (
-              <div className="mb-2 rounded-none border border-[var(--short)]/20 bg-[var(--short)]/5 px-3 py-2">
-                <p className="text-[10px] text-[var(--short)]">{closeError}</p>
-              </div>
-            )}
-
-            <button
-              onClick={() => {
-                prewarmClose();
-                setShowCloseModal(true);
-              }}
-              disabled={closeLoading || oracleStale || (livePriceE6 ?? 0n) <= 0n}
-              className="w-full rounded-none border border-[var(--short)] bg-[var(--short)] py-3 text-[12px] font-bold uppercase tracking-[0.1em] text-white transition-opacity duration-150 hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {closeLoading ? "Closing…" : "Close Position"}
-            </button>
-            <p className="mt-2 text-center text-[10px] text-[var(--text-secondary)]">
-              Pick an amount and confirm the fee &amp; est. receive in the next step.
-            </p>
-          </div>
-        ) : (
-          <div className="rounded-none border border-[var(--border)] bg-[var(--bg-surface)] px-3 py-8 text-center">
-            <p className="text-[12px] font-medium text-[var(--text)]">No open position</p>
-            <p className="mx-auto mt-1.5 max-w-[240px] text-[11px] leading-relaxed text-[var(--text-secondary)]">
-              You have no open position in this market to close. Switch to Open to place a trade.
-            </p>
-          </div>
-        )}
-        {closePositionModal}
+        <OrderTicketClosePanel
+          slabAddress={slabAddress}
+          positionSize={existingPositionSize}
+          entryPriceE6={existingEntryPriceE6}
+          capital={capital}
+          symbol={symbol}
+          collateralSymbol={collateralSymbol}
+          decimals={decimals}
+          tradingFeeBps={params?.tradingFeeBps}
+          maxFillAbs={fillCaps?.maxFillAbs ?? null}
+          lpUnderfunded={lpUnderfunded}
+          engineStale={engineStale}
+          oracleBlocked={!mockMode && (oracleUnavailable || oracleStale)}
+          onClosed={handleClosed}
+        />
       </div>
     );
   }

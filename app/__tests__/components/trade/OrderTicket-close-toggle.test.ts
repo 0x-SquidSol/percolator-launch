@@ -1,53 +1,50 @@
 /**
- * Binds OrderTicket's Open/Close toggle + inline close flow to source. The
- * ticket previously only opened positions; closing meant scrolling to
- * PositionsDock. This adds an Open/Close toggle above Long/Short whose Close
- * mode shows a position summary and opens the shared ClosePositionModal.
- *
- * Source-binding: OrderTicket pulls a large hook/provider stack that a unit
- * render would have to reproduce; what matters here is the wiring — it reuses
- * useClosePosition + ClosePositionModal (no logic drift) and closes correctly.
+ * Binds OrderTicket's Open/Close toggle to source (GH#2651). The behaviour of the
+ * close panel itself is tested for real in OrderTicketClosePanel.test.tsx; this
+ * only pins the wiring that a unit render of the whole ticket cannot cheaply reach.
  */
 import { describe, expect, it } from "vitest";
 import fs from "fs";
 import path from "path";
 
-const SRC = fs.readFileSync(
+const RAW = fs.readFileSync(
   path.resolve(__dirname, "../../../components/trade/OrderTicket.tsx"),
   "utf8",
 );
+/** Source without comments, so prose mentioning a hook cannot satisfy or fail a check. */
+const SRC = RAW.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
 
 describe("OrderTicket — Open/Close toggle", () => {
-  it("reuses useClosePosition + ClosePositionModal (no duplicated close logic)", () => {
-    expect(SRC).toContain('import { useClosePosition } from "@/hooks/useClosePosition"');
-    expect(SRC).toContain('import { ClosePositionModal } from "@/components/trade/ClosePositionModal"');
-    expect(SRC).toMatch(/useClosePosition\(slabAddress\)/);
+  it("delegates Close mode to OrderTicketClosePanel and does not mount the close hook itself", () => {
+    expect(SRC).toContain('import { OrderTicketClosePanel } from "@/components/trade/OrderTicketClosePanel"');
+    expect(SRC).toMatch(/<OrderTicketClosePanel[\s\S]*onClosed=\{handleClosed\}/);
+    // the open form must not pay for useClosePosition / a reactive price
+    expect(SRC).not.toMatch(/useClosePosition\(/);
+    expect(SRC).not.toMatch(/useLivePrice\(\)/);
   });
 
-  it("has an open/close mode toggle rendered above the order form", () => {
+  it("has an open/close toggle, defaulting to open, emitted before the close branch", () => {
     expect(SRC).toMatch(/const \[ticketMode, setTicketMode\] = useState<"open" \| "close">\("open"\)/);
     expect(SRC).toMatch(/role="tablist"/);
-    // toggle is emitted before the main form return
-    const toggleAt = SRC.indexOf("openCloseToggle =");
-    const closeReturnAt = SRC.indexOf('if (ticketMode === "close")');
-    expect(toggleAt).toBeGreaterThan(-1);
-    expect(closeReturnAt).toBeGreaterThan(toggleAt);
+    expect(SRC.indexOf("openCloseToggle =")).toBeGreaterThan(-1);
+    expect(SRC.indexOf('if (ticketMode === "close")')).toBeGreaterThan(SRC.indexOf("openCloseToggle ="));
   });
 
-  it("close mode opens the modal wired to this market's position", () => {
-    expect(SRC).toMatch(/<ClosePositionModal[\s\S]*positionSize=\{existingPositionSize\}/);
-    expect(SRC).toMatch(/onConfirm=\{handleConfirmClose\}/);
-    // gated on an actual open position
-    expect(SRC).toContain("showCloseModal && hasOpenPosition");
+  it("no hook is called after the Close-mode early return (rules of hooks)", () => {
+    const after = SRC.slice(SRC.indexOf('if (ticketMode === "close")'));
+    const componentEnd = after.indexOf("\n};\n");
+    const body = after.slice(0, componentEnd === -1 ? undefined : componentEnd);
+    expect(body).not.toMatch(/\buse[A-Z][A-Za-z]*\(/);
   });
 
-  it("close success clears the entry cache on a full close and refreshes the ticket", () => {
-    expect(SRC).toMatch(/await closePosition\(percent\)/);
+  it("a full close clears the cached entry price and refreshes the ticket", () => {
     expect(SRC).toMatch(/percent === 100 && userAccount\) clearEntryPrice/);
     expect(SRC).toMatch(/setTimeout\(\(\) => refreshSlab\(\), \d+\)/);
   });
 
-  it("shows an empty state when there is no position to close", () => {
-    expect(SRC).toContain("No open position");
+  it("gates the panel like PositionsDock: engine staleness, LP underfunded, oracle", () => {
+    expect(SRC).toMatch(/lpUnderfunded=\{lpUnderfunded\}/);
+    expect(SRC).toMatch(/engineStale=\{engineStale\}/);
+    expect(SRC).toMatch(/oracleBlocked=\{!mockMode && \(oracleUnavailable \|\| oracleStale\)\}/);
   });
 });
