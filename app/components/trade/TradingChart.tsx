@@ -47,6 +47,9 @@ import { ChartDrawingToolbar } from "./ChartDrawingToolbar";
 import { useChartDrawingTool } from "@/hooks/useChartDrawingTool";
 import { useChartDrawings } from "@/hooks/useChartDrawings";
 import { pollWhenVisible } from "@/lib/pollWhenVisible";
+import { useChartZoomControls } from "@/hooks/useChartZoomControls";
+import { ChartZoomControls } from "./ChartZoomControls";
+import { ChartZoomOverlay } from "./ChartZoomOverlay";
 import {
   isCandleStyle,
   candleStyleOptions,
@@ -663,6 +666,15 @@ const TradingChartInner: FC<{ slabAddress: string; mintAddress?: string }> = ({
   // ad-hoc candle+line predicate.
   const { sparse: effectiveSparse } = hasRenderableData(chartStyle, candleData, lineData);
 
+  // GH#1652: do NOT early-return on this — the chart container must always
+  // mount so that lightweight-charts can create its canvas. Sparse/empty
+  // state is rendered as an overlay inside the container below. Hoisted
+  // above the indicator/zoom hooks (rather than declared just before the
+  // JSX return, as it originally was) because useChartZoomControls also
+  // needs it, to suppress box-zoom-drag/double-click-reset while there's
+  // nothing meaningful on screen to zoom to.
+  const showEmptyOverlay = totalDataPoints === 0 || effectiveSparse;
+
   // Phase 2: volume has data (used to show empty state in volume pane)
   // #2321: guard on Number.isFinite, not just `> 0`. NaN > 0 is false so NaN was
   // already excluded here, but Infinity > 0 is TRUE — so a single corrupt candle
@@ -690,6 +702,33 @@ const TradingChartInner: FC<{ slabAddress: string; mintAddress?: string }> = ({
     [indicators],
   );
   useIndicatorOscillatorPane(chartRef, chartReady, candleData, paneIndicatorConfigs, chartTheme);
+
+  // Chart zoom: +/-/reset buttons, a "drag to zoom" toggle (box-zoom drag
+  // replacing the default pan-on-drag), keyboard +/-, and double-click-
+  // to-reset. barCount matches whichever data array the active chartStyle
+  // actually renders (candleData for candle/bar styles, lineData for
+  // line/area) — same selector hasRenderableData uses internally — so the
+  // zoom-out clamp reflects what's really on screen. isPointerTool gates
+  // box-zoom-drag/double-click-reset off while a drawing tool owns the
+  // chart's click/drag gestures (ChartDrawingOverlay). See
+  // hooks/useChartZoomControls.ts — any other lightweight-charts price/
+  // candle chart in the app should reuse this same hook for consistent
+  // zoom behaviour.
+  const activeBarCount = chartDataKind(chartStyle) === "ohlc" ? candleData.length : lineData.length;
+  const {
+    zoomIn: handleZoomIn,
+    zoomOut: handleZoomOut,
+    reset: handleZoomReset,
+    dragToZoom,
+    setDragToZoom,
+    dragSelection,
+  } = useChartZoomControls({
+    chartRef,
+    chartReady,
+    barCount: activeBarCount,
+    isPointerTool: drawingTool === "pointer",
+    enabled: !showEmptyOverlay,
+  });
 
   // Create/destroy chart
   useEffect(() => {
@@ -734,7 +773,12 @@ const TradingChartInner: FC<{ slabAddress: string; mintAddress?: string }> = ({
         vertTouchDrag: true,
       },
       handleScale: {
-        axisPressedMouseMove: true,
+        // Explicit object form (rather than the boolean-true shorthand,
+        // which is equivalent but opaque) — dragging the time or price
+        // axis zooms that scale, on top of the +/-/reset buttons, box-
+        // zoom drag, and mouse-wheel zoom (below). See ChartZoomControls
+        // / useChartZoomControls for the rest of the zoom UI.
+        axisPressedMouseMove: { time: true, price: true },
         mouseWheel: true,
         pinch: true,
       },
@@ -1250,10 +1294,8 @@ const TradingChartInner: FC<{ slabAddress: string; mintAddress?: string }> = ({
   const ref24h = computeRef24h(activeData, timeframe, currentPrice);
   const { priceChange, priceChangePercent, isUp } = computePriceChange(currentPrice, ref24h);
 
-  // GH#1652: do NOT early-return here — the chart container must always mount
-  // so that lightweight-charts can create its canvas. Sparse/empty state is
-  // rendered as an overlay inside the container below.
-  const showEmptyOverlay = totalDataPoints === 0 || effectiveSparse;
+  // showEmptyOverlay is hoisted above (useChartZoomControls needs it too) —
+  // see the GH#1652 comment there.
   // Distinguishes "still fetching, first paint hasn't happened yet" from
   // "all three sources settled and there's genuinely no data" — previously
   // both looked identical (instant "No chart data yet"), which reads as
@@ -1322,6 +1364,17 @@ const TradingChartInner: FC<{ slabAddress: string; mintAddress?: string }> = ({
             updateIndicator={updateIndicator}
             clearAll={clearAllIndicators}
           />
+          {/* Zoom in/out/reset + drag-to-zoom toggle. Lives in this header
+              row (not overlaid on the canvas) so it can never collide with
+              the price/time scale or the canvas-overlaid drawing toolbar,
+              and wraps for free at mobile widths via this row's flex-wrap. */}
+          <ChartZoomControls
+            onZoomIn={handleZoomIn}
+            onZoomOut={handleZoomOut}
+            onReset={handleZoomReset}
+            dragToZoom={dragToZoom}
+            onToggleDragToZoom={() => setDragToZoom(!dragToZoom)}
+          />
 
           {/* PERC-8090: 1m/5m/15m/1h/4h/1d only — 7d/30d collapsed */}
           <div className="flex gap-1 rounded-none border border-[var(--border)] bg-[var(--bg-elevated)] p-0.5">
@@ -1361,6 +1414,13 @@ const TradingChartInner: FC<{ slabAddress: string; mintAddress?: string }> = ({
             capped below it. Mobile keeps a fixed 45svh (no grid row to fill
             there — the mobile layout is a stacked flex column). */}
         <div ref={containerRef} className="w-full h-[45svh] lg:h-full" />
+
+        {/* Box-zoom drag selection: translucent rectangle shown while the
+            user drags with "drag to zoom" toggled on (useChartZoomControls
+            owns the drag state + actually performs the zoom on release).
+            Renders nothing while no drag is in flight — safe to always
+            mount. */}
+        <ChartZoomOverlay selection={dragSelection} />
 
         {/* User-drawing overlay: transparent canvas tracking the chart
             container's dimensions, layered above the chart canvas via DOM
