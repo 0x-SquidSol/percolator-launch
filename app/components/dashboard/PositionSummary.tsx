@@ -5,6 +5,7 @@ import { usePortfolio, getLiquidationSeverity, isOpenPosition, type PortfolioPos
 import { formatTokenAmount, formatUsdPriceE6 } from "@/lib/format";
 import { useMultiTokenMeta } from "@/hooks/useMultiTokenMeta";
 import { describeLiqPrice } from "@/lib/liq-price-display";
+import { describeEntryPrice } from "@/lib/trading";
 import { LiqPriceValue } from "@/components/trade/LiqPriceValue";
 
 import { GlowButton } from "@/components/ui/GlowButton";
@@ -37,13 +38,24 @@ function PositionCard({ pos, symbol, decimals = 6 }: { pos: PortfolioPosition; s
   // Cross-margin: where collateral covers the position there is no liquidation
   // price, and a bare "—" says nothing about risk. Show margin health instead
   // (#2634 / #2558) — one shared derivation, see lib/liq-price-display.ts.
+  // The entry price is RECONSTRUCTED, never read off the chain: v17 stores no
+  // entry_price, so `account.entryPrice` is a hard-coded 0n and reading it here
+  // rendered "—" on every position forever (#2660). `effectiveEntryPrice` plus
+  // `entryPriceSource` is the resolved pair, and describeEntryPrice is the one
+  // place that decides whether it may be shown.
+  const entryDisplay = describeEntryPrice({
+    entryPriceE6: pos.effectiveEntryPrice,
+    source: pos.entryPriceSource,
+    formatPrice: formatUsdPriceE6,
+    unknownText: "—",
+  });
   const liqDisplay = describeLiqPrice({
     liqPriceE6: pos.liquidationPriceE6,
     positionSize: pos.account?.positionSize ?? 0n,
     capital: pos.account?.capital ?? 0n,
     markPriceE6: pos.oraclePriceE6,
     maintenanceMarginBps: pos.maintenanceMarginBps,
-    hasResolvedEntry: pos.entryPriceSource !== "unknown",
+    hasResolvedEntry: entryDisplay.known,
     formatPrice: formatUsdPriceE6,
     unknownText: "—",
   });
@@ -97,7 +109,13 @@ function PositionCard({ pos, symbol, decimals = 6 }: { pos: PortfolioPosition; s
             )}
           </div>
           <div className="text-right">
-            {hasValidOracle ? (
+            {/* An unresolved entry makes `unrealizedPnl` a PLACEHOLDER 0, not a
+                flat reading — PortfolioPosition's own doc says display sites MUST
+                render "--" for it. A confident green +0 / +0.00% beside an honest
+                "—" for Entry is the louder half of the same lie (#2660). This is
+                how the trade surfaces already gate it (OtherMarketPositions:231,
+                PositionsDock:432). */}
+            {hasValidOracle && entryDisplay.known ? (
               <>
                 <span
                   className={`text-[11px] font-bold ${pos.unrealizedPnl >= 0n ? "text-[var(--long)]" : "text-[var(--short)]"}`}
@@ -112,7 +130,11 @@ function PositionCard({ pos, symbol, decimals = 6 }: { pos: PortfolioPosition; s
                 </span>
               </>
             ) : (
-              <span className="text-[11px] font-bold text-[var(--text-secondary)]" style={{ fontFamily: "var(--font-jetbrains-mono)" }}>
+                <span
+                  className="text-[11px] font-bold text-[var(--text-dim)]"
+                  style={{ fontFamily: "var(--font-jetbrains-mono)" }}
+                  title={entryDisplay.known ? undefined : entryDisplay.title}
+                >
                 --
               </span>
             )}
@@ -129,8 +151,12 @@ function PositionCard({ pos, symbol, decimals = 6 }: { pos: PortfolioPosition; s
           </div>
           <div>
             <span className="text-[var(--text-secondary)]">Entry: </span>
-            <span className="text-[var(--text-secondary)]" style={{ fontFamily: "var(--font-jetbrains-mono)" }}>
-              {pos.account?.entryPrice != null ? formatUsdPriceE6(pos.account.entryPrice) : "—"}
+            <span
+              className={entryDisplay.known ? "text-[var(--text-secondary)]" : "text-[var(--text-dim)]"}
+              style={{ fontFamily: "var(--font-jetbrains-mono)" }}
+              title={entryDisplay.title}
+            >
+              {entryDisplay.text}
             </span>
           </div>
           <div>

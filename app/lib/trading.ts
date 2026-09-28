@@ -234,6 +234,70 @@ export function resolveEntryPrice(
   };
 }
 
+/** What an entry-price cell should render, and whether it means anything. */
+export interface EntryPriceDisplay {
+  /**
+   * Whether an entry price actually resolved. The same boolean every surface
+   * needs, and the one `describeLiqPrice`'s `hasResolvedEntry` is asking for.
+   */
+  known: boolean;
+  /** Text for the value cell. */
+  text: string;
+  /** Tooltip explaining the "--", or undefined when there is a real price. */
+  title: string | undefined;
+}
+
+/**
+ * The ONE way an entry price reaches a trader's screen.
+ *
+ * `resolveEntryPrice` above says it in words — "only DISPLAY should branch on
+ * `source`" — and then leaves each surface to remember. Five did it five ways
+ * and two got it wrong in OPPOSITE directions (GH#2660):
+ *
+ *   - `PositionSummary` read the RAW `account.entryPrice`, which v17 hard-codes
+ *     to 0n (`userAccountScan.ts:153`: "v17 genuinely does not store one"), so
+ *     the dashboard rendered "--" for every position ever, while the Liq cell
+ *     beside it showed a price computed from the entry that HAD resolved.
+ *   - `PortfolioPositionsView` rendered `effectiveEntryPrice` with no reference
+ *     to `source` at all. On the "unknown" path that value IS the oracle price,
+ *     so the row showed the current mark as the trader's entry — identical to
+ *     the Mark cell next to it, on a row reading 0 PnL.
+ *
+ * A dash is the honest answer here and a number is not, so the decision is
+ * worth exactly one definition.
+ *
+ * The `entry <= 0n` arm is defence-in-depth, NOT a live guard: review proved it
+ * unreachable for anything `resolveEntryPrice` produces, because
+ * `estimateEntryFromPnl` already clamps (`return entry > 0n ? entry :
+ * oraclePrice`) and both other branches require a positive price. It is kept
+ * for callers that hand-build a position without going through the resolver —
+ * mock data, tests, a future estimator that drops the clamp — where a confident
+ * "$0.000000" would be the same fabrication in a different disguise.
+ */
+export function describeEntryPrice(input: {
+  /** Resolved entry, e6 — `ResolvedEntryPrice.entry` / `effectiveEntryPrice`. */
+  entryPriceE6: bigint | null | undefined;
+  source: EntryPriceSource;
+  /** Price formatter, e.g. `formatUsdPriceE6`. */
+  formatPrice: (priceE6: bigint) => string;
+  /** Text when the entry did not resolve. Matches the shipped surfaces. */
+  unknownText?: string;
+}): EntryPriceDisplay {
+  const entry = input.entryPriceE6 ?? 0n;
+  // ALLOWLIST, not a denylist. `source === "unknown"` alone fails OPEN: an
+  // absent or null `source`, or any member added later ("stale", "estimated"),
+  // would be treated as trustworthy and print the mark as the entry — the exact
+  // defect this helper exists to stop. Review demonstrated it, and pointedly
+  // "onchain" — the impossible value the PREVIOUS fixtures used — sailed
+  // straight through. TypeScript guards the union at compile time; nothing
+  // guards it at runtime, and this value reaches here from a hook.
+  const trusted = input.source === "cache" || input.source === "derived";
+  if (!trusted || entry <= 0n) {
+    return { known: false, text: input.unknownText ?? "--", title: UNKNOWN_ENTRY_TOOLTIP };
+  }
+  return { known: true, text: input.formatPrice(entry), title: undefined };
+}
+
 export function estimateEntryFromPnl(
   positionSize: bigint,
   onChainPnl: bigint,

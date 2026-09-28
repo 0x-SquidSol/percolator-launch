@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { subscribeSlab, getSnapshot } from "@/lib/priceStore/priceStore";
-import { computeLivePositionPnl } from "@/lib/trading";
+import { computeLivePositionPnl, describeEntryPrice } from "@/lib/trading";
 import { adlReductionTooltip } from "@/lib/v17-adl";
 import { computeLiquidationDistancePct } from "@/lib/liquidation-distance";
 import { SlabProvider } from "@/components/providers/SlabProvider";
@@ -197,6 +197,20 @@ function PositionCard({
   const posSize = pos.effectiveSize;
   const posCapital = pos.account?.capital ?? 0n;
   const posEntry = pos.effectiveEntryPrice;
+  // `posEntry` is the right input for RISK MATH, which wants a non-zero
+  // denominator and gets the mark when nothing resolved. It is the wrong thing
+  // to PRINT: on the "unknown" path it IS the mark, so rendering it unguarded
+  // showed the current price as the trader's entry, matching the Mark cell two
+  // slots away on a row reading 0 PnL (#2660). resolveEntryPrice's own doc says
+  // "only DISPLAY should branch on source" — this is that branch.
+  const entryDisplay = describeEntryPrice({
+    entryPriceE6: posEntry,
+    source: pos.entryPriceSource,
+    formatPrice: formatUsdPriceE6,
+    // Em dash, matching this row's Liq cell and its other empty values. The
+    // "--" default belongs to the trade tables, which pair it with an InfoIcon.
+    unknownText: "—",
+  });
   const side = posSize > 0n ? "Long" : posSize < 0n ? "Short" : "Flat";
   const sizeAbs = posSize < 0n ? -posSize : posSize;
   const { liquidationPriceE6, leverage } = pos;
@@ -246,7 +260,7 @@ function PositionCard({
     capital: pos.account?.capital ?? 0n,
     markPriceE6: markE6,
     maintenanceMarginBps: pos.maintenanceMarginBps,
-    hasResolvedEntry: pos.entryPriceSource !== "unknown",
+    hasResolvedEntry: entryDisplay.known,
     formatPrice: formatUsdPriceE6,
     unknownText: "—",
   });
@@ -307,19 +321,35 @@ function PositionCard({
               )}
             </div>
             <div className="flex items-center gap-3">
-              <div className="text-right">
-                <span
-                  className={`text-sm font-bold ${pnlPositive ? "text-[var(--long)]" : "text-[var(--short)]"}`}
-                  style={{ fontFamily: "var(--font-jetbrains-mono)", fontVariantNumeric: "tabular-nums" }}
-                >
-                  {formatPnl(pnlTokens, decimals)}
-                </span>
-                <span
-                  className={`ml-2 text-[10px] font-medium ${pnlPositive ? "text-[var(--long)]/70" : "text-[var(--short)]/70"}`}
-                >
-                  {formatPnlPct(pnlPct)}
-                </span>
-              </div>
+                <div className="text-right">
+                  {/* An unresolved entry makes this PnL fabricated, not flat:
+                      computeLivePositionPnl is fed the MARK as the entry, so it
+                      renders the drift since the last poll. PortfolioPosition's
+                      own doc says display sites MUST render "--" here (#2660). */}
+                  {entryDisplay.known ? (
+                    <>
+                  <span
+                    className={`text-sm font-bold ${pnlPositive ? "text-[var(--long)]" : "text-[var(--short)]"}`}
+                    style={{ fontFamily: "var(--font-jetbrains-mono)", fontVariantNumeric: "tabular-nums" }}
+                  >
+                    {formatPnl(pnlTokens, decimals)}
+                  </span>
+                  <span
+                    className={`ml-2 text-[10px] font-medium ${pnlPositive ? "text-[var(--long)]/70" : "text-[var(--short)]/70"}`}
+                  >
+                    {formatPnlPct(pnlPct)}
+                  </span>
+                    </>
+                  ) : (
+                    <span
+                      className="text-sm font-bold text-[var(--text-dim)]"
+                      style={{ fontFamily: "var(--font-jetbrains-mono)", fontVariantNumeric: "tabular-nums" }}
+                      title={entryDisplay.title}
+                    >
+                      --
+                    </span>
+                  )}
+                </div>
               <button
                 type="button"
                 onClick={(e) => {
@@ -359,8 +389,12 @@ function PositionCard({
             </div>
             <div>
               <p className="text-[9px] font-medium uppercase tracking-[0.15em] text-[var(--text)]">Entry</p>
-              <p className="text-[12px] text-[var(--text-secondary)]" style={{ fontFamily: "var(--font-jetbrains-mono)", fontVariantNumeric: "tabular-nums" }}>
-                {formatUsdPriceE6(posEntry)}
+              <p
+                className={`text-[12px] ${entryDisplay.known ? "text-[var(--text-secondary)]" : "text-[var(--text-dim)]"}`}
+                style={{ fontFamily: "var(--font-jetbrains-mono)", fontVariantNumeric: "tabular-nums" }}
+                title={entryDisplay.title}
+              >
+                {entryDisplay.text}
               </p>
             </div>
             <div>
