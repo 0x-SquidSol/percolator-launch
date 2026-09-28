@@ -11,6 +11,7 @@ import {
 } from "@privy-io/react-auth/solana";
 import { createSolanaRpc, createSolanaRpcSubscriptions } from "@solana/kit";
 import { PublicKey, Transaction } from "@solana/web3.js";
+import * as Sentry from "@sentry/nextjs";
 import { SentryUserContext } from "@/components/providers/SentryUserContext";
 import { PrivyLoginContext } from "@/hooks/usePrivySafe";
 import { WalletApiContext, type WalletApi } from "@/hooks/walletApiContext";
@@ -242,6 +243,22 @@ const PrivyWalletApiBridge: FC<{ children: ReactNode }> = ({ children }) => {
         }
       } catch (e) {
         console.warn("[PrivyProviderClient] connected-wallet variadic sign failed — using Privy signer (may prompt per tx):", e);
+      }
+
+      // ATTEMPT 3 (fallback) — Privy's own signer, called with all N inputs.
+      // GH#2594: this still RESOLVES with N signed transactions, so from
+      // signAllCompat's (lib/tx.ts) point of view it looks identical to a
+      // genuine one-approval batch — but Privy's own bridge for a
+      // non-wallet-standard wallet may prompt once PER transaction internally
+      // (the "I still signed N times" report). Neither the return value nor
+      // signAllCompat can observe that degradation, so before this it was
+      // invisible outside a console.warn. Report it once per batch so a
+      // degraded launch is discoverable without reproducing it locally.
+      if (txs.length > 1) {
+        Sentry.captureMessage(
+          `[PrivyProviderClient] signAllTransactions degraded to Privy's per-tx signer for a ${txs.length}-tx batch — the wallet likely prompted ${txs.length} times instead of once.`,
+          "warning",
+        );
       }
 
       const inputs = serialized.map((bytes) => ({
