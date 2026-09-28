@@ -18,12 +18,6 @@ interface LaunchSuccessProps {
   mainnetCA?: string;
   /** Devnet mint address (different from mainnet CA) */
   devnetMint?: string | null;
-  /** Number of tokens airdropped */
-  devnetAirdropAmount?: number | null;
-  /** Token symbol for airdrop */
-  devnetAirdropSymbol?: string | null;
-  /** Error from devnet mint attempt */
-  devnetMintError?: string | null;
   /**
    * GH#1761: Insurance LP Mint (step 5) failed but market is live.
    * Shows a soft warning on the success screen; does not block trading.
@@ -61,9 +55,6 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
   onDeployAnother,
   mainnetCA,
   devnetMint,
-  devnetAirdropAmount,
-  devnetAirdropSymbol,
-  devnetMintError,
   insuranceMintFailed,
   backingSeedFailed,
   keeperDelegated,
@@ -93,6 +84,7 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
     if (!publicKey || !devnetMint || mintLoading) return;
     setMintLoading(true);
     setMintError(null);
+    let failed = false;
     try {
       const resp = await fetch("/api/devnet-airdrop", {
         method: "POST",
@@ -104,15 +96,56 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
       });
       // GH#1266: On claim failure, show a brief warning but still navigate.
       // Previously we returned early here, leaving the user stranded with an error banner.
-      if (!resp.ok && resp.status !== 429) {
-        const d = await resp.json().catch(() => ({}));
-        setMintError(d.error ?? "Sim-USDC faucet claim failed — you can claim it from the faucet on the trade page");
+      const d = (await resp.json().catch(() => ({}))) as { error?: string; nextClaimAt?: string };
+      // GH#2610: a 429 is NOT automatically good news. The route returns it for
+      // two unrelated reasons, and only one of them means the wallet has tokens:
+      //
+      //   "Already claimed — try again in Xh Ym"  -> carries nextClaimAt/retryAfterSecs
+      //   "Too many requests. Please slow down"   -> the per-IP fund limiter, and
+      //                                              NOTHING was minted
+      //
+      // Treating both as success navigated the creator away with no collateral and
+      // no explanation. `nextClaimAt` is the discriminator.
+      const alreadyClaimed = resp.status === 429 && typeof d.nextClaimAt === "string";
+      if (!resp.ok && !alreadyClaimed) {
+        failed = true;
+        // Append rather than replace: the route's ~16 specific errors are worth
+        // showing verbatim, but the generic 500 (GH#2608) carries no guidance at
+        // all, and `d.error ?? fallback` would drop the guidance precisely when it
+        // is most needed.
+        setMintError(`${d.error ?? "Sim-USDC claim failed"} — you can claim it any time from the faucet on the trade page`);
       }
     } catch {
-      // Network error — still navigate
+      // Network error — treat as a failure so the reason is shown rather than
+      // navigated past.
+      failed = true;
+      setMintError("Sim-USDC claim could not be sent — you can claim it any time from the faucet on the trade page");
     }
-    // Always navigate regardless of claim outcome
-    router.push(`/trade/${marketAddress}`);
+    // GH#2610: clear the loading state BEFORE the navigation decision.
+    //
+    // setMintLoading(true) had no matching reset anywhere in this file. That was
+    // invisible while the push was unconditional — the component unmounted — but
+    // making the navigation conditional turns it into a permanent "FUNDING…" on a
+    // disabled button, with the plain TRADE THIS MARKET link unrendered because it
+    // is the other arm of the same ternary. The creator would be left with a
+    // spinner that never resolves sitting above an error that says it failed, and
+    // no way to retry. That is a worse version of the defect this change removes.
+    setMintLoading(false);
+
+    // Navigate only when the claim did not fail.
+    //
+    // GH#1266 made this unconditional so a failed claim could not leave the user
+    // "stranded with an error banner", and that concern is right — but the
+    // navigation happened on the line AFTER setMintError, so the component
+    // unmounted before the message could render and the failure was silent. The
+    // user arrived on the trade page with no collateral and no explanation.
+    //
+    // Staying put shows the reason; the explicit link rendered beside it is what
+    // stops it being a dead end, so #1266's property is preserved without the
+    // silence. Success still navigates exactly as before.
+    if (!failed) {
+      router.push(`/trade/${marketAddress}`);
+    }
   }, [publicKey, devnetMint, mintLoading, marketAddress, router]);
 
   const handleCopy = async () => {
@@ -254,24 +287,28 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
         Reframed below to describe what's actually happening: a Sim-USDC
         collateral top-up, plus a note on how the market gets its price.
       */}
-      {isDevnet && (devnetMint || devnetAirdropAmount || devnetMintError) && (
+      {isDevnet && devnetMint && (
         <div className="mb-5 w-full max-w-sm mx-auto text-left">
           {/* One line for the thing that actually matters to the creator right
               now — did the collateral land. Everything explanatory moved into
               the disclosure below: the success screen was a wall of text. */}
-          {devnetAirdropAmount && devnetAirdropSymbol ? (
-            <p className="text-[11px] text-[var(--text)]">
-              <span className="text-[var(--long)]">✓</span>{" "}
-              Sent <strong>{devnetAirdropAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })} {devnetAirdropSymbol}</strong>{" "}
-              <span className="text-[var(--text-secondary)]">of Sim-USDC to your wallet</span>
-            </p>
-          ) : devnetMintError ? (
-            <p className="text-[11px] text-[var(--short)]">
-              ✗ Sim-USDC claim failed — use the faucet on the trade page.
-            </p>
-          ) : (
-            <p className="text-[11px] text-[var(--text-dim)]">⏳ Sending Sim-USDC…</p>
-          )}
+          {/* GH#2610: this used to be a three-way branch on the automatic
+              claim's outcome — sent / failed / in-progress. That claim is gone
+              (see useCreateMarket), so the three props it fed — the airdrop
+              amount / the airdrop symbol / the mint error — were never set
+              again and are deleted along with it. Had they been left
+              in place, the branch would have fallen through to its
+              in-progress arm on EVERY launch: a "Sending
+              Sim-USDC…" spinner that never resolves, which is the very state
+              this change exists to remove.
+
+              One statement instead. The claim now happens on the button below,
+              which reports its own outcome. */}
+          <p className="text-[11px] text-[var(--text-secondary)]">
+            <strong className="text-[var(--text)]">Sim-USDC</strong> is your collateral —
+            claim it any time from the{" "}
+            <Link href="/faucet" className="text-[var(--accent)] underline underline-offset-2">faucet</Link>.
+          </p>
 
           <details className="mt-3 group">
             <summary className="cursor-pointer list-none text-[10px] uppercase tracking-[0.12em] text-[var(--text-dim)] transition-colors hover:text-[var(--text-secondary)]">
@@ -369,7 +406,29 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
         </button>
       </div>
       {mintError && (
-        <p className="mt-2 text-[11px] text-[var(--short)]">{mintError}</p>
+        <div className="mt-2">
+          <p className="text-[11px] text-[var(--short)]">{mintError}</p>
+          {/* The way forward, so a visible failure is not a dead end (GH#1266).
+              /faucet FIRST and deliberately: the trade page's own faucet button
+              calls the SAME /api/devnet-airdrop that just failed, so sending the
+              creator there alone would hand them a second copy of the same dead
+              end. /faucet goes to /api/playground/faucet — a different route, a
+              different gate — and is the one that can actually fund them. */}
+          <div className="mt-1 flex flex-wrap gap-3">
+            <Link
+              href="/faucet"
+              className="text-[11px] text-[var(--accent)] underline underline-offset-2 hover:opacity-80"
+            >
+              Get Sim-USDC from the faucet →
+            </Link>
+            <Link
+              href={`/trade/${marketAddress}`}
+              className="text-[11px] text-[var(--text-secondary)] underline underline-offset-2 hover:text-[var(--text)]"
+            >
+              Continue to the market anyway
+            </Link>
+          </div>
+        </div>
       )}
 
       {/* Logo upload */}

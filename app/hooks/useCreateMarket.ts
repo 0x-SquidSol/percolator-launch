@@ -346,12 +346,6 @@ export interface CreateMarketState {
   loading: boolean;
   /** Devnet mint address (different from mainnet CA) */
   devnetMint: string | null;
-  /** Number of tokens airdropped to creator */
-  devnetAirdropAmount: number | null;
-  /** Token symbol for devnet airdrop */
-  devnetAirdropSymbol: string | null;
-  /** Error from devnet mint attempt */
-  devnetMintError: string | null;
   /**
    * GH#1761 (legacy): previously set to true when the old "Insurance LP Mint" step
    * failed after exhausting retries. That instruction was removed (see the Step 4/5
@@ -1719,26 +1713,19 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     updateInFlightStep(slabPk.toBase58(), 6);
 
 
-    // Post-creation hook — devnet token airdrop, fired without awaiting.
+    // GH#2610: the post-creation Sim-USDC claim used to fire from here and set
+    // devnetMintError on failure. Removed — it was the FOURTH way to do one
+    // thing (the "GET SIM-USDC & TRADE" button on the same screen fires the
+    // identical request, plus the trade-page faucet and /faucet), and the only
+    // one that could put an error on the launch screen. It fails on every
+    // launch today (#2608), leaving either a red banner the creator cannot act
+    // on or, on a 429, a "Sending Sim-USDC…" spinner that never resolves.
+
+    // devnetMint is STILL set: LaunchSuccess gates its whole devnet panel on it
+    // and handleMintAndTrade needs it, so dropping it would remove the button
+    // along with the claim.
     if (isDevnetEnv) {
-      void fetch("/api/devnet-airdrop", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mintAddress: params.mint.toBase58(), walletAddress: walletPk.toBase58() }),
-      }).then(async (resp) => {
-        const data = await resp.json().catch(() => ({} as Record<string, unknown>));
-        if (resp.ok || resp.status === 429) {
-          setState((s) => ({
-            ...s, devnetMint: params.mint.toBase58(),
-            devnetAirdropAmount: (data as { amount?: number }).amount ?? null,
-            devnetAirdropSymbol: (data as { symbol?: string }).symbol ?? null,
-          }));
-        } else {
-          setState((s) => ({ ...s, devnetMint: params.mint.toBase58(), devnetMintError: (data as { error?: string }).error ?? `HTTP ${resp.status}` }));
-        }
-      }).catch((mintErr) => {
-        setState((s) => ({ ...s, devnetMint: params.mint.toBase58(), devnetMintError: mintErr instanceof Error ? mintErr.message : "Airdrop request failed" }));
-      });
+      setState((st) => ({ ...st, devnetMint: params.mint.toBase58() }));
     }
 
     clearInFlightMarket(slabPk.toBase58());
@@ -1798,9 +1785,6 @@ export function useCreateMarket() {
     error: null,
     loading: false,
     devnetMint: null,
-    devnetAirdropAmount: null,
-    devnetAirdropSymbol: null,
-    devnetMintError: null,
     insuranceMintFailed: false,
     backingSeedFailed: false,
     keeperDelegated: false,
@@ -3731,47 +3715,18 @@ export function useCreateMarket() {
           // PERC-465: mainnet_ca is already written to the markets table via /api/markets POST above.
           // The oracle keeper auto-discovers new markets from Supabase every 30s.
 
-          // Mint devnet token + airdrop $500 to creator.
-          // Use the devnet-airdrop endpoint (not devnet-mint-token) because the
-          // mirror mint was already created by StepTokenSelect → devnet-mirror-mint.
-          // devnet-mint-token expected a mainnet CA but received the devnet mirror
-          // address, causing DexScreener lookup to fail → no tokens → untradeable market.
-          setState((s) => ({ ...s, stepLabel: "Airdropping devnet tokens..." }));
-          try {
-            const airdropResp = await fetch("/api/devnet-airdrop", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                mintAddress: mintAddr,
-                walletAddress: wallet.publicKey.toBase58(),
-              }),
-            });
-            const airdropData = await airdropResp.json();
-            if (airdropResp.ok || airdropResp.status === 429) {
-              // 429 = already claimed, which is fine — user has tokens
-              setState((s) => ({
-                ...s,
-                devnetMint: mintAddr,
-                devnetAirdropAmount: airdropData.amount ?? null,
-                devnetAirdropSymbol: airdropData.symbol ?? null,
-              }));
-            } else {
-              console.warn("Devnet airdrop failed:", airdropData.error ?? airdropResp.status);
-              // Non-fatal — market is live, user can use faucet button on trade page
-              setState((s) => ({
-                ...s,
-                devnetMint: mintAddr, // Still set devnetMint so "Mint & Trade" works
-                devnetMintError: airdropData.error ?? `HTTP ${airdropResp.status}`,
-              }));
-            }
-          } catch (mintErr) {
-            console.warn("Devnet airdrop error:", mintErr);
-            setState((s) => ({
-              ...s,
-              devnetMint: mintAddr, // Still set so "Mint & Trade" button appears
-              devnetMintError: mintErr instanceof Error ? mintErr.message : "Airdrop request failed",
-            }));
-          }
+          // GH#2610: the post-creation Sim-USDC claim used to fire from here and set
+          // devnetMintError on failure. Removed — it was the FOURTH way to do one
+          // thing (the "GET SIM-USDC & TRADE" button on the same screen fires the
+          // identical request, plus the trade-page faucet and /faucet), and the only
+          // one that could put an error on the launch screen. It fails on every
+          // launch today (#2608), leaving either a red banner the creator cannot act
+          // on or, on a 429, a "Sending Sim-USDC…" spinner that never resolves.
+
+          // devnetMint is STILL set: LaunchSuccess gates its whole devnet panel on it
+          // and handleMintAndTrade needs it, so dropping it would remove the button
+          // along with the claim.
+          setState((st) => ({ ...st, devnetMint: mintAddr }));
         }
 
         // Done! Clear in-memory keypair ref + in-flight recovery state.
@@ -3816,9 +3771,6 @@ export function useCreateMarket() {
       loading: false,
       batchFallbackReason: null,
       devnetMint: null,
-      devnetAirdropAmount: null,
-      devnetAirdropSymbol: null,
-      devnetMintError: null,
       insuranceMintFailed: false,
       backingSeedFailed: false,
       keeperDelegated: false,

@@ -335,8 +335,6 @@ describe("LaunchSuccess", () => {
           {...defaultProps}
           mainnetCA="9cRCn9rGT8V2imeM2BaKs13yhMEais3ruM3rPvTGpump"
           devnetMint={simUsdcMint}
-          devnetAirdropAmount={500}
-          devnetAirdropSymbol="USDC"
         />
       );
       // The "COLLATERAL & PRICING" heading is gone — that whole explainer now
