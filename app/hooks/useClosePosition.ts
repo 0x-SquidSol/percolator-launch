@@ -16,6 +16,7 @@ import { chunkCloseSize } from "@/lib/closeChunks";
 import { isMockMode } from "@/lib/mock-mode";
 import { isMockSlab } from "@/lib/mock-trade-data";
 import { useWalletCompat } from "@/hooks/useWalletCompat";
+import { invalidatePortfolio } from "@/lib/portfolio-invalidation";
 
 export interface ClosePositionResult {
   signature: string | null;
@@ -380,6 +381,15 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
         setLastSig(sig ?? null);
         setPhase("confirming");
         setTimeout(() => setPhase("idle"), 2000);
+        // The site-wide PositionsBar reads its OWN usePortfolio instance, which
+        // refreshes on a 30s poll and learns nothing from this page's local dock
+        // refresh — so a just-closed position lingered in the header strip for up
+        // to half a minute. The OPEN path already fires this (OrderTicket); every
+        // close path (PositionsDock, PositionPanel, OtherMarketPositions) funnels
+        // through here, so notifying once at this single choke point covers them
+        // all and can't drift. usePortfolio subscribes and runs its reconcile
+        // burst (PORTFOLIO_RECONCILE_MS). See lib/portfolio-invalidation.ts.
+        invalidatePortfolio();
         return { signature: sig ?? null };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
