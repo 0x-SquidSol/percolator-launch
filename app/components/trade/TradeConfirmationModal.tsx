@@ -8,6 +8,7 @@ import { useLockBodyScroll } from "@/hooks/useLockBodyScroll";
 import { formatLeverage, ORDER_LEVERAGE_LABEL, ORDER_LEVERAGE_TITLE, RISK_LEVERAGE_LABEL, RISK_LEVERAGE_TITLE } from "@/lib/leverage-display";
 import { InfoIcon } from "@/components/ui/Tooltip";
 import { formatTokenAmount } from "@/lib/format";
+import { computeNotionalNative } from "@/lib/notional";
 
 interface TradeConfirmationModalProps {
   direction: "long" | "short";
@@ -70,7 +71,11 @@ export const TradeConfirmationModal: FC<TradeConfirmationModalProps> = ({
   // banner. Latch on first click, disable the button, and only unlatch if the
   // confirm action rejects (the modal normally unmounts on success).
   const [submitting, setSubmitting] = useState(false);
-  const notional = margin * BigInt(leverage);
+  // GH#2616: one definition, shared with OrderTicket — which renders this modal
+  // and passes it this same leverage. Two hand-copied formulas is what caused
+  // the original crash, and a confirmation screen that silently disagrees with
+  // the order it submits would be worse than crashing.
+  const notional = computeNotionalNative(margin, leverage);
   const riskLeverage = accountEquity != null && accountEquity > 0n
     ? Number(notional) / Number(accountEquity)
     : null;
