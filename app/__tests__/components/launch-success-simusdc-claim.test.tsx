@@ -120,19 +120,86 @@ describe("the screen no longer reports on a claim it does not make", () => {
     }
   });
 
-  it("the hook issues no automatic airdrop call", () => {
-    // A fetch cannot happen without its URL, and the hook builds every request
-    // inline, so absence of the string is exhaustive here. The control below
-    // keeps this from passing on a mis-read file.
+  it("the hook's devnet branch issues no request at all", () => {
+    // NOT `expect(hook).not.toContain('fetch("/api/devnet-airdrop"')`. That was
+    // the first version and it is close to worthless: it greps a 190k-char file
+    // for one contiguous literal, so restoring the claim as
+    //   const AIRDROP = "/api/devnet" + "-airdrop"; void fetch(AIRDROP, …)
+    // passes. So does a template with an interpolation, an imported constant, or
+    // a URL built in lib/. A mutant written to match the assertion (a plain
+    // literal fetch) dies; the cheaper sibling lives — which makes the kill a
+    // measure of the mutant, not of the test.
+    //
+    // Scoped to the construct instead: the devnet branch that sets devnetMint on
+    // each launch path, and nothing else in this 5k-line hook.
+    //
+    // Anchored on the ASSIGNMENTS and walked outwards to the enclosing block,
+    // not on the guard's text. The first version looked for `if (isDevnetEnv) {`
+    // and found only one of the two sites — the batch path guards on
+    // `isDevnetEnv`, the sequential path on a locally-computed
+    // `isDevnet && slabAddr`. The length control below is what caught that.
     const hook = readFileSync(resolve(process.cwd(), "hooks/useCreateMarket.ts"), "utf8");
-    // Anchored on the CALL, not the bare path: a comment mentioning the route in
-    // this 5k-line file would otherwise fail the test for no reason.
-    expect(hook).not.toContain('fetch("/api/devnet-airdrop"');
-    // CONTROL: the file was read, and still contains the flow it belongs to.
-    expect(hook.length).toBeGreaterThan(50_000);
-    // Anchored on the ASSIGNMENT, not the type declaration: `devnetMint:` alone
-    // also matches the interface field, so deleting both setState calls — which
-    // would remove the panel AND the claim button — would have survived.
+
+    // Walks out one level from `from`, returning [openIndex, block].
+    const outward = (from: number): [number, string] => {
+      let depth = 0;
+      let start = -1;
+      for (let i = from; i >= 0; i--) {
+        if (hook[i] === "}") depth++;
+        else if (hook[i] === "{" && depth-- === 0) { start = i; break; }
+      }
+      expect(start).toBeGreaterThan(-1);
+      depth = 0;
+      let end = start;
+      for (let i = start; i < hook.length; i++) {
+        if (hook[i] === "{") depth++;
+        else if (hook[i] === "}" && --depth === 0) { end = i; break; }
+      }
+      return [start, hook.slice(start, end + 1)];
+    };
+
+    // The innermost enclosing brace is the `{ ...st, devnetMint }` object literal
+    // inside setState, so widen until the block is the devnet branch. The test is
+    // the block's OWN GUARD — the text right before its `{` — not whether the
+    // block merely contains a devnet `if` somewhere: that first version widened
+    // straight out to a 45k-char function, which contains one. The length control
+    // below is what caught that.
+    const GUARD = /if \([^)]*isDevnet[^)]*\)\s*$/;
+    const enclosingBlock = (needle: string): string => {
+      const at = hook.indexOf(needle);
+      expect(at).toBeGreaterThan(-1);
+      let [open, block] = outward(at);
+      for (let lvl = 0; lvl < 6 && !GUARD.test(hook.slice(Math.max(0, open - 200), open)); lvl++) {
+        [open, block] = outward(open - 1);
+      }
+      return block;
+    };
+
+    const blocks = [
+      enclosingBlock("devnetMint: params.mint.toBase58()"),
+      enclosingBlock("devnetMint: mintAddr"),
+    ];
+
+    for (const body of blocks) {
+      // CONTROL: the extracted block is a real, bounded devnet branch — not the
+      // whole file and not a stray inner block that happens to exclude a fetch.
+      // Without this, a brace-walk bug quietly turns every assertion below into a
+      // check on the wrong text, which is how both earlier versions went wrong.
+      expect(body.startsWith("{")).toBe(true);
+      expect(body.length).toBeLessThan(2_000);
+      expect(hook.length).toBeGreaterThan(50_000);
+
+      expect(body).not.toContain("fetch");
+      expect(body).not.toContain("await");
+      // The branch does exactly one thing.
+      expect(body).toContain("devnetMint:");
+    }
+
+    // And devnetMint is still assigned a real value on both paths. Anchored on
+    // the ASSIGNMENT, not the type declaration: `devnetMint:` alone also matches
+    // the interface field and the two `devnetMint: null` initial states, so
+    // deleting both setState calls — removing the panel AND the claim button —
+    // would have survived.
     expect(hook).toContain("devnetMint: params.mint.toBase58()");
     expect(hook).toContain("devnetMint: mintAddr");
   });
@@ -208,6 +275,56 @@ describe("the button keeps the job, and reports how it went", () => {
     render(<LaunchSuccess {...props()} />);
     fireEvent.click(screen.getByText(/GET SIM-USDC & TRADE/i));
 
+    await waitFor(() => expect(push).toHaveBeenCalledWith(`/trade/${MARKET}`));
+    // Asserting the navigation alone let a mutant through that set the error for
+    // EVERY non-ok response and only gated `failed` — so an "already claimed"
+    // 429 navigated while flashing its message as a red failure.
+    expect(screen.queryByText(/Already claimed/i)).toBeNull();
+  });
+
+  it("a network error is reported, not navigated past", async () => {
+    // The catch arm is code this change introduced, and nothing exercised it: no
+    // test made fetch reject, so deleting `failed = true` from the catch — a
+    // network error silently navigating past its own message, the exact
+    // regression class this change closes — survived the whole suite.
+    const f = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+    vi.stubGlobal("fetch", f);
+
+    render(<LaunchSuccess {...props()} />);
+    fireEvent.click(screen.getByText(/GET SIM-USDC & TRADE/i));
+
+    await waitFor(() => expect(screen.getByText(/could not be sent/i)).toBeInTheDocument());
+    expect(push).not.toHaveBeenCalled();
+    // Same way forward as any other failure.
+    expect(screen.getByText(/Get Sim-USDC from the faucet/i)).toBeInTheDocument();
+  });
+
+  it("a double click while the claim is in flight sends one request", async () => {
+    // Distinct from the retry test: that one clicks again AFTER the failure has
+    // resolved. Nothing covered clicking twice while still in flight, so the
+    // re-entrancy guard could be deleted — and the claim is a faucet draw, so
+    // the duplicate is a wasted daily allowance, not just a wasted request.
+    let release: (v: unknown) => void = () => {};
+    const f = vi.fn().mockReturnValue(new Promise((r) => { release = r; }));
+    vi.stubGlobal("fetch", f);
+
+    render(<LaunchSuccess {...props()} />);
+    const btn = screen.getByText(/GET SIM-USDC & TRADE/i);
+    fireEvent.click(btn);
+    await waitFor(() => expect(f).toHaveBeenCalledTimes(1));
+
+    // Still mid-flight: the button is the disabled FUNDING… state.
+    //
+    // `disabled` is what actually stops the second click — asserted directly,
+    // because the `|| mintLoading` guard inside handleMintAndTrade is redundant
+    // with it and deleting that guard is therefore unobservable from here. This
+    // assertion is the one that bites if the attribute goes.
+    const inflight = screen.getByText(/FUNDING/i).closest("button");
+    expect(inflight).toBeDisabled();
+    fireEvent.click(screen.getByText(/FUNDING/i));
+    expect(f).toHaveBeenCalledTimes(1);
+
+    release({ ok: true, status: 200, json: async () => ({ amount: 500 }) });
     await waitFor(() => expect(push).toHaveBeenCalledWith(`/trade/${MARKET}`));
   });
 
