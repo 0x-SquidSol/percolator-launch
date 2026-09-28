@@ -113,7 +113,17 @@ describe("GH#2517: no API route discards a confirmTransaction result", () => {
   it("finds the call sites at all (guards the scan itself)", () => {
     // If a refactor moves these calls behind a wrapper, this test starts
     // passing vacuously — so assert the scan still sees something.
-    expect(callSites().length).toBeGreaterThanOrEqual(10);
+    //
+    // #2608: devnet-airdrop/route.ts dropped from 11 total call sites to 9 —
+    // its two confirmTransaction() calls (the deprecated signature-only overload,
+    // which refetches its own "confirmed" blockhash internally and can throw
+    // BlockhashNotFound / TransactionExpiredBlockheightExceededError on a landed
+    // tx on the load-balanced padre RPC) were replaced with sendAndConfirmSignedTx,
+    // which confirms by POLLING getSignatureStatus instead — same fail-closed
+    // guarantee (throws on a non-null status.err), just not a confirmTransaction()
+    // call, so the scan below correctly no longer sees them. Threshold lowered
+    // to match, keeping the same ~1-site margin below the real count.
+    expect(callSites().length).toBeGreaterThanOrEqual(8);
   });
 
   it("checks every one of them", () => {
@@ -124,9 +134,12 @@ describe("GH#2517: no API route discards a confirmTransaction result", () => {
     ).toEqual([]);
   });
 
-  it("the seven routes GH#2517 named import the shared helper", () => {
+  it("the routes still using confirmTransaction() import the shared helper", () => {
+    // #2608: devnet-airdrop/route.ts removed — see the doc comment on the test
+    // above. It no longer calls confirmTransaction() at all (replaced with
+    // sendAndConfirmSignedTx's poll-based confirmation), so it has nothing to
+    // import this helper for.
     const named = [
-      "devnet-airdrop/route.ts",
       "devnet-mint-token/route.ts",
       "devnet-mirror-mint/route.ts",
       "playground/faucet/route.ts",

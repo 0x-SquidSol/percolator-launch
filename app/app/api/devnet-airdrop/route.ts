@@ -54,7 +54,6 @@ import { getServerConnection } from "@/lib/server-rpc";
 import { getDevnetMintSigner } from "@/lib/devnet-signer";
 import type { getServiceClient as _GetServiceClient } from "@/lib/supabase";
 import * as Sentry from "@sentry/nextjs";
-import { assertSuccessfulConfirmation } from "@/lib/transaction-confirmation";
 
 type SupabaseClient = ReturnType<typeof _GetServiceClient>;
 
@@ -263,6 +262,64 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 /**
+ * Send an already fully-signed transaction and confirm it by POLLING
+ * getSignatureStatus rather than the blockhash-tied confirmTransaction().
+ *
+ * #2608 root cause: this route builds its blockhash from `getServerConnection`'s
+ * default "confirmed" commitment, then calls `sendRawTransaction` (preflight ON)
+ * followed by `confirmTransaction(sig, "confirmed")`. On the load-balanced padre
+ * devnet RPC, a "confirmed" blockhash may not have propagated to whichever node
+ * handles the preflight simulation yet, throwing "Blockhash not found"; separately,
+ * confirmTransaction() builds its own blockhash-height strategy and throws
+ * TransactionExpiredBlockheightExceededError on a slow-but-landed tx. Both were
+ * uncaught here and became this route's outer catch's bare 500 — on every launch,
+ * since a mint attempt is the ONLY thing this route's success path does.
+ *
+ * Mirrors lib/server-rpc.ts::sendAndConfirmServerTx, added for the identical bug
+ * in /api/devnet-pre-fund (see its header comment) — duplicated locally rather
+ * than imported because that helper needs a raw Signer[] to call tx.sign() for
+ * its own send-time retry, and this route signs through the sealed devnet-signer
+ * (lib/devnet-signer.ts), which never exposes a Keypair. Callers here fetch a
+ * FINALIZED blockhash (seen by every LB node) and sign BEFORE calling this, then
+ * hand it the already-signed tx.
+ */
+async function sendAndConfirmSignedTx(
+  connection: Connection,
+  signedTx: Transaction,
+  timeoutMs: number,
+): Promise<string> {
+  const sig = await connection.sendRawTransaction(signedTx.serialize(), {
+    skipPreflight: true, // trusted, already-signed server tx — see doc comment above
+    maxRetries: 5,
+  });
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 1500));
+    let status;
+    try {
+      status = (await connection.getSignatureStatus(sig, { searchTransactionHistory: true })).value;
+    } catch {
+      continue;
+    }
+    if (!status) continue;
+    if (status.err) throw new Error(`Transaction failed: ${JSON.stringify(status.err)}`);
+    if (status.confirmationStatus === "confirmed" || status.confirmationStatus === "finalized") {
+      return sig;
+    }
+  }
+  // Final re-check — the padre RPC can be slow to reflect a landed tx.
+  const finalStatus = await connection
+    .getSignatureStatus(sig, { searchTransactionHistory: true })
+    .catch(() => ({ value: null as null }));
+  const fs = finalStatus.value;
+  if (fs && !fs.err && (fs.confirmationStatus === "confirmed" || fs.confirmationStatus === "finalized")) {
+    return sig;
+  }
+  throw new Error(`Transaction ${sig} not confirmed within ${timeoutMs}ms`);
+}
+
+/**
  * GH#1769: Resolve a server-owned devnet mint for a given mainnet CA.
  *
  * When the incoming mintAddress was NOT created by the server keypair (e.g.
@@ -341,7 +398,8 @@ async function resolveServerOwnedDevnetMint(
     return null;
   }
 
-  const { blockhash } = await connection.getLatestBlockhash();
+  // #2608: FINALIZED blockhash — see sendAndConfirmSignedTx's doc comment.
+  const { blockhash } = await connection.getLatestBlockhash("finalized");
   const createTx = new Transaction();
   createTx.recentBlockhash = blockhash;
   createTx.feePayer = mintAuthPk;
@@ -369,15 +427,11 @@ async function resolveServerOwnedDevnetMint(
   const signedCreateTx = mintSigner.signTransaction(createTx) as Transaction;
 
   try {
-    const createSig = await connection.sendRawTransaction(signedCreateTx.serialize());
-    // GH#2517: confirmTransaction() can RESOLVE with a SignatureResult whose
-    // `err` records an on-chain failure, so awaiting it is not proof of
-    // success. Without this, a mint that failed on chain still reached the
-    // `devnet_mints` upsert below and became the stored mapping.
-    assertSuccessfulConfirmation(
-      await connection.confirmTransaction(createSig, "confirmed"),
-      "Devnet mirror-mint creation",
-    );
+    // GH#2517: a failed on-chain mint must not reach the `devnet_mints` upsert
+    // below and become the stored mapping — sendAndConfirmSignedTx throws on an
+    // on-chain execution error (status.err), same guarantee assertSuccessfulConfirmation
+    // gave, plus #2608's robustness (see its doc comment).
+    await sendAndConfirmSignedTx(connection, signedCreateTx, 45_000);
   } catch (e) {
     Sentry.captureException(e, {
       tags: { endpoint: "/api/devnet-airdrop", step: "resolveServerOwnedDevnetMint.createMint" },
@@ -751,40 +805,36 @@ export async function POST(req: NextRequest) {
       // sendRawTransaction requires both fields to be set — unlike sendAndConfirmTransaction
       // which fetches the blockhash internally. Without this, serialize() throws
       // "Transaction recentBlockhash field is required", causing a 500.
-      const { blockhash } = await connection.getLatestBlockhash();
+      //
+      // #2608: FINALIZED, not the connection default ("confirmed") — see
+      // sendAndConfirmSignedTx's doc comment for why a "confirmed" blockhash
+      // made this route 500 on every launch.
+      const { blockhash } = await connection.getLatestBlockhash("finalized");
       tx.recentBlockhash = blockhash;
       tx.feePayer = mintAuthPk;
 
-      // Sign using sealed signer and send raw.
+      // Sign using sealed signer, then send + confirm via sendAndConfirmSignedTx.
       // sendAndConfirmTransaction() calls tx.sign(signers) internally which wipes all existing
-      // signatures — including the one the sealed signer just applied. Use sendRawTransaction +
-      // confirmTransaction instead (same pattern as auto-fund and devnet-mirror-mint).
-      const signedTx = mintSigner.signTransaction(tx);
+      // signatures — including the one the sealed signer just applied — so we sign here and
+      // hand the ALREADY-SIGNED tx to sendAndConfirmSignedTx (same pattern as auto-fund and
+      // devnet-mirror-mint).
+      const signedTx = mintSigner.signTransaction(tx) as Transaction;
       try {
-        sig = await withTimeout(
-          (async () => {
-            const txSig = await connection.sendRawTransaction(
-              (signedTx as Transaction).serialize(),
-            );
-            // GH#2517: without this the 24h claim stays reserved and the
-            // response reports an amount even though nothing was minted.
-            assertSuccessfulConfirmation(
-              await connection.confirmTransaction(txSig, "confirmed"),
-              "Devnet airdrop mint",
-            );
-            return txSig;
-          })(),
-          30_000,
-        );
+        sig = await sendAndConfirmSignedTx(connection, signedTx, 45_000);
       } catch (mintErr) {
         // Convert mint-authority program errors (spl-token error 0x4 = OwnerMismatch) to 400.
         // Any other error (network, timeout) re-throws to surface as 500 via outer catch.
+        // sendAndConfirmSignedTx skips preflight (see its doc comment), so this program
+        // error now typically arrives as `Transaction failed: {"InstructionError":[..,
+        // {"Custom":4}]}` from the confirmed-but-failed-on-chain path rather than a
+        // preflight SendTransactionError — match both shapes.
         const errStr = mintErr instanceof Error ? mintErr.message : String(mintErr);
         const isAuthorityError =
           errStr.includes("owner does not match") ||
           errStr.includes("OwnerMismatch") ||
           errStr.includes("0x4") || // spl-token OwnerMismatch
-          errStr.includes("custom program error: 0x4");
+          errStr.includes("custom program error: 0x4") ||
+          errStr.includes('"Custom":4'); // on-chain error via poll-based confirmation
         if (isAuthorityError) {
           Sentry.captureException(mintErr, {
             tags: { endpoint: "/api/devnet-airdrop", step: "mint_authority_mismatch" },
@@ -833,6 +883,14 @@ export async function POST(req: NextRequest) {
     Sentry.captureException(error, {
       tags: { endpoint: "/api/devnet-airdrop", method: "POST" },
     });
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    // #2608: the bare "Internal server error" body left the real cause only in
+    // Sentry — surface it (this route is devnet-only; messages here are our own
+    // thrown Errors or RPC/DB error text, never secrets). Same pattern as
+    // /api/faucet/route.ts's outer catch.
+    const errorMsg =
+      error instanceof Error
+        ? error.message || error.toString() || "Internal server error"
+        : String(error) || "Internal server error";
+    return NextResponse.json({ error: errorMsg }, { status: 500 });
   }
 }
