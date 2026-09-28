@@ -41,8 +41,21 @@ describe("#2629 devnet-airdrop keeps the claim on an unknown outcome", () => {
 
   it("an unknown outcome flags the mint so the finally KEEPS the claim", () => {
     const c = code(SRC);
-    expect(c).toMatch(/if \(mintErr instanceof ServerSignatureTimeoutError\)\s*mintOutcomeUnknown = true/);
+    expect(c).toMatch(/if \(mintErr instanceof ServerSignatureTimeoutError\) \{\s*mintOutcomeUnknown = true/);
     // release is now gated on NOT-unknown as well as not-succeeded
     expect(c).toContain("!mintSucceeded && !mintOutcomeUnknown");
+  });
+
+  it("an ambiguous send is resolved by the pre-send signature (a36b3c87 rule)", () => {
+    const c = code(SRC);
+    expect(c).toContain("bs58.encode(signedTx.signature)");
+    // only a JSON-RPC rejection means not-broadcast; anything else is unknown
+    expect(c).toMatch(/!\(sendErr instanceof SendTransactionError\) && preSendSig/);
+    expect(c).toContain("throw new ServerSignatureTimeoutError(preSendSig, timeoutMs)");
+  });
+
+  it("an unknown outcome answers 503 pending, retryable:false, with the signature", () => {
+    const c = code(SRC);
+    expect(c).toMatch(/pending: true,\s*retryable: false,\s*signature: mintErr\.signature/);
   });
 });

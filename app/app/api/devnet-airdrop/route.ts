@@ -36,9 +36,11 @@ import {
   Connection,
   Keypair,
   PublicKey,
+  SendTransactionError,
   SystemProgram,
   Transaction,
 } from "@solana/web3.js";
+import bs58 from "bs58";
 import {
   getAssociatedTokenAddress,
   createAssociatedTokenAccountInstruction,
@@ -288,10 +290,24 @@ async function sendAndConfirmSignedTx(
   signedTx: Transaction,
   timeoutMs: number,
 ): Promise<string> {
-  const sig = await connection.sendRawTransaction(signedTx.serialize(), {
-    skipPreflight: true, // trusted, already-signed server tx — see doc comment above
-    maxRetries: 5,
-  });
+  // The fee-payer signature IS the tx id and exists before the send. Keep it so a
+  // send that throws ambiguously (dropped connection, timeout, 5xx — the RPC may
+  // have forwarded the tx before the response was lost) is reported as an UNKNOWN
+  // outcome, not a safe retry. Same rule as playground/faucet (a36b3c87).
+  const preSendSig = signedTx.signature ? bs58.encode(signedTx.signature) : undefined;
+  let sig: string;
+  try {
+    sig = await connection.sendRawTransaction(signedTx.serialize(), {
+      skipPreflight: true, // trusted, already-signed server tx — see doc comment above
+      maxRetries: 5,
+    });
+  } catch (sendErr) {
+    // A JSON-RPC rejection (SendTransactionError) means nothing was broadcast.
+    if (!(sendErr instanceof SendTransactionError) && preSendSig) {
+      throw new ServerSignatureTimeoutError(preSendSig, timeoutMs);
+    }
+    throw sendErr;
+  }
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -833,7 +849,25 @@ export async function POST(req: NextRequest) {
       } catch (mintErr) {
         // #2629: a poll-timeout (unknown outcome) must NOT release the claim — the
         // mint may land after the re-check. Flag it so the finally keeps the claim.
-        if (mintErr instanceof ServerSignatureTimeoutError) mintOutcomeUnknown = true;
+        if (mintErr instanceof ServerSignatureTimeoutError) {
+          mintOutcomeUnknown = true;
+          // Same unknown-outcome response as devnet-pre-fund (#2599) / faucet (#2602):
+          // 503 pending + signature, not a bare 500 that reads as a failed mint.
+          Sentry.captureException(mintErr, {
+            tags: { endpoint: "/api/devnet-airdrop", step: "mint", outcome: "unknown" },
+            extra: { signature: mintErr.signature },
+          });
+          return NextResponse.json(
+            {
+              error:
+                "Airdrop was broadcast but not yet confirmed. It may still arrive — check your balance before retrying.",
+              pending: true,
+              retryable: false,
+              signature: mintErr.signature,
+            },
+            { status: 503 },
+          );
+        }
         // Convert mint-authority program errors (spl-token error 0x4 = OwnerMismatch) to 400.
         // Any other error (network, timeout) re-throws to surface as 500 via outer catch.
         // sendAndConfirmSignedTx skips preflight (see its doc comment), so this program
