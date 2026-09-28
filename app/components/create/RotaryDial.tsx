@@ -1,6 +1,6 @@
 "use client";
 
-import { FC, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FC, useCallback, useEffect, useRef, useState } from "react";
 
 export interface RotaryDialProps {
   label: string;
@@ -24,26 +24,20 @@ const R = 34;
 const A0 = Math.PI * 0.75;
 const A1 = Math.PI * 2.25;
 /**
- * Vertical drag travel, budgeted per DETENT rather than per dial.
+ * Vertical pixels of drag for a full min→max sweep.
  *
- * This used to be a flat 190px for a full min→max sweep whatever the range,
- * which made the feel a property of the CALLER rather than of the control: the
- * notches are supplied by whoever renders the dial, so px-per-detent came out
- * as 190/detents. The three dials in the Control Room sit in one grid and
- * answered the same gesture ~6x differently, and Liquidity — 99 detents over
- * 100..10,000 — moved a full 100 sim-USDC per pixel of mouse travel, which is
- * below the noise floor of an ordinary drag.
+ * This number now MEANS what it says. It always claimed to, but the handler
+ * discarded its rounding remainder on every commit, so a full sweep actually
+ * cost half of it — 96px on Leverage, 99px on Liquidity, 108px on Insurance.
  *
- * It also meant widening a range silently degraded its own dial: GH#2621 took
- * Leverage from 2..6.5 to 2..10 and cut its travel from 11.0 to 6.0 px/detent.
- *
- * The floor keeps a coarse dial from becoming a twitch, and the ceiling keeps a
- * 99-detent one reachable in a single gesture — at the cost of a finer feel
- * there, which is what the arrow keys and scroll wheel are for.
+ * Note that it budgets travel per DIAL, so px-per-detent remains a function of
+ * the caller's range: 11.9 on Leverage's 16 detents against 1.92 on Liquidity's
+ * 99, a ~6x spread across three dials sitting in one grid. That is a real
+ * complaint about how the control feels and it is tracked separately in GH#2653
+ * — it is a product decision about every dial on the panel, not a correctness
+ * bug, and it does not belong in the same change as the two that are.
  */
-const PX_PER_DETENT = 20;
-const DRAG_RANGE_MIN_PX = 190;
-const DRAG_RANGE_MAX_PX = 600;
+const DRAG_RANGE_PX = 190;
 
 /**
  * A machined rotary dial — the Control Room's primary control.
@@ -85,19 +79,6 @@ export const RotaryDial: FC<RotaryDialProps> = ({
     (v: number) => Math.min(max, Math.max(min, Math.round(v / step) * step)),
     [min, max, step],
   );
-
-  /**
-   * Pixels of drag for a full min→max sweep, budgeted per detent.
-   *
-   * Guards a zero/negative/non-finite step, which would make `detents` Infinity
-   * or NaN and take the drag with it. The dial is a controlled component and
-   * these come from props, so it cannot assume they are sane.
-   */
-  const dragRangePx = useMemo(() => {
-    const detents = step > 0 ? (max - min) / step : 0;
-    if (!Number.isFinite(detents) || detents <= 0) return DRAG_RANGE_MIN_PX;
-    return Math.min(DRAG_RANGE_MAX_PX, Math.max(DRAG_RANGE_MIN_PX, PX_PER_DETENT * detents));
-  }, [min, max, step]);
 
   // ── power-on self-test: sweep min → max → settle on value ──────────────
   useEffect(() => {
@@ -270,7 +251,7 @@ export const RotaryDial: FC<RotaryDialProps> = ({
       const y = "touches" in e ? e.touches[0]!.clientY : (e as MouseEvent).clientY;
       const dy = lastY.current - y; // up = increase, like a real dial
       lastY.current = y;
-      residue.current += (dy / dragRangePx) * (max - min);
+      residue.current += (dy / DRAG_RANGE_PX) * (max - min);
       const next = value + residue.current;
       const snapped = clamp(next);
       if (snapped !== value) {
@@ -283,13 +264,20 @@ export const RotaryDial: FC<RotaryDialProps> = ({
         residue.current -= snapped - value;
         commit(snapped);
       }
-      // Whatever is left is a rounding remainder, which is bounded by step/2
-      // by definition — EXCEPT at the stops, where `clamp` cannot move the
-      // value and the residue would otherwise grow without limit. Pushing 200px
+      // Whatever is left is a rounding remainder, bounded by step/2 by
+      // definition — EXCEPT at the stops, where `clamp` cannot move the value,
+      // so the unpaid part stays banked and grows without limit. Pushing 200px
       // past max then reversing meant 206px of dead travel before the dial
       // responded; a hard shove left it unresponsive entirely.
-      const slack = step / 2;
-      residue.current = Math.max(-slack, Math.min(slack, residue.current));
+      //
+      // Bound it by the travel PHYSICALLY REMAINING, which is 0 at a stop: a
+      // dial resting against a mechanical stop stores no energy. Clamping to
+      // ±step/2 instead also bounds it, but parks the residue AT the threshold,
+      // so leaving a stop costs a whole detent where an interior one costs
+      // half. This form is symmetric, and it has no `step` term — a negative
+      // step collapses `Math.max(-step/2, Math.min(step/2, r))` to a constant
+      // and freezes the drag after one detent.
+      residue.current = Math.max(min - value, Math.min(max - value, residue.current));
     };
     const up = () => {
       dragging.current = false;
@@ -300,13 +288,21 @@ export const RotaryDial: FC<RotaryDialProps> = ({
     window.addEventListener("touchmove", move, { passive: false });
     window.addEventListener("mouseup", up);
     window.addEventListener("touchend", up);
+    // `touchcancel` too, or an interrupted gesture never ends: the OS takes the
+    // touch (a system gesture, an incoming call, a second finger) and no
+    // `touchend` follows, so `dragging` stays true with a stale `lastY`. That
+    // leaves the dial armed — the next touch anywhere slews it by the distance
+    // to the old anchor — and, because `move` calls preventDefault while
+    // dragging, it also stops the PAGE scrolling until the component unmounts.
+    window.addEventListener("touchcancel", up);
     return () => {
       window.removeEventListener("mousemove", move);
       window.removeEventListener("touchmove", move);
       window.removeEventListener("mouseup", up);
       window.removeEventListener("touchend", up);
+      window.removeEventListener("touchcancel", up);
     };
-  }, [value, min, max, step, clamp, commit, disabled, dragRangePx]);
+  }, [value, min, max, clamp, commit, disabled]);
 
   const start = (clientY: number) => {
     if (disabled) return;
