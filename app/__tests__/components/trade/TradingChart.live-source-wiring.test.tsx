@@ -29,11 +29,23 @@ const harness = vi.hoisted(() => {
     // #2581: the range-change subscription used for scroll-back paging.
     subscribeVisibleLogicalRangeChange: vi.fn(),
     unsubscribeVisibleLogicalRangeChange: vi.fn(),
+    // Chart zoom (useChartZoomControls): +/-/reset buttons and box-zoom
+    // drag read/write the visible logical range and project drag pixels
+    // to logical indices.
+    getVisibleLogicalRange: vi.fn(() => null as { from: number; to: number } | null),
+    setVisibleLogicalRange: vi.fn(),
+    coordinateToLogical: vi.fn(() => null as number | null),
   };
 
   const pane = {
     setPreserveEmptyPane: vi.fn(),
   };
+
+  // A real (jsdom) element — useChartZoomControls attaches native
+  // addEventListener/removeEventListener + reads/writes tabIndex on
+  // whatever chart.chartElement() returns, same as ChartDrawingOverlay's
+  // chart.chartElement() usage elsewhere in this component.
+  const chartElementDiv = document.createElement('div');
 
   const chart = {
     panes: vi.fn(() => [pane]),
@@ -47,6 +59,11 @@ const harness = vi.hoisted(() => {
     unsubscribeCrosshairMove: vi.fn(),
     subscribeClick: vi.fn(),
     unsubscribeClick: vi.fn(),
+    chartElement: vi.fn(() => chartElementDiv),
+    options: vi.fn(() => ({
+      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+      handleScale: { axisPressedMouseMove: { time: true, price: true }, mouseWheel: true, pinch: true },
+    })),
   };
 
   const percolatorCandles = Array.from({ length: 10 }, (_, index) => ({
