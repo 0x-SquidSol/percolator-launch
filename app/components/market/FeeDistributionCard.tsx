@@ -14,8 +14,11 @@ import { formatUsdFromNumber } from "@/lib/format";
  *  - SHARE (exact policy): `FEE_SPLIT.PROTOCOL_FEE_BPS` (fixed) + the three
  *    creator/lp/insurance share bps, each a share of the whole trade fee T.
  *  - COLLECTED (realized): the on-chain cumulative `*_accrued` counters for
- *    protocol / LP / insurance. The creator leg uses a SINGLE counter
- *    (`creatorFeeClaimableAtoms`) that goes down when the creator claims, so it
+ *    protocol / LP / insurance. The creator leg is asset 0's per-asset
+ *    `creatorFeeClaimableAtoms` (GH#420) PLUS the legacy config-level counter
+ *    of the same name — see `lib/v17-creator-fee.ts` for why both are needed
+ *    (the config counter alone under-reports on every market seeded after
+ *    GH#420, percolator-prog#507). It goes down when the creator claims, so it
  *    reflects "claimable now", not a cumulative total — labelled distinctly so
  *    the number is never read as "total ever earned".
  */
@@ -32,20 +35,25 @@ function pctStr(bps: number): string {
 }
 
 export const FeeDistributionCard: FC = () => {
-  const { wrapperConfigV17: cfg } = useSlabState();
+  const { wrapperConfigV17: cfg, assetProfile } = useSlabState();
   const tokenMeta = useTokenMeta(cfg?.collateralMint ?? null);
   const decimals = tokenMeta?.decimals ?? 6;
 
   const legs = useMemo(() => {
     if (!cfg) return null;
     const toUsd = (a: bigint) => Number(a) / 10 ** decimals;
+    // GH#420: the creator leg accrues into asset 0's per-asset counter now, not
+    // (only) this config-level one — see lib/v17-creator-fee.ts. `assetProfile`
+    // is null on a v12 slab or a truncated account; fall back to the legacy
+    // pot alone rather than fabricating a per-asset value.
+    const creatorAtoms = cfg.creatorFeeClaimableAtoms + (assetProfile?.creatorFeeClaimableAtoms ?? 0n);
     return [
       { key: "protocol", label: "Protocol", bps: FEE_SPLIT.PROTOCOL_FEE_BPS, usd: toUsd(cfg.protocolFeeAccruedAtoms), note: "collected" },
-      { key: "creator", label: "Creator", bps: cfg.creatorShareBps, usd: toUsd(cfg.creatorFeeClaimableAtoms), note: "claimable" },
+      { key: "creator", label: "Creator", bps: cfg.creatorShareBps, usd: toUsd(creatorAtoms), note: "claimable" },
       { key: "lp", label: "LP", bps: cfg.lpShareBps, usd: toUsd(cfg.lpFeeAccruedAtoms), note: "collected" },
       { key: "insurance", label: "Insurance", bps: cfg.insuranceShareBps, usd: toUsd(cfg.insuranceReserveAccruedAtoms), note: "collected" },
     ];
-  }, [cfg, decimals]);
+  }, [cfg, assetProfile, decimals]);
 
   if (!cfg || !legs) {
     return (
