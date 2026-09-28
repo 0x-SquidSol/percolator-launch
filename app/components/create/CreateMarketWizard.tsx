@@ -70,9 +70,10 @@ const DEFAULT_STATE: WizardState = {
   dexPool: null,
   pythFeed: null,
   tradingFeeBps: 30,
-  // The dial's leverage range floors to MIN_SAFE_INITIAL_MARGIN_BPS (1500 = 6.67x) —
-  // 2000 bps (5x) is the highest default we can promise without it being a lie once
-  // create() applies that floor on-chain. See StepControlRoom's MAX_LEVERAGE comment.
+  // GH#2621: 2000 bps (5x) — a conservative default until quick-launch detection
+  // supplies a tier-based value. The dial itself now goes up to MAX_LEVERAGE_X
+  // (10x, see StepControlRoom's MAX_LEVERAGE comment); this default was never
+  // tied to the old dead 6.67x floor, it just predates the tier defaults below.
   initialMarginBps: 2000,
   lpCollateral: "",
   insuranceAmount: "100",
@@ -273,12 +274,13 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
       ...prev,
       tradingFeeBps: quickLaunch.config!.tradingFeeBps,
       // Normalise through the dial's own quantisation so the number ON the dial is
-      // exactly the number written on-chain. quick-launch still supplies 1000 bps
-      // ("10x"); create() floors that to MIN_SAFE_INITIAL_MARGIN_BPS (1500 = 6.67x),
-      // but the dial snaps to 0.5x and can only render 6.5x — so storing either the
-      // raw 1000 or a plain floor of 1500 would display 6.5x while actually creating
-      // a 6.67x market. Round-tripping bps → leverage → bps lands on 1538 bps, which
-      // IS 6.5x. Same class of lie as the old "10x" readout; closed here.
+      // exactly the number written on-chain. quick-launch's "high" tier supplies
+      // 1000 bps (10x); GH#2621 raised the dial's ceiling to MAX_LEVERAGE_X (10x)
+      // to match, so this now round-trips to 1000 bps exactly. Before that fix the
+      // dial could only render up to 6.5x, so this round-trip silently downgraded
+      // every high-tier default from 10x to 6.5x (1538 bps) — kept generically
+      // (rather than special-cased to 10x) because it also protects any FUTURE
+      // quick-launch tier from producing a bps the dial's own snap can't display.
       initialMarginBps: prev.marginSetByUser
         ? prev.initialMarginBps
         : leverageToMarginBps(marginBpsToLeverage(quickLaunch.config!.initialMarginBps)),
@@ -297,9 +299,10 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
 
   // Derived values
   const mintValid = isValidBase58Pubkey(wizard.mintAddress) && wizard.mintAddress.length >= 32;
-  // BUG 16 fix: use the FLOORED margin (what create() actually enforces on-chain via
-  // MIN_SAFE_INITIAL_MARGIN_BPS) so the success screen advertises real leverage, not the
-  // raw requested value the dial produced.
+  // BUG 16 fix: use the FLOORED margin (what create() actually enforces on-chain,
+  // via flooredInitialMarginBps / deriveMarketParams — see useCreateMarket.ts;
+  // MIN_SAFE_INITIAL_MARGIN_BPS itself is superseded, see GH#2621) so the success
+  // screen advertises real leverage, not the raw requested value the dial produced.
   const maxLeverage = Math.floor(10000 / flooredInitialMarginBps(wizard.initialMarginBps));
   const feeConflict = wizard.tradingFeeBps >= wizard.initialMarginBps;
   const hasTokens = wizard.walletBalance !== null && wizard.walletBalance > 0n;

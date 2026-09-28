@@ -3,24 +3,35 @@
 import { FC, useMemo } from "react";
 import { RotaryDial } from "./RotaryDial";
 import { HoldToLaunch } from "./HoldToLaunch";
-import { MIN_SAFE_INITIAL_MARGIN_BPS } from "@/hooks/useCreateMarket";
+import { MAX_LEVERAGE_X, MIN_LEVERAGE_X } from "@/lib/market-params";
 import { FeeBreakdown } from "@/components/FeeBreakdown";
 
 /**
- * The protocol floors initial margin at MIN_SAFE_INITIAL_MARGIN_BPS (1500 bps
- * = 15%), so the highest leverage a market can ACTUALLY be created with is
- * 10000/1500 ≈ 6.67x. The dial stops at 6.5x rather than offering leverage the
- * program would silently floor — the old wizard defaulted to 1000 bps and told
- * the user "10x" while create() quietly wrote 1500 bps (6.67x) on-chain.
+ * GH#2621: this dial used to floor initial margin at the OLD
+ * MIN_SAFE_INITIAL_MARGIN_BPS (1500 bps / 6.67x) and cap the dial at 6.5x,
+ * telling creators the 6.5x ceiling was "the protocol's 15% margin floor".
+ * That floor was removed 2026-07-27 (see useCreateMarket.ts's
+ * MIN_SAFE_INITIAL_MARGIN_BPS comment and market-params.ts's
+ * MAX_PRICE_MOVE_BY_MARGIN table): it came from a bisection that mis-blamed
+ * leverage for a failure actually caused by an incompatible price-move
+ * budget. Every layer below the dial — deriveMarketParams,
+ * flooredInitialMarginBps, createMarketValidation.ts's own floor
+ * (Math.ceil(10_000 / MAX_LEVERAGE_X) = 1000 bps) and the deployed program's
+ * handle_init_market (which assigns initial_margin_bps straight to config,
+ * unbounded) — already supports MAX_LEVERAGE_X (10x). The dial was the only
+ * thing still enforcing the dead floor.
+ *
+ * Bounds now come from the same single source (market-params.ts) everything
+ * else already uses, so a future change to MAX_LEVERAGE_X moves the dial and
+ * the pipeline together instead of drifting apart again.
  */
-const MIN_MARGIN_BPS = Number(MIN_SAFE_INITIAL_MARGIN_BPS); // 1500
-export const MAX_LEVERAGE = 6.5;
-export const MIN_LEVERAGE = 2;
+export const MAX_LEVERAGE = MAX_LEVERAGE_X;
+export const MIN_LEVERAGE = MIN_LEVERAGE_X;
 
 export const leverageToMarginBps = (lev: number): number =>
-  Math.max(MIN_MARGIN_BPS, Math.round(10_000 / lev));
+  Math.round(10_000 / lev);
 export const marginBpsToLeverage = (bps: number): number =>
-  Math.round((10_000 / Math.max(MIN_MARGIN_BPS, bps)) * 2) / 2;
+  Math.round((10_000 / Math.max(1, bps)) * 2) / 2;
 
 /**
  * Insurance seed floor. Insurance is written ONCE at market creation and is
@@ -126,6 +137,13 @@ export const StepControlRoom: FC<StepControlRoomProps> = ({
             value={leverage}
             min={MIN_LEVERAGE}
             max={MAX_LEVERAGE}
+            // GH#2621: kept at 0.5 deliberately rather than tightening it now that
+            // the range extends to 10x. marginBpsToLeverage() already snaps to
+            // halves for display, so a finer step here would desync what the dial
+            // shows from what a resumed/reloaded market reads back as. 17 steps
+            // across 2x-10x is a coarser proportion per step than the old 2x-6.5x
+            // range, but every step is still an exact, round-trippable leverage —
+            // narrowing it is a separate design call, not part of this fix.
             step={0.5}
             format={(v) => `${v}×`}
             caption={liqCaption}
@@ -156,8 +174,9 @@ export const StepControlRoom: FC<StepControlRoomProps> = ({
         <p className="mt-6 text-[11px] leading-relaxed text-[var(--text-muted)]">
           <span className="text-[var(--text-secondary)]">Leverage</span> sets how far price can move
           before a position liquidates. <span className="text-[var(--text-secondary)]">Liquidity</span> is
-          what traders trade against — deeper means less slippage. Max leverage is capped at{" "}
-          {MAX_LEVERAGE}× by the protocol&apos;s {MIN_MARGIN_BPS / 100}% margin floor.
+          what traders trade against — deeper means less slippage. Max leverage is{" "}
+          {MAX_LEVERAGE}×, set by how much price-move headroom the protocol can guarantee at
+          that margin.
         </p>
       </div>
 
