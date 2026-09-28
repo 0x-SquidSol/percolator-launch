@@ -40,6 +40,13 @@ export interface MarketVaultInfo {
   oiUtilPct: number;
   /** Collateral token decimals */
   decimals: number;
+  /**
+   * Whether this market has a usable on-chain Earn LP vault (registry + mint).
+   * Set by buildMarketVaultInfo from `curatedVaults[slab].found`. `undefined`
+   * (mock/fallback rows) is treated as "has one"; only an explicit `false`
+   * (a live market with no Earn vault) is hidden from the vault grid.
+   */
+  hasVault?: boolean;
 }
 
 export interface EarnStats {
@@ -510,6 +517,9 @@ export function buildMarketVaultInfo(
     maxLeverage,
     oiUtilPct,
     decimals,
+    // Earn LP vault registry present on-chain? Drives the vault grid's
+    // "hide markets without a usable vault" filter (VaultGrid).
+    hasVault: curatedVaults[slab]?.found === true,
   } satisfies MarketVaultInfo;
 }
 
