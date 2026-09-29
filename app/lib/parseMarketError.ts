@@ -34,6 +34,8 @@ const CREATE_ENGINE_STALE =
   "(EngineStale — a stale authority epoch or sequence number, not a stale price or engine clock). " +
   "Nothing from this step was applied. Retry rebuilds it from the market's live on-chain state.";
 
+import { EARN_VAULT_BUCKET_NOT_EMPTY_MESSAGE } from "@/lib/earn-vault-seed";
+
 /** Per-step meanings that differ from the generic code table. */
 const STEP_ERROR_OVERRIDES: Partial<Record<CreateStepKind, Record<number, string>>> = {
   "oracle-delegation": {
@@ -47,6 +49,11 @@ const STEP_ERROR_OVERRIDES: Partial<Record<CreateStepKind, Record<number, string
       "The program rejected the liquidity-backing seed's arguments (InvalidInstruction). This is an app bug, " +
       "not a problem with your wallet or funds — nothing from this step was applied.",
   },
+  "earn-vault": {
+    // LpVaultBackingBucketNotEmpty. Only reachable on a market whose backing was
+    // seeded by the pre-fix launcher (direct top-up): retrying can never succeed.
+    63: EARN_VAULT_BUCKET_NOT_EMPTY_MESSAGE,
+  },
   "stake-pool": {
     8:
       "Market admin authority has already moved to the staking pool (an earlier attempt completed this step), " +
@@ -55,7 +62,7 @@ const STEP_ERROR_OVERRIDES: Partial<Record<CreateStepKind, Record<number, string
 };
 
 /** Custom program error code in `msg`, from either the hex log form or the InstructionError JSON form. */
-function extractCustomCode(msg: string): number | null {
+export function extractCustomCode(msg: string): number | null {
   const hex = msg.match(/custom program error:\s*0x([0-9a-fA-F]+)/);
   if (hex) return parseInt(hex[1], 16);
   const ie = msg.match(/"?InstructionError"?.*?"?Custom"?\D*(\d+)/);
