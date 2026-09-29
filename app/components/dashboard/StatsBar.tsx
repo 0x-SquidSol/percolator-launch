@@ -25,14 +25,14 @@ export function StatsBar() {
   const positions = useMemo(() => allPositions.filter(isOpenPosition), [allPositions]);
 
   // Calculate real stats from portfolio positions (memoized — pure over `positions`)
-  const { totalPnl, wins, losses, total, winRate } = useMemo(() => {
+  const { totalPnl, wins, losses, total, inProfitPct } = useMemo(() => {
     const totalPnlRaw = positions.reduce((sum, p) => sum + (p.unrealizedPnl ?? 0n), 0n);
     const totalPnl = Number(totalPnlRaw) / 1e6; // e6 → human
     const wins = positions.filter((p) => (p.unrealizedPnl ?? 0n) > 0n).length;
     const losses = positions.filter((p) => (p.unrealizedPnl ?? 0n) < 0n).length;
     const total = wins + losses;
-    const winRate = total > 0 ? ((wins / total) * 100).toFixed(1) : "--";
-    return { totalPnl, wins, losses, total, winRate };
+    const inProfitPct = total > 0 ? ((wins / total) * 100).toFixed(0) : null;
+    return { totalPnl, wins, losses, total, inProfitPct };
   }, [positions]);
 
   // M15: v17 has no maker/taker fee split — "Fee Tier" used to fabricate one
@@ -73,9 +73,14 @@ export function StatsBar() {
       color: totalPnl >= 0 ? "text-[var(--long)]" : "text-[var(--short)]",
     },
     {
-      label: "Win Rate",
-      value: loading ? "..." : `${winRate}%`,
-      sub: total > 0 ? `${wins}W / ${losses}L` : "No trades yet",
+      // This is NOT a trade win rate: it counts OPEN positions whose unrealized
+      // PnL is positive right now. Closed trades are not tracked anywhere (no
+      // per-trader trade history / realized PnL), so a "Win Rate" label claimed
+      // a track record this figure cannot support — a position that is up 1c
+      // and later closes at a loss was a "win". Label what it is.
+      label: "In Profit",
+      value: loading ? "..." : inProfitPct == null ? "--" : `${inProfitPct}%`,
+      sub: total > 0 ? `${wins} up / ${losses} down · open positions` : "No open positions",
       color: "text-[var(--text)]",
     },
     {
