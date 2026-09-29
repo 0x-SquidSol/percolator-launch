@@ -10,6 +10,7 @@ import { getServiceClient, getServerNetwork } from "@/lib/supabase";
 import { isActiveMarket, isSaneMarketValue, isZombieMarket } from "@/lib/activeMarketFilter";
 import { loadMergedMarketRows, type MarketRegistryRow } from "@/lib/market-registry";
 import { isPhantomOpenInterest } from "@/lib/phantom-oi";
+import { qToUsd } from "@/lib/q-usd";
 import { computeDisplayOiUsd } from "@/lib/oi-display";
 import { BLOCKED_SLAB_ADDRESSES } from "@/lib/blocklist";
 import { getClientIp } from "@/lib/get-client-ip";
@@ -63,7 +64,7 @@ function zeroStats() {
     totalListedMarkets: 0,
     totalVolume24h: 0,
     totalOpenInterest: 0,
-    totalTraders: 0,
+    totalTraders: 0 as number | null,
     trades24h: 0,
     updatedAt: new Date().toISOString(),
     live: false,
@@ -156,6 +157,26 @@ async function computeStatsFromMarketsApi(_request: NextRequest): Promise<(Retur
       if (displayOiUsd != null && isSaneMarketValue(displayOiUsd)) totalOpenInterest += displayOiUsd;
     }
 
+    // GH#2676: these rows DO carry the indexer's 24h volume + trade count (the
+    // zombie filter above already reads volume_24h). This path used to return a
+    // literal 0 for both — shadowing the #2083 volume fix in the later paths —
+    // so the dashboard showed $0 next to a markets list with ~$5K of volume.
+    // Convert with the SAME helper /api/markets uses for each row's
+    // volume_24h_usd, over the same visible rows, so the total equals the sum of
+    // what the list shows by construction.
+    let totalVolume24h = 0;
+    let trades24h = 0;
+    for (const m of visible) {
+      const row = m as Record<string, unknown>;
+      const rawPrice = numericOrNull(row.last_price);
+      const price = rawPrice != null && rawPrice > 0 && rawPrice <= MAX_SANE_PRICE_FOR_ACTIVE ? rawPrice : null;
+      const usd = qToUsd(numericOrNull(row.volume_24h), price);
+      if (usd != null) totalVolume24h += usd;
+      const count = numericOrNull(row.trade_count_24h);
+      if (count != null && count > 0) trades24h += count;
+    }
+    totalVolume24h = Math.round(totalVolume24h * 100) / 100;
+
     const activeTotal = visible.filter((m: MarketRegistryRow) =>
       isActiveMarket(m as Parameters<typeof isActiveMarket>[0]),
     ).length;
@@ -164,12 +185,13 @@ async function computeStatsFromMarketsApi(_request: NextRequest): Promise<(Retur
       totalMarkets: visible.length,
       activeTotal,
       totalListedMarkets: visible.length,
-      // No on-chain source for trade history — honest zeros, same as the
-      // discovery path below.
-      totalVolume24h: 0,
+      totalVolume24h,
       totalOpenInterest,
-      totalTraders: 0,
-      trades24h: 0,
+      // Unique traders genuinely has no source on this path (market_stats has
+      // no trader count). null = unknown, which ProtocolStatsBar already
+      // renders as such — 0 would claim "nobody traded" next to real volume.
+      totalTraders: null,
+      trades24h,
       updatedAt: new Date().toISOString(),
       live: true,
     };

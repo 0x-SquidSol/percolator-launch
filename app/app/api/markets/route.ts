@@ -9,6 +9,7 @@ import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
 import { readRegisteredMarkets, type RegisteredMarket } from "@/lib/playground-registered-markets";
 import { parseV17RiskParams } from "@/lib/v17-engine-config";
 import { leverageFromMarginBps } from "@/lib/market-params";
+import { qToUsd } from "@/lib/q-usd";
 import { getClientIp } from "@/lib/get-client-ip";
 import { claimPlaygroundChallenge } from "@/lib/playground-nonce-store";
 import { signKeeperRequest } from "@/lib/keeper-hmac";
@@ -853,7 +854,11 @@ export async function GET(request: NextRequest) {
       // to divide by 10^decimals manually. Mirrors the total_open_interest_usd pattern.
       // Raw volume_24h is preserved in the response for backward compatibility.
       // GH#1564: uses n_volume_24h (coerced from Supabase NUMERIC string) — see block above.
-      const volume_24h_usd = rawToUsd(n_volume_24h, n_decimals, sanitizedPrice);
+      // GH#2676: volume_24h is SUM(ABS(size)) in engine Q units (scale 1e6,
+      // independent of the mint's decimals) — convert with qToUsd, NOT the mint
+      // decimals, or a 9-decimal SOL market reads 1000x low ($0.40 for ~$397).
+      // /api/stats sums this same helper so the dashboard total equals the rows.
+      const volume_24h_usd = qToUsd(n_volume_24h, sanitizedPrice);
 
       // GH#1420 + GH#1427: Mark zombie markets using shared isZombieMarket() helper.
       // (CodeRabbit #1466: extracted from inline predicate in stats route to avoid drift.)
