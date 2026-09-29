@@ -1,3 +1,4 @@
+import { resolveDevnetProgramIds } from "@/lib/program-ids";
 /**
  * Percolator on-chain program error code to human-readable message mappings.
  * 
@@ -189,7 +190,7 @@ const NFT_ERROR_CODE_MAP: Record<number, string> = {
 
 /** Hard-coded NFT program id. Matches app/lib/nft-program.ts. Kept here to
  *  avoid importing the (client-only) PublicKey wrapper from this module. */
-const NFT_PROGRAM_ID = "CNGBPZRALk9Xu8BdgWNyrLJ7daQ9eJYFf1GnEEC7YCU3";
+const NFT_PROGRAM_ID = resolveDevnetProgramIds().nft;
 
 function isNftProgramError(msg: string): boolean {
   if (msg.includes(NFT_PROGRAM_ID)) return true;

@@ -9,6 +9,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { MAINNET_PROGRAM_IDS, resolveDevnetProgramIds } from "@/lib/program-ids";
 import { PublicKey } from "@solana/web3.js";
 import { getServiceClient, getServerNetwork } from "@/lib/supabase";
 import { getServerConnection } from "@/lib/server-rpc";
@@ -175,8 +176,8 @@ export async function GET() {
       // v17 devnet: stake/vault program is GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3
       // mainnet: DC5fovFQD5SZYsetwvEqd4Wi4PFY1Yfnc669VMe6oa7F
       const programIdStr = isDevnet
-        ? (process.env.STAKE_PROGRAM_ID ?? "GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3")
-        : "DC5fovFQD5SZYsetwvEqd4Wi4PFY1Yfnc669VMe6oa7F";
+        ? (process.env.STAKE_PROGRAM_ID ?? resolveDevnetProgramIds().stake)
+        : MAINNET_PROGRAM_IDS.stake;
       stakeProgramId = new PublicKey(programIdStr);
     } catch {
       return NextResponse.json({ pools: [] }, {

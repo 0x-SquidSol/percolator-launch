@@ -56,7 +56,7 @@ export const MarketBrowser: FC = () => {
 
   if (error) {
     const helpMsg = error === "PROGRAM_ID not configured"
-      ? "Set the NEXT_PUBLIC_PROGRAM_ID environment variable to your Percolator program address."
+      ? "The Percolator program ID is not configured (app/lib/program-ids.ts, or NEXT_PUBLIC_WRAPPER_PROGRAM_ID on devnet)."
       : error;
     return (
       <div className="rounded-sm border border-[var(--border)] bg-[var(--panel-bg)] p-8 text-center shadow-sm">

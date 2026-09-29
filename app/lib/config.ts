@@ -2,6 +2,8 @@
  * RPC Configuration — uses server-side proxy by default, falls back to direct Helius for SSR.
  * Client-side code should use /api/rpc proxy to avoid exposing API keys.
  */
+import { MAINNET_PROGRAM_IDS, resolveDevnetProgramIds } from "@/lib/program-ids";
+
 export type Network = "mainnet" | "devnet";
 
 export function getNetwork(): Network {
@@ -87,6 +89,11 @@ export function getRpcEndpoint(): string {
  * Always returns a valid WSS URL — Helius if configured, public Solana RPC otherwise.
  */
 export function getWsEndpoint(): string {
+  // Local fork / E2E: an explicit ws(s) URL wins (devnet builds only). Pairs with
+  // the server-side DEVNET_RPC_URL that /api/rpc and getServerConnection use.
+  const wsOverride = process.env.NEXT_PUBLIC_SOLANA_WS_URL?.trim();
+  if (wsOverride && /^wss?:\/\//.test(wsOverride) && getNetwork() === "devnet") return wsOverride;
+
   // PERC-469: Use only the dedicated WS key (safe to expose: WS-only, rate-limited).
   // NEXT_PUBLIC_HELIUS_API_KEY has been removed; HELIUS_API_KEY is server-only and
   // unavailable on the client, so we cannot use it here.
@@ -110,33 +117,31 @@ export function getWsEndpoint(): string {
     : "wss://api.devnet.solana.com";
 }
 
+// Program ids: lib/program-ids.ts is the single source (one-line repoint + env overrides).
+const DEVNET_IDS = resolveDevnetProgramIds();
+
 const CONFIGS = {
   mainnet: {
     get rpcUrl() { return getRpcEndpoint(); },
-    programId: "ESa89R5Es3rJ5mnwGybVRG1GrNt9etP11Z5V2QWD4edv",
-    matcherProgramId: "GDK8wx38kpiSVSfGTVNiSdptX3Z5R4kQyqh6Q3QX6wmi",
+    programId: MAINNET_PROGRAM_IDS.wrapper,
+    matcherProgramId: MAINNET_PROGRAM_IDS.matcher,
     crankWallet: "8y7sXswvGo6fWa4daCnxaE3znaFoBs6QJXLTzCLYXotV",  // mainnet keeper crank wallet
     explorerUrl: "https://solscan.io",
   },
   devnet: {
     get rpcUrl() { return getRpcEndpoint(); },
-    // v18 deployed devnet wrapper — FRESH re-deploy 2026-09-22 (@percolatorct/sdk@6.0.0
-    // wire + layout: EXPECTED_SLAB_VERSION 18). Supersedes the v17 fee-split wrapper
-    // (DhSkE7uTb8HBUYYWF1xkxMYBGtLYJEoDq1tfBD7SnHcj) and its abandoned markets. The
-    // matcher/nft/stake siblings were upgraded in place and keep the SAME addresses.
-    programId: "GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ",
-    // Matcher was already live and upgraded in place at the same address (unchanged).
-    matcherProgramId: "4seJWjv3R5qfXY8R5ntuPHWsoqcVvaxvfFSnU2AnGMhT",
-    nftProgramId: "CNGBPZRALk9Xu8BdgWNyrLJ7daQ9eJYFf1GnEEC7YCU3",
-    vaultProgramId: "GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3",
+    // Wrapper / matcher / nft / stake: lib/program-ids.ts (DEVNET_PROGRAM_IDS, env-overridable).
+    programId: DEVNET_IDS.wrapper,
+    matcherProgramId: DEVNET_IDS.matcher,
+    nftProgramId: DEVNET_IDS.nft,
+    vaultProgramId: DEVNET_IDS.stake,
     crankWallet: "FF7KFfU5Bb3Mze2AasDHCCZuyhdaSLjUZy2K3JvjdB7x",
     explorerUrl: "https://explorer.solana.com",
-    // v17 uses a single unified wrapper — no slab-tier program splits.
-    // All tiers use the same program ID.
+    // v17+ uses a single unified wrapper — every slab tier is the same program.
     programsBySlabTier: {
-      small:  "GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ",
-      medium: "GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ",
-      large:  "GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ",
+      small: DEVNET_IDS.wrapper,
+      medium: DEVNET_IDS.wrapper,
+      large: DEVNET_IDS.wrapper,
     } satisfies Record<string, string>,
     // Playground: canonical Sim-USDC mint (6 decimals).
     // Overridable via NEXT_PUBLIC_TEST_USDC_MINT env var.
@@ -201,20 +206,15 @@ export function getConfig() {
   };
 }
 
-// v17 program placeholder IDs (declare_id! values from v16_program.rs).
-// These are NOT yet deployed; real on-chain addresses will be set at cutover (Phase 7).
-// Listed here so the known-program gate is ready for v17 cutover without a code change.
-// IMPORTANT: Do NOT add production keys here until they are audited and deployed.
-// v17 deployed devnet program IDs — FRESH triple (2026-07-17, hash-verified),
-// pre-listed for the known-program allowlist gate. These are the fee-split wrapper
-// lineage the app now targets; the 2026-06-26 IDs are intentionally NOT listed here
-// so the allowlist gate treats old-wrapper markets as untrusted after the cutover.
-const V17_PROGRAM_ID_PLACEHOLDERS = [
-  "GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ",  // v18 wrapper (fresh 2026-09-22)
-  "4seJWjv3R5qfXY8R5ntuPHWsoqcVvaxvfFSnU2AnGMhT",  // matcher (same address, upgraded in place)
-  "CNGBPZRALk9Xu8BdgWNyrLJ7daQ9eJYFf1GnEEC7YCU3",  // nft (same address, upgraded in place)
-  "GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3",  // stake/vault (same address, upgraded in place)
-] as const;
+// Known-program allowlist: the devnet set from lib/program-ids.ts (after env
+// overrides). A repoint there moves the allowlist with it — the old wrapper
+// drops out, so its markets are treated as untrusted after the cutover.
+const DEVNET_KNOWN_PROGRAM_IDS: readonly string[] = [
+  DEVNET_IDS.wrapper,
+  DEVNET_IDS.matcher,
+  DEVNET_IDS.nft,
+  DEVNET_IDS.stake,
+];
 
 /**
  * Get all unique program ID strings from config (default + all slab tier programs).
@@ -233,8 +233,7 @@ export function getAllProgramIds(): string[] {
   if (byTier) {
     Object.values(byTier).forEach((id) => { if (id) ids.add(id); });
   }
-  // v17 placeholder IDs — pre-listed so cutover only requires swapping deployed addresses in CONFIGS.
-  V17_PROGRAM_ID_PLACEHOLDERS.forEach((id) => ids.add(id));
+  if (cfg.network === "devnet") DEVNET_KNOWN_PROGRAM_IDS.forEach((id) => ids.add(id));
   return [...ids];
 }
 

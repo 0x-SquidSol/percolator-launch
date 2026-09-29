@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { DEVNET_PROGRAM_IDS } from "@/lib/program-ids";
 import {
   Keypair,
   PublicKey,
@@ -871,7 +872,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     const [lpVaultMint] = deriveInsuranceLpMint(programId, slabPk);
     const stakeProgramId = new PublicKey(
       (getConfig() as { vaultProgramId?: string }).vaultProgramId ??
-        "GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3",
+        DEVNET_PROGRAM_IDS.stake,
     );
     const [stakePoolPda] = deriveStakePool(slabPk, stakeProgramId);
     const [stakeVaultAuth] = deriveStakeVaultAuth(stakePoolPda, stakeProgramId);
@@ -3774,7 +3775,7 @@ export function useCreateMarket() {
           // hooks/useStakeDeposit.ts and hooks/useStakePool.ts.
           const stakeProgramId = new PublicKey(
             (getConfig() as { vaultProgramId?: string }).vaultProgramId ??
-              "GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3",
+              DEVNET_PROGRAM_IDS.stake,
           );
           const [stakePoolPda] = deriveStakePool(slabPk, stakeProgramId);
 

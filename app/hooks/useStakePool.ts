@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { DEVNET_PROGRAM_IDS } from "@/lib/program-ids";
 import { PublicKey } from '@solana/web3.js';
 import { useWalletCompat, useConnectionCompat } from '@/hooks/useWalletCompat';
 import {
@@ -234,7 +235,7 @@ export function useStakePool() {
       // (getConfig().vaultProgramId), NOT the SDK's default stake program id.
       const stakeProgramId = new PublicKey(
         (getConfig() as { vaultProgramId?: string }).vaultProgramId
-        ?? 'GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3'
+        ?? DEVNET_PROGRAM_IDS.stake
       );
       const slabPk = new PublicKey(slabAddress);
       const [poolPda] = deriveStakePool(slabPk, stakeProgramId);

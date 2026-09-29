@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useSyncExternalStore, type CSSProperties } from "react";
+import { DEVNET_PROGRAM_IDS } from "@/lib/program-ids";
 import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { PublicKey, Connection } from "@solana/web3.js";
@@ -669,7 +670,7 @@ function DepositWidget({
         // (getConfig().vaultProgramId), NOT the SDK's default stake program id.
         const stakeProgramId = new PublicKey(
           (getConfig() as { vaultProgramId?: string }).vaultProgramId
-          ?? "GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3"
+          ?? DEVNET_PROGRAM_IDS.stake
         );
         const found = await fetchPoolPosition(pool, publicKey, connection, stakeProgramId);
         if (!cancelled) setWithdrawPosition(found);
@@ -1396,7 +1397,7 @@ export default function StakePage() {
         // (getConfig().vaultProgramId), NOT the SDK's default stake program id.
         const stakeProgramId = new PublicKey(
           (getConfig() as { vaultProgramId?: string }).vaultProgramId
-          ?? "GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3"
+          ?? DEVNET_PROGRAM_IDS.stake
         );
         // Check every pool for user's LP position — same detection logic the
         // Withdraw tab uses for a single selected pool (fetchPoolPosition).

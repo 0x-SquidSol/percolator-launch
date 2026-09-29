@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { DEVNET_PROGRAM_IDS } from "@/lib/program-ids";
 import { bigintToFloat } from "@/lib/formatters";
 import { PublicKey, SystemProgram } from '@solana/web3.js';
 import { useWalletCompat, useConnectionCompat } from '@/hooks/useWalletCompat';
@@ -155,7 +156,7 @@ export function useLpPositions(): LpPositionsState & { refresh: () => void } {
       // (getConfig().vaultProgramId), NOT the SDK's default stake program id.
       const stakeProgramPk = new PublicKey(
         (getConfig() as { vaultProgramId?: string }).vaultProgramId
-        ?? 'GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3'
+        ?? DEVNET_PROGRAM_IDS.stake
       );
 
       // 2a. Batch-fetch LP + collateral mint accounts to read per-mint decimals (PERC-8197).

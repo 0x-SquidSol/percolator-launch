@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { resolveDevnetProgramIds } from "@/lib/program-ids";
 import { PublicKey } from "@solana/web3.js";
 import { validateNumericParam } from "@/lib/route-validators";
 import { parseHeader, parseConfig, discoverMarkets, type DiscoveredMarket, isV17Account, parseWrapperConfigV17, parseAssetOracleProfileV17, parseMarketGroupV17OI, type V17MarketGroupOI, type RiskParams, V17_HEADER_LEN, V17_MARKET_GROUP_OFF, V17_MARKET_GROUP_LEN } from "@percolatorct/sdk";
@@ -106,7 +107,7 @@ const DEVNET_MARKET_DIRECTORY_FALLBACK: Record<string, unknown>[] = [
   {
     // Live v18 SOL market — fresh clean re-seed 2026-09-22 (shared sim-USDC collateral).
     slab_address: "AzagguvrWmRgcBpsKuqomW7Yb1YUUd6UzcrkiRsqdhr",
-    program_id: "GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ",
+    program_id: resolveDevnetProgramIds().wrapper,
     mint_address: "DJ54k4wH92NTtNP8RuHAwG8si1bevXEknzctDdqYN8eC",
     symbol: "SOL-PERP",
     name: "SOL/USD Perpetual (Devnet)",
