@@ -116,6 +116,44 @@ describe("sendTx selfHeal", () => {
     expect(conn.getAccountInfoAndContext).not.toHaveBeenCalled();
   });
 
+  it("security LOW fix: a retry RE-PLANS — a repair landed by someone else meanwhile is not resent", async () => {
+    // Attempt 0: PAID lapsed → repair prepended; the send hits a blockhash miss.
+    // Meanwhile the keeper expired the bucket, so attempt 1 reads a healthy market
+    // and must NOT carry the (now engine-rejected) ExpireBackingBucket again.
+    const conn = makeConn("paid-market-v18-lapsed");
+    let healthy = false;
+    conn.getAccountInfoAndContext.mockImplementation(async () => {
+      const r = {
+        context: { slot: 505580400 },
+        value: { data: fixture(healthy ? "pengu-market-v18-healthy" : "paid-market-v18-lapsed"), owner: PROGRAM, lamports: 1, executable: false },
+      };
+      return r;
+    });
+    conn.simulateTransaction.mockImplementation(async (vtx: VersionedTransaction) => {
+      const ixs = vtx.message.compiledInstructions;
+      const repaired = ixs.some((ix) => ix.data[0] === 89);
+      if (healthy) return { value: { err: repaired ? { InstructionError: [3, { Custom: 19 }] } : null, logs: [] } };
+      return { value: { err: repaired ? null : { InstructionError: [ixs.length - 1, { Custom: 19 }] }, logs: [] } };
+    });
+    conn.sendRawTransaction
+      .mockImplementationOnce(async () => { healthy = true; throw new Error("Blockhash not found"); })
+      .mockResolvedValue(SIG);
+    const wallet = makeWallet();
+    const outcomes: string[] = [];
+    const sig = await sendTx({
+      connection: conn as never,
+      wallet,
+      instructions: [tradeIx()],
+      selfHeal: { programId: PROGRAM, market: MARKET },
+      onSelfHeal: (r) => { outcomes.push(r.outcome); },
+    });
+    expect(sig).toBe(SIG);
+    expect(outcomes).toEqual(["repaired", "no-repair-needed"]);
+    expect(wallet.signed).toHaveLength(2);
+    expect(wallet.signed[0].instructions.some((ix) => ix.data[0] === 89)).toBe(true);
+    expect(wallet.signed[1].instructions.some((ix) => ix.data[0] === 89)).toBe(false);
+  });
+
   it("NEGATIVE CONTROL healthy market: one account read, no extra simulation, instructions untouched", async () => {
     const conn = makeConn("pengu-market-v18-healthy");
     conn.simulateTransaction.mockResolvedValue({ value: { err: null, logs: [] } });

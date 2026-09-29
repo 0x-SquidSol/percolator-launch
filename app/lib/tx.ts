@@ -637,19 +637,23 @@ export async function sendTx({
   let lastError: Error | null = null;
   let lastSignature: string | undefined;
 
-  // P0b self-heal: decided ONCE per sendTx (retries reuse the decision). Started
+  // P0b self-heal. Planned from the ORIGINAL instructions on EVERY attempt:
+  // a repair that someone else (the keeper) landed meanwhile makes its engine
+  // gate false, and resending that stale repair would revert the whole tx on
+  // each retry (security review 2026-09-29, LOW). Attempt 0's plan starts
   // before the first blockhash fetch so the market read overlaps it.
   const feePayer = wallet.publicKey;
-  const selfHealPromise: Promise<SelfHealResult | null> =
-    selfHeal && isSelfHealEnabled() && !skipPreflight
+  const selfHealOn = !!selfHeal && isSelfHealEnabled() && !skipPreflight;
+  const planHeal = (): Promise<SelfHealResult | null> =>
+    selfHeal && selfHealOn
       ? planSelfHeal(
           { programId: selfHeal.programId, market: selfHeal.market, instructions, computeUnits },
           connectionSelfHealDeps(connection, selfHeal.market, feePayer),
         )
       : Promise.resolve(null);
+  let selfHealPromise: Promise<SelfHealResult | null> = planHeal();
   let healedInstructions = instructions;
   let healedComputeUnits = computeUnits;
-  let selfHealApplied = false;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -658,9 +662,11 @@ export async function sendTx({
       // a prewarmTxLanding call; retries force a fresh blockhash since a
       // stale one is a plausible cause of the failure being retried).
       const blockhashPromise = getFreshBlockhash(connection, attempt > 0);
-      if (!selfHealApplied) {
-        selfHealApplied = true;
+      if (selfHealOn) {
+        if (attempt > 0) selfHealPromise = planHeal();
         const heal = await selfHealPromise;
+        healedInstructions = instructions;
+        healedComputeUnits = computeUnits;
         if (heal) {
           onSelfHeal?.(heal);
           if (heal.outcome === "repaired") {
