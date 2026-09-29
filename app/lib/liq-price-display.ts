@@ -92,6 +92,15 @@ export function describeLiqPrice(input: LiqPriceDisplayInput): LiqPriceDisplay {
   if (!hasPosition || input.liqPriceE6 == null) return unknown;
 
   const liq = input.liqPriceE6;
+  // A real price is shown even when `hasResolvedEntry` is false — deliberately
+  // (#2673 item 3). A liquidation price is an EQUITY statement (capital + pnl
+  // vs maintenance), not an entry-attribution one: on the "unknown" path the
+  // on-chain pnl is 0 because the loss was crystallized OUT of capital, so
+  // (entry = mark, capital) is the same equity reference a derived entry gives
+  // (derived E = mark − pnl/size with the pre-crystallization capital) — see
+  // __tests__/lib/liq-price-unknown-entry.test.ts. Hiding it would drop the
+  // one risk number that is still right from exactly the positions that have
+  // been losing. Only the ZERO/sentinel claim below needs a resolved entry.
   if (liq > 0n && liq < LIQ_PRICE_UNLIQUIDATABLE) {
     const format = input.formatPrice ?? ((e6: bigint) => formatLiqPrice(e6));
     return {

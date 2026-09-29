@@ -151,3 +151,155 @@ describe("the helper is an ALLOWLIST (#2671)", () => {
     expect(isEntryKnown(undefined, "cache")).toBe(false);
   });
 });
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * #2673 — per-CALL, not per-file, and not keyed on an "Entry" label.
+ *
+ * The discovered-surface check above has two holes #2673 measured: it is
+ * per-FILE (an unrelated gated cell satisfies it — ungating OtherMarketPositions'
+ * Entry cell left it green), and it only sees files with an "Entry" label
+ * (ClosePositionModal says "… at $x entry"). The checks below scan EVERY .tsx
+ * under components/ and app/ and look at each formatter / modal call itself.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+const ALL_TSX: Array<[string, string]> = [];
+walkTsx((rel, src) => ALL_TSX.push([rel, src]));
+
+/**
+ * Components that receive an entry as a PROP under the "0n = unknown"
+ * convention (65d8cfd5): inside them `entry > 0n` IS the gate, because every
+ * call site is required (below) to pass a gated value.
+ */
+const ZERO_CONVENTION = new Set([
+  "components/trade/ClosePositionModal.tsx",
+  "components/trade/OrderTicketClosePanel.tsx",
+]);
+
+const KNOWN_FLAG = /^\s*(pnlIsKnown|\w*[eE]ntryKnown|isEntryKnown\(|[\w.]*\.known)\b/;
+const ZERO_GATE = /^\s*[\w.]*[eE]ntry\w*\s*>\s*0n\s*$/;
+
+/** The condition of the nearest enclosing `{cond ? … }` JSX/TS expression, up to 3 levels out. */
+function enclosingConditions(src: string, at: number): string[] {
+  const conds: string[] = [];
+  let depth = 0;
+  for (let i = at - 1, levels = 0; i >= 0 && levels < 3 && at - i < 600; i--) {
+    const ch = src[i];
+    if (ch === "}") depth++;
+    else if (ch === "{") {
+      if (depth === 0) {
+        levels++;
+        const head = src.slice(i + 1, at);
+        const q = head.indexOf("?");
+        if (q !== -1) conds.push(head.slice(0, q));
+      } else depth--;
+    }
+  }
+  return conds;
+}
+
+/** Every formatter call on an entry-named value, anywhere in the tree. */
+const ENTRY_FORMAT = /format\w*\(\s*([\w?.]*[eE]ntry[\w?.]*)\s*\)/g;
+const FORMAT_EXEMPT: Record<string, string> = {
+  "components/trade/OrderTicket.tsx|estEntry": "projected fill for the order being placed, not a held entry",
+  "components/trade/AccountsCard.tsx|row.entryPrice": "pre-v17 accounts only; entry_price decoded from chain there",
+};
+
+describe("#2673: every formatted entry sits under a resolved-entry gate (per call)", () => {
+  const calls: Array<{ file: string; arg: string; conds: string[] }> = [];
+  for (const [file, src] of ALL_TSX) {
+    for (const m of src.matchAll(ENTRY_FORMAT)) {
+      calls.push({ file, arg: m[1], conds: enclosingConditions(src, m.index ?? 0) });
+    }
+  }
+
+  it("inventory is pinned (a new entry readout fails here until reviewed)", () => {
+    expect(calls.map((c) => `${c.file}|${c.arg}`).sort()).toEqual([
+      "components/trade/AccountsCard.tsx|row.entryPrice",
+      "components/trade/ClosePositionModal.tsx|entryPrice",
+      "components/trade/OrderTicket.tsx|estEntry",
+      "components/trade/OrderTicketClosePanel.tsx|entryPriceE6",
+      "components/trade/OtherMarketPositions.tsx|entryE6",
+      "components/trade/PositionPanel.tsx|entryPriceE6",
+      "components/trade/PositionsDock.tsx|entryPriceE6",
+    ]);
+  });
+
+  it.each(calls.map((c) => [`${c.file} format(${c.arg})`, c] as const))("%s", (_label, c) => {
+    if (FORMAT_EXEMPT[`${c.file}|${c.arg}`]) return;
+    const gated = c.conds.some(
+      (cond) => KNOWN_FLAG.test(cond) || (ZERO_CONVENTION.has(c.file) && ZERO_GATE.test(cond)),
+    );
+    expect(gated, `conditions seen: ${JSON.stringify(c.conds)}`).toBe(true);
+  });
+});
+
+/** `<Component … prop={expr}` → expr (balanced braces). */
+function jsxPropValues(src: string, component: string, prop: string): string[] {
+  const out: string[] = [];
+  const open = new RegExp(`<${component}\\b`, "g");
+  for (const m of src.matchAll(open)) {
+    const start = m.index ?? 0;
+    const end = src.indexOf("/>", start);
+    const el = src.slice(start, end === -1 ? undefined : end);
+    const p = el.indexOf(`${prop}={`);
+    if (p === -1) {
+      out.push("<missing>");
+      continue;
+    }
+    let depth = 0;
+    let i = p + prop.length + 1;
+    const from = i + 1;
+    for (; i < el.length; i++) {
+      if (el[i] === "{") depth++;
+      else if (el[i] === "}" && --depth === 0) break;
+    }
+    out.push(el.slice(from, i).trim());
+  }
+  return out;
+}
+
+const GATED_ENTRY_EXPR = /^(displayEntryE6\(|(pnlIsKnown|\w*[eE]ntryKnown)\s*\?)/;
+
+describe("#2673: the close dialog is handed a gated entry at EVERY call site", () => {
+  // ClosePositionModal is the one entry readout attached to an irreversible
+  // action, and it has no `source` prop: it trusts `entryPrice > 0n`. So every
+  // caller must pass the resolved entry only when it resolved (0n otherwise).
+  const sites: Array<{ file: string; expr: string }> = [];
+  for (const [file, src] of ALL_TSX) {
+    for (const expr of jsxPropValues(src, "ClosePositionModal", "entryPrice")) sites.push({ file, expr });
+    for (const expr of jsxPropValues(src, "OrderTicketClosePanel", "entryPriceE6")) sites.push({ file, expr });
+  }
+
+  it("call-site inventory is pinned", () => {
+    expect(sites.map((s) => s.file).sort()).toEqual([
+      "components/portfolio/PortfolioPositionsView.tsx",
+      "components/trade/OrderTicket.tsx",
+      "components/trade/OrderTicketClosePanel.tsx",
+      "components/trade/OtherMarketPositions.tsx",
+      "components/trade/PositionPanel.tsx",
+      "components/trade/PositionsDock.tsx",
+    ]);
+  });
+
+  it.each(sites.map((s) => [`${s.file}: ${s.expr}`, s] as const))("%s", (_label, s) => {
+    // A ZERO_CONVENTION component may forward its own (already-gated) prop.
+    const forwarded = ZERO_CONVENTION.has(s.file) && /^[\w]*[eE]ntry\w*$/.test(s.expr);
+    expect(GATED_ENTRY_EXPR.test(s.expr) || forwarded, s.expr).toBe(true);
+  });
+});
+
+describe("CONTROL: the per-call scanners are not vacuous", () => {
+  it("an ungated formatter is caught (the #2673 OtherMarketPositions mutant)", () => {
+    const src = `<td title={pnlIsKnown ? undefined : TIP}>{formatUsdPriceE6(entryE6)}</td>`;
+    const at = src.indexOf("formatUsdPriceE6");
+    expect(enclosingConditions(src, at).some((c) => KNOWN_FLAG.test(c))).toBe(false);
+    const ok = `<td>{pnlIsKnown && entryE6 > 0n ? formatUsdPriceE6(entryE6) : "--"}</td>`;
+    expect(enclosingConditions(ok, ok.indexOf("formatUsdPriceE6")).some((c) => KNOWN_FLAG.test(c))).toBe(true);
+  });
+
+  it("an ungated modal prop is caught", () => {
+    const [expr] = jsxPropValues(`<ClosePositionModal entryPrice={pos.effectiveEntryPrice} onCancel={x} />`, "ClosePositionModal", "entryPrice");
+    expect(expr).toBe("pos.effectiveEntryPrice");
+    expect(GATED_ENTRY_EXPR.test(expr)).toBe(false);
+  });
+});
