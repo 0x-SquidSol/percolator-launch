@@ -9,6 +9,8 @@ import {
 import { getServerConnection } from "@/lib/server-rpc";
 import { sanitizeOnChainValue } from "@/lib/health";
 import { isMarketauthComplete } from "@/lib/market-completeness";
+import { parseV17RiskParams } from "@/lib/v17-engine-config";
+import { leverageFromMarginBps } from "@/lib/market-params";
 
 /**
  * Live per-market state, read straight from the slab account.
@@ -75,6 +77,18 @@ export interface LiveMarketState {
    * apply here, so every market is treated as complete rather than filtered.
    */
   isComplete: boolean;
+  /**
+   * Max leverage cap derived from the market's REAL on-chain initialMarginBps
+   * (round(10000 / bps)). This is the same figure /api/markets' on-chain
+   * discovery path computes via computeMaxLeverage — but the Supabase list path
+   * (the one that actually serves the deployed site) never had it, so every
+   * market fell back to the DB's stored max_leverage of 10. That is correct only
+   * by coincidence for 1000bps markets and wrong for the rest (e.g. SOL at
+   * 666bps is 15x, COLLECT at 1538bps is ~7x). Read off the SAME slab bytes this
+   * file already fetches, so it costs zero extra RPC. Null when the engine-config
+   * region can't be read — the caller then keeps whatever the registry row had.
+   */
+  maxLeverage: number | null;
 }
 
 // isMarketauthComplete lives in lib/market-completeness.ts (client-safe: this
@@ -131,6 +145,10 @@ function parseLiveState(data: Uint8Array, slabKey: PublicKey): LiveMarketState |
   // isComplete doc comment above. Only devnet, where the stake program IS
   // pinned, can flip this to false.
   let isComplete = true;
+  // Null until read: leaving it null (not 10) makes the caller keep the
+  // registry's stored max_leverage on an RPC/parse gap, rather than clobbering
+  // it with a wrong-but-plausible fallback. See LiveMarketState.maxLeverage.
+  let maxLeverage: number | null = null;
   try {
     const cfg = parseWrapperConfigV17(data, V17_HEADER_LEN);
     const e6 = cfg.markEwmaE6;
@@ -139,6 +157,15 @@ function parseLiveState(data: Uint8Array, slabKey: PublicKey): LiveMarketState |
     // Same signal the discovery path uses; no stake program pinned (mainnet
     // today) => complete, PDA derivation failure => fail closed.
     isComplete = isMarketauthComplete(cfg.marketauth, slabKey);
+
+    // Real per-market leverage cap from the engine's initialMarginBps — the same
+    // derivation /api/markets' on-chain discovery path uses (computeMaxLeverage
+    // -> leverageFromMarginBps). Parsed from the SAME bytes already in hand.
+    const risk = parseV17RiskParams(data, cfg.tradeFeeBps);
+    if (risk && risk.initialMarginBps > 0n) {
+      const lev = leverageFromMarginBps(Number(risk.initialMarginBps));
+      if (Number.isFinite(lev) && lev > 0) maxLeverage = lev;
+    }
   } catch {
     // Config unreadable — the row keeps a null price rather than a wrong one.
     // Unreadable also means we can't prove completeness — fail closed (not
@@ -184,6 +211,7 @@ function parseLiveState(data: Uint8Array, slabKey: PublicKey): LiveMarketState |
     vault,
     cTot,
     isComplete,
+    maxLeverage,
   };
 }
 
