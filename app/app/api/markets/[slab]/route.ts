@@ -15,6 +15,8 @@ import { getConfig } from "@/lib/config";
 import { getServerConnection } from "@/lib/server-rpc";
 import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
 import { readCreatorFeeClaimable } from "@/lib/v17-creator-fee";
+import { qToUsd } from "@/lib/q-usd";
+import { maxLeverageFromSlab } from "@/lib/slab-max-leverage";
 import { readRegisteredMarkets } from "@/lib/playground-registered-markets";
 import { getMarketLpCapital } from "@/lib/lp-portfolio";
 import { verifyKeeperSignature } from "@/lib/keeper-hmac";
@@ -76,25 +78,32 @@ async function withOnChainMarketLp(
 async function withCreatorFee(
   market: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  if (market.creator_fee_claimable_atoms != null) return market;
-
   const slab = market.slab_address as string | undefined;
   if (!slab) return market;
+  const needFee = market.creator_fee_claimable_atoms == null;
 
+  const unknownFee = needFee
+    ? { creator_fee_claimable_atoms: null, creator_fee_authority: null }
+    : {};
   try {
     const connection = getServerConnection("confirmed");
     const info = await connection.getAccountInfo(new PublicKey(slab));
-    if (!info?.data) return { ...market, creator_fee_claimable_atoms: null, creator_fee_authority: null };
+    if (!info?.data) return { ...market, ...unknownFee };
+    // The same account read also yields the real leverage cap (see
+    // maxLeverageFromSlab) — no extra RPC. Only override when derivable.
+    const lev = maxLeverageFromSlab(new Uint8Array(info.data));
+    const out: Record<string, unknown> = lev != null ? { ...market, max_leverage: lev } : { ...market };
+    if (!needFee) return out;
     const claim = readCreatorFeeClaimable(info.data);
-    if (!claim) return { ...market, creator_fee_claimable_atoms: null, creator_fee_authority: null };
+    if (!claim) return { ...out, ...unknownFee };
     return {
-      ...market,
+      ...out,
       creator_fee_claimable_atoms: claim.atoms.toString(),
       creator_fee_authority: claim.claimAuthority?.toBase58() ?? null,
     };
   } catch {
     // Unknown, NOT zero.
-    return { ...market, creator_fee_claimable_atoms: null, creator_fee_authority: null };
+    return { ...market, ...unknownFee };
   }
 }
 
@@ -164,6 +173,9 @@ async function onChainSlabFallback(slab: string): Promise<NextResponse> {
       oracle_mode: cfg.oracleMode === 1 ? "hyperp" : cfg.oracleMode === 3 ? "keeper" : "admin",
       dex_pool_address: playgroundMeta?.dex_pool_address ?? registered?.poolAddress ?? null,
       mainnet_ca: playgroundMeta?.mainnet_ca ?? registered?.mainnetCA ?? null,
+      // Real cap from on-chain initial_margin_bps (was absent here, so every
+      // consumer fell back to 10x).
+      max_leverage: maxLeverageFromSlab(data),
       created_at: null,
       stats_updated_at: null,
       is_zombie: false,
@@ -177,7 +189,7 @@ async function onChainSlabFallback(slab: string): Promise<NextResponse> {
       open_interest_long: oiLong,
       open_interest_short: oiShort,
       total_open_interest: oiLong + oiShort,
-      total_open_interest_usd: markPriceUsd != null ? ((oiLong + oiShort) / 1_000_000) * markPriceUsd : 0,
+      total_open_interest_usd: qToUsd(oiLong + oiShort, markPriceUsd) ?? 0,
       insurance_fund: insurance,
       insurance_balance: insurance,
       // Creator fee claim (tag 90). atoms as a string (u64 can exceed JS number
