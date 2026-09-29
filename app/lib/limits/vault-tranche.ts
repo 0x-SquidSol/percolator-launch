@@ -21,7 +21,13 @@ const bpsCeil = (x: bigint, bps: number): bigint | null => {
   const rem = (x % BPS) * b;
   return (x / BPS) * b + rem / BPS + (rem % BPS !== 0n ? 1n : 0n);
 };
-const mulDivFloor = (a: bigint, b: bigint, d: bigint): bigint | null => (d === 0n ? null : (a * b) / d);
+const U128_MAX = (1n << 128n) - 1n;
+/** `mul_div_floor`: None on d == 0 or on a u128-overflowing product (fail closed, like Rust). */
+const mulDivFloor = (a: bigint, b: bigint, d: bigint): bigint | null => {
+  if (d === 0n) return null;
+  const p = a * b;
+  return p > U128_MAX ? null : p / d;
+};
 
 export interface TrancheSplit {
   senior: bigint;

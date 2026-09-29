@@ -11,7 +11,7 @@
  *   - P1: `percolator-prog feat/p1-safety-release@6066399f` `src/v16_program.rs`
  *     (`ASSET_RISK_LIMITS_OFF` :376, `AssetRiskLimitsV17` :2370, `risk_limits_v17` :9212,
  *     errors :1125-1142, tag 93 :385);
- *   - P2: `percolator-match feat/p2-matcher-v2@49fb7dc` `src/vamm.rs` `MatcherCtx` :89,
+ *   - P2: `percolator-match feat/p2-matcher-v2@4a0f696` `src/vamm.rs` `MatcherCtx` :89,
  *     `src/v2.rs` V2Block :257 / errors :32-39;
  *   - P3: `percolator-prog feat/p3-vault-owned-lp@c7437518` (`ASSET_VAULT_LP_OFF` :381,
  *     `VaultLpStateV18` :5470, `AssetVaultLpV18` :5573, errors :1148-1166).

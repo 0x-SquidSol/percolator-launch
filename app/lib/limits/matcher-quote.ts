@@ -1,6 +1,6 @@
 /**
  * P2 matcher v2: client ports of the kind-2 (adaptive) quote from
- * `percolator-match feat/p2-matcher-v2@49fb7dc` `src/v2.rs` (`adaptive_fee_bps`
+ * `percolator-match feat/p2-matcher-v2@4a0f696` `src/v2.rs` (`adaptive_fee_bps`
  * :525, `cp_impact_bps` :588, `skew_potential_num` :619, `skew_net_bps` :655,
  * `price_with_total_bps` :696, `quote_adaptive` :734) and the fill clipping of
  * `vamm.rs::execute_leg` / `compute_adaptive_execution` (:831-990).
@@ -150,7 +150,7 @@ export interface AdaptiveQuote {
   clippedByTotal: boolean;
 }
 
-/** `quote_adaptive` (binary search identical to Rust, at most 128 steps). */
+/** `quote_adaptive` @4a0f696 (binary search identical to Rust, at most 128 steps; LP-reducing exemption; impact capped at 9000). */
 export function quoteAdaptive(q: AdaptiveQuoteIn): AdaptiveQuote | null {
   const maxTotal = BigInt(Math.min(q.maxTotalBps, 9_000));
   const zero: AdaptiveQuote = { fill: 0n, priceE6: q.oracleE6, totalBps: 0n, impactBps: 0n, skewBps: 0n, clippedByTotal: false };
@@ -170,8 +170,18 @@ export function quoteAdaptive(q: AdaptiveQuoteIn): AdaptiveQuote | null {
     }
     fill = lo;
   }
+  // 4a0f696: a request that REDUCES the LP's |inventory| is always fillable up
+  // to |inventory| (priced at the max_total clamp if it must be).
+  const lpReduces = (q.takerBuys && q.invPre > 0n) || (!q.takerBuys && q.invPre < 0n);
+  if (lpReduces) {
+    const absInv = q.invPre < 0n ? -q.invPre : q.invPre;
+    const exempt = q.fill < absInv ? q.fill : absInv;
+    if (exempt > fill) fill = exempt;
+  }
   if (fill === 0n) return { ...zero, clippedByTotal: true };
-  const { impact, skew } = impactAndSkew(q, fill);
+  const is = impactAndSkew(q, fill);
+  const impact = is.impact > 9_000n ? 9_000n : is.impact;
+  const skew = is.skew;
   const gross = BigInt(q.baseSpreadBps) + q.feeBps + impact + skew;
   const g = gross < 0n ? 0n : gross;
   const total = g > maxTotal ? maxTotal : g;
