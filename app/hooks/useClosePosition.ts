@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useCallback, useRef } from "react";
+import { useSingleMarketHealth } from "@/hooks/useMarketHealth";
+import { safeExplainMarketTxError } from "@/lib/market-error";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { useConnectionCompat } from "@/hooks/useWalletCompat";
 import { AccountKind, isV17Account, parsePortfolioV17 } from "@percolatorct/sdk";
@@ -141,6 +143,8 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
   const { trade } = useTrade(slabAddress);
   const { accounts, raw, programId } = useSlabState();
   const mockMode = isMockMode() && isMockSlab(slabAddress);
+  // P0b: live v18 health refines 19/21 on a failed close (lib/market-error.ts).
+  const marketHealth = useSingleMarketHealth(slabAddress);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -395,7 +399,7 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         console.error("[useClosePosition] error:", msg);
-        setError(humanizeError(msg, "trade"));
+        setError(safeExplainMarketTxError(msg, "close", marketHealth) ?? humanizeError(msg, "trade"));
         // #2643: refine an ambiguous Custom(9) from pre-trade state (no-op for
         // any other error). The generic text above shows immediately.
         if (programId) {
@@ -423,7 +427,7 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
         setLoading(false);
       }
     },
-    [connection, publicKey, userAccount, trade, lpIdx, slabAddress, mockMode, isV17Market, programId],
+    [connection, publicKey, userAccount, trade, lpIdx, slabAddress, mockMode, isV17Market, programId, marketHealth],
   );
 
   const prewarmClose = useCallback(() => {

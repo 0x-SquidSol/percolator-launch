@@ -46,6 +46,7 @@ import { remainingSideCapacityQ, wouldExceedInventoryCap, UNLIMITED_CAPACITY } f
 import { isBlockedSlab } from "@/lib/blocklist";
 import { humanizeError, isEngineLockError, withTransientRetry } from "@/lib/errorMessages";
 import { useSingleMarketHealth } from "@/hooks/useMarketHealth";
+import { safeExplainMarketTxError } from "@/lib/market-error";
 import { PublicKey } from "@solana/web3.js";
 import { diagnoseTradeRejection } from "@/lib/tradeRejectDiagnosis";
 import { explorerTxUrl, getNetwork } from "@/lib/config";
@@ -933,7 +934,10 @@ setEngineLockError(null);
       // trade-context text (not the generic "invalid instruction" one, which is
       // still correct for deposit/withdraw/NFT/market-creation call sites).
       // Custom(9) is NOT always slippage — see the #2643 refinement below.
-      const friendlyMsg = humanizeError(msg, "trade");
+      // P0b: refine 19/21/49 with live market health (LP depleted / resolved /
+      // bankruptcy / repairable) — lib/market-error.ts. Wallet lock and program
+      // Unauthorized(8) are never refined into "locked".
+      const friendlyMsg = safeExplainMarketTxError(msg, "open", marketHealth) ?? humanizeError(msg, "trade");
     if (isEngineLockError(msg)) {
       setEngineLockError(friendlyMsg);
     }

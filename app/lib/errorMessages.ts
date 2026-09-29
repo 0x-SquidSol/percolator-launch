@@ -43,6 +43,12 @@ export { LIGHTHOUSE_USER_MESSAGE };
 // the deployed program: Custom(N) == enum ordinal, no offset; ProgramError::Custom(value as u32)).
 // This was previously a stale v12 map whose codes were misaligned from ordinal 4
 // onward (e.g. 21 showed "Position size mismatch" but v17 21 = EngineLockActive).
+/**
+ * P1 wrapper errors (appended after 61). Kept as its own table so the P1
+ * release is a self-contained edit. Empty until the P1 codes are final.
+ */
+export const P1_ERROR_MESSAGES: Record<number, string> = {};
+
 const ERROR_CODE_MAP: Record<number, string> = {
   0: "Invalid market data (bad magic) - corrupted or not a Percolator market.",
   1: "This market uses a different program version and needs migration.",
@@ -52,7 +58,12 @@ const ERROR_CODE_MAP: Record<number, string> = {
   5: "Invalid account data length - corrupted account.",
   6: "Missing required signature.",
   7: "An account that must be writable was passed as read-only.",
-  8: "Unauthorized - you don't have permission for this action.",
+  // Custom(8) = PercolatorError::Unauthorized from the PROGRAM: the connected
+  // wallet is not the authority the instruction requires. Not the same thing as
+  // a wallet that is locked / has not authorised this site (Phantom 4100,
+  // Solflare "wallet is locked") — those are detected in detectWalletError and
+  // never reach this map.
+  8: "Not authorized: the connected wallet isn't the account this action requires (for example the market's creator or admin, or the owner of this position). If you switched wallets, reconnect the one you used for this market.",
   9: "Invalid or unsupported instruction. (If this is a market order, the market's matcher config may be misaligned on-chain. Please report this to the team.)",
   10: "Invalid mint account.",
   11: "Invalid token account.",
@@ -138,6 +149,12 @@ const ERROR_CODE_MAP: Record<number, string> = {
   59: "Stake pool is not in insurance-LP mode, so it is not owed the insurance/staker fee leg.",
   60: "This wrapper build has no pinned stake program — the insurance-reserve-to-stake withdrawal has no trusted destination (expected off devnet).",
   61: "This asset slot is already configured/active — only an append at the next index or a re-activation of a retired slot is allowed.",
+  // ── P1 safety release (oracle band, auto-halt, exposure cap) ──────────────
+  // Codes are appended after 61 by feat/p1-safety-release; add one line per
+  // code here from ~/percolator-ops/ledger/p1-safety-release-2026-09-29.md.
+  // market-error.ts (explainMarketTxError) can refine any of them with live
+  // market health, the same way 19/21/49 are refined.
+  ...P1_ERROR_MESSAGES,
 };
 
 /** Legacy Anchor error map (unused but kept for compatibility) */
@@ -219,6 +236,40 @@ function isSplTokenProgramError(msg: string): boolean {
 const SPL_TOKEN_INSUFFICIENT_FUNDS_MESSAGE =
   "Insufficient balance - you're trying to deposit more than your wallet holds. " +
   "Reduce the amount or add more funds and try again.";
+
+// ── Wallet-side errors (Phantom / Solflare / Privy) ─────────────────────────
+// A wallet that is LOCKED or has not authorised this site is not a program
+// "Unauthorized". Shapes observed/documented:
+//   Phantom  : {code: 4100, message: "The requested method and/or account has not been authorized by the user."}
+//              {code: 4001, message: "User rejected the request."}
+//   Solflare : "Wallet is locked" / "WalletNotConnectedError" / "User rejected the request"
+//   adapters : WalletNotConnectedError, WalletSignTransactionError: "Wallet not connected"
+export const WALLET_LOCKED_MESSAGE =
+  "Your wallet is locked or hasn't authorised this site. Unlock Phantom / Solflare, reconnect it from the header, and try again. Nothing was sent.";
+export type WalletErrorKind = "locked" | "rejected";
+
+export function detectWalletError(msg: string): WalletErrorKind | null {
+  if (/has not been authori[sz]ed by the user|\b4100\b.*authori[sz]|wallet is locked|locked wallet|WalletNotConnected|wallet not connected|please unlock/i.test(msg)) {
+    return "locked";
+  }
+  if (/user rejected|rejected the request|user declined|transaction rejected|request rejected|\b4001\b/i.test(msg)) {
+    return "rejected";
+  }
+  return null;
+}
+
+/**
+ * Program id of the FIRST "Program <id> failed: custom program error" log line
+ * — the innermost failing program (a CPI failure is logged by the callee
+ * first, then re-logged by each caller). Null when no such line is present.
+ */
+export function failingProgramId(msg: string): string | null {
+  const m = msg.match(/Program ([1-9A-HJ-NP-Za-km-z]{32,44}) failed: custom program error/);
+  return m ? m[1] : null;
+}
+
+const MATCHER_PROGRAM_ID = resolveDevnetProgramIds().matcher;
+const WRAPPER_PROGRAM_ID = resolveDevnetProgramIds().wrapper;
 
 export function extractErrorCode(msg: string): number | null {
   const m = msg.match(/(?:custom program error|Error Code)[:\s]+0x([0-9a-fA-F]+)/i);
@@ -312,6 +363,12 @@ export function humanizeError(rawMsg: string, context?: "trade"): string {
     return LIGHTHOUSE_USER_MESSAGE;
   }
 
+  // Wallet-side refusals BEFORE any code extraction: a locked Phantom/Solflare
+  // must never read as the program's Custom(8) "Not authorized".
+  const walletErr = detectWalletError(rawMsg);
+  if (walletErr === "locked") return WALLET_LOCKED_MESSAGE;
+  if (walletErr === "rejected") return "Transaction cancelled.";
+
   // Handle Solana system errors BEFORE custom code extraction.
   // These are string-form errors like "InvalidAccountData", "AccountAlreadyInitialized" etc.
   // They must NOT be confused with Percolator custom program error codes.
@@ -354,6 +411,11 @@ export function humanizeError(rawMsg: string, context?: "trade"): string {
   // recognized" in the NFT program — a user who sees the former assumes a
   // wallet/signing bug instead of an on-chain program mismatch).
   if (code !== null) {
+    // Code-overlap guard: the matcher's own custom codes are not wrapper codes.
+    const origin = failingProgramId(rawMsg);
+    if (origin && origin === MATCHER_PROGRAM_ID && origin !== WRAPPER_PROGRAM_ID) {
+      return `The market's matcher rejected this fill (matcher error ${code}). Try a smaller size, or retry in a moment.`;
+    }
     if (isNftProgramError(rawMsg) && NFT_ERROR_CODE_MAP[code]) {
       return NFT_ERROR_CODE_MAP[code];
     }
