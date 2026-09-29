@@ -228,10 +228,43 @@ export function resolveEntryPrice(
   // crystallized out of capital. Indistinguishable from here, and guessing
   // "flat" is the dangerous guess — so refuse to display a number.
   if (onChainPnl === 0n) return { entry: oraclePrice, source: "unknown" };
-  return {
-    entry: estimateEntryFromPnl(positionSize, onChainPnl, oraclePrice),
-    source: "derived",
-  };
+  // #2672: a back-solve that could not move off the mark is no more informative
+  // than pnl == 0 — it is either below one e6 price tick (truncated to 0) or
+  // inconsistent with this position (non-positive, clamped). Both used to come
+  // back as the MARK labelled "derived", i.e. the fabrication above wearing a
+  // trusted label. Same numeric `.entry` as before (risk math is unchanged);
+  // only the source is downgraded so display refuses it.
+  const backSolved = backSolveEntryFromPnl(positionSize, onChainPnl, oraclePrice);
+  if (backSolved === null) return { entry: oraclePrice, source: "unknown" };
+  return { entry: backSolved, source: "derived" };
+}
+
+/**
+ * Invert the collateral PnL relation for a real entry, or `null` when the
+ * on-chain `pnl` does not determine one distinct from the mark:
+ *
+ *   - `diff == 0`: |pnl| < absPos / 1e6, i.e. the implied price move is below
+ *     one e6 tick. The only entry it can express is the mark itself —
+ *     the exact value the `pnl == 0` rule refuses to show — and a flat
+ *     "$0.00" beside it would hide a pnl that is not zero. On sub-cent
+ *     memecoins (BURNIE ~1_495 e6, SOLCAT ~132 e6) one tick is 0.07%–0.8% of the price, so the band of
+ *     pnl this swallows is a real amount on a large position.
+ *   - entry <= 0: the pnl is larger than the position's notional at the
+ *     mark, so it is not this leg's mark PnL (portfolio pnl is one scalar).
+ *
+ * `estimateEntryFromPnl` keeps its historical mark fallback for risk math.
+ */
+export function backSolveEntryFromPnl(
+  positionSize: bigint,
+  onChainPnl: bigint,
+  oraclePrice: bigint,
+): bigint | null {
+  if (positionSize === 0n || oraclePrice <= 0n || onChainPnl === 0n) return null;
+  const absPos = positionSize < 0n ? -positionSize : positionSize;
+  const diff = (onChainPnl * 1_000_000n) / absPos;
+  if (diff === 0n) return null;
+  const entry = positionSize > 0n ? oraclePrice - diff : oraclePrice + diff;
+  return entry > 0n ? entry : null;
 }
 
 export function estimateEntryFromPnl(
