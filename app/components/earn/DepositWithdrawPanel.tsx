@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useMemo } from 'react';
 import { formatPercent } from "@/lib/formatters";
+import { earnErrorMessage } from "@/lib/earnErrors";
 import { GlowButton } from '@/components/ui/GlowButton';
 import { useWalletCompat } from '@/hooks/useWalletCompat';
 import dynamic from 'next/dynamic';
@@ -182,7 +183,9 @@ export function DepositWithdrawPanel({
       }
       setAmount('');
     } catch (e) {
-      setTxError(e instanceof Error ? e.message : 'Transaction failed');
+      // Decode the program error into Earn-specific copy (a locked vault used to
+      // surface as a raw "custom program error: 0x15").
+      setTxError(earnErrorMessage(e, tab === 'deposit' ? 'deposit' : 'claim'));
       setWithdrawConfirming(false);
     } finally {
       setSubmitting(false);
@@ -206,7 +209,7 @@ export function DepositWithdrawPanel({
           : 'Redemption claimed — funds sent to your wallet!',
       );
     } catch (e) {
-      setClaimError(e instanceof Error ? e.message : 'Transaction failed');
+      setClaimError(earnErrorMessage(e, 'claim'));
     } finally {
       setClaimSubmitting(false);
     }

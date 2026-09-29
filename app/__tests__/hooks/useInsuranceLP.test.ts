@@ -695,6 +695,38 @@ describe("useInsuranceLP", () => {
       expect(sendTx).toHaveBeenCalledTimes(1);
     });
 
+    // Live 2026-09-29 (ANSEM): every claim failed NotEnoughAccountKeys. The deployed
+    // wrapper (percolator-prog #461 / GH#412, v18.2) reads a 13th account — the
+    // redeemer's rent destination, pinned to redemption.redeemer — and the hook
+    // passed 12.
+    it("ExecuteRedemption passes all 13 accounts, [12] = the redeemer as writable rent destination", async () => {
+      const sdk = await import("@percolatorct/sdk");
+      mockConnection.getAccountInfo.mockResolvedValue({
+        data: Buffer.alloc(64),
+        lamports: 1_000_000,
+        executable: false,
+        owner: new PublicKey("5BZWY6XWPxuWFxs2nPCLLsVaKRWZVnzZh3FkJDLJBkJf"),
+      });
+      const { result } = renderHook(() => useInsuranceLP());
+      vi.mocked(sdk.buildIx).mockClear();
+      await act(async () => {
+        await result.current.withdraw(250_000n);
+      });
+      expect(sdk.encodeExecuteRedemption).toHaveBeenCalled();
+      const call = vi.mocked(sdk.buildIx).mock.calls.find(
+        (c) => (c[0] as { keys: unknown[] }).keys.length >= 12,
+      );
+      expect(call).toBeDefined();
+      const keys = (call![0] as { keys: { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[] }).keys;
+      expect(keys).toHaveLength(13);
+      expect(keys[12].pubkey.equals(mockWalletPubkey)).toBe(true);
+      expect(keys[12].isWritable).toBe(true);
+      expect(keys[12].isSigner).toBe(false);
+      // [0] is still the signing cranker (the redeemer themselves).
+      expect(keys[0].pubkey.equals(mockWalletPubkey)).toBe(true);
+      expect(keys[0].isSigner).toBe(true);
+    });
+
     it("should throw if wallet not connected", async () => {
       vi.mocked(useWalletCompat).mockReturnValue({
         publicKey: null,

@@ -748,7 +748,7 @@ export function useInsuranceLP() {
         // account list per percolator-prog src/v16_program.rs handle_execute_redemption
         // (L12153-12163): [cranker(signer,w), market(w), registry(w), redemption(w),
         // lpMint(w), escrow(w), vaultToken(w), vaultAuthority, ledger(w), redeemerDest(w),
-        // tokenProgram]. `cranker` is permissionless (anyone may execute post-cooldown,
+        // tokenProgram, siblingLedger(w), redeemerRentDest(w)]. `cranker` is permissionless (anyone may execute post-cooldown,
         // and is directly credited the redemption PDA's reclaimed rent) — the UI always
         // calls it as the redeemer themselves.
         const [vaultPda] = deriveVaultAuthority(progPk, marketPk);
@@ -778,6 +778,14 @@ export function useInsuranceLP() {
           { pubkey: redeemerAta, isSigner: false, isWritable: true },
           { pubkey: WELL_KNOWN.tokenProgram, isSigner: false, isWritable: false },
           { pubkey: siblingLedgerPda, isSigner: false, isWritable: true },
+          // [12] redeemerRentDest (w) — REQUIRED since percolator-prog #461 (GH#412,
+          // live in v18.2 `6377376a`): the consumed redemption PDA's rent is returned
+          // to the RECORDED redeemer, and handle_execute_redemption reads
+          // `account(accounts, 12)?` and rejects any key != redemption.redeemer.
+          // Without it every claim failed NotEnoughAccountKeys before touching state
+          // (live user report 2026-09-29, ANSEM). The UI only claims its own
+          // redemption, so the redeemer is the connected wallet.
+          { pubkey: wallet.publicKey, isSigner: false, isWritable: true },
         ];
         const executeIx = buildIx({
           programId: progPk,

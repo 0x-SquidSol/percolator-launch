@@ -219,7 +219,7 @@ const SPL_TOKEN_INSUFFICIENT_FUNDS_MESSAGE =
   "Insufficient balance - you're trying to deposit more than your wallet holds. " +
   "Reduce the amount or add more funds and try again.";
 
-function extractErrorCode(msg: string): number | null {
+export function extractErrorCode(msg: string): number | null {
   const m = msg.match(/(?:custom program error|Error Code)[:\s]+0x([0-9a-fA-F]+)/i);
   if (m) return parseInt(m[1], 16);
   // Match JSON format from getSignatureStatuses: {"Custom":14}
