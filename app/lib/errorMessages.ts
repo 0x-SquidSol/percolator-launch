@@ -365,6 +365,10 @@ export function humanizeError(rawMsg: string, context?: "trade"): string {
 
   // Wallet-side refusals BEFORE any code extraction: a locked Phantom/Solflare
   // must never read as the program's Custom(8) "Not authorized".
+  // lib/maintenance.ts MaintenanceError: already user-facing.
+  if (rawMsg.includes("The playground is in maintenance")) {
+    return rawMsg.slice(rawMsg.indexOf("The playground is in maintenance"));
+  }
   const walletErr = detectWalletError(rawMsg);
   if (walletErr === "locked") return WALLET_LOCKED_MESSAGE;
   if (walletErr === "rejected") return "Transaction cancelled.";

@@ -10,6 +10,7 @@ import { TickerBanner } from "@/components/layout/TickerBanner";
 import { PositionsBar } from "@/components/layout/PositionsBar";
 import { MusicPlayer } from "@/components/ui/MusicPlayer";
 import { MainnetBetaBanner } from "@/components/layout/MainnetBetaBanner";
+import { MaintenanceBanner } from "@/components/layout/MaintenanceBanner";
 import { ChromeGate } from "@/components/layout/ChromeGate";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { organizationSchema, websiteSchema } from "@/lib/structured-data";
@@ -117,6 +118,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <JsonLd data={[organizationSchema(), websiteSchema()]} />
         <Providers>
           <div className="relative z-[1] flex min-h-screen flex-col">
+            <MaintenanceBanner />
             <ChromeGate>
               <TickerBanner />
               <MainnetBetaBanner />

@@ -4,6 +4,7 @@ import type { PublicKey, Signer } from "@solana/web3.js";
 import { getNetwork } from "@/lib/config";
 import { connectionSelfHealDeps, describeRepair, isSelfHealEnabled, planSelfHeal } from "@/lib/self-heal";
 import type { SelfHealResult } from "@/lib/self-heal";
+import { getMaintenanceConfig, MaintenanceError } from "@/lib/maintenance";
 
 /**
  * PERC-8388: Lighthouse v2 program ID — Blowfish/Phantom wallet middleware injects
@@ -620,6 +621,10 @@ export async function sendTx({
   // stop FUTURE signatures, never an already-submitted one).
   if (abortSignal?.aborted) {
     throw new TxCancelledError();
+  }
+  // Maintenance with writes blocked: refuse before any tx is built or signed.
+  if (getMaintenanceConfig().blockWrites) {
+    throw new MaintenanceError();
   }
 
   // Check clock drift — genuinely non-blocking now (it was awaited serially
