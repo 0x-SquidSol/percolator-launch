@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { useClusterSlotObservation } from "@/hooks/useClusterSlot";
 import { detectOracleMode, type OracleMode } from "@/lib/oraclePrice";
+import { oraclePushSlotV17 } from "@/lib/v17-engine-clock";
 
 // GH#1338: "unavailable" = oracle has never been cranked (no valid price exists on-chain).
 // Distinct from "stale" (had a price, but it's old). Unavailable → hard block on trading.
@@ -196,12 +197,16 @@ export function useOracleFreshness(options?: UseOracleFreshnessOptions): OracleF
       // stores the funding rate, not a unix timestamp.
       const currentPrice = config.lastEffectivePriceE6;
 
-      // v17 keeper/hyperp: the reliable liveness signal is the last-push SLOT
-      // (markEwmaLastSlot), which the keeper advances on EVERY push (~10s) even
-      // when the price VALUE is unchanged. Tracking the value alone falsely goes
-      // stale on a flat/slow market — the EWMA doesn't move between pushes, so
-      // the change never fires and trading gets disabled despite a live oracle.
-      const pushSlot = wrapperConfigV17?.markEwmaLastSlot ?? null;
+      // v17 keeper/hyperp: the reliable liveness signal is the last-push SLOT,
+      // not the price value (a flat market's value never changes). Which field
+      // holds it depends on the oracle mode — see oraclePushSlotV17: for
+      // AUTH_MARK/EWMA_MARK the wrapper stamps `last_good_oracle_slot` on EVERY
+      // accepted push but moves `mark_ewma_last_slot` only when the price VALUE
+      // changes, so reading the latter made a held/flat market (the keeper
+      // republishes the held mark every cycle) read STALE after 60s and blocked
+      // trading AND closing while pushes were landing. A keeper that stops
+      // pushing still stops advancing both, so GH#2583's fail-closed age holds.
+      const pushSlot = wrapperConfigV17 ? oraclePushSlotV17(wrapperConfigV17) : null;
 
       // GH#1338: For hyperp mode, also check lastEffectivePriceE6 (index price from
       // on-chain crank). If it's 0, the oracle-keeper has never cranked this market —
@@ -220,7 +225,7 @@ export function useOracleFreshness(options?: UseOracleFreshnessOptions): OracleF
           clusterSlotObservation !== null &&
           clusterSlotObservation.slot >= pushSlot
         ) {
-          // markEwmaLastSlot is an on-chain slot, not a timestamp.
+          // The push slot is an on-chain slot, not a timestamp.
           // Anchor the estimate to the wall-clock time when this cluster slot
           // was actually observed. Unrelated slab rerenders must not rebase
           // the keeper's estimated push timestamp.

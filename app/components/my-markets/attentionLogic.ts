@@ -9,6 +9,7 @@
 import { PublicKey } from "@solana/web3.js";
 import type { CreatedMarket } from "@/hooks/useCreatedMarkets";
 import { detectOracleMode } from "@/lib/oraclePrice";
+import { oraclePushSlotV17 } from "@/lib/v17-engine-clock";
 
 /** Same accrue-cliff threshold as CreatorMarketRow/useCreatedMarkets — engine
  *  crank staleness (asset slot_last vs current slot). */
@@ -20,7 +21,9 @@ export const ENGINE_STALE_THRESHOLD_SLOTS = 500;
  *    of a keeper registration that failed silently at launch time (this is the
  *    audit's highest-value new wiring: give the creator a way back to retry
  *    it, where today there is none once past the launch wizard), OR
- *  - the wrapper's own price-push timestamp (markEwmaLastSlot) is stale well
+ *  - the wrapper's own price-push slot (oraclePushSlotV17 → last_good_oracle_slot
+ *    for AUTH_MARK; mark_ewma_last_slot only moves on a price CHANGE, so a
+ *    held/flat feed would read "dead" while pushes land) is stale well
  *    beyond a normal keeper cycle (~30s per PLAYGROUND.md; this threshold is
  *    generous — ~10 minutes at 0.4s/slot — specifically to avoid false
  *    positives from a transient keeper hiccup).
@@ -44,7 +47,7 @@ export function isKeeperFeedDead(market: CreatedMarket, currentSlot: bigint | nu
   if (mode !== "keeper") return false;
   if (cfg.markEwmaE6 === 0n) return true;
   if (currentSlot == null) return false;
-  const staleness = currentSlot - cfg.markEwmaLastSlot;
+  const staleness = currentSlot - oraclePushSlotV17(cfg);
   return staleness > BigInt(KEEPER_PRICE_STALE_THRESHOLD_SLOTS);
 }
 
