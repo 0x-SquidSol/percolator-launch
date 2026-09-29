@@ -459,12 +459,12 @@ function PositionCard({
 
         {/* Tx feedback */}
         {txStatus && (
-          <p className={`text-[11px] ${txStatus.type === "success" ? "text-[var(--long)]" : "text-[var(--short)]"}`}>
+          <p data-testid={txStatus.type === "success" ? "stake-success" : "stake-error"} className={`text-[11px] ${txStatus.type === "success" ? "text-[var(--long)]" : "text-[var(--short)]"}`}>
             {txStatus.msg}
           </p>
         )}
         {withdrawError && !txStatus && (
-          <p className="text-[11px] text-[var(--short)]">{withdrawError}</p>
+          <p data-testid="stake-error" data-kind="withdraw" className="text-[11px] text-[var(--short)]">{withdrawError}</p>
         )}
 
         {/* Action buttons */}
@@ -764,6 +764,7 @@ function DepositWidget({
           <button
             type="button"
             onClick={() => { setMode("deposit"); setTxStatus(null); setWithdrawTxStatus(null); }}
+            data-testid="stake-tab-deposit"
             className={`flex-1 rounded-sm py-1.5 text-[11px] font-semibold uppercase tracking-[0.1em] transition-colors ${
               mode === "deposit"
                 ? "bg-[var(--accent)]/[0.12] text-[var(--accent-text)]"
@@ -775,6 +776,7 @@ function DepositWidget({
           <button
             type="button"
             onClick={() => { setMode("withdraw"); setTxStatus(null); setWithdrawTxStatus(null); }}
+            data-testid="stake-tab-withdraw"
             className={`flex-1 rounded-sm py-1.5 text-[11px] font-semibold uppercase tracking-[0.1em] transition-colors ${
               mode === "withdraw"
                 ? "bg-[var(--cyan)]/[0.12] text-[var(--cyan)]"
@@ -821,6 +823,7 @@ function DepositWidget({
               <div className="flex gap-2">
                 <input
                   type="number"
+                  data-testid="stake-deposit-input"
                   value={amount}
                   onChange={(e) => { setAmount(e.target.value); setTxStatus(null); }}
                   placeholder="0.00"
@@ -901,12 +904,12 @@ function DepositWidget({
 
             {/* Tx feedback */}
             {txStatus && (
-              <p className={`text-[11px] ${txStatus.type === "success" ? "text-[var(--long)]" : "text-[var(--short)]"}`}>
+              <p data-testid={txStatus.type === "success" ? "stake-success" : "stake-error"} className={`text-[11px] ${txStatus.type === "success" ? "text-[var(--long)]" : "text-[var(--short)]"}`}>
                 {txStatus.msg}
               </p>
             )}
             {depositError && !txStatus && (
-              <p className="text-[11px] text-[var(--short)]">{depositError}</p>
+              <p data-testid="stake-error" data-kind="deposit" className="text-[11px] text-[var(--short)]">{depositError}</p>
             )}
 
             {/* CTA */}
@@ -916,6 +919,7 @@ function DepositWidget({
               </button>
             ) : (
               <button
+                data-testid="stake-deposit-submit"
                 disabled={amountNum <= 0 || depositLoading || depositStatus === "exceeds"}
                 onClick={handleDeposit}
                 className={`w-full rounded-sm py-3 text-[12px] font-semibold uppercase tracking-[0.1em] transition-all duration-200 ${
@@ -949,6 +953,7 @@ function DepositWidget({
               <div className="flex gap-2">
                 <input
                   type="number"
+                  data-testid="stake-withdraw-input"
                   value={withdrawAmount}
                   onChange={(e) => { setWithdrawAmount(e.target.value); setWithdrawTxStatus(null); }}
                   placeholder="0.00"
@@ -1008,12 +1013,12 @@ function DepositWidget({
 
             {/* Tx feedback */}
             {withdrawTxStatus && (
-              <p className={`text-[11px] ${withdrawTxStatus.type === "success" ? "text-[var(--long)]" : "text-[var(--short)]"}`}>
+              <p data-testid={withdrawTxStatus.type === "success" ? "stake-success" : "stake-error"} data-kind="withdraw" className={`text-[11px] ${withdrawTxStatus.type === "success" ? "text-[var(--long)]" : "text-[var(--short)]"}`}>
                 {withdrawTxStatus.msg}
               </p>
             )}
             {withdrawError && !withdrawTxStatus && (
-              <p className="text-[11px] text-[var(--short)]">{withdrawError}</p>
+              <p data-testid="stake-error" data-kind="withdraw" className="text-[11px] text-[var(--short)]">{withdrawError}</p>
             )}
 
             {/* CTA */}
@@ -1023,6 +1028,7 @@ function DepositWidget({
               </button>
             ) : (
               <button
+                data-testid="stake-withdraw-submit"
                 disabled={!withdrawPosition || !withdrawPosition.cooldownElapsed || withdrawAmountNum <= 0 || withdrawLoading}
                 onClick={handleWithdraw}
                 className={`w-full rounded-sm py-3 text-[12px] font-semibold uppercase tracking-[0.1em] transition-all duration-200 ${

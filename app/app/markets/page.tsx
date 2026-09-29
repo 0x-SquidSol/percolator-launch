@@ -1123,6 +1123,8 @@ function MarketsPageInner() {
                   return (
                     <Link
                       key={m.slabAddress}
+                      data-testid="market-row"
+                      data-market={m.slabAddress}
                       href={`/trade/${m.slabAddress}`}
                       // prefetch={true}: /trade/[slab] is a DYNAMIC route, so the
                       // default Link prefetch only fetches up to its loading.tsx
