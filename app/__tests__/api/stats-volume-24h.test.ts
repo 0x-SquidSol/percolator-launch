@@ -87,3 +87,18 @@ describe("GH#2676 /api/markets volume_24h_usd uses engine Q units (not mint deci
     expect(stats.totalVolume24h as number).toBeCloseTo(sum, 2);
   });
 });
+
+describe("GH#2676 /api/markets total_open_interest_usd uses engine Q units", () => {
+  it("a 9-decimal market's OI is not divided by 10^9", async () => {
+    // 3 SOL of OI (Q = 3_000_000) at the live mark — the live merge's own
+    // total_open_interest_usd (totalOiQ / 1e6 * mark) is ~$351.26; the list
+    // must not recompute it 1000x smaller from the mint's decimals.
+    mocks.loadMergedMarketRows.mockResolvedValue(
+      LIVE_ROWS.map((r) => (r.symbol === "SOL" ? { ...r, total_open_interest: 3_000_000, total_open_interest_usd: 351.26 } : { ...r })),
+    );
+    const res = await marketsGET(new NextRequest("http://localhost/api/markets"));
+    const body = (await res.json()) as { markets: Array<Record<string, unknown>> };
+    const sol = body.markets.find((r) => r.symbol === "SOL");
+    expect(sol?.total_open_interest_usd).toBeCloseTo(351.26, 1);
+  });
+});

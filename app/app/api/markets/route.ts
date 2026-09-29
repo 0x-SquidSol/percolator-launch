@@ -204,8 +204,6 @@ const PLAYGROUND_CURATED_SLABS = _playgroundAllowedSlabs;
  */
 const FUNDING_RATE_BPS_MAX = 10_000;
 
-/** Cap per-market USD contribution — prevents sentinel leakage ($10B > any real market). */
-const MAX_PER_MARKET_USD = 10_000_000_000;
 
 /**
  * GH#1208: Cap for c_tot raw value.
@@ -648,25 +646,8 @@ function fallbackMarketsResponse(request: NextRequest, reason: string): NextResp
   );
 }
 
-/**
- * Convert a raw on-chain token micro-unit amount to USD.
- * Returns null when the raw value is a sentinel/garbage or no price is available.
- * GH#1578: Explicitly return 0 when raw value is exactly 0 — isSaneMarketValue requires
- * v > 0 and would otherwise return null for zero-OI/volume markets.
- * (#1160: expose a pre-computed USD field so API consumers don't have to divide by 10^decimals themselves)
- */
-function rawToUsd(raw: number | null | undefined, decimals: number | null | undefined, priceUsd: number | null | undefined): number | null {
-  if (raw == null || !Number.isFinite(raw as number)) return null;
-  // GH#1578: zero is a valid and expected value — return 0 immediately without price check
-  if (raw === 0) return 0;
-  if (!isSaneMarketValue(raw)) return null;
-  const d = Math.min(Math.max(decimals ?? 6, 0), 18);
-  const p = priceUsd ?? 0;
-  if (p <= 0) return null;
-  const usd = (raw! / 10 ** d) * p;
-  // GH#1618: round to 2dp to eliminate IEEE-754 float artifacts (e.g. 4620.241999999999)
-  return usd > MAX_PER_MARKET_USD ? null : Math.round(usd * 100) / 100;
-}
+// rawToUsd (mint-decimals USD conversion) removed in GH#2676: every raw
+// quantity this route converts (volume_24h, OI) is engine Q — see lib/q-usd.ts.
 
 /** Sanitize a numeric funding_rate from the DB view. Returns null for garbage values. */
 function sanitizeFundingRate(v: number | null | undefined): number | null {
@@ -797,7 +778,6 @@ export async function GET(request: NextRequest) {
       const n_total_open_interest = numericOrNull(m.total_open_interest);
       const n_open_interest_long = numericOrNull(m.open_interest_long);
       const n_open_interest_short = numericOrNull(m.open_interest_short);
-      const n_decimals = numericOrNull(m.decimals);
       const n_funding_rate = numericOrNull(m.funding_rate);
       const n_vault_balance = numericOrNull(m.vault_balance);
       const n_c_tot = numericOrNull(m.c_tot);
@@ -819,7 +799,11 @@ export async function GET(request: NextRequest) {
             // GH#1594: combined === 0 is valid (zero OI), same as primary path's n_total_open_interest === 0 guard
             return combined === 0 || isSaneMarketValue(combined) ? combined : null;
           })();
-      const total_open_interest_usd = rawToUsd(rawOi, n_decimals, sanitizedPrice);
+      // GH#2676: OI is engine Q (scale 1e6, mint-decimals independent) — the
+      // live merge's own total_open_interest_usd is totalOiQ / 1e6 * mark. Using
+      // the mint's decimals here made any non-6-decimal market (SOL: 9) read
+      // 1000x low in the list while /api/stats summed the correct live value.
+      const total_open_interest_usd = qToUsd(rawOi, sanitizedPrice);
 
       // GH#1250: If total_accounts == 0, OI must be stale/orphaned — suppress from display.
       // Root cause: the on-chain totalOpenInterest counter is not decremented when positions
