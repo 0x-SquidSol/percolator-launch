@@ -244,6 +244,7 @@ export const StepControlRoom: FC<StepControlRoomProps> = ({
       <button
         type="button"
         onClick={onBack}
+        data-testid="wizard-back"
         className="text-[11px] uppercase tracking-[0.12em] text-[var(--text-secondary)] transition-colors hover:text-[var(--text)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
       >
         ← Back to token

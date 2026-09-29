@@ -956,6 +956,8 @@ setEngineLockError(null);
           role="tab"
           aria-selected={ticketMode === m}
           onClick={() => setTicketMode(m)}
+          data-testid="trade-mode-tab"
+          data-mode={m}
           className={`flex-1 rounded-none border py-2 text-[11px] font-bold uppercase tracking-[0.1em] transition-colors duration-150 ${
             ticketMode === m
               ? "border-[var(--accent)] bg-[var(--accent)]/[0.08] text-[var(--accent)]"
@@ -1029,6 +1031,8 @@ setEngineLockError(null);
       <div className="mb-3 flex gap-1">
         <button
           onClick={() => setDirection("long")}
+          data-testid="trade-side-long"
+          data-side="long"
           aria-pressed={direction === "long"}
           className={`flex-1 rounded-none border py-2.5 text-[11px] font-bold uppercase tracking-[0.1em] transition-colors duration-150 ${
             direction === "long"
@@ -1040,6 +1044,8 @@ setEngineLockError(null);
         </button>
         <button
           onClick={() => setDirection("short")}
+          data-testid="trade-side-short"
+          data-side="short"
           aria-pressed={direction === "short"}
           className={`flex-1 rounded-none border py-2.5 text-[11px] font-bold uppercase tracking-[0.1em] transition-colors duration-150 ${
             direction === "short"
@@ -1096,6 +1102,7 @@ setEngineLockError(null);
         <div className="flex gap-1.5">
           <input
             id="order-size-input"
+            data-testid="trade-size-input"
             type="text"
             inputMode="decimal"
             value={sizeInput}
@@ -1125,6 +1132,8 @@ setEngineLockError(null);
           <button
             key={pct}
             onClick={() => setSizePercent(pct)}
+          data-testid="trade-size-preset"
+          data-percent={pct}
             className="flex-1 rounded-none border border-[var(--border)]/30 py-1 text-[10px] font-medium text-[var(--text-secondary)] transition-colors duration-150 hover:border-[var(--accent)]/30 hover:bg-[var(--accent-subtle)] hover:text-[var(--text)]"
           >
             {pct === 100 ? "Max" : `${pct}%`}
@@ -1194,6 +1203,7 @@ setEngineLockError(null);
           <div className="flex items-center gap-1">
             <input
               id="order-leverage-input"
+              data-testid="trade-leverage-input"
               type="text"
               inputMode="decimal"
               value={leverageText}
@@ -1274,6 +1284,7 @@ setEngineLockError(null);
                   className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
                   style={{ height: "100%" }}
                   aria-label="Leverage"
+                  data-testid="trade-leverage-slider"
                 />
               </div>
               {/* Labels — uniformly spaced, one per snap point */}
@@ -1283,6 +1294,8 @@ setEngineLockError(null);
                     key={l}
                     type="button"
                     onClick={() => updateLeverage(l)}
+                    data-testid="trade-leverage-preset"
+                    data-leverage={l}
                     className={`text-[8px] font-mono transition-colors duration-100 ${
                       leverage === l
                         ? "text-[var(--accent)] font-bold"
@@ -1470,6 +1483,7 @@ setEngineLockError(null);
                     </label>
                     <input
                       id="starter-deposit-amount"
+                      data-testid="deposit-amount-input"
                       type="text"
                       inputMode="decimal"
                       value={starterAmountInput}
@@ -1504,6 +1518,7 @@ setEngineLockError(null);
                   </p>
                 )}
                 <button
+                  data-testid="deposit-submit"
                   onClick={canOneClick ? onClickDirect : () => setShowInlineDeposit((v) => !v)}
                   disabled={initLoading || starterOver}
                   className={`w-full rounded-none py-2.5 text-[11px] font-bold uppercase tracking-[0.1em] transition-[filter] duration-150 hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-70 ${
@@ -1515,7 +1530,7 @@ setEngineLockError(null);
               </>
             );
           })()}
-          {(initCtaError || initError) && <p className="mt-1 text-[10px] text-[var(--short)]">{initCtaError ?? initError}</p>}
+          {(initCtaError || initError) && <p data-testid="deposit-error" className="mt-1 text-[10px] text-[var(--short)]">{initCtaError ?? initError}</p>}
           {showInlineDeposit && (
             <div className="mt-1.5" data-deposit-trigger>
               <DepositWithdrawCard slabAddress={slabAddress} />
@@ -1524,6 +1539,7 @@ setEngineLockError(null);
         </>
       ) : (
         <button
+          data-testid="trade-submit"
           onClick={() => {
             if (submitDisabled) return;
             const signedSize = direction === "short" ? -positionSize : positionSize;
@@ -1580,13 +1596,13 @@ setEngineLockError(null);
           engineLockError takes precedence over humanError since a lock failure
           sets both. */}
       {engineLockError ? (
-        <div className="mt-2 rounded-none border border-[var(--warning)]/30 bg-[var(--warning)]/5 px-3 py-2">
+        <div data-testid="trade-error" data-kind="engine-lock" className="mt-2 rounded-none border border-[var(--warning)]/30 bg-[var(--warning)]/5 px-3 py-2">
           <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--warning)]">Market temporarily locked</p>
           <p className="mt-1 text-[10px] leading-relaxed text-[var(--text-secondary)]">{engineLockError}</p>
           <p className="mt-1 text-[10px] leading-relaxed text-[var(--text-muted)]">This usually clears once the market is cranked again — try again shortly.</p>
         </div>
       ) : humanError ? (
-        <div className="mt-2 rounded-none border border-[var(--short)]/20 bg-[var(--short)]/5 px-3 py-2">
+        <div data-testid="trade-error" data-kind="trade" className="mt-2 rounded-none border border-[var(--short)]/20 bg-[var(--short)]/5 px-3 py-2">
           <p className="text-[10px] text-[var(--short)]">{humanError}</p>
         </div>
       ) : null}
@@ -1623,12 +1639,14 @@ setEngineLockError(null);
           <div className="flex shrink-0 items-center gap-1.5">
             <button
               onClick={() => toggleInlineDeposit("deposit")}
+              data-testid="deposit-toggle"
               className="rounded-sm border border-[var(--accent)]/50 bg-[var(--accent)]/[0.1] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--accent)] transition-all duration-150 hover:bg-[var(--accent)]/[0.18] hover:brightness-110"
             >
               + Deposit
             </button>
             <button
               onClick={() => toggleInlineDeposit("withdraw")}
+              data-testid="withdraw-toggle"
               className="rounded-sm border border-[var(--long)]/50 bg-[var(--long)]/[0.1] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--long)] transition-all duration-150 hover:bg-[var(--long)]/[0.18] hover:brightness-110"
             >
               − Withdraw

@@ -400,7 +400,7 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
             </tr>
           </thead>
           <tbody>
-            <tr className="border-b border-[var(--border)]/20 transition-colors hover:bg-[var(--accent)]/[0.03]">
+            <tr data-testid="position-row" className="border-b border-[var(--border)]/20 transition-colors hover:bg-[var(--accent)]/[0.03]">
               <td className="whitespace-nowrap px-4 py-2.5 text-left"><span className="text-[11px] font-medium text-[var(--text)]">{marketDisplaySymbol}/USD</span></td>
               <td className="whitespace-nowrap px-3 py-2.5 text-left">
                 <span className={`inline-block rounded-sm px-1.5 py-0.5 text-[9px] font-bold uppercase ${isLong ? "bg-[var(--long)]/10 text-[var(--long)]" : "bg-[var(--short)]/10 text-[var(--short)]"}`}>
@@ -510,6 +510,7 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
                     // the moment the modal opens, so the confirm click reaches
                     // the wallet popup with zero blocking round-trips.
                     onClick={() => { prewarmClose(); setShowCloseModal(true); }}
+                    data-testid="position-close"
                     disabled={closeLoading || lpUnderfunded || !hasValidMark || engineStale}
                     title={!hasValidMark ? "Waiting for price data…" : engineStale ? "Market crank behind — trading paused. This market needs a re-seed before closing works." : undefined}
                     className="rounded-none border border-[var(--short)]/30 px-3 py-1 text-[9px] font-medium uppercase tracking-[0.1em] text-[var(--short)] transition-colors duration-150 hover:bg-[var(--short)]/8 hover:border-[var(--short)]/50 disabled:cursor-not-allowed disabled:opacity-50"
@@ -526,7 +527,7 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
         <WarmupProgress slabAddress={slabAddress} accountIdx={activeInfo.idx} />
       </div>
       {closeError && (
-        <div className="mx-4 mb-3 rounded-none border border-[var(--short)]/20 bg-[var(--short)]/5 px-3 py-2">
+        <div data-testid="position-close-error" className="mx-4 mb-3 rounded-none border border-[var(--short)]/20 bg-[var(--short)]/5 px-3 py-2">
           <p className="text-[10px] text-[var(--short)]">{closeError}</p>
         </div>
       )}

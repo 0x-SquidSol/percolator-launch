@@ -104,6 +104,8 @@ export function EarnVaultView() {
       {showError && (
         <div
           role="alert"
+          data-testid="earn-error"
+          data-kind="stats"
           className="fixed bottom-4 right-4 z-50 flex items-start gap-3 rounded-sm border border-[var(--short)]/30 bg-[var(--short)]/10 px-4 py-3 text-[12px] text-[var(--short)]"
         >
           <span>{error}</span>
