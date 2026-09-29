@@ -94,7 +94,10 @@ describe("WalletPage", () => {
   it("shows connect prompt when unauthenticated", () => {
     privyState = { ...privyState, authenticated: false };
     render(<WalletPage />);
-    expect(screen.getByText(/Connect your wallet/i)).toBeTruthy();
+    expect(screen.getByText(/Connect a wallet/i)).toBeTruthy();
+    // #2663: the Privy-only branch advertises email sign-in (loginMethods
+    // includes "email", createOnLogin "users-without-wallets").
+    expect(screen.getByText(/sign in with email/i)).toBeTruthy();
   });
 
   it("shows read-only warning when Privy is unavailable", () => {

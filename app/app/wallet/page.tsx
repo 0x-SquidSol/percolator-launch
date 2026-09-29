@@ -104,7 +104,7 @@ function WalletPageInner() {
             Connect a wallet — or sign in with email to create one instantly.
           </p>
           <p className="mt-1 text-[11px] text-[var(--text-muted)]">
-            No existing wallet needed: email sign-in mints you an embedded Solana wallet.
+            No existing wallet needed: email sign-in creates an embedded Solana wallet for you.
           </p>
           <div className="mt-5 flex justify-center">
             <ConnectButton />
