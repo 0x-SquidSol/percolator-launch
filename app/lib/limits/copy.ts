@@ -17,7 +17,7 @@ export const COPY = {
     none: () => "",
   },
   clamped: (max: string, sym: string, reason: string) => `Size reduced to ${max} ${sym}. ${reason}`.trim(),
-  zeroFill: "No fill: the LP had no room for this trade when it landed. Nothing changed and no fee was charged.",
+  zeroFill: "The LP had no room for this trade when it landed. Your position did not change and no trading fee was charged.",
   partialFill: (filled: string, requested: string, sym: string) => `Partially filled: ${filled} of ${requested} ${sym}.`,
   halted: (side: string) =>
     `Opening ${side} is paused: the market's liquidity provider is at its capital floor. Reducing and closing positions still work.`,
@@ -54,6 +54,8 @@ export const COPY = {
     `Your junior tranche is first-loss capital. Traders' profits are paid from it before Earn depositors lose anything. It can't be withdrawn while the LP holds positions, or below ${floor} of Earn deposits.`,
   wizardAfterLaunch: "Junior deposit is added after launch.",
   closeRebooked: "Fees were re-booked; press Close again to finish.",
+  closeHalted:
+    "The market's LP is at its capital floor and your close would add to its exposure, so the program may refuse it until the LP recovers. Closes on the other side of the book still work.",
 } as const;
 
 /** Matcher v2 error copy (Custom 8002..8005, matcher program only). */

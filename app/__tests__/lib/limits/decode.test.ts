@@ -152,8 +152,9 @@ describe("P3 decoders from Rust-laid-out bytes", () => {
   });
   it("VaultLpStateV18 account (header + 256 B)", () => {
     const acct = new Uint8Array(C.VAULT_LP_STATE_ACCOUNT_LEN);
-    acct[C.HEADER_KIND_OFF] = C.KIND_VAULT_LP_STATE;
-    acct.set(hex(layouts.vaultLpStateHex), C.HEADER_LEN);
+    // wrapper `write_header`: magic u64 @0, version u16 @8, kind u8 @10 (literal, not the constant under test)
+    acct[10] = 9;
+    acct.set(hex(layouts.vaultLpStateHex), 16);
     const s = decodeVaultLpState(acct)!;
     expect(s.seniorClaimAtoms).toBe(1_000_000_000_000n);
     expect(s.juniorDepositedAtoms).toBe(150_000_000_000n);
