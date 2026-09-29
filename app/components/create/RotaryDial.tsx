@@ -8,7 +8,7 @@ export interface RotaryDialProps {
   value: number;
   min: number;
   max: number;
-  /** Snap increment. Drag detents land on multiples of this. */
+  /** Snap increment. Detents land on multiples of this. */
   step: number;
   /** Renders the value for the inset readout (e.g. "10×", "0.30%"). */
   format: (v: number) => string;
@@ -23,48 +23,15 @@ const R = 34;
 /** Sweep runs from 7:30 to 4:30 — a real instrument's dead-zone at the bottom. */
 const A0 = Math.PI * 0.75;
 const A1 = Math.PI * 2.25;
-/**
- * Drag gearing (GH#2653). The travel budget is derived from the dial's detent
- * count instead of being a flat constant, so how a dial FEELS is a property of
- * the control and not of whoever renders it.
- *
- * The old flat 190px per full sweep meant px-per-detent = 190 / detents: 11.9 on
- * Leverage (16 detents) against 1.9 on Liquidity (99), a ~6x spread between dials
- * sitting in one grid, and one pixel of hand jitter moving Liquidity by a whole
- * step. Each detent now costs DRAG_PX_PER_DETENT of travel, bounded on both sides:
- *
- *  - the FLOOR keeps a coarse dial at the geared 190px it always had (Leverage
- *    is unchanged: 16 detents * 8 = 128 -> 190);
- *  - the CEILING keeps a fine dial reachable in one stroke on a small phone (the
- *    create page leaves ~450px of usable band under the sticky header and the
- *    bottom nav), so Liquidity's 99 detents get 400px (~4px each) rather than the
- *    ~800px that a strict 8px-per-detent rule would need.
- *
- * Spread across the three Control Room dials: ~6x -> ~3x. It cannot reach 1x
- * without an unusable sweep; a coarser Liquidity `step` or a non-linear scale is
- * the remaining lever and is a caller/product decision.
- */
-export const DRAG_PX_PER_DETENT = 8;
-export const DRAG_MIN_SWEEP_PX = 190;
-export const DRAG_MAX_SWEEP_PX = 400;
-
-/** Vertical pixels of drag for a full min->max sweep of a dial with this shape. */
-export function dragSweepPx(min: number, max: number, step: number): number {
-  const detents = step > 0 ? Math.abs(max - min) / step : 0;
-  return Math.min(
-    DRAG_MAX_SWEEP_PX,
-    Math.max(DRAG_MIN_SWEEP_PX, detents * DRAG_PX_PER_DETENT),
-  );
-}
 
 /**
  * A machined rotary dial — the Control Room's primary control.
  *
- * Deliberately NOT a slider: dragging a physical dial makes the value feel
- * consequential, which is the point (a creator is setting real market
- * parameters, not tweaking a preference). Drag vertically, scroll, or use
- * arrow keys. Values snap to `step` detents, and each detent crossed fires a
- * short tick pulse so the control feels notched rather than continuous.
+ * Adjusted by scroll wheel or arrow keys (drag was removed — GH#2695: on the
+ * create page it felt laggy, and scroll/keys give the same detented control
+ * without the per-move jank). Values snap to `step` detents, and each detent
+ * crossed fires a short tick pulse so the control feels notched rather than
+ * continuous.
  *
  * On mount the needle performs a power-on self-test sweep (min→max→value), the
  * way a real instrument does when it boots. That single detail is what sells
@@ -82,16 +49,7 @@ export const RotaryDial: FC<RotaryDialProps> = ({
   disabled = false,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  /**
-   * Tears down the window listeners of the drag in progress, if any. Listeners
-   * are attached when a drag STARTS and removed when it ends, so they are not
-   * re-subscribed on every detent (the "laggy drag" churn).
-   */
-  const stopDrag = useRef<(() => void) | null>(null);
   const lastDetent = useRef(value);
-  /** Latest props, read by the drag handlers so they never go stale mid-gesture. */
-  const live = useRef({ min, max, step, onChange });
-  live.current = { min, max, step, onChange };
 
   /** Needle position actually painted — lags `value` during the boot sweep. */
   const [painted, setPainted] = useState(min);
@@ -269,63 +227,6 @@ export const RotaryDial: FC<RotaryDialProps> = ({
     [clamp, onChange, pulse, value],
   );
 
-  // A drag cannot outlive the dial: unmounting or disabling ends it.
-  useEffect(() => () => stopDrag.current?.(), []);
-  useEffect(() => {
-    if (disabled) stopDrag.current?.();
-  }, [disabled]);
-
-  const start = (clientY: number) => {
-    if (disabled) return;
-    stopDrag.current?.();
-
-    // `pos` is the dial's TRUE position in value units, tracked across events in
-    // a closure rather than reconstructed from `value + residue` on each move.
-    // That reconstruction read a `value` that could be a render stale (React
-    // batches updates from native listeners) and needed the listeners torn down
-    // and re-added on every detent to stay fresh.
-    //
-    // It is bounded to [min, max]: a dial resting against a mechanical stop
-    // stores no energy, so shoving past a stop banks no dead travel (GH#2648-C),
-    // and leaving a stop costs the same half detent as leaving any settled value.
-    let pos = value;
-    let emitted = value;
-    let lastY = clientY;
-
-    const move = (e: MouseEvent | TouchEvent) => {
-      e.preventDefault();
-      const y = "touches" in e ? e.touches[0]!.clientY : (e as MouseEvent).clientY;
-      const dy = lastY - y; // up = increase, like a real dial
-      lastY = y;
-      const { min: lo, max: hi, step: st, onChange: emit } = live.current;
-      pos = Math.min(hi, Math.max(lo, pos + (dy / dragSweepPx(lo, hi, st)) * (hi - lo)));
-      const snapped = Math.min(hi, Math.max(lo, Math.round(pos / st) * st));
-      if (snapped !== emitted) {
-        emitted = snapped;
-        pulse(snapped);
-        emit(snapped);
-      }
-    };
-    const end = () => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("touchmove", move);
-      window.removeEventListener("mouseup", end);
-      window.removeEventListener("touchend", end);
-      // The OS can take a touch (system gesture, incoming call, second finger)
-      // with no `touchend`; without this the dial stays armed with a stale anchor
-      // and `move`'s preventDefault stops the page scrolling.
-      window.removeEventListener("touchcancel", end);
-      if (stopDrag.current === end) stopDrag.current = null;
-    };
-
-    window.addEventListener("mousemove", move);
-    window.addEventListener("touchmove", move, { passive: false });
-    window.addEventListener("mouseup", end);
-    window.addEventListener("touchend", end);
-    window.addEventListener("touchcancel", end);
-    stopDrag.current = end;
-  };
-
   return (
     <div className="flex flex-col items-center">
       <div
@@ -337,8 +238,6 @@ export const RotaryDial: FC<RotaryDialProps> = ({
         aria-valuenow={value}
         aria-valuetext={format(value)}
         aria-disabled={disabled}
-        onMouseDown={(e) => start(e.clientY)}
-        onTouchStart={(e) => start(e.touches[0]!.clientY)}
         onWheel={(e) => {
           if (disabled) return;
           commit(value + (e.deltaY < 0 ? step : -step));
@@ -360,7 +259,7 @@ export const RotaryDial: FC<RotaryDialProps> = ({
           }
         }}
         className={`select-none rounded-full transition-transform duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--panel-bg)] ${
-          disabled ? "cursor-not-allowed opacity-40" : "cursor-grab active:cursor-grabbing active:scale-[0.97]"
+          disabled ? "cursor-not-allowed opacity-40" : "cursor-pointer"
         }`}
       >
         <canvas

@@ -139,7 +139,7 @@ export const StepControlRoom: FC<StepControlRoomProps> = ({
           <div className="text-[10px] uppercase tracking-[0.16em] text-[var(--text-secondary)]">
             Market controls
           </div>
-          <div className="text-[10px] text-[var(--text-muted)]">drag · scroll · arrow keys</div>
+          <div className="text-[10px] text-[var(--text-muted)]">scroll · arrow keys</div>
         </div>
 
         <div className="grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-3">
