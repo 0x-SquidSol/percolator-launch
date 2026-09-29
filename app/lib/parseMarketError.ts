@@ -5,6 +5,63 @@
  */
 
 import { decodeError } from "@percolatorct/sdk";
+import type { CreateStepKind } from "@/lib/create-market-v18";
+
+/**
+ * Where in the launch the failure happened. The same program error means
+ * different things at different steps, so a context-free message is often
+ * wrong (see STEP_ERROR_OVERRIDES).
+ */
+export interface MarketCreationErrorContext {
+  step?: CreateStepKind;
+  /** User-facing name of the step, e.g. "Funding liquidity". Prefixed to the message. */
+  stepLabel?: string;
+}
+
+/**
+ * EngineStale (19) during market CREATION. On the v18 wrapper, Custom 19 is
+ * `V16Error::Stale`, which covers every CAS / replay-lane mismatch
+ * (`require_authority_epoch_view`, `require_newer_control_sequence`, the
+ * portfolio matcher-sequence) as well as engine accrual staleness. A market
+ * created seconds ago cannot be accrual-stale — measured 2026-09-29, the
+ * crank and every funding instruction simulate clean on a market 1.5 h after
+ * creation with no keeper pushes — so during creation it means a counter this
+ * step was built against had already moved. The old copy ("a crank is needed",
+ * "may need a full re-seed") sent users to the wrong fix.
+ */
+const CREATE_ENGINE_STALE =
+  "The program refused this step because a counter it was built against had already moved on-chain " +
+  "(EngineStale — a stale authority epoch or sequence number, not a stale price or engine clock). " +
+  "Nothing from this step was applied. Retry rebuilds it from the market's live on-chain state.";
+
+/** Per-step meanings that differ from the generic code table. */
+const STEP_ERROR_OVERRIDES: Partial<Record<CreateStepKind, Record<number, string>>> = {
+  "oracle-delegation": {
+    8:
+      "The price feed was already handed to the keeper in an earlier attempt, so your wallet is no longer " +
+      "the oracle authority and re-sending the hand-off is refused (Unauthorized). This step is already " +
+      "complete — Retry continues from the next step.",
+  },
+  funding: {
+    9:
+      "The program rejected the liquidity-backing seed's arguments (InvalidInstruction). This is an app bug, " +
+      "not a problem with your wallet or funds — nothing from this step was applied.",
+  },
+  "stake-pool": {
+    8:
+      "Market admin authority has already moved to the staking pool (an earlier attempt completed this step), " +
+      "so your wallet can no longer sign it (Unauthorized). The market is set up — reload to see it.",
+  },
+};
+
+/** Custom program error code in `msg`, from either the hex log form or the InstructionError JSON form. */
+function extractCustomCode(msg: string): number | null {
+  const hex = msg.match(/custom program error:\s*0x([0-9a-fA-F]+)/);
+  if (hex) return parseInt(hex[1], 16);
+  const ie = msg.match(/"?InstructionError"?.*?"?Custom"?\D*(\d+)/);
+  if (ie) return parseInt(ie[1], 10);
+  return null;
+}
 
 // v17 error codes are sourced from the SDK (PERCOLATOR_ERRORS in @percolatorct/sdk).
 // The SDK exports decodeError(code) → { name, hint } | undefined for codes 0-46.
@@ -98,8 +155,24 @@ function isTokenProgramInsufficientFunds(msg: string): boolean {
   return failing !== null && failing.code === 0x1 && failing.program === SPL_TOKEN_PROGRAM_ID;
 }
 
-export function parseMarketCreationError(error: unknown): string {
+export function parseMarketCreationError(error: unknown, context?: MarketCreationErrorContext): string {
+  const base = parseMarketCreationErrorBase(error, context);
+  return context?.stepLabel ? `${context.stepLabel} failed: ${base}` : base;
+}
+
+function parseMarketCreationErrorBase(error: unknown, context?: MarketCreationErrorContext): string {
   const msg = error instanceof Error ? error.message : String(error);
+
+  // Step-aware program errors first: with a step known, a Custom code has a
+  // specific meaning that the generic table below gets wrong.
+  if (context?.step) {
+    const code = extractCustomCode(msg);
+    if (code !== null && !isTokenProgramInsufficientFunds(msg)) {
+      const stepOverride = STEP_ERROR_OVERRIDES[context.step]?.[code];
+      if (stepOverride) return stepOverride;
+      if (code === 19) return CREATE_ENGINE_STALE;
+    }
+  }
 
   // User rejected the transaction in their wallet
   if (
