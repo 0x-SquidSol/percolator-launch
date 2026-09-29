@@ -2,6 +2,7 @@
 
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
 import { bigintRatio } from "@/lib/formatters";
+import { estimateLpEarnedSincePar } from "@/lib/lp-earned";
 import { ShimmerSkeleton } from '@/components/ui/ShimmerSkeleton';
 
 
@@ -49,6 +50,14 @@ export function LpPositionDashboard({
   // #2324: both sides can be large while the quotient is small, so scale inside
   // bigint arithmetic rather than converting each side to a float first.
   const userRedeemableFloat = bigintRatio(userRedeemableValue, divisor) ?? 0;
+
+  // Estimated earnings = appreciation of the position's shares since par. This is
+  // an ESTIMATE, not a settled P&L: the fee stream that lifts the share price is
+  // real and auto-paid on withdraw (no claim), but the on-chain deposit record
+  // holds no cost basis, so we can only measure growth from par — exact for a
+  // par-entry deposit, an upper bound for a later one. See lib/lp-earned.ts.
+  const earned = estimateLpEarnedSincePar(userRedeemableValue, redemptionRateE6);
+  const earnedFloat = bigintRatio(earned.earnedAtoms, divisor) ?? 0;
 
   if (loading) {
     return (
@@ -112,6 +121,29 @@ export function LpPositionDashboard({
                   {collateralSymbol}
                 </span>
               </div>
+              {/* Estimated earnings, right under the headline value. Labelled as
+                  an estimate on purpose — see the earned computation above and
+                  lib/lp-earned.ts for why an exact per-user figure isn't on-chain. */}
+              <div
+                className="mt-2 flex items-center gap-1.5 text-[11px] tabular-nums cursor-help"
+                title={
+                  earned.hasGain
+                    ? `Estimated fees earned: your shares are worth ${earned.gainPct.toFixed(2)}% more than par (1.00×). Assumes you deposited at par — the exact figure needs per-deposit cost basis (coming soon). Fees compound into share value and are paid automatically on withdraw; nothing to claim.`
+                    : `No fees accrued to this vault since par (1.00×) yet. Fees compound into your share value and are paid automatically on withdraw — nothing to claim.`
+                }
+              >
+                <span className="uppercase tracking-[0.15em] text-[9px] text-[var(--text-secondary)] underline decoration-dotted decoration-[var(--text-muted)]">
+                  Est. Earned
+                </span>
+                <span
+                  className="font-mono font-semibold"
+                  style={{ color: earned.hasGain ? 'var(--cyan)' : 'var(--text-muted)' }}
+                >
+                  {earned.hasGain ? '+' : ''}
+                  {earnedFloat.toFixed(4)} {collateralSymbol}
+                  {earned.hasGain ? ` (+${earned.gainPct.toFixed(2)}%)` : ''}
+                </span>
+              </div>
             </div>
 
             {/* Metrics grid */}
@@ -142,6 +174,13 @@ export function LpPositionDashboard({
                 value={`${formatRaw(vaultBalance, decimals)} ${collateralSymbol}`}
               />
             </div>
+
+            <p className="mt-4 text-[10px] leading-relaxed text-[var(--text-muted)]">
+              <span className="text-[var(--text-secondary)]">Est. Earned</span> tracks
+              your share-price growth since par (1.00×) — an estimate that assumes a
+              par-entry deposit. Fees compound into your share value and are paid
+              automatically when you withdraw; there is nothing to claim.
+            </p>
           </>
         )}
       </div>
