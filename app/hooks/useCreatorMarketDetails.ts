@@ -71,7 +71,11 @@ export function useCreatorMarketDetails(slabs: string[]) {
           // A refetch (refreshKey > 0) busts the route's s-maxage=10 CDN cache
           // so a just-claimed market reports its decremented on-chain fee, not
           // the stale cached value. The initial load stays cache-friendly.
-          const url = refreshKey > 0 ? `/api/markets/${slab}?_cb=${refreshKey}` : `/api/markets/${slab}`;
+          // The nonce must be unique per refetch, not refreshKey: refreshKey
+          // restarts at 1 on every page load, so `?_cb=1` is a SHARED CDN key
+          // that the route's stale-while-revalidate=60 would serve stale to the
+          // next session's first post-claim refetch.
+          const url = refreshKey > 0 ? `/api/markets/${slab}?_cb=${Date.now()}-${refreshKey}` : `/api/markets/${slab}`;
           const res = await fetch(url, refreshKey > 0 ? { cache: "no-store" } : undefined);
           if (!res.ok) return null;
           const body = (await res.json()) as { market?: Record<string, unknown> };

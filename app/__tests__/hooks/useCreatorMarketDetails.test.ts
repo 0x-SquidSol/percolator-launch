@@ -205,4 +205,36 @@ describe("refetch() re-reads details (e.g. after a creator-fee claim), cache-bus
     // the refetch cache-busted the route so it isn't served the stale cache
     expect(urls.some((u) => u.includes(`/api/markets/${SLAB_A}?_cb=`))).toBe(true);
   });
+
+  it("each refetch uses a CDN key no other page session can share", async () => {
+    // refreshKey restarts at 1 per page load, so `?_cb=1` alone would be a
+    // shared cache key (s-maxage=10 + stale-while-revalidate=60) — a creator
+    // claiming again after a reload would be served the previous session's
+    // pre-claim value. The nonce must carry a per-call component.
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      urls.push(String(url));
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ market: { slab_address: SLAB_A, symbol: "X", vault_balance: 1 } }),
+      } as unknown as Response);
+    }));
+    const nowSpy = vi.spyOn(Date, "now");
+    nowSpy.mockReturnValue(1_000);
+    const a = renderHook(() => useCreatorMarketDetails([SLAB_A]));
+    await waitFor(() => expect(a.result.current.details[SLAB_A]).toBeTruthy());
+    await act(async () => { a.result.current.refetch(); });
+    await waitFor(() => expect(urls.length).toBe(2));
+    a.unmount();
+    // a fresh page session, later: its first refetch must not reuse the key
+    nowSpy.mockReturnValue(2_000);
+    const b = renderHook(() => useCreatorMarketDetails([SLAB_A]));
+    await waitFor(() => expect(b.result.current.details[SLAB_A]).toBeTruthy());
+    await act(async () => { b.result.current.refetch(); });
+    await waitFor(() => expect(urls.length).toBe(4));
+    nowSpy.mockRestore();
+    expect(urls[1]).toContain("?_cb=");
+    expect(urls[3]).toContain("?_cb=");
+    expect(urls[3]).not.toBe(urls[1]);
+  });
 });
