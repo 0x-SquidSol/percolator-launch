@@ -28,7 +28,9 @@ export const COPY = {
   limitsUnavailable: "Limits unavailable. Showing no cap.",
   quoteSettlesAtMark:
     "On this program version fills settle at the mark price. The quote above only decides how much can fill and whether your slippage limit passes.",
-  quoteCharged: "The quoted price is charged: the difference from the mark is paid to the market's LP as a fee. Your signature caps it at the fee shown.",
+  quoteCharged: "The quoted price is charged: the difference from the mark is paid to the market's LP as a fee. Your signature caps it at the maximum shown.",
+  feeCapTooltip:
+    "The most this trade can charge you: base fee + the quote's fee + a small slippage margin, so a quote that moves slightly before landing still fills. You pay only what the matcher actually requests, never more than this. If the request exceeds it, the trade is refused and nothing is charged.",
   feeOverProtocolMax: (bps: string) => `The quote's fee is above this market's protocol maximum (${bps} bps), so the trade would be refused. Reduce the size.`,
   feeOverMarketMax: "The quote's fee plus the base fee is above this market's maximum trading fee, so the trade would be refused. Reduce the size.",
   quoteClipped: (fill: string) => `Quote caps this trade at ${fill}.`,
@@ -63,6 +65,15 @@ export const COPY = {
   closeRebooked: "Fees were re-booked; press Close again to finish.",
   closeZeroFill:
     "Market at capacity — no fill. Your close landed but the LP had no room to take it, so your position did not change. Try a smaller percentage or again shortly.",
+  rebalanceZeroFill:
+    "Nothing could be closed yet: this market is reduce-only after a bankruptcy and the other side has no open interest left to match. Try again as positions on the other side close.",
+  rebalancePartial: (filled: string, requested: string) =>
+    `Partially closed: ${filled} of ${requested}. The market is reduce-only after a bankruptcy; the rest can close as the other side exits.`,
+  adlReduceOnlyTitle: "Reduce-only — recovering from a bankruptcy",
+  adlCloseRoute:
+    "Your close is sent as a unilateral exit you sign yourself (RebalanceReduce), so it does not depend on the market's LP. It may close only part of the position if the other side has little open interest left.",
+  adlReduceOnly:
+    "A bankrupt position was spread across this side of the market, so new positions are paused until one side has closed out. Closing works: your close is sent as a unilateral exit you sign yourself. The market reopens on its own once positions close; no admin step is needed.",
   closePartial: (filled: string, requested: string) => `Partially closed: ${filled} of ${requested}. The rest of your position is still open.`,
 } as const;
 

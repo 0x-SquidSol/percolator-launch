@@ -14,7 +14,7 @@
  * (#6); a failed read never blanks a good value; every phase is gated by its
  * flag so a flag-off build does no extra RPC at all.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { PublicKey } from "@solana/web3.js";
 import { useConnectionCompat } from "@/hooks/useWalletCompat";
 import { useSlabState } from "@/components/providers/SlabProvider";
@@ -27,6 +27,7 @@ import {
   decodeMatcherCtx,
   decodePortfolioRisk,
   decodeVaultLpState,
+  decodeLpVaultRegistryShares,
   signedPositionForAsset,
   type AssetRiskLimits,
   type AssetVaultLp,
@@ -36,7 +37,7 @@ import {
   type VaultLpStateView,
 } from "@/lib/limits/decode";
 import { deriveVaultLpStatePda, resolveLpAccounts } from "@/lib/limits/lp-discovery";
-import { VAULT_LP_STATE_SEED } from "@/lib/limits/constants";
+import { LP_VAULT_REGISTRY_SEED, VAULT_LP_STATE_SEED } from "@/lib/limits/constants";
 import { effectiveExecBandBps } from "@/lib/limits/risk-limits";
 
 const POLL_MS = 20_000;
@@ -60,6 +61,8 @@ export interface MarketLimits {
   lp: LpView | null;
   matcher: MatcherCtxView | null;
   vaultState: VaultLpStateView | null;
+  /** P3: registry `total_lp_shares_outstanding` (the program's share count); null = unread. */
+  registryShares: bigint | null;
   assetAdmin: Uint8Array | null;
 }
 
@@ -73,6 +76,7 @@ const OFF = (flags: LimitsFlags): MarketLimits => ({
   lp: null,
   matcher: null,
   vaultState: null,
+  registryShares: null,
   assetAdmin: null,
 });
 
@@ -88,9 +92,9 @@ export function useMarketLimits(slabAddress: string | null | undefined, assetInd
     lp: LpView | null;
     matcher: MatcherCtxView | null;
     vaultState: VaultLpStateView | null;
+    registryShares: bigint | null;
     error: boolean;
   } | null>(null);
-  const reqId = useRef(0);
 
   // Slab-derived parts: pure, recomputed per slab poll.
   const slabPart = useMemo(() => {
@@ -115,7 +119,8 @@ export function useMarketLimits(slabAddress: string | null | undefined, assetInd
     } catch {
       return;
     }
-    const my = ++reqId.current;
+    // Per-effect liveness flag (gotcha #6): a reply from a previous market/effect is dropped.
+    let alive = true;
     let fetching = false;
     const tick = async () => {
       if (fetching) return;
@@ -128,12 +133,15 @@ export function useMarketLimits(slabAddress: string | null | undefined, assetInd
         if (lpAccts?.matcherCtx) keys.push(lpAccts.matcherCtx);
         const vaultPda = flags.p3 ? deriveVaultLpStatePda(programPk, slabPk, VAULT_LP_STATE_SEED) : null;
         if (vaultPda) keys.push(vaultPda);
+        const registryPda = flags.p3 ? deriveVaultLpStatePda(programPk, slabPk, LP_VAULT_REGISTRY_SEED) : null;
+        if (registryPda) keys.push(registryPda);
         const infos = keys.length ? await connection.getMultipleAccountsInfo(keys, "confirmed") : [];
-        if (my !== reqId.current) return; // market switched while in flight
+        if (!alive) return; // market switched while in flight
         let k = 0;
         const lpInfo = lpAccts ? infos[k++] : null;
         const ctxInfo = lpAccts?.matcherCtx ? infos[k++] : null;
         const vaultInfo = vaultPda ? infos[k++] : null;
+        const registryInfo = registryPda ? infos[k++] : null;
         let lp: LpView | null = null;
         if (lpAccts && lpInfo) {
           const d = new Uint8Array(lpInfo.data);
@@ -142,17 +150,19 @@ export function useMarketLimits(slabAddress: string | null | undefined, assetInd
         }
         const matcher = ctxInfo ? decodeMatcherCtx(new Uint8Array(ctxInfo.data)) : null;
         const vaultState = vaultInfo ? decodeVaultLpState(new Uint8Array(vaultInfo.data)) : null;
+        const registryShares = registryInfo ? decodeLpVaultRegistryShares(new Uint8Array(registryInfo.data)) : null;
         setAccts((prev) => ({
           slab: slabAddress,
           // never blank a good value on a failed/empty read
           lp: lp ?? (prev?.slab === slabAddress ? prev.lp : null),
           matcher: matcher ?? (prev?.slab === slabAddress ? prev.matcher : null),
           vaultState: vaultState ?? (prev?.slab === slabAddress ? prev.vaultState : null),
+          registryShares: registryShares ?? (prev?.slab === slabAddress ? prev.registryShares : null),
           error: false,
         }));
       } catch {
-        if (my === reqId.current) {
-          setAccts((prev) => (prev && prev.slab === slabAddress ? { ...prev, error: true } : { slab: slabAddress, lp: null, matcher: null, vaultState: null, error: true }));
+        if (alive) {
+          setAccts((prev) => (prev && prev.slab === slabAddress ? { ...prev, error: true } : { slab: slabAddress, lp: null, matcher: null, vaultState: null, registryShares: null, error: true }));
         }
       } finally {
         fetching = false;
@@ -161,7 +171,7 @@ export function useMarketLimits(slabAddress: string | null | undefined, assetInd
     void tick();
     const dispose = pollWhenVisible(() => void tick(), POLL_MS);
     return () => {
-      reqId.current++;
+      alive = false;
       dispose();
     };
   }, [anyOn, slabAddress, programIdStr, connection, boundVaultLpKey, marketId, assetIndex, flags.p3]);
@@ -183,6 +193,7 @@ export function useMarketLimits(slabAddress: string | null | undefined, assetInd
       lp: accPart?.lp ?? null,
       matcher: accPart?.matcher ?? null,
       vaultState: accPart?.vaultState ?? null,
+      registryShares: accPart?.registryShares ?? null,
       assetAdmin: admin,
     };
   }, [anyOn, flags, accts, slabAddress, slabPart, raw, assetProfile]);

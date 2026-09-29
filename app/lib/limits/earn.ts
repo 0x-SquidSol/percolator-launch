@@ -10,12 +10,14 @@ import { earnTrancheView, harvestableFeeAtoms, vaultLpValueAtoms, type EarnTranc
 export function earnViewFromLimits(
   limits: MarketLimits,
   backingNavAtoms: bigint,
-  totalShares: bigint,
   withdrawShares: bigint,
 ): EarnTrancheView | null {
   const vs = limits.flags.p3 ? limits.vaultState : null;
   const e = limits.engine;
-  if (!vs || !e) return null;
+  // The program prices against registry.total_lp_shares_outstanding (tags 75/77), never the
+  // LP mint supply. Unread => no view (the gate then does not guess).
+  const shares = limits.registryShares;
+  if (!vs || !e || shares === null) return null;
   const lpValue = limits.lp ? vaultLpValueAtoms(limits.lp, e) : ({ kind: "stale" } as const);
   return earnTrancheView({
     seniorClaimAtoms: vs.seniorClaimAtoms,
@@ -24,7 +26,10 @@ export function earnViewFromLimits(
     backingNavAtoms,
     harvestableAtoms: harvestableFeeAtoms(e),
     lpValue,
-    totalShares,
+    totalShares: shares,
     withdrawShares,
   });
 }
+
+/** The share count the Earn gate uses: the registry's, exactly as the program. */
+export const earnGateShares = (limits: MarketLimits): bigint | null => limits.registryShares;

@@ -113,7 +113,7 @@ const ERROR_CODE_MAP: Record<number, string> = {
   // position settled); or a genuinely deep-stale market. It does NOT always mean
   // "re-seed" — a transient lag clears on its own; a bankrupt/recovery market
   // needs maintainer action. Don't promise either outcome.
-  21: "This market is temporarily locked. If it's a brief lag it clears on its own — try again in a moment. If it persists, the market needs maintainer attention (it may be in recovery). Please report it.",
+  21: "This market is temporarily locked, or reduce-only while it recovers from a bankruptcy. Closing positions still works (your close is sent as a unilateral exit if needed); new positions may be paused until the market reopens on its own. If a brief lag, try again in a moment.",
   22: "Crank made no progress - the market may need attention. Try again shortly.",
   23: "This market is in recovery mode and must be cranked before trading resumes.",
   24: "Engine counter overflow.",

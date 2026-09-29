@@ -39,6 +39,10 @@ export const MSG_REPAIRABLE =
   "Try again: your next transaction includes the repair automatically.";
 export const MSG_LOSS_STALE =
   "Positions on this market are being refreshed after a price move. Try again in a few seconds.";
+export const MSG_ADL_REDUCE_ONLY_OPEN =
+  "This market is reduce-only while it recovers from a bankruptcy, so new positions are paused. Closing positions still works, and the market reopens on its own once one side has closed out.";
+export const MSG_ADL_REDUCE_ONLY_CLOSE =
+  "This market is reduce-only while it recovers from a bankruptcy. Closing still works: try the close again and it is sent as a unilateral exit you sign yourself.";
 export const MSG_DRAIN_ONLY = "This side of the market only accepts position-reducing trades right now.";
 
 const OPENING: readonly MarketTxAction[] = ["open"];
@@ -86,6 +90,7 @@ export function explainMarketTxError(
     if (has(health, "resolved")) return opening ? MSG_RESOLVED : null;
     if (has(health, "recovery")) return MSG_RECOVERY;
     if (has(health, "repairable")) return MSG_REPAIRABLE;
+    if (code === 21 && has(health, "adl-reduce-only")) return opening ? MSG_ADL_REDUCE_ONLY_OPEN : MSG_ADL_REDUCE_ONLY_CLOSE;
     if (code === 21 && opening && health.lpDepleted) return MSG_LP_DEPLETED_OPEN;
     if (code === 21 && has(health, "bankruptcy")) return MSG_BANKRUPTCY;
     if (code === 21 && has(health, "loss-stale")) return MSG_LOSS_STALE;

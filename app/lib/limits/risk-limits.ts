@@ -28,20 +28,35 @@ export function effectiveExecBandBps(stored: number): number {
   return stored;
 }
 
-/** `exec_price_within_band`: `|exec - ref| * 1e4 <= ref * band`; a zero ref is never in band. */
+/**
+ * `exec_price_within_band` (P1 71da9917): `|exec - ref| * 1e4 <= ref * band + (1e4 - 1)`,
+ * i.e. `diff <= ceil(ref * band / 1e4)` — the band edge rounds OUT one atom so a matcher
+ * pricing exactly at the edge with LP-favourable rounding is not refused. Band 0 admits
+ * only the exact reference; a zero ref is never in band.
+ */
 export function execPriceWithinBand(execE6: bigint, refE6: bigint, bandBps: number): boolean {
   if (refE6 === 0n) return false;
   const diff = execE6 > refE6 ? execE6 - refE6 : refE6 - execE6;
-  return diff * BPS <= refE6 * BigInt(bandBps);
+  return diff * BPS <= refE6 * BigInt(bandBps) + (BPS - 1n);
 }
 
-/** Band edges `[ref*(1-b), ref*(1+b)]`, floored/ceiled INWARD so every shown edge is in-band. */
+/** Band edges `ref ± ceil(ref·band/1e4)` — exactly the widest in-band prices. */
 export function bandEdgesE6(refE6: bigint, bandBps: number): { lo: bigint; hi: bigint } {
-  const b = BigInt(bandBps);
-  const lo = (refE6 * (BPS - b) + BPS - 1n) / BPS; // ceil
-  const hi = (refE6 * (BPS + b)) / BPS; // floor
-  return { lo: lo < 0n ? 0n : lo, hi };
+  const n = refE6 * BigInt(bandBps);
+  const d = n / BPS + (n % BPS === 0n ? 0n : 1n);
+  const lo = refE6 - d;
+  return { lo: lo < 0n ? 0n : lo, hi: refE6 + d };
 }
+
+/** P1 `exposure_within_cap_fast`: division-free `abs <= lp_exposure_cap_q(...)`; null on overflow / zero price. */
+export function exposureWithinCapFast(absQ: bigint, equityAtoms: bigint, kBps: number, priceE6: bigint, posScale = POS_SCALE): boolean | null {
+  if (priceE6 === 0n) return null;
+  const lhs = absQ * (BPS * priceE6);
+  const rhs = equityAtoms * BigInt(kBps) * posScale;
+  if (lhs > U128_MAX_ || rhs > U128_MAX_ || equityAtoms * BigInt(kBps) > U128_MAX_) return null;
+  return lhs <= rhs;
+}
+const U128_MAX_ = (1n << 128n) - 1n;
 
 /** `default_lp_exposure_k_bps`: `1e8 / imr_bps`, saturating at the setter max. */
 export function defaultLpExposureKBps(initialMarginBps: bigint): number {

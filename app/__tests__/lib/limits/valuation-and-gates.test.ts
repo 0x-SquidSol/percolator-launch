@@ -15,7 +15,14 @@ import {
 } from "@/lib/limits/vault-tranche";
 import { maxTradeSizePerSide, sameOwnerRoomQ, type SizeLimitInputs } from "@/lib/limits/risk-limits";
 import { deriveTicketLimits } from "@/lib/limits/ticket";
-import { feeChannelOf, requestedFeeBps, signedFeeForQuote } from "@/lib/limits/fee-channel";
+import {
+  clampFeeCapMarginBps,
+  defaultFeeCapMarginBps,
+  feeChannelOf,
+  requestedFeeBps,
+  requestedFeePermitted,
+  signedFeeForQuote,
+} from "@/lib/limits/fee-channel";
 import { earnViewFromLimits } from "@/lib/limits/earn";
 import { marketLimits, vaultBoundLp, OWNER_A, OWNER_LP } from "./fixtures";
 
@@ -106,7 +113,7 @@ describe("earnDepositBlock (tag 75 gate)", () => {
 
 describe("earnViewFromLimits (fixture market, certified vault LP + real fee leg)", () => {
   it("uses the cert equity and the harvestable leg from the slab", () => {
-    const v = earnViewFromLimits(marketLimits(), 1_000_000_000n, 1_000_000_000n, 0n)!;
+    const v = earnViewFromLimits(marketLimits(), 1_000_000_000n, 0n)!;
     expect(v.valuation).toBe("certified");
     // harvestable = min(3e6-1e6, 50e6-0-0, 5e9) = 2e6 ; C_eff = 1e9+2e6 ; V = 1e9 + 2e6 + 120e6
     expect(v.harvestable).toBe(2_000_000n);
@@ -199,12 +206,31 @@ describe("P2 fee channel (P1 e74809b1)", () => {
   });
   it("signed fee = base + requested; over the protocol / market max is flagged", () => {
     const ch = { enabled: true, protocolMaxBps: 50 };
-    expect(signedFeeForQuote(10n, 1_003_100n, 1_000_000n, ch, 100n)).toEqual({ signedFeeBps: 41n, requestedBps: 31n, verdict: "ok" });
+    expect(signedFeeForQuote(10n, 1_003_100n, 1_000_000n, ch, 100n)).toEqual({ signedFeeBps: 41n, requestedBps: 31n, marginBps: 0n, verdict: "ok" });
     expect(signedFeeForQuote(10n, 1_006_000n, 1_000_000n, ch, 100n).verdict).toBe("over-protocol-max");
     expect(signedFeeForQuote(80n, 1_003_100n, 1_000_000n, ch, 100n).verdict).toBe("over-market-max");
-    expect(signedFeeForQuote(10n, 1_003_100n, 1_000_000n, { enabled: false, protocolMaxBps: 0 }, 100n)).toEqual({ signedFeeBps: 10n, requestedBps: 0n, verdict: "ok" });
-    // legacy kinds: consent to the band-clamped bound, capped at the protocol max
-    expect(signedFeeForQuote(10n, null, 1_000_000n, ch, 100n, 200)).toEqual({ signedFeeBps: 60n, requestedBps: 50n, verdict: "ok" });
+    expect(signedFeeForQuote(10n, 1_003_100n, 1_000_000n, { enabled: false, protocolMaxBps: 0 }, 100n, undefined, 2)).toEqual({ signedFeeBps: 10n, requestedBps: 0n, marginBps: 0n, verdict: "ok" });
+    // legacy kinds: consent to the band-clamped bound, capped at the protocol max (already worst case: no margin)
+    expect(signedFeeForQuote(10n, null, 1_000_000n, ch, 100n, 200, 2)).toEqual({ signedFeeBps: 60n, requestedBps: 50n, marginBps: 0n, verdict: "ok" });
+  });
+  it("fee-cap slippage margin: added on top of the quote, clamped at the market max, verdict judged on the quote", () => {
+    const ch = { enabled: true, protocolMaxBps: 50 };
+    expect(signedFeeForQuote(10n, 1_003_100n, 1_000_000n, ch, 100n, undefined, 2)).toEqual({ signedFeeBps: 43n, requestedBps: 31n, marginBps: 2n, verdict: "ok" });
+    // near the market max: the margin is clamped (never sign above max_trading_fee_bps)
+    expect(signedFeeForQuote(10n, 1_003_100n, 1_000_000n, ch, 42n, undefined, 5)).toEqual({ signedFeeBps: 42n, requestedBps: 31n, marginBps: 1n, verdict: "ok" });
+    // the margin never turns a refused quote into an accepted one
+    expect(signedFeeForQuote(10n, 1_006_000n, 1_000_000n, ch, 100n, undefined, 10).verdict).toBe("over-protocol-max");
+    // a quote that moved by <= the margin before landing is still permitted by the signed cap
+    const cap = signedFeeForQuote(10n, 1_003_100n, 1_000_000n, ch, 100n, undefined, 2).signedFeeBps;
+    expect(requestedFeePermitted(33n, 10n, cap, 50, 100n)).toBe(true);
+    expect(requestedFeePermitted(34n, 10n, cap, 50, 100n)).toBe(false);
+  });
+  it("margin config: env default +2, clamped to [0, 50]", () => {
+    expect(defaultFeeCapMarginBps()).toBe(2);
+    expect(clampFeeCapMarginBps(-3)).toBe(0);
+    expect(clampFeeCapMarginBps(7.9)).toBe(7);
+    expect(clampFeeCapMarginBps(99)).toBe(50);
+    expect(clampFeeCapMarginBps(Number.NaN)).toBe(2);
   });
   it("ticket: channel on => quote charged, sign base + requested", () => {
     const L = marketLimits({
@@ -215,7 +241,10 @@ describe("P2 fee channel (P1 e74809b1)", () => {
     const t = deriveTicketLimits({ limits: L, direction: "long", sizeQ: 100_000_000n, takerPosQ: 0n, takerOwner: OWNER_A, leverage: 1, limitPriceE6: 0n });
     expect(t.fee!.charged).toBe(true);
     expect(t.fee!.requestedBps).toBe(31n); // quote total 31 bps above mark
-    expect(t.fee!.signedFeeBps).toBe(41n); // base 10 + 31
+    expect(t.fee!.signedFeeBps).toBe(43n); // base 10 + 31 + default margin 2
+    expect(t.fee!.marginBps).toBe(2n);
+    const custom = deriveTicketLimits({ limits: L, direction: "long", sizeQ: 100_000_000n, takerPosQ: 0n, takerOwner: OWNER_A, leverage: 1, limitPriceE6: 0n, feeMarginBps: 0 });
+    expect(custom.fee!.signedFeeBps).toBe(41n);
     const off = deriveTicketLimits({ limits: marketLimits({ matcher: { ...marketLimits().matcher!, inventoryBase: 0n } }), direction: "long", sizeQ: 100_000_000n, takerPosQ: 0n, takerOwner: OWNER_A, leverage: 1, limitPriceE6: 0n });
     expect(off.fee!.charged).toBe(false);
     expect(off.fee!.signedFeeBps).toBe(10n);

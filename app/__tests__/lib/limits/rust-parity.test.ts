@@ -2,9 +2,9 @@
 /**
  * Rust parity: every vector in fixtures/limits/rust-parity-vectors.json was
  * emitted by the REAL Rust function (scripts/limits-parity/main.rs):
- *   - P1 `risk_limits_v17` extracted verbatim from feat/p1-safety-release@e74809b1 (committed);
+ *   - P1 `risk_limits_v17` extracted verbatim from feat/p1-safety-release@71da9917 (committed);
  *   - P2 `percolator_match::v2` from feat/p2-matcher-v2@4a0f696 (crate path dep);
- *   - P3 `vault_lp_v18.rs` from feat/p3-vault-owned-lp@0be66041 (committed).
+ *   - P3 `vault_lp_v18.rs` from feat/p3-vault-owned-lp@8dffb534 (committed).
  * The TS ports must agree on every one.
  */
 import { describe, it, expect } from "vitest";
@@ -22,6 +22,7 @@ import {
   positionChangeReduceOnly,
   flooredLpMoveAllowed,
   lpFillGate,
+  exposureWithinCapFast,
 } from "@/lib/limits/risk-limits";
 import { requestedFeeBps, requestedFeePermitted } from "@/lib/limits/fee-channel";
 import { adaptiveFeeBps, cpImpactBps, quoteAdaptive, skewNetBps } from "@/lib/limits/matcher-quote";
@@ -119,13 +120,14 @@ export const EVAL: Record<string, (v: V) => unknown> = {
   requested_fee_bps: (v) => Number(requestedFeeBps(B(v.o), B(v.ex))),
   conservative_equity: (v) => opt(conservativeEquity(B(v.c), B(v.p), B(v.fc))),
   vault_lp_exposure_allowed: (v) => vaultLpExposureAllowed(B(v.lb), B(v.la), B(v.eq), N(v.lev), B(v.pr)),
+  exposure_within_cap_fast: (v) => exposureWithinCapFast(B(v.a), B(v.eq), N(v.k), B(v.pr)),
 };
 
 describe("limits: TS ports agree with the Rust functions on every emitted vector", () => {
   it("fixture covers every ported function", () => {
     const seen = new Set(vectors.map((v) => v.f));
     for (const f of Object.keys(EVAL)) expect(seen.has(f), f).toBe(true);
-    expect(vectors.length).toBeGreaterThan(8500);
+    expect(vectors.length).toBeGreaterThan(10_000);
   });
 
   for (const f of Object.keys(EVAL)) {

@@ -1,6 +1,6 @@
 //! offset_of! for the fields the Earn NAV (P3) reads, on the DEPLOYED v18.2 tree (6377376a + engine 35ddd692).
 use core::mem::{offset_of, size_of};
-use percolator::{HealthCertV16Account, MarketGroupV16HeaderAccount, PortfolioAccountV16Account};
+use percolator::{AssetStateV16Account, HealthCertV16Account, MarketGroupV16HeaderAccount, PortfolioAccountV16Account};
 use percolator_prog::state::WrapperConfigV16;
 fn main() {
     println!("{{");
@@ -26,6 +26,9 @@ fn main() {
     println!("\"cert.active_bitmap_at_cert\":{},", offset_of!(HealthCertV16Account, active_bitmap_at_cert));
     println!("\"cert.valid\":{},", offset_of!(HealthCertV16Account, valid));
     println!("\"cert.size\":{},", size_of::<HealthCertV16Account>());
+    println!("\"asset.a_long\":{},", offset_of!(AssetStateV16Account, a_long));
+    println!("\"asset.a_short\":{},", offset_of!(AssetStateV16Account, a_short));
+    println!("\"adl_one\":\"{}\",", percolator::ADL_ONE);
     println!("\"bitmap.size\":{}", offset_of!(HealthCertV16Account, valid) - offset_of!(HealthCertV16Account, active_bitmap_at_cert));
     println!("}}");
 }

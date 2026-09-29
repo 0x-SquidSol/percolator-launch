@@ -48,9 +48,28 @@ export function feeChannelOf(limits: { matcherExtMode: number; maxRequestedFeeBp
 
 export type SignedFeeVerdict = "ok" | "over-protocol-max" | "over-market-max";
 
+export const DEFAULT_FEE_CAP_MARGIN_BPS = 2;
+export const MAX_FEE_CAP_MARGIN_BPS = 50;
+
+/** Clamp a user/env margin to [0, 50] whole bps. */
+export function clampFeeCapMarginBps(v: number): number {
+  if (!Number.isFinite(v)) return DEFAULT_FEE_CAP_MARGIN_BPS;
+  return Math.max(0, Math.min(MAX_FEE_CAP_MARGIN_BPS, Math.floor(v)));
+}
+
+/** Default slippage margin on the signed fee cap: NEXT_PUBLIC_FEE_CAP_MARGIN_BPS, else +2 bps. */
+export function defaultFeeCapMarginBps(): number {
+  const raw = process.env.NEXT_PUBLIC_FEE_CAP_MARGIN_BPS;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_FEE_CAP_MARGIN_BPS;
+  return clampFeeCapMarginBps(Number(raw));
+}
+
 /**
- * The fee_bps the ticket signs for a quote: base + requested(quote) when the channel is
- * on, else base. `verdict` says whether the program would accept it at that quote.
+ * The fee_bps the ticket signs for a quote. Channel off => base. Channel on =>
+ * base + requested(quote) + `marginBps` (slippage headroom so a quote that moves a
+ * little before landing is not refused), clamped to the market's max_trading_fee_bps.
+ * The signed value is the MAXIMUM the taker consents to; the program charges only the
+ * matcher's actual request (<= that cap). `verdict` judges the quote itself.
  */
 export function signedFeeForQuote(
   baseFeeBps: bigint,
@@ -59,22 +78,27 @@ export function signedFeeForQuote(
   channel: FeeChannel,
   maxTradingFeeBps: bigint,
   legacyBoundBps?: number,
-): { signedFeeBps: bigint; requestedBps: bigint; verdict: SignedFeeVerdict } {
-  if (!channel.enabled) return { signedFeeBps: baseFeeBps, requestedBps: 0n, verdict: "ok" };
+  marginBps = 0,
+): { signedFeeBps: bigint; requestedBps: bigint; marginBps: bigint; verdict: SignedFeeVerdict } {
+  const m = BigInt(clampFeeCapMarginBps(marginBps));
+  const clampMax = (x: bigint) => (x > maxTradingFeeBps ? maxTradingFeeBps : x);
+  if (!channel.enabled) return { signedFeeBps: baseFeeBps, requestedBps: 0n, marginBps: 0n, verdict: "ok" };
   // Kind 0/1 matchers have no exact client quote: consent to their price bound
-  // (max_total, already clamped to the band), capped at the protocol maximum.
+  // (max_total, already clamped to the band), capped at the protocol maximum — already
+  // the worst case, so no margin is added.
   if (quoteExecE6 === null) {
-    if (legacyBoundBps === undefined) return { signedFeeBps: baseFeeBps, requestedBps: 0n, verdict: "ok" };
+    if (legacyBoundBps === undefined) return { signedFeeBps: baseFeeBps, requestedBps: 0n, marginBps: 0n, verdict: "ok" };
     const b = BigInt(Math.min(legacyBoundBps, channel.protocolMaxBps));
-    const signed = baseFeeBps + b;
-    return { signedFeeBps: signed, requestedBps: b, verdict: signed > maxTradingFeeBps ? "over-market-max" : "ok" };
+    const raw = baseFeeBps + b;
+    return { signedFeeBps: clampMax(raw), requestedBps: b, marginBps: 0n, verdict: raw > maxTradingFeeBps ? "over-market-max" : "ok" };
   }
   const req = requestedFeeBps(oracleE6, quoteExecE6);
-  const signed = baseFeeBps + req;
+  const atQuote = baseFeeBps + req;
   let verdict: SignedFeeVerdict = "ok";
   if (req > BigInt(channel.protocolMaxBps)) verdict = "over-protocol-max";
-  else if (signed > maxTradingFeeBps) verdict = "over-market-max";
-  return { signedFeeBps: signed, requestedBps: req, verdict };
+  else if (atQuote > maxTradingFeeBps) verdict = "over-market-max";
+  const signed = clampMax(atQuote + m);
+  return { signedFeeBps: signed, requestedBps: req, marginBps: signed - atQuote > 0n ? signed - atQuote : 0n, verdict };
 }
 
 /**

@@ -87,8 +87,13 @@ import { FEE_LEGS, legPercent, splitFeeAtoms } from "@/lib/fee-breakdown";
 import { useMarketLimits } from "@/hooks/useMarketLimits";
 import { deriveTicketLimits, sizeQToInput } from "@/lib/limits/ticket";
 import { takeFillResult } from "@/lib/limits/fill-check";
+import { defaultFeeCapMarginBps } from "@/lib/limits/fee-channel";
 import type { FillResult } from "@/lib/limits/fill-result";
 import { OrderTicketLimits } from "@/components/limits/OrderTicketLimits";
+import { LimitsNotice } from "@/components/limits/LimitsRow";
+import { COPY } from "@/lib/limits/copy";
+import { decodeMarketEngineView } from "@/lib/limits/decode";
+import { isAdlReduceOnly } from "@/lib/limits/adl-reduce-only";
 
 const SIZE_PRESETS = [25, 50, 75, 100];
 const MAX_DISPLAY_LEVERAGE = 200;
@@ -324,7 +329,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // The market's per-trade size ceiling (immutable, resolved once).
   const fillCaps = useMarketFillCap(slabAddress);
   const { engine, params, insuranceBalance: liveInsuranceBalance, totalOI: liveTotalOI, hasData: engineHasData } = useEngineState();
-  const { accounts, config: mktConfig, header, refresh: refreshSlab, programId: slabProgramId } = useSlabState();
+  const { accounts, config: mktConfig, header, refresh: refreshSlab, programId: slabProgramId, raw: slabRaw } = useSlabState();
+  // F-3 / R1 (not flag-gated — deployed engine behaviour): ADL reduce-only after a bankruptcy.
+  const adlReduceOnly = useMemo(() => (slabRaw ? isAdlReduceOnly(decodeMarketEngineView(slabRaw)) : false), [slabRaw]);
   const tokenMeta = useTokenMeta(mktConfig?.collateralMint ?? null);
   // Non-reactive — see file-header comment. NOT `useLivePrice()`.
   const { priceUsd, priceE6: livePriceE6 } = getLivePriceSnapshot(slabAddress);
@@ -454,6 +461,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const marketLimits = useMarketLimits(slabAddress);
   const [limitsClampedToQ, setLimitsClampedToQ] = useState<bigint | null>(null);
   const [limitsFill, setLimitsFill] = useState<{ fill: FillResult; requestedQ: bigint } | null>(null);
+  // P2 fee channel: slippage margin on the signed fee cap (default NEXT_PUBLIC_FEE_CAP_MARGIN_BPS or +2).
+  const [feeMarginBps, setFeeMarginBps] = useState<number>(() => defaultFeeCapMarginBps());
   const lpDepleted = marketHealth?.lpDepleted === true;
   const marketResolved = marketHealth?.lockReasons.includes("resolved") === true;
 
@@ -795,8 +804,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     leverage,
     limitPriceE6: slippageBoundE6,
     markE6: livePriceE6 ?? undefined,
+    feeMarginBps,
   });
-  const limitsBlocking = ticketLimits.issues.some((x) => x.severity === "error");
+  const limitsBlocking = ticketLimits.issues.some((x) => x.severity === "error") || adlReduceOnly;
   // P1: clamp the size input to the live headroom and SAY so (never silently).
   const limitsClampTo = ticketLimits.clampToQ;
   useEffect(() => {
@@ -1059,6 +1069,11 @@ setEngineLockError(null);
     return (
       <div className="relative p-3.5">
         {openCloseToggle}
+        {adlReduceOnly && (
+          <LimitsNotice tone="info" title={COPY.adlReduceOnlyTitle} testId="limits-adl-close-route">
+            {COPY.adlCloseRoute}
+          </LimitsNotice>
+        )}
         <OrderTicketClosePanel
           slabAddress={slabAddress}
           positionSize={existingPositionSize}
@@ -1239,6 +1254,11 @@ setEngineLockError(null);
           cap, and the LP's remaining net-exposure capacity on the CHOSEN side
           (direction-aware, refreshed on a 20s poll). Without this row the
           only way to discover the limits was to trip them. */}
+      {adlReduceOnly && (
+        <LimitsNotice tone="warning" title={COPY.adlReduceOnlyTitle} testId="limits-adl-reduce-only">
+          {COPY.adlReduceOnly}
+        </LimitsNotice>
+      )}
       <OrderTicketLimits
         limits={marketLimits}
         ticket={ticketLimits}
@@ -1247,6 +1267,8 @@ setEngineLockError(null);
         clampedToQ={limitsClampedToQ}
         fillResult={limitsFill?.fill ?? null}
         requestedQ={limitsFill?.requestedQ ?? null}
+        feeMarginBps={feeMarginBps}
+        onFeeMarginChange={setFeeMarginBps}
       />
       {!mockMode && fillCapNotional != null && (
         <div className="mb-3 space-y-0.5">

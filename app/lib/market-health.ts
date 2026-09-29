@@ -36,8 +36,10 @@
  */
 import { decodeMarketLiveness, planLivenessRepairs } from "@/lib/self-heal";
 import type { LivenessRepair } from "@/lib/self-heal";
-import { decodeAssetRiskLimits } from "@/lib/limits/decode";
+import { decodeAssetRiskLimits, decodeMarketEngineView } from "@/lib/limits/decode";
+import { isAdlReduceOnly } from "@/lib/limits/adl-reduce-only";
 import { limitsFlags } from "@/lib/limits/flags";
+import { COPY } from "@/lib/limits/copy";
 
 const MARKET_GROUP_OFF = 592;
 const MARKET_GROUP_LEN = 758;
@@ -76,7 +78,8 @@ export type LockReason =
   | "bankruptcy" //     bankruptcy_hlock_active: a bankrupt account must be settled first
   | "loss-stale" //     loss_stale_active: positioned accounts need a refresh crank (keeper, ~seconds)
   | "repairable" //     lapsed backing bucket / ResetPending side — self-heal repairs it in your tx
-  | "drain-only"; //    a side is DrainOnly: only risk-reducing trades on that side
+  | "drain-only" //     a side is DrainOnly: only risk-reducing trades on that side
+  | "adl-reduce-only"; // F-3: a_long or a_short != ADL_ONE after a bankruptcy ADL — opens blocked, closes via tag 44
 
 export interface DomainPayout {
   domain: number;
@@ -203,6 +206,8 @@ export function decodeMarketHealth(
   if (lossStale) lockReasons.push("loss-stale");
   if (repairs.length > 0) lockReasons.push("repairable");
   if (drainOnlySides.length > 0) lockReasons.push("drain-only");
+  // F-3 / R1 (not flag-gated: deployed v18.2 engine behaviour, v16.rs:15883).
+  if (isAdlReduceOnly(decodeMarketEngineView(data, 0))) lockReasons.push("adl-reduce-only");
 
   return {
     mode,
@@ -224,7 +229,7 @@ export function decodeMarketHealth(
 
 export type HealthBadgeTone = "danger" | "warning" | "info";
 export interface HealthBadge {
-  id: "lp-depleted" | "lp-halted" | "payout-haircut" | "resolved" | "recovery" | "bankruptcy" | "loss-stale" | "repairable" | "drain-only";
+  id: "lp-depleted" | "lp-halted" | "adl-reduce-only" | "payout-haircut" | "resolved" | "recovery" | "bankruptcy" | "loss-stale" | "repairable" | "drain-only";
   label: string;
   tone: HealthBadgeTone;
   detail: string;
@@ -271,6 +276,14 @@ export function healthBadges(h: MarketHealth): HealthBadge[] {
       detail:
         `Winning positions can currently realize ${formatBpsPercent(10_000 - h.payoutHaircutBps)} of their open profit: ` +
         "the backing from the losing side covers only part of it right now. Losses are not affected.",
+    });
+  }
+  if (h.lockReasons.includes("adl-reduce-only")) {
+    out.push({
+      id: "adl-reduce-only",
+      label: "Reduce-only",
+      tone: "warning",
+      detail: COPY.adlReduceOnly,
     });
   }
   if (h.lockReasons.includes("bankruptcy")) {

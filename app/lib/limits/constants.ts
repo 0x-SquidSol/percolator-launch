@@ -25,6 +25,10 @@
 export const HEADER_LEN = 16;
 /** Account header: magic u64 @0, version u16 @8, kind u8 @10 (wrapper `write_header`). */
 export const HEADER_KIND_OFF = 10;
+/** Wrapper header (v16_program.rs :46/:72): magic "PERCV16\0" (u64 LE @0), version u16 @8 = 18. */
+export const WRAPPER_MAGIC = 0x5045_5243_5631_3600n;
+export const WRAPPER_VERSION_V18 = 18;
+export const KIND_MARKET_ACCOUNT = 1;
 export const MARKET_GROUP_OFF = 592;
 export const MARKET_GROUP_LEN = 758;
 /** `Market { wrapper: [u8; 1024], engine: EngineAssetSlotV16Account (1301) }`. */
@@ -64,6 +68,14 @@ export const H_FUNDING_EPOCH = 597; // u64
 /** AssetStateV16Account (relative to the engine slot base). */
 export const A_MARKET_ID = 0;
 export const A_EFFECTIVE_PRICE = 25;
+/** ADL side factors (u128; dump_layout AssetStateV16Account a_long @49, a_short @65). */
+export const A_A_LONG = 49;
+export const A_A_SHORT = 65;
+/** engine lib.rs:16 `ADL_ONE` (1e15). While either side's A != ADL_ONE the asset is reduce-only. */
+export const ADL_ONE = 1_000_000_000_000_000n;
+/** Wrapper tag 44 RebalanceReduce (deployed 6377376a decode arm :6776, handler :17853). */
+export const TAG_REBALANCE_REDUCE = 44;
+export const REBALANCE_REDUCE_DATA_LEN = 35;
 export const A_OI_EFF_LONG_Q = 289;
 export const A_OI_EFF_SHORT_Q = 305;
 export const A_MODE_LONG = 513;
@@ -200,6 +212,13 @@ export const VAULT_LP_DEFAULT_MAX_LEV_BPS = 10_000;
 export const VAULT_LP_MAX_LEV_BPS = 50_000;
 
 export const VAULT_LP_STATE_SEED = "vault_lp";
+/** LpVaultRegistryV16 PDA `["lp_vault", market]` (wrapper LP_VAULT_REGISTRY_SEED); kind 5; 16 + 160 B. */
+export const LP_VAULT_REGISTRY_SEED = "lp_vault";
+export const KIND_LP_VAULT_REGISTRY = 5;
+export const LP_VAULT_REGISTRY_ACCOUNT_LEN = HEADER_LEN + 160;
+/** `total_lp_shares_outstanding` u128 at struct 64..80 => absolute 80. The share count EVERY
+ *  Earn price/gate uses on-chain (tags 75/77), NOT the LP mint supply. */
+export const REG_TOTAL_LP_SHARES_OUTSTANDING = HEADER_LEN + 64;
 export const KIND_VAULT_LP_STATE = 9;
 export const VAULT_LP_STATE_VERSION = 1;
 /** VaultLpStateV18 is at HEADER_LEN; these are absolute account offsets. */

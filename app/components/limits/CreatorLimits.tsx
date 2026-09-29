@@ -72,7 +72,6 @@ const CreatorTranchePanelLive: FC<{ slab: string; decimals: number; collateralSy
       limits={limits}
       slab={slab}
       backingNavAtoms={lpState.vaultTotalAtoms}
-      totalShares={lpState.lpSupply}
       creatorFeesAtoms={assetProfile?.creatorFeeClaimableAtoms ?? null}
       decimals={decimals}
       collateralSymbol={collateralSymbol}
@@ -84,17 +83,16 @@ export const CreatorTranchePanelView: FC<{
   limits: MarketLimits;
   slab: string;
   backingNavAtoms: bigint;
-  totalShares: bigint;
   creatorFeesAtoms: bigint | null;
   decimals: number;
   collateralSymbol: string;
-}> = ({ limits, slab, backingNavAtoms, totalShares, creatorFeesAtoms, decimals, collateralSymbol }) => {
+}> = ({ limits, slab, backingNavAtoms, creatorFeesAtoms, decimals, collateralSymbol }) => {
   if (limits.state === "off" || (!limits.flags.p3 && !limits.flags.p1)) return null;
   const fmt = (a: bigint) => `${formatTokenAmount(a, decimals)} ${collateralSymbol}`;
   const e = limits.engine;
   const lp = limits.lp;
   const vs = limits.flags.p3 ? limits.vaultState : null;
-  const view = earnViewFromLimits(limits, backingNavAtoms, totalShares, 0n);
+  const view = earnViewFromLimits(limits, backingNavAtoms, 0n);
   const lpFlat = lp ? lp.posQ === 0n : false;
   const withdrawable =
     view && vs && view.vaultValue !== null

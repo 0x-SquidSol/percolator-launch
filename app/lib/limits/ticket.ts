@@ -5,7 +5,7 @@
  */
 import { UNLIMITED_CAPACITY } from "@/lib/marketCapacity";
 import { COPY } from "./copy";
-import { feeChannelOf, signedFeeForQuote, type FeeChannel, type SignedFeeVerdict } from "./fee-channel";
+import { defaultFeeCapMarginBps, feeChannelOf, signedFeeForQuote, type FeeChannel, type SignedFeeVerdict } from "./fee-channel";
 import { VAULT_LP_DEFAULT_MAX_LEV_BPS } from "./constants";
 import type { MarketLimits } from "@/hooks/useMarketLimits";
 import { maxTradeSizePerSide, sameOwnerBlocked, sameOwnerRoomQ, type Side, type SideLimit } from "./risk-limits";
@@ -34,6 +34,8 @@ export interface TicketLimitsInput {
   limitPriceE6: bigint;
   /** Mark used for the quote (e6). Defaults to the engine effective price. */
   markE6?: bigint;
+  /** Slippage margin on the signed fee cap (bps). Default `defaultFeeCapMarginBps()`. */
+  feeMarginBps?: number;
 }
 
 export interface TicketLimits {
@@ -46,7 +48,15 @@ export interface TicketLimits {
   clampToQ: bigint | null;
   quote: PreTradeQuote | null;
   /** P2 fee channel for this asset + the fee the ticket must SIGN for this quote. */
-  fee: { channel: FeeChannel; signedFeeBps: bigint; requestedBps: bigint; verdict: SignedFeeVerdict; charged: boolean } | null;
+  fee: {
+    channel: FeeChannel;
+    signedFeeBps: bigint;
+    requestedBps: bigint;
+    /** Slippage margin actually added on top of the quote's fee (after the market-max clamp). */
+    marginBps: bigint;
+    verdict: SignedFeeVerdict;
+    charged: boolean;
+  } | null;
   stepDown: { maxLeverage: number; stepped: boolean; baseMaxLeverage: number; crowdBps: number } | null;
   issues: TicketIssue[];
 }
@@ -132,6 +142,7 @@ export function deriveTicketLimits(i: TicketLimitsInput): TicketLimits {
         channel,
         e.maxTradingFeeBps,
         out.quote.kind === "legacy" ? out.quote.maxTotalBps : undefined,
+        i.feeMarginBps ?? defaultFeeCapMarginBps(),
       );
       out.fee = { channel, ...f, charged: channel.enabled || L.flags.p2FeeCharged };
       if (f.verdict !== "ok") {

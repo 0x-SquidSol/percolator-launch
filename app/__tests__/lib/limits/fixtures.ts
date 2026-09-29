@@ -102,6 +102,7 @@ export function marketLimits(over: Partial<MarketLimits> = {}): MarketLimits {
       lpPortfolio: new Uint8Array(32).fill(7),
       juniorOwner: OWNER_LP,
     },
+    registryShares: 1_000_000_000n,
     assetAdmin: null,
     ...over,
   };

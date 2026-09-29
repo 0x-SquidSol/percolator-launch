@@ -16,6 +16,7 @@ import type { Side } from "@/lib/limits/risk-limits";
 import { formatUsdPriceE6 } from "@/lib/format";
 import { LimitsNotice, LimitsRow, fmtBandPct, fmtBps } from "./LimitsRow";
 import { fmtQ } from "@/lib/limits/format";
+import { clampFeeCapMarginBps } from "@/lib/limits/fee-channel";
 
 export interface OrderTicketLimitsProps {
   limits: MarketLimits;
@@ -26,6 +27,9 @@ export interface OrderTicketLimitsProps {
   clampedToQ: bigint | null;
   fillResult: FillResult | null;
   requestedQ: bigint | null;
+  /** Fee-cap slippage margin (bps) and its setter (P2 fee channel). */
+  feeMarginBps?: number;
+  onFeeMarginChange?: (bps: number) => void;
 }
 
 export { fmtQ };
@@ -57,7 +61,17 @@ function reasonCopy(t: TicketLimits, limits: MarketLimits, side: Side): string {
   }
 }
 
-export const OrderTicketLimits: FC<OrderTicketLimitsProps> = ({ limits, ticket, direction, symbol, clampedToQ, fillResult, requestedQ }) => {
+export const OrderTicketLimits: FC<OrderTicketLimitsProps> = ({
+  limits,
+  ticket,
+  direction,
+  symbol,
+  clampedToQ,
+  fillResult,
+  requestedQ,
+  feeMarginBps,
+  onFeeMarginChange,
+}) => {
   if (limits.state === "off") return null;
   const loading = limits.state === "loading";
   const p1 = limits.flags.p1;
@@ -147,12 +161,20 @@ export const OrderTicketLimits: FC<OrderTicketLimitsProps> = ({ limits, ticket, 
         </LimitsNotice>
       )}
 
-      {limits.flags.p2 && ticket.quote && <QuotePanel limits={limits} ticket={ticket} symbol={symbol} />}
+      {limits.flags.p2 && ticket.quote && (
+        <QuotePanel limits={limits} ticket={ticket} symbol={symbol} feeMarginBps={feeMarginBps} onFeeMarginChange={onFeeMarginChange} />
+      )}
     </div>
   );
 };
 
-const QuotePanel: FC<{ limits: MarketLimits; ticket: TicketLimits; symbol: string }> = ({ limits, ticket, symbol }) => {
+const QuotePanel: FC<{
+  limits: MarketLimits;
+  ticket: TicketLimits;
+  symbol: string;
+  feeMarginBps?: number;
+  onFeeMarginChange?: (bps: number) => void;
+}> = ({ limits, ticket, symbol, feeMarginBps, onFeeMarginChange }) => {
   const q = ticket.quote!;
   const mark = limits.engine?.effectivePriceE6 ?? 0n;
   // Charged when the protocol enabled the fee channel on-chain (or the manual override flag).
@@ -205,9 +227,39 @@ const QuotePanel: FC<{ limits: MarketLimits; ticket: TicketLimits; symbol: strin
         testId="limits-quote-row"
         data={{ row: charged ? "fee-charged" : "settles" }}
         label={charged ? "Fee charged (quote)" : "Settles at"}
-        value={charged && ticket.fee ? `${fmtBps(ticket.fee.requestedBps)} · you sign ≤ ${ticket.fee.signedFeeBps} bps` : "Mark"}
+        value={charged && ticket.fee ? fmtBps(ticket.fee.requestedBps) : "Mark"}
         valueClass={charged ? "text-[var(--warning)]" : undefined}
       />
+      {charged && ticket.fee && ticket.fee.channel.enabled && (
+        <>
+          <LimitsRow
+            testId="limits-fee-cap"
+            data={{ "signed-bps": ticket.fee.signedFeeBps.toString(), "margin-bps": ticket.fee.marginBps.toString() }}
+            label="Max fee you consent to"
+            tooltip={COPY.feeCapTooltip}
+            value={`${ticket.fee.signedFeeBps} bps (base + quote ${ticket.fee.requestedBps} + margin ${ticket.fee.marginBps})`}
+            valueClass="text-[var(--text)]"
+          />
+          {onFeeMarginChange && (
+            <label className="flex items-center justify-between text-[10px]">
+              <span className="uppercase tracking-[0.08em] text-[var(--text-secondary)]">Fee slippage margin</span>
+              <span className="flex items-center gap-1">
+                <input
+                  data-testid="limits-fee-margin-input"
+                  type="number"
+                  min={0}
+                  max={50}
+                  step={1}
+                  value={feeMarginBps ?? 0}
+                  onChange={(e) => onFeeMarginChange(clampFeeCapMarginBps(Number(e.target.value)))}
+                  className="w-12 rounded-none border border-[var(--border)] bg-[var(--bg)] px-1 py-0.5 text-right font-mono text-[10px] text-[var(--text)]"
+                />
+                <span className="font-mono text-[var(--text-secondary)]">bps</span>
+              </span>
+            </label>
+          )}
+        </>
+      )}
       <p className="pt-1 text-[9px] leading-relaxed text-[var(--text-dim)]">{charged ? COPY.quoteCharged : COPY.quoteSettlesAtMark}</p>
       {ticket.issues
         .filter((x) => x.kind === "fee-over-max")

@@ -120,7 +120,7 @@ function readPortfolioOwner(data: Buffer): PublicKey {
  *
  * Shared with useDeposit — kept co-located here to avoid a cross-hook import.
  */
-async function findV17Portfolio(
+export async function findV17Portfolio(
   connection: Connection,
   programId: PublicKey,
   marketPk: PublicKey,

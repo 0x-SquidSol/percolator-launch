@@ -195,7 +195,7 @@ describe("P3 decoders from Rust-laid-out bytes", () => {
   });
 });
 
-describe("live portfolio (ANSEM, 2SewEcvf) — cross-checked against the SDK parser", () => {
+describe("live portfolio (ANSEM's matcher LP, 2SewEcvf) — cross-checked against the SDK parser", () => {
   const pf = jsonAccount("2SewEcvf.portfolio.json");
   const market = jsonAccount("5bVTTMRc.ansem.market.json");
 
@@ -248,7 +248,7 @@ describe("P3 valuation offsets agree with rustc offset_of! (deployed 6377376a; i
     expect(nav["bitmap.size"]).toBe(8);
   });
 
-  it("live ANSEM portfolio: active bitmap marks its one leg; cert bool byte is 0/1; epochs are plausible vs the market", () => {
+  it("live ANSEM LP portfolio: active bitmap marks its one leg; cert bool byte is 0/1; epochs are plausible vs the market", () => {
     const pf = jsonAccount("2SewEcvf.portfolio.json");
     const market = jsonAccount("5bVTTMRc.ansem.market.json");
     const r = decodePortfolioRisk(pf)!;

@@ -106,7 +106,7 @@ describe("EarnTrancheCardView", () => {
     const { getByTestId } = render(
       <EarnTrancheCardView
         limits={marketLimits()}
-        view={earnViewFromLimits(marketLimits(), 1_000_000_000n, 1_000_000_000n, 100_000_000n)}
+        view={earnViewFromLimits(marketLimits(), 1_000_000_000n, 100_000_000n)}
         slab="SLAB"
         withdrawShares={100_000_000n}
         decimals={6}
@@ -131,7 +131,7 @@ describe("EarnTrancheCardView stale valuation", () => {
   it("says 'Needs refresh' instead of guessing when the LP certificate is stale and backing is short", () => {
     const L = marketLimits({ lp: { ...marketLimits().lp!, staleState: 1 } });
     const { getByTestId } = render(
-      <EarnTrancheCardView limits={L} view={earnViewFromLimits(L, 900_000_000n, 1_000_000_000n, 0n)} slab="S2" withdrawShares={0n} decimals={6} collateralSymbol="USDC" nowSecs={1} />,
+      <EarnTrancheCardView limits={L} view={earnViewFromLimits(L, 900_000_000n, 0n)} slab="S2" withdrawShares={0n} decimals={6} collateralSymbol="USDC" nowSecs={1} />,
     );
     const card = getByTestId("limits-tranche-card");
     expect(card.dataset.status).toBe("stale");
@@ -199,8 +199,29 @@ describe("Quote panel with the P2 fee channel on", () => {
       <OrderTicketLimits limits={L} ticket={ticketFor(L)} direction="long" symbol="SOL" clampedToQ={null} fillResult={null} requestedQ={null} />,
     );
     const row = getAllByTestId("limits-quote-row").find((r) => r.dataset.row === "fee-charged")!;
-    expect(row.textContent).toContain("you sign ≤ 41 bps");
+    expect(row.textContent).toContain("+31 bps");
+    const cap = getByTestId("limits-fee-cap");
+    expect(cap.dataset.signedBps).toBe("43");
+    expect(cap.dataset.marginBps).toBe("2");
+    expect(cap.textContent).toContain("Max fee you consent to");
+    expect(cap.textContent).toContain("43 bps (base + quote 31 + margin 2)");
     expect(getByTestId("limits-quote").textContent).toContain("The quoted price is charged");
+  });
+  it("the margin is user-editable and flows into the signed cap", () => {
+    const L = marketLimits({
+      matcher: { ...marketLimits().matcher!, inventoryBase: 0n },
+      riskLimits: { ...marketLimits().riskLimits!, matcherExtMode: 1, maxRequestedFeeBps: 50 },
+      engine: { ...marketLimits().engine!, maxTradingFeeBps: 100n },
+    });
+    let margin = 2;
+    const onChange = (b: number) => { margin = b; };
+    const { getByTestId } = render(
+      <OrderTicketLimits limits={L} ticket={ticketFor(L)} direction="long" symbol="SOL" clampedToQ={null} fillResult={null} requestedQ={null} feeMarginBps={2} onFeeMarginChange={onChange} />,
+    );
+    fireEvent.change(getByTestId("limits-fee-margin-input"), { target: { value: "5" } });
+    expect(margin).toBe(5);
+    fireEvent.change(getByTestId("limits-fee-margin-input"), { target: { value: "999" } });
+    expect(margin).toBe(50);
   });
 });
 

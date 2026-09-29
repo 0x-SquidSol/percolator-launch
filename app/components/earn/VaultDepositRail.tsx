@@ -7,7 +7,7 @@ import { useTokenMeta } from '@/hooks/useTokenMeta';
 import { DepositWithdrawPanel } from '@/components/earn/DepositWithdrawPanel';
 import { EarnTrancheCardView } from '@/components/limits/EarnTrancheCard';
 import { useMarketLimits } from '@/hooks/useMarketLimits';
-import { earnViewFromLimits } from '@/lib/limits/earn';
+import { earnGateShares, earnViewFromLimits } from '@/lib/limits/earn';
 import { earnDepositBlock } from '@/lib/limits/vault-tranche';
 import { COPY } from '@/lib/limits/copy';
 import { MarketLogo } from '@/components/market/MarketLogo';
@@ -90,8 +90,9 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
   // P3 (flag-gated; "off" = no RPC): one limits read model feeds the tranche card AND the
   // deposit gate, which mirrors the program's own tag-75 refusals (lib/limits/vault-tranche.ts).
   const marketLimits = useMarketLimits(slab);
-  const trancheView = earnViewFromLimits(marketLimits, state.vaultTotalAtoms, state.lpSupply, state.userLpBalance);
-  const depositBlock = earnDepositBlock(trancheView, state.lpSupply);
+  const trancheView = earnViewFromLimits(marketLimits, state.vaultTotalAtoms, state.userLpBalance);
+  const gateShares = earnGateShares(marketLimits);
+  const depositBlock = gateShares === null ? null : earnDepositBlock(trancheView, gateShares);
   const depositBlockedReason =
     depositBlock === 'senior-impaired'
       ? COPY.depositsPausedImpaired

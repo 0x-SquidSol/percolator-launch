@@ -116,5 +116,26 @@ fn main() {
         let lb = r.signed() % 100_000_000_000; let la = r.signed() % 100_000_000_000; let eq = r.mag(); let lev = r.pick(&[0, 1, 10_000, 50_000]) as u32; let pr = r.pick(&[0, 1, 1_000_000, 150_000_000]);
         out.push(format!("{{\"f\":\"vault_lp_exposure_allowed\",\"lb\":\"{lb}\",\"la\":\"{la}\",\"eq\":\"{eq}\",\"lev\":{lev},\"pr\":\"{pr}\",\"out\":{}}}", b(p3::vault_lp_exposure_allowed(lb, la, eq, lev, pr, 1_000_000))));
     }
+    // ── P1 71da9917: band edge rounds out one atom; division-free cap check ──
+    for _ in 0..300 {
+        let rf = r.pick(&[1, 3, 7, 999_999, 1_000_000, 150_000_001, 3_000_000_003]); let band = r.pick(&[0, 1, 3, 500, 777, 10_000]) as u16;
+        let d = ((rf as u128) * (band as u128) + 9_999) / 10_000; // ceil
+        for ex in [rf.saturating_add(d as u64), rf.saturating_add(d as u64 + 1), rf.saturating_sub(d as u64), rf.saturating_sub(d as u64 + 1)] {
+            out.push(format!("{{\"f\":\"exec_price_within_band\",\"exec\":\"{ex}\",\"ref\":\"{rf}\",\"band\":{band},\"out\":{}}}", b(p1::exec_price_within_band(ex, rf, band))));
+        }
+        let a = r.mag(); let eq = r.mag(); let k = r.below(10_000_001) as u32; let t = r.next(); let pr = r.pick(&[0, 1, 1_000_000, 150_000_000, t]);
+        let fast = p1::exposure_within_cap_fast(a, eq, k, pr, 1_000_000);
+        out.push(format!("{{\"f\":\"exposure_within_cap_fast\",\"a\":\"{a}\",\"eq\":\"{eq}\",\"k\":{k},\"pr\":\"{pr}\",\"out\":{}}}", fast.map(|x| b(x).to_string()).unwrap_or("null".into())));
+    }
+    // exact boundary (lhs == rhs) and one atom either side, so `<=` vs `<` is observable
+    for (eq, k, pr) in [(1_000_000u128, 10_000u32, 1_000_000u64), (3_000_000, 50_000, 7_500_000), (123_000_000, 20_000, 150_000_000), (7, 10_000, 7)] {
+        let rhs = eq * (k as u128) * 1_000_000;
+        let den = 10_000u128 * (pr as u128);
+        let a = rhs / den;
+        for aa in [a.saturating_sub(1), a, a + 1] {
+            let fast = p1::exposure_within_cap_fast(aa, eq, k, pr, 1_000_000);
+            out.push(format!("{{\"f\":\"exposure_within_cap_fast\",\"a\":\"{aa}\",\"eq\":\"{eq}\",\"k\":{k},\"pr\":\"{pr}\",\"out\":{}}}", fast.map(|x| b(x).to_string()).unwrap_or("null".into())));
+        }
+    }
     println!("[\n{}\n]", out.join(",\n"));
 }

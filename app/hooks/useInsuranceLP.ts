@@ -33,6 +33,9 @@ import { useSlabState } from '../components/providers/SlabProvider';
 import { assertKnownProgram } from '@/lib/programAllowlist';
 import { assertDepositWithinBalance, readTokenBalance } from '@/lib/deposit-guard';
 import { useParams } from 'next/navigation';
+import { pythCrankAccount } from "@/lib/limits/oracle-tail";
+import { limitsFlags } from "@/lib/limits/flags";
+import { earnVaultLpRepairOption } from "@/lib/limits/vault-lp-repair";
 import { sanitizeOnChainValue } from '@/lib/health';
 import { pollWhenVisible } from '@/lib/pollWhenVisible';
 import {
@@ -121,6 +124,18 @@ export function useInsuranceLP() {
   const { connection } = useConnectionCompat();
   const wallet = useWalletCompat();
   const slabState = useSlabState();
+  // P3-L2 (flag P3): prepend the vault-LP refresh crank to Earn 75/76/77 only when the
+  // unmodified tx would revert VaultLpValuationStale (lib/limits/vault-lp-repair.ts).
+  const slabOracleCfg = slabState.config;
+  const slabOracleMode = slabState.wrapperConfigV17?.oracleMode;
+  const earnRepairFor = useCallback(
+    (progPk: PublicKey, marketPk: PublicKey) =>
+      // Flag off => undefined with no work at all (no oracle-mode derivation).
+      limitsFlags().p3
+        ? earnVaultLpRepairOption(true, progPk, marketPk, pythCrankAccount(slabOracleCfg, slabOracleMode))
+        : undefined,
+    [slabOracleCfg, slabOracleMode],
+  );
   const params = useParams();
   // Prefer the SlabProvider's resolved slab (set from its `slabAddress` prop) so
   // this hook works BOTH on the /earn/[slab] route AND when mounted inside a
@@ -663,7 +678,7 @@ export function useInsuranceLP() {
         keys,
         data: encodeDepositToLpVault({ amount: amount.toString(), domain }),
       }));
-      const sig = await sendTx({ connection, wallet, instructions: ixs, selfHeal: { programId: progPk, market: marketPk } });
+      const sig = await sendTx({ connection, wallet, instructions: ixs, selfHeal: { programId: progPk, market: marketPk }, vaultLpRepair: earnRepairFor(progPk, marketPk) });
       await refreshState();
       return sig;
     } catch (err) {
@@ -673,7 +688,7 @@ export function useInsuranceLP() {
     } finally {
       setLoading(false);
     }
-  }, [wallet, connection, slabAddress, programId, slabState, state.lpVaultDomain, refreshState]);
+  }, [wallet, connection, slabAddress, programId, slabState, state.lpVaultDomain, refreshState, earnRepairFor]);
 
   /**
    * RequestRedeemLpShares (tag 76) — begin LP share redemption (starts cooldown).
@@ -738,7 +753,7 @@ export function useInsuranceLP() {
           keys: requestKeys,
           data: encodeRequestRedeemLpShares({ shares: lpAmount.toString() }),
         });
-        signature = await sendTx({ connection, wallet, instructions: [requestIx], selfHeal: { programId: progPk, market: marketPk } });
+        signature = await sendTx({ connection, wallet, instructions: [requestIx], selfHeal: { programId: progPk, market: marketPk }, vaultLpRepair: earnRepairFor(progPk, marketPk) });
         step = 'requested';
       } else {
         // Step 2: ExecuteRedemption (tag 77) — collect collateral after cooldown.
@@ -792,7 +807,7 @@ export function useInsuranceLP() {
           keys: executeKeys,
           data: encodeExecuteRedemption({ domain }),
         });
-        signature = await sendTx({ connection, wallet, instructions: [executeIx], selfHeal: { programId: progPk, market: marketPk } });
+        signature = await sendTx({ connection, wallet, instructions: [executeIx], selfHeal: { programId: progPk, market: marketPk }, vaultLpRepair: earnRepairFor(progPk, marketPk) });
         step = 'executed';
       }
       await refreshState();
@@ -804,7 +819,7 @@ export function useInsuranceLP() {
     } finally {
       setLoading(false);
     }
-  }, [wallet, connection, slabAddress, programId, slabState, state.lpVaultDomain, refreshState]);
+  }, [wallet, connection, slabAddress, programId, slabState, state.lpVaultDomain, refreshState, earnRepairFor]);
 
   return {
     state,

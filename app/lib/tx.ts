@@ -3,6 +3,13 @@ import bs58 from "bs58";
 import type { PublicKey, Signer } from "@solana/web3.js";
 import { getNetwork } from "@/lib/config";
 import { connectionSelfHealDeps, describeRepair, isSelfHealEnabled, planSelfHeal } from "@/lib/self-heal";
+import {
+  connectionVaultLpRepairDeps,
+  isVaultLpSelfHealEnabled,
+  planVaultLpRepair,
+  type VaultLpRepairResult,
+} from "@/lib/limits/vault-lp-repair";
+import type { AccountMeta } from "@solana/web3.js";
 import type { SelfHealResult } from "@/lib/self-heal";
 import { getMaintenanceConfig, MaintenanceError } from "@/lib/maintenance";
 
@@ -69,6 +76,13 @@ export interface SendTxParams {
   selfHeal?: { programId: PublicKey; market: PublicKey };
   /** Test/diagnostic hook: receives the self-heal decision once per sendTx. */
   onSelfHeal?: (result: SelfHealResult) => void;
+  /**
+   * P3-L2 self-repair (lib/limits/vault-lp-repair.ts): on a vault-owned-LP market, when
+   * the user's Earn tx would revert VaultLpValuationStale, prepend the permissionless
+   * crank of the vault LP into THIS tx. Planned after the P0b self-heal, on every attempt.
+   */
+  vaultLpRepair?: { programId: PublicKey; market: PublicKey; oracleTail?: AccountMeta[] };
+  onVaultLpRepair?: (result: VaultLpRepairResult) => void;
 }
 
 /**
@@ -607,6 +621,8 @@ export async function sendTx({
   simulateBeforeSign = false,
   selfHeal,
   onSelfHeal,
+  vaultLpRepair,
+  onVaultLpRepair,
 }: SendTxParams): Promise<string> {
   if (!wallet.publicKey || (!wallet.signTransaction && !wallet.signAndSendTransaction)) {
     throw new Error("Wallet not connected");
@@ -679,6 +695,31 @@ export async function sendTx({
             healedComputeUnits = heal.computeUnits;
             console.info(`[self-heal] prepended ${heal.repairs.map(describeRepair).join(", ")}`);
           }
+        }
+      }
+      if (vaultLpRepair && !skipPreflight && isVaultLpSelfHealEnabled()) {
+        // Planned from the (P0b-healed) list on EVERY attempt, like P0b: a crank someone
+        // else landed meanwhile makes the valuation current and the repair is dropped.
+        if (!selfHealOn) {
+          healedInstructions = instructions;
+          healedComputeUnits = computeUnits;
+        }
+        const r = await planVaultLpRepair(
+          {
+            programId: vaultLpRepair.programId,
+            market: vaultLpRepair.market,
+            cranker: feePayer,
+            instructions: healedInstructions,
+            computeUnits: healedComputeUnits,
+            oracleTail: vaultLpRepair.oracleTail,
+          },
+          connectionVaultLpRepairDeps(connection, vaultLpRepair.market, feePayer),
+        );
+        onVaultLpRepair?.(r);
+        if (r.outcome === "repaired") {
+          healedInstructions = r.instructions;
+          healedComputeUnits = r.computeUnits;
+          console.info("[vault-lp-repair] prepended the vault-LP refresh crank");
         }
       }
 

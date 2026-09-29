@@ -38,6 +38,8 @@ export interface MarketEngineView {
   tradeFeeBaseBps: bigint;
   marketId: bigint;
   effectivePriceE6: bigint;
+  aLong: bigint;
+  aShort: bigint;
   oiEffLongQ: bigint;
   oiEffShortQ: bigint;
   modeLong: number;
@@ -58,9 +60,19 @@ export interface MarketEngineView {
 /** Bytes needed to decode asset `i`'s engine view and wrapper-slot records. */
 export const marketLimitsSliceLen = (i = 0): number => C.assetEngineOff(i) + 1301;
 
+/** A v18 wrapper MARKET account header (magic, version 18, kind 1). v17 slabs have another layout. */
+export function isV18MarketHeader(d: Uint8Array): boolean {
+  if (d.length < C.HEADER_LEN) return false;
+  const v = dv(d);
+  return v.getBigUint64(0, true) === C.WRAPPER_MAGIC && v.getUint16(8, true) === C.WRAPPER_VERSION_V18 && d[C.HEADER_KIND_OFF] === C.KIND_MARKET_ACCOUNT;
+}
+
 export function decodeMarketEngineView(d: Uint8Array, assetIndex = 0): MarketEngineView | null {
   const e = C.assetEngineOff(assetIndex);
   if (d.length < e + C.A_MODE_SHORT + 1) return null;
+  // Never read these offsets off a non-v18 account (a v17 slab reads a_long = a_short = 0,
+  // which would look like the ADL reduce-only state).
+  if (!isV18MarketHeader(d)) return null;
   const g = C.MARKET_GROUP_OFF;
   const cfg = g + C.H_CONFIG;
   return {
@@ -73,6 +85,8 @@ export function decodeMarketEngineView(d: Uint8Array, assetIndex = 0): MarketEng
     tradeFeeBaseBps: u64(d, C.HEADER_LEN + C.WCFG_TRADE_FEE_BASE_BPS),
     marketId: u64(d, e + C.A_MARKET_ID),
     effectivePriceE6: u64(d, e + C.A_EFFECTIVE_PRICE),
+    aLong: u128(d, e + C.A_A_LONG),
+    aShort: u128(d, e + C.A_A_SHORT),
     oiEffLongQ: u128(d, e + C.A_OI_EFF_LONG_Q),
     oiEffShortQ: u128(d, e + C.A_OI_EFF_SHORT_Q),
     modeLong: d[e + C.A_MODE_LONG],
@@ -356,4 +370,14 @@ export function decodeVaultLpState(d: Uint8Array): VaultLpStateView | null {
     lpPortfolio: d.slice(C.VS.lpPortfolio, C.VS.lpPortfolio + 32),
     juniorOwner: d.slice(C.VS.juniorOwner, C.VS.juniorOwner + 32),
   };
+}
+
+/**
+ * `LpVaultRegistryV16.total_lp_shares_outstanding` — the share count the program prices
+ * Earn deposits/redemptions against (tags 75/77). null = not a registry account.
+ */
+export function decodeLpVaultRegistryShares(d: Uint8Array): bigint | null {
+  if (d.length < C.LP_VAULT_REGISTRY_ACCOUNT_LEN) return null;
+  if (d[C.HEADER_KIND_OFF] !== C.KIND_LP_VAULT_REGISTRY) return null;
+  return u128(d, C.REG_TOTAL_LP_SHARES_OUTSTANDING);
 }

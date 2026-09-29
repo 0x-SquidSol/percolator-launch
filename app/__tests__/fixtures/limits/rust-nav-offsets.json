@@ -21,5 +21,8 @@
 "cert.active_bitmap_at_cert":112,
 "cert.valid":120,
 "cert.size":121,
+"asset.a_long":49,
+"asset.a_short":65,
+"adl_one":"1000000000000000",
 "bitmap.size":8
 }
