@@ -2,7 +2,7 @@
 
 import { FC, useMemo, useState } from "react";
 import { formatTokenAmount, formatUsdPriceE6 } from "@/lib/format";
-import { computeMarkPnl, computeMarkPnlCollateral, clampClosePercent } from "@/lib/trading";
+import { computeMarkPnl, computeMarkPnlCollateral, clampClosePercent, UNKNOWN_ENTRY_TOOLTIP } from "@/lib/trading";
 
 /**
  * The body of the close-position UI: position banner, close-amount slider + %
@@ -19,6 +19,12 @@ import { computeMarkPnl, computeMarkPnlCollateral, clampClosePercent } from "@/l
  */
 export interface ClosePositionFormProps {
   positionSize: bigint;
+  /**
+   * Resolved entry (E6), or 0n when it is UNKNOWN (#2660): v17/v18 store no
+   * entry on-chain, and callers pass 0n rather than the mark placeholder.
+   * Then the PnL is not "0" — the form shows "unknown entry", PnL "--" and an
+   * Est. Receive marked "excl. PnL".
+   */
   entryPrice: bigint;
   currentPrice: bigint;
   capital: bigint;
@@ -46,6 +52,8 @@ export interface ClosePositionFormProps {
   submitDisabledLabel?: string;
   /** Tooltip explaining why the close is blocked. */
   submitTitle?: string;
+  /** Hover/focus on the submit button — lets the caller warm the close's reads. */
+  onSubmitIntent?: () => void;
 }
 
 function abs(n: bigint): bigint {
@@ -75,6 +83,7 @@ export const ClosePositionForm: FC<ClosePositionFormProps> = ({
   submitDisabled = false,
   submitDisabledLabel,
   submitTitle,
+  onSubmitIntent,
 }) => {
   const [percent, setPercent] = useState(100);
   const updatePercent = (value: number) => setPercent(clampClosePercent(value));
@@ -117,6 +126,8 @@ export const ClosePositionForm: FC<ClosePositionFormProps> = ({
     return { closeAbs, remainingAbs, pnl, pnlUsd, closeFee, receive };
   }, [percent, absPosition, isLong, entryPrice, currentPrice, capital, priceUsd, tradingFeeBps, decimals]);
 
+  // #2660: 0n = unknown entry (see the prop doc) — never a confident zero PnL.
+  const entryKnown = entryPrice > 0n;
   const pnlColor =
     preview.pnl === 0n
       ? "text-[var(--text-muted)]"
@@ -156,7 +167,11 @@ export const ClosePositionForm: FC<ClosePositionFormProps> = ({
         </p>
         <p className="mt-1 text-[10px] text-[var(--text-secondary)]">
           <span style={{ fontFamily: "var(--font-mono)" }}>{formatTokenAmount(absPosition, decimals)}</span> {symbol} at{" "}
-          <span style={{ fontFamily: "var(--font-mono)" }}>{formatUsdPriceE6(entryPrice)}</span> entry
+          {entryKnown ? (
+            <><span style={{ fontFamily: "var(--font-mono)" }}>{formatUsdPriceE6(entryPrice)}</span> entry</>
+          ) : (
+            <span title={UNKNOWN_ENTRY_TOOLTIP}>unknown entry</span>
+          )}
         </p>
       </div>
 
@@ -215,6 +230,11 @@ export const ClosePositionForm: FC<ClosePositionFormProps> = ({
         </div>
         <div className="flex justify-between border-t border-[var(--border)]/30 pt-2">
           <span className="text-[var(--text-dim)]">Est. PnL:</span>
+          {!entryKnown ? (
+            <span className="font-mono font-medium text-[var(--text-muted)]" title={UNKNOWN_ENTRY_TOOLTIP} data-testid="close-pnl-unknown">
+              --
+            </span>
+          ) : (
           <span className={`font-mono font-medium ${pnlColor}`}>
             {preview.pnl > 0n ? "+" : preview.pnl < 0n ? "-" : ""}
             {formatTokenAmount(abs(preview.pnl), decimals)} {colSym}
@@ -224,6 +244,7 @@ export const ClosePositionForm: FC<ClosePositionFormProps> = ({
               </span>
             )}
           </span>
+          )}
         </div>
         {preview.closeFee > 0n && (
           <div className="flex justify-between">
@@ -235,8 +256,9 @@ export const ClosePositionForm: FC<ClosePositionFormProps> = ({
         )}
         <div className="flex justify-between">
           <span className="text-[var(--text-dim)]">Est. Receive:</span>
-          <span className="font-mono font-medium text-[var(--text)]">
+          <span className="font-mono font-medium text-[var(--text)]" title={entryKnown ? undefined : "Excludes unrealized PnL — the entry price is unknown, so the PnL settled on close can't be previewed."}>
             ~{formatTokenAmount(preview.receive, decimals)} {colSym}
+            {!entryKnown && <span className="ml-1 text-[10px] text-[var(--text-muted)]">excl. PnL</span>}
           </span>
         </div>
       </div>
@@ -281,6 +303,8 @@ export const ClosePositionForm: FC<ClosePositionFormProps> = ({
         )}
         <button
           onClick={() => onConfirm(percent)}
+          onPointerEnter={onSubmitIntent}
+          onFocus={onSubmitIntent}
           disabled={closeBlocked}
           title={submitTitle}
           className="flex-1 rounded-none bg-[var(--short)] py-2.5 text-[11px] font-medium uppercase tracking-[0.1em] text-white transition-[filter,opacity] duration-150 hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"

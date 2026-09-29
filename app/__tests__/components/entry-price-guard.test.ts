@@ -171,6 +171,7 @@ walkTsx((rel, src) => ALL_TSX.push([rel, src]));
  * call site is required (below) to pass a gated value.
  */
 const ZERO_CONVENTION = new Set([
+  "components/trade/ClosePositionForm.tsx",
   "components/trade/ClosePositionModal.tsx",
   "components/trade/OrderTicketClosePanel.tsx",
 ]);
@@ -215,9 +216,8 @@ describe("#2673: every formatted entry sits under a resolved-entry gate (per cal
   it("inventory is pinned (a new entry readout fails here until reviewed)", () => {
     expect(calls.map((c) => `${c.file}|${c.arg}`).sort()).toEqual([
       "components/trade/AccountsCard.tsx|row.entryPrice",
-      "components/trade/ClosePositionModal.tsx|entryPrice",
+      "components/trade/ClosePositionForm.tsx|entryPrice",
       "components/trade/OrderTicket.tsx|estEntry",
-      "components/trade/OrderTicketClosePanel.tsx|entryPriceE6",
       "components/trade/OtherMarketPositions.tsx|entryE6",
       "components/trade/PositionPanel.tsx|entryPriceE6",
       "components/trade/PositionsDock.tsx|entryPriceE6",
@@ -267,12 +267,14 @@ describe("#2673: the close dialog is handed a gated entry at EVERY call site", (
   const sites: Array<{ file: string; expr: string }> = [];
   for (const [file, src] of ALL_TSX) {
     for (const expr of jsxPropValues(src, "ClosePositionModal", "entryPrice")) sites.push({ file, expr });
+    for (const expr of jsxPropValues(src, "ClosePositionForm", "entryPrice")) sites.push({ file, expr });
     for (const expr of jsxPropValues(src, "OrderTicketClosePanel", "entryPriceE6")) sites.push({ file, expr });
   }
 
   it("call-site inventory is pinned", () => {
     expect(sites.map((s) => s.file).sort()).toEqual([
       "components/portfolio/PortfolioPositionsView.tsx",
+      "components/trade/ClosePositionModal.tsx",
       "components/trade/OrderTicket.tsx",
       "components/trade/OrderTicketClosePanel.tsx",
       "components/trade/OtherMarketPositions.tsx",

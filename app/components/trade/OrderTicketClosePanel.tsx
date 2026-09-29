@@ -1,6 +1,6 @@
 "use client";
 
-import { FC, useEffect } from "react";
+import { FC, useEffect, useRef } from "react";
 import { useClosePosition } from "@/hooks/useClosePosition";
 import { useLivePrice } from "@/hooks/useLivePrice";
 import { ClosePositionForm } from "@/components/trade/ClosePositionForm";
@@ -9,7 +9,7 @@ export interface OrderTicketClosePanelProps {
   slabAddress: string;
   /** Signed position size (base units); 0n = nothing to close. */
   positionSize: bigint;
-  /** Resolved entry price (E6) — same resolution the ticket uses elsewhere. */
+  /** Resolved entry price (E6), or 0n when UNKNOWN (#2660) — never the mark placeholder. */
   entryPriceE6: bigint;
   capital: bigint;
   symbol: string;
@@ -71,9 +71,18 @@ export const OrderTicketClosePanel: FC<OrderTicketClosePanelProps> = ({
 
   // Warm the fresh-read + trade prewarms once the close form is on screen, so
   // the first "Close" click reaches the wallet popup with no blocking RPC.
+  // ONCE per mount/market — not on every `prewarmClose` identity change: its
+  // deps include SlabProvider's `programId`, which is re-set from each slab
+  // update's `owner` object, so keying the effect on it re-ran the prewarm
+  // (a portfolio read + trade-account resolve) on every crank while the tab
+  // was open. The prewarmed read is only consumed within 4s
+  // (FRESH_READ_TTL_MS), so the button also re-warms on hover/focus — the
+  // same moment the old "Close Position" button warmed it.
+  const prewarmRef = useRef(prewarmClose);
+  prewarmRef.current = prewarmClose;
   useEffect(() => {
-    if (hasPosition) prewarmClose();
-  }, [hasPosition, prewarmClose]);
+    if (hasPosition) prewarmRef.current();
+  }, [hasPosition, slabAddress]);
 
   const handleConfirm = async (percent: number) => {
     try {
@@ -130,6 +139,7 @@ export const OrderTicketClosePanel: FC<OrderTicketClosePanelProps> = ({
         submitDisabled={submitDisabled}
         submitDisabledLabel={submitDisabledLabel}
         submitTitle={submitTitle}
+        onSubmitIntent={() => prewarmRef.current()}
       />
     </div>
   );

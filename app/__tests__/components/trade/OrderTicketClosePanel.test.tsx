@@ -11,19 +11,27 @@
  * assertions exercise the actual inline UI.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, act } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, act, within } from "@testing-library/react";
 
 const closePosition = vi.fn();
 const prewarmClose = vi.fn();
 let hookState = { loading: false, error: null as string | null };
 let live: { priceE6: bigint | null; priceUsd: number | null } = { priceE6: 110_000_000n, priceUsd: 110 };
 
+// `freshPrewarmIdentity` models the REAL hook: prewarmClose is a useCallback
+// whose deps include SlabProvider's programId, re-set on every slab update.
+let freshPrewarmIdentity = false;
 vi.mock("@/hooks/useClosePosition", () => ({
-  useClosePosition: () => ({ closePosition, prewarmClose, ...hookState }),
+  useClosePosition: () => ({
+    closePosition,
+    prewarmClose: freshPrewarmIdentity ? () => prewarmClose() : prewarmClose,
+    ...hookState,
+  }),
 }));
 vi.mock("@/hooks/useLivePrice", () => ({ useLivePrice: () => live }));
 
 import { OrderTicketClosePanel, type OrderTicketClosePanelProps } from "@/components/trade/OrderTicketClosePanel";
+import { ClosePositionModal } from "@/components/trade/ClosePositionModal";
 
 const base = (over: Partial<OrderTicketClosePanelProps> = {}): OrderTicketClosePanelProps => ({
   slabAddress: "Slab111",
@@ -49,6 +57,7 @@ beforeEach(() => {
   prewarmClose.mockReset();
   hookState = { loading: false, error: null };
   live = { priceE6: 110_000_000n, priceUsd: 110 };
+  freshPrewarmIdentity = false;
 });
 
 const closeBtn = () => screen.getByRole("button", { name: /^close \d+%$/i }) as HTMLButtonElement;
@@ -139,5 +148,137 @@ describe("OrderTicketClosePanel (inline form)", () => {
     live = { priceE6: 90_000_000n, priceUsd: 90 };
     render(<OrderTicketClosePanel {...base()} />);
     expect(screen.getByText(/-\d+\.\d+ USDC/)).toBeTruthy();
+  });
+});
+
+/* ── Review follow-up (#2662 on current playground): money-path invariants ── */
+
+const rowValue = (container: HTMLElement, label: string): string => {
+  const lbl = within(container).getByText(label);
+  return (lbl.parentElement?.lastElementChild?.textContent ?? "").replace(/\s+/g, " ").trim();
+};
+
+describe("inline close — unknown entry (#2660/#2672 rules, 0n from OrderTicket)", () => {
+  it("never shows the mark as the entry nor a confident PnL, and marks Receive 'excl. PnL'", () => {
+    const { container } = render(<OrderTicketClosePanel {...base({ entryPriceE6: 0n })} />);
+    expect(screen.getByText("unknown entry")).toBeTruthy();
+    expect(screen.queryByText(/\$110\.0+ entry|\$0\.0+ entry/)).toBeNull();
+    expect(screen.getByTestId("close-pnl-unknown").textContent?.trim()).toBe("--");
+    expect(rowValue(container, "Est. Receive:")).toMatch(/excl\. PnL/);
+  });
+
+  it("…but closing stays ALLOWED: an unknown entry must never trap a position", async () => {
+    const p = base({ entryPriceE6: 0n });
+    render(<OrderTicketClosePanel {...p} />);
+    expect(closeBtn().disabled).toBe(false);
+    await act(async () => fireEvent.click(closeBtn()));
+    expect(closePosition).toHaveBeenCalledWith(100);
+  });
+});
+
+describe("inline close — reduce-only by construction", () => {
+  it("hands useClosePosition ONLY a whole percent in [1,100] (the hook re-reads the size)", async () => {
+    render(<OrderTicketClosePanel {...base()} />);
+    const slider = screen.getByRole("slider") as HTMLInputElement;
+    for (const v of ["150", "-20", "0", "33.6", "100", "1"]) {
+      fireEvent.change(slider, { target: { value: v } });
+      await act(async () => fireEvent.click(closeBtn()));
+    }
+    for (const p of ["25%", "50%", "75%", "100%"]) {
+      fireEvent.click(screen.getByRole("button", { name: p }));
+      await act(async () => fireEvent.click(closeBtn()));
+    }
+    expect(closePosition.mock.calls.length).toBe(10);
+    for (const call of closePosition.mock.calls) {
+      expect(call).toHaveLength(1); // no size, no side — nothing that could flip/increase
+      const pct = call[0] as number;
+      expect(Number.isInteger(pct)).toBe(true);
+      expect(pct).toBeGreaterThanOrEqual(1);
+      expect(pct).toBeLessThanOrEqual(100);
+    }
+  });
+
+  it("the previewed close size never exceeds the position (100% → Remaining 0)", () => {
+    const { container } = render(<OrderTicketClosePanel {...base({ positionSize: -2_000_000n })} />);
+    expect(rowValue(container, "Close Size:")).toBe("2 SOL");
+    expect(rowValue(container, "Remaining:")).toBe("0 SOL");
+  });
+});
+
+describe("inline close — PnL / fee / receive match ClosePositionModal exactly", () => {
+  // 1 SOL long, entry $100, mark $110, capital 50 USDC, fee 30 bps, 50%:
+  //   close notional 0.5 × 110 = 55 USDC → fee 0.165 USDC
+  //   receive = 25 (half the capital) + PnL − 0.165
+  const rows = ["Close Size:", "Remaining:", "Est. PnL:", "Trading Fee:", "Est. Receive:"];
+
+  it("inline numbers are the modal's numbers", () => {
+    const p = base();
+    const { container: inline } = render(<OrderTicketClosePanel {...p} />);
+    fireEvent.click(within(inline).getByRole("button", { name: "50%" }));
+    const inlineRows = rows.map((r) => rowValue(inline, r));
+    cleanup();
+
+    render(
+      <ClosePositionModal
+        positionSize={p.positionSize}
+        entryPrice={p.entryPriceE6}
+        currentPrice={110_000_000n}
+        capital={p.capital}
+        symbol={p.symbol}
+        collateralSymbol={p.collateralSymbol}
+        decimals={p.decimals}
+        priceUsd={110}
+        isLong
+        loading={false}
+        tradingFeeBps={p.tradingFeeBps}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "50%" }));
+    expect(rows.map((r) => rowValue(dialog, r))).toEqual(inlineRows);
+    expect(inlineRows[3]).toMatch(/^−0\.165 USDC$/);
+    expect(inlineRows[4]).toMatch(/^~29\.8\d* USDC$/);
+  });
+});
+
+describe("inline close — gates that flip while the form is open", () => {
+  it.each([
+    ["engineStale", { engineStale: true }],
+    ["lpUnderfunded", { lpUnderfunded: true }],
+    ["oracleBlocked", { oracleBlocked: true }],
+  ] as const)("%s turning on after mount blocks the click", async (_n, over) => {
+    const { rerender } = render(<OrderTicketClosePanel {...base()} />);
+    rerender(<OrderTicketClosePanel {...base(over)} />);
+    const btn = screen.getAllByRole("button").find((b) => /close \d+%|crank behind/i.test(b.textContent ?? ""))!;
+    expect((btn as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => fireEvent.click(btn));
+    expect(closePosition).not.toHaveBeenCalled();
+  });
+
+  it("a close in flight disables the button (no double-submit)", () => {
+    hookState = { loading: true, error: null };
+    render(<OrderTicketClosePanel {...base()} />);
+    const btn = screen.getByRole("button", { name: /closing/i }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
+});
+
+describe("inline close — prewarm cost", () => {
+  it("does NOT re-prewarm on every slab update (prewarmClose identity churn)", () => {
+    freshPrewarmIdentity = true;
+    const p = base();
+    const { rerender } = render(<OrderTicketClosePanel {...p} />);
+    for (let i = 0; i < 5; i++) rerender(<OrderTicketClosePanel {...p} capital={p.capital + BigInt(i)} />);
+    expect(prewarmClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-warms on hover/focus of the close button (the 4s fresh-read window)", () => {
+    render(<OrderTicketClosePanel {...base()} />);
+    prewarmClose.mockClear();
+    fireEvent.pointerEnter(closeBtn());
+    fireEvent.focus(closeBtn());
+    expect(prewarmClose).toHaveBeenCalledTimes(2);
   });
 });
