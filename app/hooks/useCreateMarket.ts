@@ -70,6 +70,7 @@ import {
   // resending it — see the Step 3 block below.
   parsePortfolioV17,
   parseMarketGroupV17OI,
+  parseAssetOracleProfileV17,
 } from "@percolatorct/sdk";
 import { PERCOLATOR_NFT_PROGRAM_ID } from "@/lib/nft-program";
 import { toE6 } from "@/lib/format";
@@ -80,7 +81,7 @@ import { deriveMarketParams, MIN_LEVERAGE_X, backingSeedPerDomain, leverageFromM
 // both backing seeds, so it answered "sufficient" to the very request that said
 // the wallet was short.
 import { fullMarketRequirement } from "@/lib/prefund-requirement";
-import { defaultCrankObservations, readPortfolioIdentity, readAssetMarketId, readAssetControlSeqs } from "@/lib/v18-wire";
+import { defaultCrankObservations, readPortfolioIdentity, readAssetMarketId, readAssetControlSeqs, assetProfileOff } from "@/lib/v18-wire";
 // v17: SetOracleAuthority (tag 17), PushOraclePrice (tag 16), SetOraclePriceCap (tag 16),
 // and UpdateConfig (tag 14) do not exist in v17. All oracle + risk params are embedded
 // in InitMarket (extended tail). The sdk-compat stubs throw at runtime if called.
@@ -98,11 +99,19 @@ import {
   checkSignatureLanded,
   TxCancelledError,
   isTxCancelledError,
+  presimulateOrThrow,
 } from "@/lib/tx";
 import { getConfig, getNetwork } from "@/lib/config";
 import { resolveMarketOracleMode } from "@/lib/resolveMarketOracleMode";
 import { normalizeDexType } from "@/lib/dex-type";
 import { parseMarketCreationError } from "@/lib/parseMarketError";
+import {
+  DIRECT_BACKING_TOPUP_EXPIRY_SLOT,
+  freshLaunchAuthorityEpoch,
+  isOracleDelegationApplied,
+  sequentialStepKind,
+  type CreateStepKind,
+} from "@/lib/create-market-v18";
 import {
   inspectV17MatcherContext,
   isEmptyV17PortfolioMatcherConfig,
@@ -160,7 +169,7 @@ export function orderStakeTailInstructions<T>(
 }
 
 // BACKING-BUCKET SEEDING: both domains of asset 0 (long=2*assetIndex,
-// short=2*assetIndex+1) are seeded to Fresh@MAX_BACKING_BUCKET_EXPIRY_SLOT via
+// short=2*assetIndex+1) are seeded to Fresh@DIRECT_BACKING_TOPUP_EXPIRY_SLOT via
 // TopUpBackingBucket in Step 3, right after DepositCollateral lands (buckets are
 // still Empty — nothing in Steps 0-5 calls TradeCpi). That defuses the
 // freshness deadlock. The AMOUNT now comes from backingSeedPerDomain() rather
@@ -830,6 +839,15 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
   const walletPk = wallet.publicKey;
   const slabPk = slabKp.publicKey;
   let broadcastStarted = false;
+  // Where a failure after broadcast leaves the launch, for Retry and for the
+  // error message. The batch used to leave `state.step` at 0, so Retry resumed
+  // from step 0 and re-sent the keeper hand-off that had already landed — the
+  // wrapper refuses that with Unauthorized (Custom 8), which is the "not
+  // authorized" users saw on retry. `resumeStep` is the sequential step to run
+  // next; `failingKind`/`failingLabel` name the tx in flight.
+  let resumeStep = 0;
+  let failingKind: CreateStepKind = "create-market";
+  let failingLabel = "Creating the market";
   // Every risk parameter for this market, derived from the creator's leverage
   // and LP seed. Nothing below hand-picks a price-move rate or an LP cap.
   const derived = deriveMarketParams(
@@ -943,6 +961,12 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       const { partialTxBase64 } = (await cosignResp.json()) as { partialTxBase64: string };
       cosignTx = Transaction.from(Buffer.from(partialTxBase64, "base64"));
     }
+
+    // Asset 0's authority_epoch as the funding txs below will find it. The
+    // co-sign tx's UpdateAssetAuthority (Oracle → keeper) advances it 0 → 1
+    // before M3a lands; the literal 0 this used to be made every keeper
+    // launch's M3a revert EngineStale (Custom 19). See freshLaunchAuthorityEpoch.
+    const assetZeroAuthorityEpoch = freshLaunchAuthorityEpoch(cosignTx !== null);
 
     // 4. Burst the signMessage prompt NOW, immediately before the batch — the
     //    proof tolerates the ~15-30s the pipeline takes to actually use it (the
@@ -1195,15 +1219,18 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
         data: encodeTopUpBackingBucket({
           // Real seed, not dust: the SHORT domain can never be topped up again
           // once CreateLpVault runs. See backingSeedPerDomain in lib/market-params.ts.
-          // v18 fresh-market: asset-0 market_id = 1; authority_epoch = 0 (fresh CAS);
-          // intentId is the strictly-increasing one-shot lane — long(domain 0)=1,
-          // short(domain 1)=2 (matches the newmarkets.ts seed).
+          // v18 fresh-market: asset-0 market_id = 1; authority_epoch = the value
+          // after the oracle hand-off (see assetZeroAuthorityEpoch); intentId is
+          // the strictly-increasing one-shot lane — long(domain 0)=1, short(domain
+          // 1)=2 (matches the newmarkets.ts seed).
           domain,
           marketId: 1n,
           intentId: BigInt(domain) + 1n,
-          authorityEpoch: 0n,
+          authorityEpoch: assetZeroAuthorityEpoch,
           amount: backingSeed.toString(),
-          expirySlot: MAX_BACKING_BUCKET_EXPIRY_SLOT.toString(),
+          // NOT MAX_BACKING_BUCKET_EXPIRY_SLOT: that is the reserved LP-vault
+          // sentinel and the wrapper refuses it here (Custom 9).
+          expirySlot: DIRECT_BACKING_TOPUP_EXPIRY_SLOT.toString(),
         }),
       });
     });
@@ -1222,13 +1249,13 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       keys: buildAccountMetas(ACCOUNTS_TOPUP_INSURANCE, {
         signer: walletPk, market: slabPk, sourceToken: userAta, vaultToken: vaultAta, tokenProgram: WELL_KNOWN.tokenProgram,
       }),
-      // v18 fresh-market: asset-0 market_id = 1; authority_epoch = 0; intentId is
-      // the NEXT value on the shared insurance/backing one-shot lane — backing
+      // v18 fresh-market: asset-0 market_id = 1; authority_epoch as above; intentId
+      // is the NEXT value on the shared insurance/backing one-shot lane — backing
       // consumed 1 and 2 above, so insurance takes 3.
       data: encodeTopUpInsurance({
         marketId: 1n,
         intentId: 3n,
-        authorityEpoch: 0n,
+        authorityEpoch: assetZeroAuthorityEpoch,
         amount: params.insuranceAmount.toString(),
       }),
     });
@@ -1294,10 +1321,11 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     const updateFeeSplitIx = feeSplitArgs
       ? (() => {
           // v18 fresh-market: UpdateFeeSplit (tag 86) is CAS-bound to asset-0's
-          // authority_epoch lane; on a brand-new market that lane is 0. This runs
-          // BEFORE StakeInitPool rotates marketauth, so the creator is still the
-          // gating authority.
-          const feeSplitV18 = { ...feeSplitArgs, authorityEpoch: 0n };
+          // authority_epoch lane — 0 after InitMarket, 1 once the keeper hand-off
+          // has landed (see assetZeroAuthorityEpoch). This runs BEFORE
+          // StakeInitPool rotates marketauth, so the creator is still the gating
+          // authority.
+          const feeSplitV18 = { ...feeSplitArgs, authorityEpoch: assetZeroAuthorityEpoch };
           const reason = validateFeeSplit(feeSplitV18);
           if (reason) throw new Error(`Invalid fee split: ${reason}`);
           return buildIx({
@@ -1386,6 +1414,15 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       m4aDescriptor.label,
       m4bDescriptor.label,
     ];
+
+    // M1 is the only batch tx that does not depend on an earlier one landing,
+    // so it is the only one that can be simulated now. Doing it before the
+    // prompt means a bad InitMarket is explained by us (and falls back to the
+    // sequential path, nothing broadcast) rather than shown to the user as the
+    // wallet's own "this transaction may fail". The later txs reference the slab
+    // M1 creates; wallets that simulate a batch may still flag those, and the
+    // only way to avoid that is the sequential path.
+    await presimulateOrThrow(connection, m1);
 
     // ---- ONE wallet approval for the whole batch --------------------------
     setState((s) => ({ ...s, phase: "awaiting-signature", stepLabel: "Approve the transaction batch in your wallet..." }));
@@ -1568,7 +1605,11 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     const m1Sig = await broadcastTailTx(0);
     setState((s) => ({ ...s, slabAddress: slabPk.toBase58() }));
     advanceLanding(m1Sig);
-    updateInFlightStep(slabPk.toBase58(), 2);
+    // With a keeper hand-off still to land, a resume must run step 1 (which
+    // skips the hand-off itself once it is on-chain); without one, step 1 has
+    // nothing left to do (M1 carried SetNftProgramId).
+    resumeStep = signedCosign ? 1 : 2;
+    updateInFlightStep(slabPk.toBase58(), resumeStep);
 
     // ZOMBIE-MARKET FIX (2026-07-27): this POST is what makes a market VISIBLE
     // in the app. It used to fire here, immediately after M1, in parallel with
@@ -1598,14 +1639,23 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     // Registration now happens under the marketauth proof, which can safely
     // overwrite an 'auto' row. See lib/market-registration.ts.
     if (signedCosign) {
+      failingKind = "oracle-delegation";
+      failingLabel = "Connecting the price feed";
       const cosignSig = await broadcastSignedTx(connection, signedCosign);
       advanceLanding(cosignSig);
+      resumeStep = 2;
+      updateInFlightStep(slabPk.toBase58(), 2);
     }
 
+    failingKind = "lp-init";
+    failingLabel = m2Descriptor.label;
     const m2Sig = await broadcastTailTx(1);
     advanceLanding(m2Sig);
+    resumeStep = 3;
     updateInFlightStep(slabPk.toBase58(), 3);
 
+    failingKind = "funding";
+    failingLabel = m3aDescriptor.label;
     const m3aSig = await broadcastTailTx(2);
     advanceLanding(m3aSig);
 
@@ -1682,6 +1732,8 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     // no error at all. Reading the engine's own insuranceBalance afterwards
     // catches all three: never built, reverted, and partially applied.
     let m3bError: unknown = null;
+    failingKind = "insurance";
+    failingLabel = m3bDescriptor.label;
     try {
       const m3bSig = await broadcastTailTx(3);
       advanceLanding(m3bSig);
@@ -1711,6 +1763,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       // No insurance requested — the crank alone stays best-effort.
       console.warn("[useCreateMarket] batch: post-LP crank failed (non-fatal):", m3bError);
     }
+    resumeStep = 4;
     updateInFlightStep(slabPk.toBase58(), 4);
 
     // #2464: started HERE, not above — everything that can fail the launch has
@@ -1723,8 +1776,11 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     // Landing it as its OWN transaction, separately from the stake-pool tail,
     // means a failure here is reported (and resumable) as exactly what it is,
     // and never drags in the much larger/riskier M4b bundle.
+    failingKind = "earn-vault";
+    failingLabel = m4aDescriptor.label;
     const m4aSig = await broadcastTailTx(4);
     advanceLanding(m4aSig);
+    resumeStep = 5;
     updateInFlightStep(slabPk.toBase58(), 5);
 
     // M4b: mint/vault creation + [UpdateFeeSplit] + StakeInitPool + BindInsuranceAuthority.
@@ -1732,8 +1788,11 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     // irreversibly rotates marketauth to the pool PDA) and after keeper-register
     // above (same marketauth-rotation constraint that used to gate the old
     // single M4).
+    failingKind = "stake-pool";
+    failingLabel = m4bDescriptor.label;
     const m4bSig = await broadcastTailTx(5);
     advanceLanding(m4bSig);
+    resumeStep = 6;
     updateInFlightStep(slabPk.toBase58(), 6);
 
 
@@ -1790,8 +1849,10 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     // abandoned launch), just with an accurate reason.
     const msg = isTxCancelledError(err)
       ? "Market creation cancelled — navigated away before it finished."
-      : parseMarketCreationError(err);
-    setState((s) => ({ ...s, loading: false, error: msg }));
+      : parseMarketCreationError(err, { step: failingKind, stepLabel: failingLabel });
+    // `step` drives Retry (CreateMarketWizard.handleRetry passes it straight to
+    // create()), so it must name the step to resume from, not 0.
+    setState((s) => ({ ...s, loading: false, error: msg, step: resumeStep, stepLabel: STEP_LABELS[resumeStep] ?? s.stepLabel }));
     return { status: "fatal" };
   }
 }
@@ -2112,11 +2173,15 @@ export function useCreateMarket() {
         }));
       }
 
+      // The sequential step currently running, for the failure message: the
+      // same program error means different things at different steps.
+      let runningStep = startStep;
       try {
         // Step 0: Create slab + vault ATA + InitMarket (ATOMIC — all-or-nothing)
         // Merged into a single transaction to prevent SOL lock if InitMarket fails.
         // If any instruction fails, the entire tx rolls back — no stuck lamports.
         if (startStep <= 0) {
+          runningStep = 0;
           setState((s) => ({ ...s, step: 0, stepLabel: STEP_LABELS[0] }));
 
           vaultAta = await getAssociatedTokenAddress(params.mint, vaultPda, true);
@@ -2243,6 +2308,7 @@ export function useCreateMarket() {
               const initMarketIx = buildIx({ programId, keys: initMarketKeys, data: initMarketData });
 
               const sig = await sendTx({
+                simulateBeforeSign: true,
                 connection, wallet,
                 abortSignal,
                 instructions: [createAtaIx, initMarketIx],
@@ -2358,6 +2424,7 @@ export function useCreateMarket() {
             const initMarketIx = buildIx({ programId, keys: initMarketKeys, data: initMarketData });
 
             const sig = await sendTx({
+              simulateBeforeSign: true,
               connection,
               wallet,
               abortSignal,
@@ -2387,6 +2454,7 @@ export function useCreateMarket() {
         //
         // We detect v17 by reading the newly created slab account and checking V17_MAGIC.
         if (startStep <= 1) {
+          runningStep = 1;
           setState((s) => ({ ...s, step: 1, stepLabel: STEP_LABELS[1] }));
 
           const instructions: TransactionInstruction[] = [];
@@ -2463,7 +2531,26 @@ export function useCreateMarket() {
           // Keeper oracle mode (v17): ConfigureAuthMark + UpdateAssetAuthority(Oracle → keeper).
           // The backend co-signs UpdateAssetAuthority (as the new oracle_authority = keeper).
           // After this tx: oracle_mode=3 (AUTH_MARK), oracle_authority=keeperPubkey.
+          // Resume/retry idempotency: the hand-off can only ever land once. After it
+          // lands the deployer is no longer the oracle authority, so re-sending it
+          // is refused with Unauthorized (Custom 8) — that is exactly the "not
+          // authorized" a Retry after a batched-launch failure produced, because
+          // Retry re-ran this step. Read the market first and skip if it is done.
+          let oracleDelegationDone = false;
           if (isKeeperOracle && isV17Slab) {
+            const profileInfo = await connection.getAccountInfo(slabPk, "confirmed");
+            if (profileInfo?.data) {
+              const profile = parseAssetOracleProfileV17(new Uint8Array(profileInfo.data), assetProfileOff(0));
+              oracleDelegationDone = isOracleDelegationApplied(profile, wallet.publicKey);
+              if (oracleDelegationDone) {
+                console.log(
+                  `[useCreateMarket] Step 1: oracle already delegated to ${profile.oracleAuthority.toBase58()} — skipping the keeper hand-off.`,
+                );
+              }
+            }
+          }
+
+          if (isKeeperOracle && isV17Slab && !oracleDelegationDone) {
             setState((s) => ({ ...s, stepLabel: "Delegating oracle authority to keeper..." }));
             const cosignResp = await fetch("/api/playground/keeper-cosign", {
               method: "POST",
@@ -2487,6 +2574,11 @@ export function useCreateMarket() {
             // Deserialize the partially-signed tx (keeper has signed UpdateAssetAuthority)
             const partialTxBytes = Buffer.from(partialTxBase64, "base64");
             const partialTx = Transaction.from(partialTxBytes);
+
+            // Simulate BEFORE the wallet prompt. A tx that will revert otherwise
+            // reaches Phantom/Solflare first, and the user sees the wallet's own
+            // generic "this transaction may fail" warning instead of our reason.
+            await presimulateOrThrow(connection, partialTx);
 
             // Wallet signs (adds creator sig for ConfigureAuthMark + UpdateAssetAuthority)
             if (!wallet.signTransaction) throw new Error("Wallet does not support signTransaction");
@@ -2579,6 +2671,7 @@ export function useCreateMarket() {
           // don't send a pointless zero-instruction transaction.
           if (instructions.length > 0) {
             const sig = await sendTx({
+              simulateBeforeSign: true,
               connection, wallet, instructions, computeUnits: 500_000,
               abortSignal,
             });
@@ -2610,6 +2703,7 @@ export function useCreateMarket() {
         // comment) also changed: SetMatcherConfig (TX C) must land BEFORE InitMatcherCtx (TX D),
         // since the wrapper cross-checks the LP portfolio's stored matcher config before CPI-ing.
         if (startStep <= 2) {
+          runningStep = 2;
           setState((s) => ({ ...s, step: 2, stepLabel: STEP_LABELS[2] }));
 
           const matcherProgramId = new PublicKey(getConfig().matcherProgramId);
@@ -2691,6 +2785,7 @@ export function useCreateMarket() {
               );
 
               const signature = await sendTx({
+                simulateBeforeSign: true,
                 connection,
                 wallet,
                 abortSignal,
@@ -2861,6 +2956,7 @@ export function useCreateMarket() {
               );
 
               const contextSignature = await sendTx({
+                simulateBeforeSign: true,
                 connection,
                 wallet,
                 abortSignal,
@@ -2902,6 +2998,7 @@ export function useCreateMarket() {
               });
 
               const configSignature = await sendTx({
+                simulateBeforeSign: true,
                 connection,
                 wallet,
                 abortSignal,
@@ -2977,6 +3074,7 @@ export function useCreateMarket() {
               });
 
               const portfolioSignature = await sendTx({
+                simulateBeforeSign: true,
                 connection,
                 wallet,
                 abortSignal,
@@ -3081,6 +3179,7 @@ export function useCreateMarket() {
 
         // Step 3: DepositCollateral + TopUpInsurance + Final Crank (merged)
         if (startStep <= 3) {
+          runningStep = 3;
           setState((s) => ({ ...s, step: 3, stepLabel: STEP_LABELS[3] }));
 
           const userAta = await getAssociatedTokenAddress(params.mint, wallet.publicKey);
@@ -3247,6 +3346,7 @@ export function useCreateMarket() {
           if (alreadyDepositedCapital < params.lpCollateral) {
             const depositIx = buildIx({ programId, keys: depositKeys, data: depositData });
             const depositSig = await sendTx({
+              simulateBeforeSign: true,
               connection, wallet,
               abortSignal,
               instructions: [depositIx],
@@ -3337,12 +3437,15 @@ export function useCreateMarket() {
                       intentId: BigInt(domain) + 1n,
                       authorityEpoch: bbAuthorityEpoch,
                       amount: backingSeed.toString(),
-                      expirySlot: MAX_BACKING_BUCKET_EXPIRY_SLOT.toString(),
+                      // Not the SDK's MAX (the reserved LP-vault sentinel, refused
+                      // here with Custom 9) — see DIRECT_BACKING_TOPUP_EXPIRY_SLOT.
+                      expirySlot: DIRECT_BACKING_TOPUP_EXPIRY_SLOT.toString(),
                     }),
                   }),
                 );
               }
               const backingSig = await sendTx({
+                simulateBeforeSign: true,
                 connection, wallet,
                 abortSignal,
                 instructions: backingIxs,
@@ -3471,6 +3574,7 @@ export function useCreateMarket() {
 
             if (finalInstructions.length > 0) {
               const sig = await sendTx({
+                simulateBeforeSign: true,
                 connection, wallet,
                 abortSignal,
                 instructions: finalInstructions,
@@ -3572,6 +3676,7 @@ export function useCreateMarket() {
         // functional benefit; anyone (including the creator, later) can be
         // the vault's first depositor from the Earn page.
         if (startStep <= 4) {
+          runningStep = 4;
           setState((s) => ({ ...s, step: 4, stepLabel: STEP_LABELS[4] }));
 
           const [lpVaultRegistry] = deriveLpVaultRegistry(programId, slabPk);
@@ -3600,6 +3705,7 @@ export function useCreateMarket() {
             });
 
             const sigLpVault = await sendTx({
+              simulateBeforeSign: true,
               connection,
               wallet,
               abortSignal,
@@ -3659,6 +3765,7 @@ export function useCreateMarket() {
         // performs — nothing after this point may depend on marketauth
         // still being the creator wallet.
         if (startStep <= 5) {
+          runningStep = 5;
           setState((s) => ({ ...s, step: 5, stepLabel: STEP_LABELS[5] }));
 
           // Stake pools live under this deployment's vault program
@@ -3755,6 +3862,7 @@ export function useCreateMarket() {
             });
 
             const sigStake = await sendTx({
+              simulateBeforeSign: true,
               connection,
               wallet,
               abortSignal,
@@ -3811,7 +3919,10 @@ export function useCreateMarket() {
           slabAddress: slabPk.toBase58(),
         }));
       } catch (e) {
-        const msg = parseMarketCreationError(e);
+        const msg = parseMarketCreationError(e, {
+          step: sequentialStepKind(runningStep),
+          stepLabel: `Step ${runningStep + 1} (${STEP_LABELS[runningStep]?.replace(/\.\.\.$/, "") ?? "market creation"})`,
+        });
         setState((s) => ({ ...s, loading: false, error: msg }));
       }
     },
