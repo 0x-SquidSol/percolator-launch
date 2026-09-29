@@ -1,0 +1,267 @@
+/**
+ * v18 market health: LP depleted, payout haircut, and WHY a market is locked.
+ *
+ * Replaces the dead v12 signals (SlabProvider `accounts` is always [] on
+ * v17/v18, so the old `accounts.find(kind === LP).capital === 0n` check never
+ * fired — client gotcha class #2) with fields read from the v18 market bytes.
+ *
+ * Layout: deployed tree `~/deploycand-v182/percolator-prog@6377376a` + engine
+ * `35ddd692` (examples/dump_layout.rs; see lib/self-heal.ts for the shared
+ * header/slot offsets). Additional fields used here:
+ *   MarketGroupV16HeaderAccount: bankruptcy_hlock_active u8 @621,
+ *     threshold_stress_active u8 @622, loss_stale_active u8 @623,
+ *     recovery_reason (2 B) @624, mode u8 @626 (MarketModeV16 {Live, Resolved,
+ *     Recovery}).
+ *   EngineAssetSlotV16Account: source_credit_long @595, source_credit_short
+ *     @779 (SourceCreditStateV16Account, 184 B, packed: 11 x u128 then
+ *     credit_epoch u64 → positive_claim_bound_num @0, credit_rate_num @160).
+ *
+ * Payout haircut — the engine's own support formula, aggregated per source
+ * domain (engine v16.rs `account_source_realizable_support` +
+ * `source_credit_state_realizable_support_for_claim_num` +
+ * `available_backing_num_for_source_credit_state`):
+ *   - a LIENED claim is paid by its lien: counterparty lien backing (only while
+ *     the domain's bucket is Fresh and unexpired — C-S-04 drops it otherwise)
+ *     plus insurance lien backing;
+ *   - the UNLIENED remainder is paid at `credit_rate_num / CREDIT_RATE_SCALE`
+ *     (= available / all claims, capped at available backing).
+ *   payout = (validLienedCounterparty? + validLienedInsurance
+ *             + available * unliened / claims) / claims
+ * All `_num` fields share BOUND_SCALE. This is the market-wide expected rate;
+ * an individual account's mix of liened/unliened claim can differ.
+ *
+ * LP depleted: the matcher LP portfolio's `capital` is 0 (read separately —
+ * lib/lp-portfolio.ts). Live 2026-09-29: COLLECT/TEXTIT/Murphy opens revert
+ * Custom(49) at the trade once the lock is repaired — this is that state.
+ */
+import { decodeMarketLiveness, planLivenessRepairs } from "@/lib/self-heal";
+import type { LivenessRepair } from "@/lib/self-heal";
+
+const MARKET_GROUP_OFF = 592;
+const MARKET_GROUP_LEN = 758;
+const H_BANKRUPTCY_HLOCK = 621;
+const H_THRESHOLD_STRESS = 622;
+const H_LOSS_STALE = 623;
+const H_MODE = 626;
+const ASSET_WRAPPER_LEN = 1024;
+const SLOT_SOURCE_CREDIT = [595, 779] as const;
+// SourceCreditStateV16Account (184 B, packed V16PodU128 x 11 + u64).
+const SC_POSITIVE_CLAIM_BOUND = 0;
+const SC_FRESH_RESERVED = 32;
+const SC_VALID_LIENED_BACKING = 80;
+const SC_IMPAIRED_LIENED_BACKING = 96;
+const SC_INSURANCE_RESERVED = 112;
+const SC_VALID_LIENED_INSURANCE = 128;
+const SC_IMPAIRED_LIENED_INSURANCE = 144;
+const SC_CREDIT_RATE = 160;
+// BackingBucketV16Account inside the engine slot (see self-heal.ts).
+const SLOT_BACKING = [963, 1060] as const;
+const BK_EXPIRY = 88;
+const BK_STATUS = 96;
+const H_CURRENT_SLOT = 613;
+export const CREDIT_RATE_SCALE = 1_000_000_000_000n;
+/** engine lib.rs:25 — every `_num` field is atoms * BOUND_SCALE. */
+export const BOUND_SCALE = 1_000_000_000_000n;
+/** Below this much open profit (1 unit of a 6-dp collateral) no haircut is shown. */
+export const MIN_HAIRCUT_CLAIM_ATOMS = 1_000_000n;
+
+/** Bytes needed for header + asset slot 0: RPC `dataSlice` length for cheap reads. */
+export const MARKET_HEALTH_SLICE_LEN = MARKET_GROUP_OFF + MARKET_GROUP_LEN + 2325;
+
+export type LockReason =
+  | "resolved" //       header.mode == Resolved: closes/withdrawals only
+  | "recovery" //       header.mode == Recovery
+  | "bankruptcy" //     bankruptcy_hlock_active: a bankrupt account must be settled first
+  | "loss-stale" //     loss_stale_active: positioned accounts need a refresh crank (keeper, ~seconds)
+  | "repairable" //     lapsed backing bucket / ResetPending side — self-heal repairs it in your tx
+  | "drain-only"; //    a side is DrainOnly: only risk-reducing trades on that side
+
+export interface DomainPayout {
+  domain: number;
+  side: "long" | "short";
+  hasClaims: boolean;
+  /** Realizable support / claims in bps (10000 = full payout). */
+  payoutRateBps: number;
+  /** Open positive-PnL claims sourced from this domain, collateral atoms. */
+  claimAtoms: bigint;
+  /** Of which currently realizable, collateral atoms. */
+  supportAtoms: bigint;
+}
+
+export interface MarketHealth {
+  mode: number;
+  bankruptcyHlock: boolean;
+  thresholdStress: boolean;
+  lossStale: boolean;
+  domains: DomainPayout[];
+  /**
+   * Claim-weighted haircut across both domains, in bps: 1 - sum(support)/sum(claims).
+   * 0 when there are no claims, or when open profit is below MIN_HAIRCUT_CLAIM_ATOMS
+   * (a percentage of a few cents is noise, not a signal).
+   */
+  payoutHaircutBps: number;
+  /** Open positive-PnL claims across both domains, collateral atoms. */
+  openProfitAtoms: bigint;
+  /** Of which currently realizable, collateral atoms. */
+  realizableProfitAtoms: bigint;
+  repairs: LivenessRepair[];
+  drainOnlySides: ("long" | "short")[];
+  /** LP portfolio capital in collateral atoms; null = unknown. */
+  lpCapital: bigint | null;
+  lpDepleted: boolean;
+  lockReasons: LockReason[];
+}
+
+function u128(dv: DataView, off: number): bigint {
+  return dv.getBigUint64(off, true) | (dv.getBigUint64(off + 8, true) << 64n);
+}
+
+/**
+ * Decode health from market bytes (full account or a >= MARKET_HEALTH_SLICE_LEN
+ * slice from offset 0). Only asset slot 0 is read — every live market is
+ * single-asset.
+ */
+export function decodeMarketHealth(
+  data: Uint8Array,
+  readSlot: bigint,
+  lpCapital: bigint | null,
+): MarketHealth {
+  if (data.length < MARKET_HEALTH_SLICE_LEN) {
+    throw new Error(`decodeMarketHealth: need ${MARKET_HEALTH_SLICE_LEN} bytes, got ${data.length}`);
+  }
+  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const g = MARKET_GROUP_OFF;
+  const mode = data[g + H_MODE];
+  const bankruptcyHlock = data[g + H_BANKRUPTCY_HLOCK] === 1;
+  const thresholdStress = data[g + H_THRESHOLD_STRESS] === 1;
+  const lossStale = data[g + H_LOSS_STALE] === 1;
+
+  const engine = g + MARKET_GROUP_LEN + ASSET_WRAPPER_LEN;
+  const currentSlot = dv.getBigUint64(g + H_CURRENT_SLOT, true);
+  const domains: DomainPayout[] = ([0, 1] as const).map((s) => {
+    const sc = engine + SLOT_SOURCE_CREDIT[s];
+    const claims = u128(dv, sc + SC_POSITIVE_CLAIM_BOUND);
+    if (claims === 0n) {
+      return { domain: s, side: s === 0 ? "long" : "short", hasClaims: false, payoutRateBps: 10_000, claimAtoms: 0n, supportAtoms: 0n };
+    }
+    const rd = (o: number) => u128(dv, sc + o);
+    const validCp = rd(SC_VALID_LIENED_BACKING);
+    const validIns = rd(SC_VALID_LIENED_INSURANCE);
+    const liened = validCp + rd(SC_IMPAIRED_LIENED_BACKING) + validIns + rd(SC_IMPAIRED_LIENED_INSURANCE);
+    const freshReserved = rd(SC_FRESH_RESERVED);
+    const insReserved = rd(SC_INSURANCE_RESERVED);
+    const insEncumbered = validIns + rd(SC_IMPAIRED_LIENED_INSURANCE);
+    const available =
+      (freshReserved > validCp ? freshReserved - validCp : 0n) + (insReserved > insEncumbered ? insReserved - insEncumbered : 0n);
+    const rate = rd(SC_CREDIT_RATE);
+    const unliened = claims > liened ? claims - liened : 0n;
+    const b = engine + SLOT_BACKING[s];
+    const bucketLive = data[b + BK_STATUS] === 1 && dv.getBigUint64(b + BK_EXPIRY, true) > currentSlot;
+    let unlienedSupport = (unliened * (rate > CREDIT_RATE_SCALE ? CREDIT_RATE_SCALE : rate)) / CREDIT_RATE_SCALE;
+    if (unlienedSupport > available) unlienedSupport = available;
+    let support = (bucketLive ? validCp : 0n) + validIns + unlienedSupport;
+    if (support > claims) support = claims;
+    return {
+      domain: s,
+      side: s === 0 ? "long" : "short",
+      hasClaims: true,
+      payoutRateBps: Number((support * 10_000n) / claims),
+      claimAtoms: claims / BOUND_SCALE,
+      supportAtoms: support / BOUND_SCALE,
+    };
+  });
+  const openProfitAtoms = domains.reduce((a, d) => a + d.claimAtoms, 0n);
+  const realizableProfitAtoms = domains.reduce((a, d) => a + d.supportAtoms, 0n);
+  const payoutHaircutBps =
+    openProfitAtoms >= MIN_HAIRCUT_CLAIM_ATOMS && openProfitAtoms > 0n
+      ? 10_000 - Number((realizableProfitAtoms * 10_000n) / openProfitAtoms)
+      : 0;
+
+  const liveness = decodeMarketLiveness(data, readSlot);
+  const repairs = planLivenessRepairs(liveness).filter((r) => (r.kind === "expire" ? r.domain < 2 : r.assetIndex === 0));
+  const drainOnlySides = liveness.sides
+    .filter((x) => x.assetIndex === 0 && x.mode === 1)
+    .map((x): "long" | "short" => (x.side === 0 ? "long" : "short"));
+
+  const lpDepleted = lpCapital !== null && lpCapital === 0n;
+  const lockReasons: LockReason[] = [];
+  if (mode === 1) lockReasons.push("resolved");
+  if (mode === 2) lockReasons.push("recovery");
+  if (bankruptcyHlock) lockReasons.push("bankruptcy");
+  if (lossStale) lockReasons.push("loss-stale");
+  if (repairs.length > 0) lockReasons.push("repairable");
+  if (drainOnlySides.length > 0) lockReasons.push("drain-only");
+
+  return {
+    mode,
+    bankruptcyHlock,
+    thresholdStress,
+    lossStale,
+    domains,
+    payoutHaircutBps,
+    openProfitAtoms,
+    realizableProfitAtoms,
+    repairs,
+    drainOnlySides,
+    lpCapital,
+    lpDepleted,
+    lockReasons,
+  };
+}
+
+export type HealthBadgeTone = "danger" | "warning" | "info";
+export interface HealthBadge {
+  id: "lp-depleted" | "payout-haircut" | "resolved" | "recovery" | "bankruptcy" | "loss-stale" | "repairable" | "drain-only";
+  label: string;
+  tone: HealthBadgeTone;
+  detail: string;
+}
+
+/** Format bps as a percent with at most one decimal ("12.5%", "0.1%", "100%"). */
+export function formatBpsPercent(bps: number): string {
+  const pct = bps / 100;
+  const s = pct >= 10 || Number.isInteger(pct) ? pct.toFixed(0) : pct.toFixed(1);
+  return `${s}%`;
+}
+
+/** Badges for market cards / the trade page, most severe first. Pure. */
+export function healthBadges(h: MarketHealth): HealthBadge[] {
+  const out: HealthBadge[] = [];
+  if (h.lockReasons.includes("resolved")) {
+    out.push({ id: "resolved", label: "Resolved", tone: "danger", detail: "This market is resolved. Only closing positions and withdrawing are possible." });
+  }
+  if (h.lockReasons.includes("recovery")) {
+    out.push({ id: "recovery", label: "In recovery", tone: "danger", detail: "This market is in recovery mode. New positions are blocked until it recovers." });
+  }
+  if (h.lpDepleted) {
+    out.push({
+      id: "lp-depleted",
+      label: "LP depleted",
+      tone: "danger",
+      detail: "The market's liquidity provider has no capital left, so new positions can't be opened until it is re-funded.",
+    });
+  }
+  if (h.payoutHaircutBps > 0) {
+    out.push({
+      id: "payout-haircut",
+      label: `Payout haircut ${formatBpsPercent(h.payoutHaircutBps)}`,
+      tone: h.payoutHaircutBps >= 1000 ? "danger" : "warning",
+      detail:
+        `Winning positions can currently realize ${formatBpsPercent(10_000 - h.payoutHaircutBps)} of their open profit: ` +
+        "the backing from the losing side covers only part of it right now. Losses are not affected.",
+    });
+  }
+  if (h.lockReasons.includes("bankruptcy")) {
+    out.push({ id: "bankruptcy", label: "Settling bankruptcy", tone: "warning", detail: "A bankrupt account must be liquidated before new risk is accepted. The keeper does this automatically." });
+  }
+  if (h.lockReasons.includes("drain-only")) {
+    out.push({ id: "drain-only", label: `${h.drainOnlySides.join(" & ")} reduce-only`, tone: "warning", detail: "One side of this market only accepts position-reducing trades right now." });
+  }
+  if (h.lockReasons.includes("repairable")) {
+    out.push({ id: "repairable", label: "Needs repair", tone: "info", detail: "A backing bucket expired or a side is waiting to reset. Your next transaction includes the repair automatically." });
+  }
+  if (h.lockReasons.includes("loss-stale")) {
+    out.push({ id: "loss-stale", label: "Refreshing", tone: "info", detail: "Positions are being refreshed after a price move. This clears within seconds." });
+  }
+  return out;
+}
