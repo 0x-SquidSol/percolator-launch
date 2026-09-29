@@ -15,6 +15,7 @@ import { getMockMyMarkets } from "@/lib/mock-trade-data";
 import { useMarketIdentities } from "@/hooks/useMarketIdentities";
 import { useCreatorMarketDetails } from "@/hooks/useCreatorMarketDetails";
 import { CreatorFeesPanel } from "@/components/my-markets/CreatorFeesPanel";
+import { Q_SCALE } from "@/lib/q-usd";
 
 const pageHeader = (
   <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.25em] text-[var(--accent)]/60">
@@ -169,7 +170,8 @@ const MyMarketsPage: FC = () => {
       if (priceUsd <= 0) continue; // no price yet → excluded, not fabricated as 0-value OI
       if (m.configV17) {
         if (!m.v17Stats) continue;
-        const oiUnits = Number(m.v17Stats.oi.totalLongOiQ + m.v17Stats.oi.totalShortOiQ) / 10 ** decimals;
+        // engine Q scale (1e6), not the collateral's decimals
+        const oiUnits = Number(m.v17Stats.oi.totalLongOiQ + m.v17Stats.oi.totalShortOiQ) / Q_SCALE;
         sum += oiUnits * priceUsd;
       } else {
         const oiUnits = Number(m.engine?.totalOpenInterest ?? 0n) / 10 ** decimals;

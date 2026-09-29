@@ -10,7 +10,7 @@ import { getServiceClient, getServerNetwork } from "@/lib/supabase";
 import { isActiveMarket, isSaneMarketValue, isZombieMarket } from "@/lib/activeMarketFilter";
 import { loadMergedMarketRows, type MarketRegistryRow } from "@/lib/market-registry";
 import { isPhantomOpenInterest } from "@/lib/phantom-oi";
-import { qToUsd } from "@/lib/q-usd";
+import { qToUsd, Q_SCALE } from "@/lib/q-usd";
 import { computeDisplayOiUsd } from "@/lib/oi-display";
 import { BLOCKED_SLAB_ADDRESSES } from "@/lib/blocklist";
 import { getClientIp } from "@/lib/get-client-ip";
@@ -602,13 +602,12 @@ export async function GET(request: NextRequest) {
   // $210K devnet price) are valid and must not be rejected. $1M is the display-layer guard;
   // Rust MAX_ORACLE_PRICE enforces $1B on-chain. GH#1321.
   const MAX_SANE_PRICE_USD = 1_000_000; // $1M — matches /api/markets sanitizePrice cap
+  // raw is engine Q (POS_SCALE 1e6, independent of the mint's decimals) — see
+  // lib/q-usd.ts. This used the row's mint `decimals`, so a 9-dp market (SOL)
+  // came out 1000x low.
   const toUsd = (raw: number, m: { decimals?: number | null; last_price?: number | null }): number => {
-    if (!isSaneMarketValue(raw)) return 0;
-    const d = Math.min(Math.max((m as Record<string, unknown>).decimals as number ?? 6, 0), 18);
     const p = (m.last_price != null && m.last_price > 0 && m.last_price <= MAX_SANE_PRICE_USD) ? m.last_price : 0;
-    if (p <= 0) return 0;
-    const usd = (raw / 10 ** d) * p;
-    return usd > MAX_PER_MARKET_USD ? 0 : usd;
+    return qToUsd(raw, p) ?? 0;
   };
 
   // GH#1419: Prefer fresh volume_24h (updated within 48h) but fall back to all
@@ -665,12 +664,11 @@ export async function GET(request: NextRequest) {
       // GH#1321: MAX_SANE_PRICE_USD raised from $10K → $1M (matches /api/markets).
       // MOLTBOT last_price ~$210K was rejected by the old $10K cap, causing its OI to
       // be silently dropped (p=0 branch). $1M is the correct display-layer guard.
-      const d = Math.min(Math.max((m as Record<string, unknown>).decimals as number ?? 6, 0), 18);
       const p = (m.last_price != null && m.last_price > 0 && m.last_price <= MAX_SANE_PRICE_USD)
         ? m.last_price
         : 0;
       if (p <= 0) return sum; // no valid price → unknown USD value → skip
-      const usd = (rawOi / 10 ** d) * p;
+      const usd = (rawOi / Q_SCALE) * p;
       return sum + (usd > MAX_PER_MARKET_USD ? 0 : usd);
     },
     0

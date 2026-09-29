@@ -1,6 +1,7 @@
 "use client";
 
 import { FC, useMemo, useState, useRef, useEffect } from "react";
+import { Q_SCALE } from "@/lib/q-usd";
 import { useUserAccount } from "@/hooks/useUserAccount";
 import { useMarketConfig } from "@/hooks/useMarketConfig";
 import { useClosePosition } from "@/hooks/useClosePosition";
@@ -483,7 +484,8 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     const slotsPerHour = 9000;
     // /100 converts bps → percent (GH#1943: was /10000 causing 10,000x underreport)
     const hourlyRatePercent = (rateBpsPerSlot * slotsPerHour) / 100;
-    const positionTokens = Number(absPosition) / (10 ** decimals);
+    // Q units (POS_SCALE 1e6), not the collateral mint's decimals
+    const positionTokens = Number(absPosition) / Q_SCALE;
     // hourlyRatePercent is already in percent; /100 converts to fraction for est24h
     const est24h = Math.abs((hourlyRatePercent / 100) * 24 * positionTokens);
     const longsPay = rateBpsPerSlot > 0;
@@ -622,7 +624,7 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
                   )}
                   {priceUsd != null && priceUsd > 0 && (
                     <span className="text-[10px] text-[var(--text-secondary)]" style={{ fontFamily: "var(--font-mono)" }}>
-                      ${(Number(absPosition) / 10 ** decimals * priceUsd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      ${(Number(absPosition) / Q_SCALE * priceUsd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
                   )}
                 </div>

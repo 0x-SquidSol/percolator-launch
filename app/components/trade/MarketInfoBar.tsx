@@ -11,6 +11,7 @@ import { MarketSwitcher } from "@/components/trade/MarketSwitcher";
 import { WatchButton } from "@/components/market/WatchButton";
 import { formatUsdFromNumber, formatMarkPrice } from "@/lib/format";
 import { formatCompactUsd } from "@/lib/formatters";
+import { rowVolumeUsd, Q_SCALE } from "@/lib/q-usd";
 import { computeMarketSpread } from "@/lib/oraclePrice";
 
 interface MarketInfoBarProps {
@@ -144,7 +145,13 @@ export const MarketInfoBar: FC<MarketInfoBarProps> = ({ slabAddress, symbol, log
       ? insuranceBalance === 0n && totalOI === 0n
       : false;
 
-  const volume = market?.volume_24h as number | null | undefined;
+  // volume_24h is the indexer's SUM(ABS(size)) in engine Q units (base-asset
+  // amount, POS_SCALE 1e6) — NOT dollars. It used to be formatted as USD
+  // directly (SOL read "$3.4M" for ~$397 of volume). Prefer the API's own
+  // volume_24h_usd; otherwise convert here with the live price.
+  const volume: number | null = rowVolumeUsd(
+    market ? { ...(market as { volume_24h_usd?: number | null }), last_price: priceUsd } : null,
+  );
 
   // Open interest: prefer the authoritative on-chain figure (bigint atoms, quote
   // units e6) from the engine/market-group — it's present locally even when the
@@ -152,7 +159,6 @@ export const MarketInfoBar: FC<MarketInfoBarProps> = ({ slabAddress, symbol, log
   // Fall back to the indexer's total_open_interest (base-token atoms → USD via
   // price, GH#1626) only when on-chain OI is unavailable, then to a quiet "—".
   const rawOiAtoms = market?.total_open_interest as number | null | undefined;
-  const decimals = (market?.decimals as number | null | undefined) ?? 6;
   const oi: number | null = (() => {
     // BUG 13 fix: this branch omitted `* priceUsd`, rendering raw base-token
     // quantity as if it were USD (e.g. "100 SOL OI" showed as "$100"). Mirror the
@@ -163,7 +169,8 @@ export const MarketInfoBar: FC<MarketInfoBarProps> = ({ slabAddress, symbol, log
       return priceUsd != null && priceUsd > 0 ? tokenAmount * priceUsd : tokenAmount;
     }
     if (rawOiAtoms == null) return null;
-    const tokenAmount = rawOiAtoms / Math.pow(10, decimals);
+    // Q units (1e6), not the mint's decimals — SOL (9dp) read 1000x low.
+    const tokenAmount = rawOiAtoms / Q_SCALE;
     if (priceUsd != null && priceUsd > 0) return tokenAmount * priceUsd;
     return tokenAmount;
   })();

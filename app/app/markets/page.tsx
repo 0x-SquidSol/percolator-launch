@@ -30,6 +30,7 @@ import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { detectOracleMode, resolveMarketPriceE6, priceE6ToUsd, sanitizePriceE6, applyInvert } from "@/lib/oraclePrice";
 import { subscribeSlab, getSnapshot } from "@/lib/priceStore/priceStore";
 import { formatStatValue } from "@/lib/format";
+import { qToUsd, Q_DECIMALS } from "@/lib/q-usd";
 import { MIN_VAULT_FOR_OI } from "@/lib/phantom-oi";
 
 /** Max sane price (USD) for both active-market filtering and display capping.
@@ -501,9 +502,8 @@ function MarketsPageInner() {
       const rawPrice = m.supabase?.last_price ?? priceE6ToUsd(onChainPriceE6);
       const price = rawPrice != null && rawPrice > 0 && rawPrice <= MAX_SANE_PRICE_USD ? rawPrice : null;
       if (price == null) return 0; // no price → sort to bottom
-      const rawDecimals = tokenMetaMap.get(m.mintAddress)?.decimals ?? (m.supabase?.decimals ?? 6);
-      const mintDecimals = Math.min(Math.max(rawDecimals, 0), 18);
-      return (Number(getOI(m)) / 10 ** mintDecimals) * price;
+      // OI is engine Q (POS_SCALE 1e6), not mint-decimals — same as the display path.
+      return qToUsd(Number(getOI(m)), price) ?? 0;
     };
     list = [...list].sort((a, b) => {
       switch (sortBy) {
@@ -1046,15 +1046,14 @@ function MarketsPageInner() {
                     : health;
                   const rawPrice = m.supabase?.last_price ?? priceE6ToUsd(onChainPriceE6);
                   const lastPrice = rawPrice != null && rawPrice > MAX_SANE_PRICE_USD ? null : rawPrice;
-                  const rawDecimals = tokenMetaMap.get(m.mintAddress)?.decimals ?? (m.supabase?.decimals ?? 6);
-                  const mintDecimals = Math.min(Math.max(rawDecimals, 0), 18); // clamp to sane range
-                  const tokenDivisor = 10 ** mintDecimals;
                   
                   // Token amounts: prefer on-chain, fall back to Supabase
                   // Sanitize sentinel values (u64::MAX = uninitialized on-chain) → show as 0
                   // PERC-234: Supabase values are raw on-chain values (NOT human-readable).
                   // StatsCollector stores safeBigNum(engine.totalOpenInterest) etc. directly.
-                  // Do NOT multiply by tokenDivisor — that double-counts decimals.
+                  // OI and volume are engine Q quantities (POS_SCALE 1e6 whatever the
+                  // base mint's decimals) — convert with qToUsd / Q_DECIMALS, NEVER the
+                  // mint's decimals (SOL, 9dp, read 1000x low).
                   const oiTokensRaw = m.onChain && !m.onChain.configV17
                     ? sanitizeOnChainValue(m.onChain.engine.totalOpenInterest)
                     : (() => {
@@ -1088,10 +1087,10 @@ function MarketsPageInner() {
                   // Display values (USD or tokens) — cap token display at 2dp for table readability
                   // #1152/#1153: null/zero → "—" (not "$0.00" which looks broken on devnet)
                   const oiUsd = showUsd && lastPrice != null
-                    ? Math.round((Number(oiTokensRaw) / tokenDivisor) * lastPrice * 100) / 100
+                    ? qToUsd(Number(oiTokensRaw), lastPrice)
                     : null;
                   const oiDisplay = oiTokensRaw === 0n ? "—"
-                    : oiUsd != null ? (oiUsd > 0 ? formatNum(oiUsd) : "—") : formatStatValue(oiTokensRaw, 'number', mintDecimals);
+                    : oiUsd != null ? (oiUsd > 0 ? formatNum(oiUsd) : "—") : formatStatValue(oiTokensRaw, 'number', Q_DECIMALS);
                   // Market LP is denominated in the COLLATERAL mint (Sim-USDC, 6dp) — it is
                   // already a USD amount, so it is NEVER multiplied by the token price (unlike
                   // OI, which is a base-token quantity). Divide by the collateral decimals,
@@ -1101,8 +1100,11 @@ function MarketsPageInner() {
                     : marketLpVal > 0 ? formatNum(marketLpVal) : "—";
                   const volumeDisplay = volume24hRaw != null && volume24hRaw > 0n
                     ? (showUsd && lastPrice != null
-                        ? formatNum(Math.round((Number(volume24hRaw) / tokenDivisor) * lastPrice * 100) / 100)
-                        : formatTokenAmount(volume24hRaw, mintDecimals, 2))
+                        ? (() => {
+                            const v = qToUsd(Number(volume24hRaw), lastPrice);
+                            return v != null ? formatNum(v) : null;
+                          })()
+                        : formatTokenAmount(volume24hRaw, Q_DECIMALS, 2))
                     : null;
                   // The slab collateral mint is often USDC. Pair identity must come
                   // from market metadata, otherwise SOL/USDC perps render as USDC/USD.

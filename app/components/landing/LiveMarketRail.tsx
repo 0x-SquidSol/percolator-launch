@@ -5,6 +5,7 @@ import Link from "next/link";
 import { MarketLogo } from "@/components/market/MarketLogo";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { formatMarkPrice, formatStatValue } from "@/lib/format";
+import { rowVolumeUsd } from "@/lib/q-usd";
 import { subscribeSlab, getSnapshot } from "@/lib/priceStore/priceStore";
 import { usePriceFlash } from "@/hooks/usePriceFlash";
 import { useAllMarketStats } from "@/hooks/useAllMarketStats";
@@ -217,7 +218,7 @@ export function LiveMarketRail() {
             // indexer has no data", not "zero volume" — /markets renders the
             // same state as "—", and this rail showed "$0.00" for it. Map 0
             // to null so formatStatValue renders the same "—" convention.
-            volume24h={stats?.volume_24h || null}
+            volume24h={rowVolumeUsd(stats) || null}
             maxLeverage={stats?.max_leverage ?? null}
             isLast={i === RAIL_SLABS.length - 1}
           />

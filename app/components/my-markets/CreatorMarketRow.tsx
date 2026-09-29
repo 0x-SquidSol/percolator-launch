@@ -5,6 +5,7 @@ import Link from "next/link";
 import { PublicKey } from "@solana/web3.js";
 import type { CreatedMarket } from "@/hooks/useCreatedMarkets";
 import type { CreatorMarketDetail } from "./types";
+import { Q_SCALE } from "@/lib/q-usd";
 import { unitScaleToDecimals, deriveMarketLiquidityAtoms, lpCollateralMateriallyDiverges } from "./types";
 import { useAdminActions } from "@/hooks/useAdminActions";
 import { useCloseMarket } from "@/hooks/useCloseMarket";
@@ -254,7 +255,8 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
   // falls back to the oracle price above when the feed hasn't ticked yet.
   const priceUsdForOi = getSnapshot(slab).priceUsd ?? fallbackPriceUsd;
   const oiUsd = oiAtoms != null && priceUsdForOi != null && priceUsdForOi > 0
-    ? (Number(oiAtoms) / 10 ** decimals) * priceUsdForOi
+    // v17 OI is engine Q (1e6), not the collateral mint's decimals
+    ? (Number(oiAtoms) / (isV17 ? Q_SCALE : 10 ** decimals)) * priceUsdForOi
     : null;
 
   // Field-level merge, detail first. Merging per SOURCE instead would let the

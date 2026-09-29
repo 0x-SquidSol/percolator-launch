@@ -15,6 +15,7 @@ import { FundingRateChart } from "./FundingRateChart";
 import { sanitizeSymbol } from "@/lib/symbol-utils";
 import { OracleFreshnessIndicator } from "@/components/oracle/OracleFreshnessIndicator";
 import { useMarketInfo } from "@/hooks/useMarketInfo";
+import { Q_SCALE, Q_DECIMALS } from "@/lib/q-usd";
 
 function formatNum(n: number): string {
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
@@ -88,14 +89,16 @@ export const MarketStatsCard: FC = () => {
   // A: OI (totalOI/oiLong/oiShort) is a BASE-ASSET quantity (fixed-point,
   // scale 1e6, denominated in whatever asset the market trades — SOL, BONK,
   // ...) — it genuinely needs ×priceUsd to become a dollar figure.
+  // Divide by the engine's Q scale, NOT the collateral mint's decimals: they
+  // coincide for 6-dp sim-USDC but a 9-dp collateral read OI 1000x low.
   const fmtOI = (atoms: bigint): string =>
     showUsd && priceUsd != null
-      ? formatNum((Number(atoms) / tokenDivisor) * priceUsd)
-      : formatCompactTokenAmount(atoms, decimals);
+      ? formatNum((Number(atoms) / Q_SCALE) * priceUsd)
+      : formatCompactTokenAmount(atoms, Q_DECIMALS);
   const fmtOIFull = (atoms: bigint): string =>
     showUsd && priceUsd != null
-      ? formatNum((Number(atoms) / tokenDivisor) * priceUsd)
-      : formatTokenAmount(atoms, decimals);
+      ? formatNum((Number(atoms) / Q_SCALE) * priceUsd)
+      : formatTokenAmount(atoms, Q_DECIMALS);
   const oiDisplay = fmtOI(totalOI);
   const oiFullDisplay = fmtOIFull(totalOI);
   // A: "Market LP" is COLLATERAL (sim-USDC) atoms — already USD-denominated —

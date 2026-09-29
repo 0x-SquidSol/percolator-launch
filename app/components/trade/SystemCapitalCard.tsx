@@ -1,6 +1,7 @@
 "use client";
 
 import { FC } from "react";
+import { Q_SCALE } from "@/lib/q-usd";
 import { useEngineState } from "@/hooks/useEngineState";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { useTokenMeta } from "@/hooks/useTokenMeta";
@@ -47,9 +48,13 @@ export const SystemCapitalCard: FC = () => {
   const fmtAtoms = (v: bigint | null): string =>
     v == null ? "—" : fmtCompact(Number(sanitizeOnChainValue(v)) / divisor);
   const insuranceStr = fmtAtoms(insuranceBalance);
-  const totalOIStr = fmtAtoms(totalOI);
-  const oiLongStr = fmtAtoms(oiLong);
-  const oiShortStr = fmtAtoms(oiShort);
+  // v17 OI is engine Q (POS_SCALE 1e6), not collateral atoms — dividing by the
+  // collateral mint's decimals is right only when those happen to be 6.
+  const fmtOiAtoms = (v: bigint | null): string =>
+    v == null ? "—" : fmtCompact(Number(sanitizeOnChainValue(v)) / (engine ? divisor : Q_SCALE));
+  const totalOIStr = fmtOiAtoms(totalOI);
+  const oiLongStr = fmtOiAtoms(oiLong);
+  const oiShortStr = fmtOiAtoms(oiShort);
 
   // Legacy-only (v12 engine block) — "—" when engine is null (v17).
   const vaultStr = engine ? fmtCompact(Number(sanitizeOnChainValue(engine.vault ?? 0n)) / divisor) : "—";
