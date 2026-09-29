@@ -58,7 +58,11 @@ describe("on-chain initialMarginBps -> display leverage (observed on devnet at f
   it("maps the real markets correctly", () => {
     expect(leverageFromMarginBps(666)).toBe(15); // SOL — was showing 10X
     expect(leverageFromMarginBps(1000)).toBe(10); // JUP/TRUMP/PENGU/BURNIE — coincidentally correct
-    expect(leverageFromMarginBps(1538)).toBe(7); // COLLECT — was showing 10X
-    expect(leverageFromMarginBps(2222)).toBe(5); // PAID — was showing 10X
+    // Engine cap is exactly 10000/bps (margin_requirement ceils notional*bps/1e4),
+    // so 1538 bps = 6.50x and 2222 bps = 4.50x. Math.round advertised 7x / 5x —
+    // above what the engine (and the OrderTicket slider) will accept.
+    expect(leverageFromMarginBps(1538)).toBe(6.5); // COLLECT + 10 others — was showing 10X
+    expect(leverageFromMarginBps(2222)).toBe(4.5); // PAID — was showing 10X
+    expect(leverageFromMarginBps(2000)).toBe(5); // CATE
   });
 });

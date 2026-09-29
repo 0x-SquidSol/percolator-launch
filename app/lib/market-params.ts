@@ -187,12 +187,25 @@ export function backingSeedPerDomain(lpCollateralAtoms: bigint): bigint {
  * leverage that does not divide evenly: 3x stores 3334 bps, and
  * `floor(10000 / 3334)` is **2**, so a 3x market advertised itself as 2x — on
  * the review screen, the success screen, and in the markets DB's `max_leverage`
- * column. Rounding is correct because the stored bps is never more than one
- * unit above the exact value.
+ * column. Rounding is correct ONLY for bps the launch derivation produced
+ * (never more than one unit above the exact value); any other bps floors, so
+ * the result never exceeds the engine's 10000 / bps cap (see body).
  */
 export function leverageFromMarginBps(initialMarginBps: number): number {
   if (!Number.isFinite(initialMarginBps) || initialMarginBps <= 0) return 0;
-  return Math.round(10_000 / initialMarginBps);
+  const exact = 10_000 / initialMarginBps;
+  // Rounding is only valid for bps that the launch derivation actually
+  // produced. Markets whose bps did NOT come from `ceil(10000 / lev)` for an
+  // integer lev exist on-chain (devnet 2026-09-29: 1538 bps = 6.50x on 11
+  // markets, 2222 bps = 4.50x) and Math.round advertised them as 7x / 5x —
+  // ABOVE the engine's cap (margin_requirement = ceil(notional * bps / 10000),
+  // so the real ceiling is exactly 10000 / bps), while the trade ticket
+  // (OrderTicket) correctly capped them at 6.5x / 4.5x. #2679 surfaced this
+  // for every list row. So: round only on an exact launch round-trip,
+  // otherwise floor to 0.1x — never above what the engine will accept.
+  const rounded = Math.round(exact);
+  if (rounded > 0 && Math.ceil(10_000 / rounded) === initialMarginBps) return rounded;
+  return Math.floor(exact * 10) / 10;
 }
 
 export interface DerivedMarketParams {

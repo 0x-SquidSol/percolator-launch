@@ -189,6 +189,21 @@ describe("leverageFromMarginBps — the inverse must survive the round trip", ()
     expect(leverageFromMarginBps(3334)).toBe(3); // what it does now
   });
 
+  it("never advertises more than the engine's 10000/bps cap for non-launch bps", () => {
+    // Live devnet 2026-09-29: 11 markets at 1538 bps, PAID at 2222 bps. These bps
+    // did not come from ceil(10000/lev) for an integer lev, so rounding them UP
+    // (7x / 5x) overstated the cap the engine enforces (6.50x / 4.50x).
+    expect(leverageFromMarginBps(1538)).toBe(6.5);
+    expect(leverageFromMarginBps(2222)).toBe(4.5);
+    expect(leverageFromMarginBps(666)).toBe(15); // SOL: 15.015x -> 15
+    for (let bps = 100; bps <= 10_000; bps++) {
+      expect(leverageFromMarginBps(bps)).toBeLessThanOrEqual(
+        // the only allowed overshoot is the launch round-trip (<= 1 bps of ceil)
+        Math.ceil(10_000 / Math.round(10_000 / bps)) === bps ? Math.round(10_000 / bps) : 10_000 / bps,
+      );
+    }
+  });
+
   it("is safe on degenerate input instead of returning Infinity", () => {
     expect(leverageFromMarginBps(0)).toBe(0);
     expect(leverageFromMarginBps(-1)).toBe(0);
