@@ -663,7 +663,7 @@ export function useInsuranceLP() {
         keys,
         data: encodeDepositToLpVault({ amount: amount.toString(), domain }),
       }));
-      const sig = await sendTx({ connection, wallet, instructions: ixs });
+      const sig = await sendTx({ connection, wallet, instructions: ixs, selfHeal: { programId: progPk, market: marketPk } });
       await refreshState();
       return sig;
     } catch (err) {
@@ -738,7 +738,7 @@ export function useInsuranceLP() {
           keys: requestKeys,
           data: encodeRequestRedeemLpShares({ shares: lpAmount.toString() }),
         });
-        signature = await sendTx({ connection, wallet, instructions: [requestIx] });
+        signature = await sendTx({ connection, wallet, instructions: [requestIx], selfHeal: { programId: progPk, market: marketPk } });
         step = 'requested';
       } else {
         // Step 2: ExecuteRedemption (tag 77) — collect collateral after cooldown.
@@ -792,7 +792,7 @@ export function useInsuranceLP() {
           keys: executeKeys,
           data: encodeExecuteRedemption({ domain }),
         });
-        signature = await sendTx({ connection, wallet, instructions: [executeIx] });
+        signature = await sendTx({ connection, wallet, instructions: [executeIx], selfHeal: { programId: progPk, market: marketPk } });
         step = 'executed';
       }
       await refreshState();
