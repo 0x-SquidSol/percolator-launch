@@ -32,6 +32,7 @@ describe("program-ids: the single repoint point", () => {
     const forkId = "ETDLAdiAyWnEUngspYczTXUceT6X8f92eZQvr8nmSkWB";
     vi.stubEnv("NEXT_PUBLIC_DEFAULT_NETWORK", "devnet");
     vi.stubEnv("NEXT_PUBLIC_WRAPPER_PROGRAM_ID", forkId);
+    vi.stubEnv("NEXT_PUBLIC_ALLOW_PROGRAM_ID_OVERRIDE", "1");
     const { getConfig, getAllProgramIds } = await import("@/lib/config");
     expect(getConfig().programId).toBe(forkId);
     expect(getAllProgramIds()).toContain(forkId);
@@ -39,7 +40,16 @@ describe("program-ids: the single repoint point", () => {
     expect(getAllProgramIds()).not.toContain(DEVNET_PROGRAM_IDS.wrapper);
   });
 
+  it("NEGATIVE CONTROL: an override without the explicit opt-in is ignored", () => {
+    vi.stubEnv("NEXT_PUBLIC_DEFAULT_NETWORK", "devnet");
+    vi.stubEnv("NEXT_PUBLIC_WRAPPER_PROGRAM_ID", "ETDLAdiAyWnEUngspYczTXUceT6X8f92eZQvr8nmSkWB");
+    expect(resolveDevnetProgramIds().wrapper).toBe(DEVNET_PROGRAM_IDS.wrapper);
+    vi.stubEnv("NEXT_PUBLIC_ALLOW_PROGRAM_ID_OVERRIDE", "1");
+    expect(resolveDevnetProgramIds().wrapper).toBe("ETDLAdiAyWnEUngspYczTXUceT6X8f92eZQvr8nmSkWB");
+  });
+
   it("NEGATIVE CONTROL: overrides are ignored on a mainnet build", () => {
+    vi.stubEnv("NEXT_PUBLIC_ALLOW_PROGRAM_ID_OVERRIDE", "1");
     vi.stubEnv("NEXT_PUBLIC_DEFAULT_NETWORK", "mainnet");
     vi.stubEnv("NEXT_PUBLIC_WRAPPER_PROGRAM_ID", "ETDLAdiAyWnEUngspYczTXUceT6X8f92eZQvr8nmSkWB");
     expect(resolveDevnetProgramIds().wrapper).toBe(DEVNET_PROGRAM_IDS.wrapper);
@@ -48,6 +58,7 @@ describe("program-ids: the single repoint point", () => {
   it("NEGATIVE CONTROL: an invalid override is ignored", () => {
     vi.stubEnv("NEXT_PUBLIC_DEFAULT_NETWORK", "devnet");
     vi.stubEnv("NEXT_PUBLIC_WRAPPER_PROGRAM_ID", "not-a-key");
+    vi.stubEnv("NEXT_PUBLIC_ALLOW_PROGRAM_ID_OVERRIDE", "1");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     expect(resolveDevnetProgramIds().wrapper).toBe(DEVNET_PROGRAM_IDS.wrapper);
     expect(warn).toHaveBeenCalled();

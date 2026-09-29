@@ -133,3 +133,22 @@ describe("explainMarketTxError: 19/21/49 refined by live health", () => {
     expect(explainMarketTxError("Blockhash not found", "open", health({ lpDepleted: true }))).toBeNull();
   });
 });
+
+describe("P1 / newly-mapped deployed codes", () => {
+  it("deployed 62-65 and P1 66-71 each have their own message (not the generic fallback)", () => {
+    for (const code of [62, 63, 64, 65, 66, 67, 68, 69, 70, 71]) {
+      const msg = humanizeError(presim(4, code), "trade");
+      expect(msg, `code ${code}`).not.toMatch(/^Program error|^Transaction failed/);
+    }
+    expect(humanizeError(presim(4, 63))).toMatch(/Earn vault can't be created/);
+    expect(humanizeError(presim(4, 69), "trade")).toMatch(/capital floor/);
+  });
+  it("P1 69/68 on an open with a depleted LP → LP depleted; NEGATIVE CONTROL funded LP keeps the P1 text", () => {
+    expect(explainMarketTxError(presim(4, 69), "open", health({ lpDepleted: true }))).toBe(MSG_LP_DEPLETED_OPEN);
+    expect(explainMarketTxError(presim(4, 69), "open", health())).toBeNull();
+    expect(explainMarketTxError(presim(4, 68), "close", health({ lpDepleted: true }))).toBeNull();
+  });
+  it("NEGATIVE CONTROL: an unknown code still falls through to the generic text", () => {
+    expect(humanizeError(presim(4, 250))).toMatch(/^Program error/);
+  });
+});

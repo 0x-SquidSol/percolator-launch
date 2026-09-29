@@ -46,7 +46,10 @@ function has(h: MarketHealthRow, r: LockReason): boolean {
 }
 
 /** Hook for P1 codes (band, halt, exposure cap). Returns null = no refinement. */
-export function refineP1(_code: number, _action: MarketTxAction, _health: MarketHealthRow | null): string | null {
+export function refineP1(code: number, action: MarketTxAction, health: MarketHealthRow | null): string | null {
+  // 69 LpFloorHalt / 68 LpExposureCapExceeded on an open with a depleted LP: the
+  // honest message is "LP depleted", same as the pre-P1 Custom(49) state.
+  if ((code === 69 || code === 68) && action === "open" && health?.lpDepleted) return MSG_LP_DEPLETED_OPEN;
   return null;
 }
 

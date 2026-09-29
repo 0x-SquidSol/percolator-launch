@@ -47,7 +47,16 @@ export { LIGHTHOUSE_USER_MESSAGE };
  * P1 wrapper errors (appended after 61). Kept as its own table so the P1
  * release is a self-contained edit. Empty until the P1 codes are final.
  */
-export const P1_ERROR_MESSAGES: Record<number, string> = {};
+export const P1_ERROR_MESSAGES: Record<number, string> = {
+  // p1-safety-release-2026-09-29.md §3 (append-only; feat/p1-safety-release). Harmless before
+  // the P1 deploy: the deployed wrapper never returns these codes.
+  66: "The fill price was too far from the market's oracle price, so the program refused it. Try again; if it keeps happening the market's price feed may be moving fast.",
+  67: "This wallet can't trade against its own liquidity or its own market. Use a different wallet to trade here.",
+  68: "This trade would give the market's liquidity provider more exposure than its capital allows. Try a smaller size.",
+  69: "The market's liquidity provider is at its capital floor, so new positions are paused. Closing positions still works.",
+  70: "This side of the market has reached its open-interest cap. Try a smaller size or the other side.",
+  71: "The market still has unclaimed fees, so it can't be closed yet. Claim or crank the fees first, then close it again.",
+};
 
 const ERROR_CODE_MAP: Record<number, string> = {
   0: "Invalid market data (bad magic) - corrupted or not a Percolator market.",
@@ -149,6 +158,11 @@ const ERROR_CODE_MAP: Record<number, string> = {
   59: "Stake pool is not in insurance-LP mode, so it is not owed the insurance/staker fee leg.",
   60: "This wrapper build has no pinned stake program — the insurance-reserve-to-stake withdrawal has no trusted destination (expected off devnet).",
   61: "This asset slot is already configured/active — only an append at the next index or a re-activation of a retired slot is allowed.",
+  // 62-65: on the DEPLOYED wrapper (deploy/v18.2-wrapper@6377376a PercolatorError), missing here until P0b.
+  62: "That's more than the creator fees available to claim right now. Claim the amount shown, or wait for more trading.",
+  63: "This market's backing is already funded outside the Earn vault, so an Earn vault can't be created for it. The market needs a maintainer to set up its vault.",
+  64: "The market account must stay rent-exempt after this action. Please report this — it should not happen on a normal market.",
+  65: "This market's asset changed since the transaction was built. Refresh the page and try again.",
   // ── P1 safety release (oracle band, auto-halt, exposure cap) ──────────────
   // Codes are appended after 61 by feat/p1-safety-release; add one line per
   // code here from ~/percolator-ops/ledger/p1-safety-release-2026-09-29.md.

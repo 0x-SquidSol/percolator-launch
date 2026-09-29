@@ -11,7 +11,8 @@
  * wrapper id and this file disagree, so an SDK bump without the repoint (or
  * the reverse) cannot ship silently.
  *
- * Env overrides (devnet builds only; a mainnet build ignores them):
+ * Env overrides (devnet builds only, and only with
+ * NEXT_PUBLIC_ALLOW_PROGRAM_ID_OVERRIDE=1; a mainnet build ignores them):
  *   NEXT_PUBLIC_WRAPPER_PROGRAM_ID, NEXT_PUBLIC_MATCHER_PROGRAM_ID,
  *   NEXT_PUBLIC_NFT_PROGRAM_ID, NEXT_PUBLIC_STAKE_PROGRAM_ID
  * For a local fork / E2E run against freshly deployed programs. Each must be a
@@ -64,9 +65,19 @@ function isMainnetBuild(): boolean {
   return process.env.NEXT_PUBLIC_DEFAULT_NETWORK?.trim() === "mainnet";
 }
 
+/**
+ * Overrides also need an explicit opt-in (security review INFO, 2026-09-30), so
+ * a stray `NEXT_PUBLIC_*_PROGRAM_ID` in a Vercel project can't silently repoint
+ * the playground. Mirrors the SDK's PERCOLATOR_SDK_ALLOW_PROGRAM_OVERRIDE.
+ */
+function overridesAllowed(): boolean {
+  const v = process.env.NEXT_PUBLIC_ALLOW_PROGRAM_ID_OVERRIDE?.trim();
+  return v === "1" || v === "true";
+}
+
 /** Devnet program ids after env overrides. Pure function of build-time env. */
 export function resolveDevnetProgramIds(): ProgramIdSet {
-  if (isMainnetBuild()) return { ...DEVNET_PROGRAM_IDS };
+  if (isMainnetBuild() || !overridesAllowed()) return { ...DEVNET_PROGRAM_IDS };
   return {
     wrapper:
       parseProgramIdOverride("NEXT_PUBLIC_WRAPPER_PROGRAM_ID", process.env.NEXT_PUBLIC_WRAPPER_PROGRAM_ID) ??
