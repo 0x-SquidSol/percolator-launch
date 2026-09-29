@@ -43,6 +43,55 @@ export interface SendTxParams {
    * addressed. Default: false.
    */
   skipPreflight?: boolean;
+  /**
+   * Finish the simulation BEFORE the wallet prompt, and also when `signers`
+   * are present (simulation uses sigVerify:false, so missing keypair
+   * signatures don't matter). Default false, which keeps the latency-optimised
+   * ordering where the popup and the simulation overlap on devnet.
+   *
+   * Use it when a revert is plausible: with the overlapped ordering the wallet
+   * simulates first and shows the user its own generic "this transaction may
+   * fail" warning, and our decoded explanation only arrives after they have
+   * already been asked to sign. The create-market wizard sets it on every step.
+   */
+  simulateBeforeSign?: boolean;
+}
+
+/**
+ * Simulate `tx` (unsigned or partially signed) and throw a
+ * "Transaction simulation failed: …" error carrying the program error and the
+ * failing log lines if it would revert. RPC errors during the simulation
+ * itself are logged and do NOT throw — the broadcast's own preflight still
+ * guards the send.
+ */
+export async function presimulateOrThrow(
+  connection: Connection,
+  tx: Transaction,
+): Promise<void> {
+  try {
+    const simTx = new VersionedTransaction(tx.compileMessage());
+    const simResult = await connection.simulateTransaction(simTx, {
+      replaceRecentBlockhash: true,
+      sigVerify: false,
+      commitment: "confirmed",
+    });
+    if (simResult.value.err) {
+      const logs = simResult.value.logs ?? [];
+      const errorLog = logs
+        .filter((l: string) => l.includes("Error") || l.includes("failed") || l.includes("Program log:"))
+        .slice(-3)
+        .join("\n");
+      throw new Error(
+        `Transaction simulation failed: ${JSON.stringify(simResult.value.err)}` +
+        (errorLog ? `\n${errorLog}` : ""),
+      );
+    }
+  } catch (simError) {
+    if (simError instanceof Error && simError.message.startsWith("Transaction simulation failed")) {
+      throw simError;
+    }
+    console.warn("[presimulateOrThrow] simulation RPC failed (non-blocking):", simError);
+  }
 }
 
 const POLL_INTERVAL_MS = 2000;
@@ -541,6 +590,7 @@ export async function sendTx({
   onProgress,
   abortSignal,
   skipPreflight = false,
+  simulateBeforeSign = false,
 }: SendTxParams): Promise<string> {
   if (!wallet.publicKey || (!wallet.signTransaction && !wallet.signAndSendTransaction)) {
     throw new Error("Wallet not connected");
@@ -654,51 +704,16 @@ export async function sendTx({
       // assertion instructions) is a mainnet wallet-guard concern.
       const usesAtomicSend =
         !!wallet.signAndSendTransaction && signers.length === 0 && getNetwork() !== "devnet";
-      const runSimulation = async (): Promise<void> => {
-        try {
-          // Simulate with replaceRecentBlockhash so the preflight can't
-          // false-negative with "BlockhashNotFound" when the load-balanced RPC
-          // node handling the simulate call hasn't yet propagated the blockhash
-          // we just fetched (a lag artifact — the tx itself is fine). The RPC
-          // substitutes its own recent blockhash for the simulation ONLY; the
-          // real signed tx below still carries our fetched blockhash. Program
-          // errors (Custom/margin/etc.) still surface in value.err as before.
-          const simTx = new VersionedTransaction(tx.compileMessage());
-          const simResult = await connection.simulateTransaction(simTx, {
-            replaceRecentBlockhash: true,
-            sigVerify: false,
-            commitment: "confirmed",
-          });
-          if (simResult.value.err) {
-            const logs = simResult.value.logs ?? [];
-            // Extract the most useful log line (program error or custom message)
-            const errorLog = logs
-              .filter((l: string) => l.includes("Error") || l.includes("failed") || l.includes("Program log:"))
-              .slice(-3)
-              .join("\n");
-            throw new Error(
-              `Transaction simulation failed: ${JSON.stringify(simResult.value.err)}` +
-              (errorLog ? `\n${errorLog}` : "")
-            );
-          }
-        } catch (simError) {
-          // If it's our own simulation error, rethrow with clear message
-          if (simError instanceof Error && simError.message.startsWith("Transaction simulation failed")) {
-            throw simError;
-          }
-          // Otherwise RPC error during simulation — log but don't block
-          // (the tx may still succeed; skipPreflight: false will catch it again)
-          console.warn("[sendTx] Pre-sign simulation failed (non-blocking):", simError);
-        }
-      };
-      const wantSimulation = !skipPreflight && signers.length === 0;
-      if (wantSimulation && usesAtomicSend) {
+      const runSimulation = (): Promise<void> => presimulateOrThrow(connection, tx);
+      const wantSimulation = !skipPreflight && (signers.length === 0 || simulateBeforeSign);
+      const simulateFirst = usesAtomicSend || simulateBeforeSign;
+      if (wantSimulation && simulateFirst) {
         await runSimulation();
       }
       // Settled-result wrapper so a simulation rejection can't become an
       // unhandled rejection while we're awaiting the wallet popup.
       const concurrentSimGate: Promise<Error | null> | null =
-        wantSimulation && !usesAtomicSend
+        wantSimulation && !simulateFirst
           ? runSimulation().then(
               () => null,
               (e) => (e instanceof Error ? e : new Error(String(e))),
