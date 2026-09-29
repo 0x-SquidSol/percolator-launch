@@ -664,3 +664,44 @@ export async function pingIndexerDb(timeoutMs = 3000): Promise<boolean> {
     return false;
   }
 }
+
+// ── Earn LP-vault cost basis (percolator-indexer#207) ──────────────────────
+
+export interface LpVaultPositionRow {
+  registry: string;
+  market_slab: string | null;
+  lp_shares: string;
+  pending_redeem_shares: string;
+  cost_basis_atoms: string;
+  realized_pnl_atoms: string;
+  basis_known: boolean;
+  updated_slot: string;
+}
+
+/**
+ * The indexer's average-cost position for (market, wallet), or null if it has
+ * never seen an LP-vault instruction from that wallet on that market. Amounts
+ * are selected ::text so u128 values never pass through a JS number.
+ */
+export async function queryLpVaultPosition(
+  slabAddress: string,
+  wallet: string,
+): Promise<LpVaultPositionRow | null> {
+  const sql = getSql();
+  const rows = await sql<LpVaultPositionRow[]>`
+    SELECT
+      registry, market_slab,
+      lp_shares::text AS lp_shares,
+      pending_redeem_shares::text AS pending_redeem_shares,
+      cost_basis_atoms::text AS cost_basis_atoms,
+      realized_pnl_atoms::text AS realized_pnl_atoms,
+      basis_known,
+      updated_slot::text AS updated_slot
+    FROM lp_vault_positions
+    WHERE network = ${getServerNetwork()}
+      AND market_slab = ${slabAddress}
+      AND user_wallet = ${wallet}
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
