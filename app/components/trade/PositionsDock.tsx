@@ -32,6 +32,8 @@ import { useUserAccount } from "@/hooks/useUserAccount";
 import { useNftWrappedPosition } from "@/hooks/useNftWrappedPosition";
 import { useClosePosition } from "@/hooks/useClosePosition";
 import { useSlabState } from "@/components/providers/SlabProvider";
+import { useMarketLimits } from "@/hooks/useMarketLimits";
+import { PositionLimitsRow } from "@/components/limits/PositionLimitsRow";
 import { useTokenMeta } from "@/hooks/useTokenMeta";
 import { useLivePrice } from "@/hooks/useLivePrice";
 import { useMarketConfig } from "@/hooks/useMarketConfig";
@@ -128,6 +130,8 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
   const { market: marketInfo } = useMarketInfo(slabAddress);
   const symbol = marketInfo?.symbol ?? collateralSymbol;
   const decimals = tokenMeta?.decimals ?? 6;
+  // P3 skew funding / liquidation drift (flag-gated; "off" = no RPC).
+  const marketLimits = useMarketLimits(slabAddress);
   // T3-dd: `symbol` sometimes already carries a "-PERP" suffix from the
   // market registry (e.g. "SOL-PERP") — appending "/USD" on top of that
   // rendered "SOL-PERP/USD". Strip it once, just for the Market column label
@@ -520,6 +524,20 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
                 )}
               </td>
             </tr>
+            {marketLimits.flags.p3 && (
+              <tr data-testid="limits-position-row" className="border-b border-[var(--border)]/20">
+                <td colSpan={99} className="px-4 pb-2">
+                  <PositionLimitsRow
+                    limits={marketLimits}
+                    positionQ={effectiveSize}
+                    priceE6={currentPriceE6}
+                    marginAboveMaintAtoms={account.capital - (absPosition * currentPriceE6 * maintenanceBps) / 1_000_000n / 10_000n}
+                    decimals={decimals}
+                    collateralSymbol={collateralSymbol}
+                  />
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

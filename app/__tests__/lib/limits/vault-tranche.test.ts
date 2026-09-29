@@ -128,3 +128,74 @@ describe("creator wizard projection", () => {
     });
   });
 });
+
+import { earnTrancheView, rollFeeSnapshots } from "@/lib/limits/vault-tranche";
+
+describe("earnTrancheView", () => {
+  const base = {
+    seniorClaimAtoms: 1_000_000_000n,
+    juniorFloorBps: 1_000,
+    seniorFeeShareBps: 10_000,
+    backingNavAtoms: 1_000_000_000n,
+    harvestableAtoms: 0n,
+    lpValueAtoms: 200_000_000n,
+    totalShares: 1_000_000_000n,
+    withdrawShares: 0n,
+  };
+  it("covered: price 1.0, 20% cushion, normal withdrawal", () => {
+    const v = earnTrancheView({ ...base, withdrawShares: 100_000_000n })!;
+    expect(v.sharePriceE6).toBe(1_000_000n);
+    expect(v.junior).toBe(200_000_000n);
+    expect(v.cushionBps).toBe(2_000);
+    expect(v.withdrawAtoms).toBe(100_000_000n);
+    expect(v.withdrawKind).toBe("normal");
+    expect(v.juniorFloorAtoms).toBe(100_000_000n);
+  });
+  it("illiquid: backing short of C, junior in the LP covers it", () => {
+    const v = earnTrancheView({ ...base, backingNavAtoms: 900_000_000n })!;
+    expect(v.impaired).toBe(false);
+    expect(v.illiquid).toBe(true);
+    expect(v.withdrawKind).toBe("illiquid");
+  });
+  it("impaired: junior exhausted, price below 1, redemptions pay pro-rata of senior", () => {
+    const v = earnTrancheView({ ...base, backingNavAtoms: 700_000_000n, lpValueAtoms: 100_000_000n, withdrawShares: 100_000_000n })!;
+    expect(v.impaired).toBe(true);
+    expect(v.sharePriceE6).toBe(800_000n);
+    expect(v.withdrawAtoms).toBe(80_000_000n);
+    expect(v.withdrawKind).toBe("impaired");
+    expect(v.junior).toBe(0n);
+  });
+});
+
+describe("rollFeeSnapshots", () => {
+  it("accumulates hourly snapshots and reports APY only after 24 h", () => {
+    let list: { t: number; seniorFeeCreditedAtoms: bigint; seniorClaimAtoms: bigint }[] = [];
+    let apy: number | null = null;
+    for (let h = 0; h <= 25; h++) {
+      const r = rollFeeSnapshots(list, { t: 1_000_000 + h * 3_600, seniorFeeCreditedAtoms: BigInt(h) * 1_000n, seniorClaimAtoms: 24_000_000n });
+      list = r.list;
+      apy = r.apyBps;
+      if (h < 24) expect(apy).toBeNull();
+    }
+    expect(list.length).toBe(26);
+    // 24,000 atoms/day on 24,000,000 = 0.1%/day = 3650 bps
+    expect(apy).toBe(3_650);
+  });
+  it("does not add a snapshot inside the min gap", () => {
+    const r = rollFeeSnapshots([{ t: 100, seniorFeeCreditedAtoms: 0n, seniorClaimAtoms: 1n }], { t: 200, seniorFeeCreditedAtoms: 0n, seniorClaimAtoms: 1n });
+    expect(r.list.length).toBe(1);
+  });
+});
+
+import { vaultSkewRateE9 } from "@/lib/limits/vault-tranche";
+
+describe("vaultSkewRateE9 (vault_lp_skew_rate_e9_view)", () => {
+  it("uses max(OI long, OI short); off when unbound or slope 0", () => {
+    const v = { bound: true, skewSlopeE9: 1_000n, skewMaxE9: 10_000n, lpNetQ: -250n };
+    expect(vaultSkewRateE9(v, 1_000n, 500n)).toBe(250n); // 1000 * 250/1000
+    expect(vaultSkewRateE9(v, 500n, 1_000n)).toBe(250n);
+    expect(vaultSkewRateE9({ ...v, bound: false }, 1_000n, 500n)).toBe(0n);
+    expect(vaultSkewRateE9({ ...v, skewSlopeE9: 0n }, 1_000n, 500n)).toBe(0n);
+    expect(vaultSkewRateE9(null, 1_000n, 500n)).toBe(0n);
+  });
+});

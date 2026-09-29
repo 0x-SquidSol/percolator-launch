@@ -28,6 +28,9 @@ import {
 import { sendTx, prewarmTxLanding } from "@/lib/tx";
 import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
 import { applyConfirmedFill, getPortfolioRawSnapshot, isLpPortfolio, makePortfolioScanKey } from "@/lib/userAccountScan";
+import { limitsFlags } from "@/lib/limits/flags";
+import { decodeMarketEngineView, signedPositionForAsset } from "@/lib/limits/decode";
+import { measureFill, recordFillResult } from "@/lib/limits/fill-check";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { detectOracleMode, resolveMarketPriceE6 } from "@/lib/oraclePrice";
 import { assertKnownProgram, assertCanonicalMatcher } from "@/lib/programAllowlist";
@@ -630,12 +633,20 @@ export function useTrade(slabAddress: string) {
         // Cranking an empty portfolio returns EngineNonProgress (0x16) and aborts the tx.
         // Bug fix: do NOT unconditionally prepend the crank instruction.
         let hasActiveLegs = false;
+        // P1 (flag-gated): a confirmed TradeCpi can be a partial or ZERO fill.
+        const limitsMarketId =
+          isV17Market && limitsFlags().p1 && raw ? decodeMarketEngineView(raw)?.marketId ?? null : null;
+        let beforePosQ: bigint | null = null;
         if (isV17Market) {
           try {
             const portInfo = await connection.getAccountInfo(accountA, "confirmed");
             if (portInfo) {
               const pf = parsePortfolioV17(new Uint8Array(portInfo.data));
               hasActiveLegs = pf.legs.some((l) => l.active);
+              // P1 zero-fill check: the taker's position BEFORE the trade (same read).
+              if (limitsMarketId !== null) {
+                beforePosQ = signedPositionForAsset(new Uint8Array(portInfo.data), 0, limitsMarketId);
+              }
             }
           } catch {
             // If portfolio read fails, skip the crank rather than aborting the trade
@@ -690,7 +701,15 @@ export function useTrade(slabAddress: string) {
         // the burst. Capital/pnl/fees are intentionally left untouched (not
         // deterministic client-side) — those fields still wait on the
         // refresh burst exactly as before. See applyConfirmedFill's doc.
-        if (isV17Market) {
+        if (isV17Market && limitsMarketId !== null) {
+          // P1: patch only by the MEASURED delta. A zero fill changes nothing; an
+          // unknown result waits for the refresh burst (never assumes params.size).
+          const fill = await measureFill(connection, accountA, sig, beforePosQ, params.size, limitsMarketId);
+          recordFillResult(sig, fill);
+          if ((fill.kind === "full" || fill.kind === "partial") && fill.filledQ !== null) {
+            applyConfirmedFill(makePortfolioScanKey(programId, slabAddress, wallet.publicKey), fill.filledQ);
+          }
+        } else if (isV17Market) {
           applyConfirmedFill(makePortfolioScanKey(programId, slabAddress, wallet.publicKey), params.size);
         }
 

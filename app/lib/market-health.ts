@@ -36,6 +36,8 @@
  */
 import { decodeMarketLiveness, planLivenessRepairs } from "@/lib/self-heal";
 import type { LivenessRepair } from "@/lib/self-heal";
+import { decodeAssetRiskLimits } from "@/lib/limits/decode";
+import { limitsFlags } from "@/lib/limits/flags";
 
 const MARKET_GROUP_OFF = 592;
 const MARKET_GROUP_LEN = 758;
@@ -109,6 +111,14 @@ export interface MarketHealth {
   /** LP portfolio capital in collateral atoms; null = unknown. */
   lpCapital: bigint | null;
   lpDepleted: boolean;
+  /**
+   * P1 auto-halt (flag NEXT_PUBLIC_LIMITS_P1): LP capital <= the protocol floor
+   * (AssetRiskLimitsV17.lp_floor_atoms @ wrapper-slot 608). Capital bounds IM-lane
+   * equity from above, so this never shows a halt that is not real; an LP halted
+   * by negative pnl/fee debt with capital above the floor is shown on the trade
+   * page (useMarketLimits reads the full LP portfolio). False with P1 off.
+   */
+  lpHalted: boolean;
   lockReasons: LockReason[];
 }
 
@@ -184,6 +194,8 @@ export function decodeMarketHealth(
     .map((x): "long" | "short" => (x.side === 0 ? "long" : "short"));
 
   const lpDepleted = lpCapital !== null && lpCapital === 0n;
+  const p1Limits = limitsFlags().p1 ? decodeAssetRiskLimits(data, 0) : null;
+  const lpHalted = p1Limits !== null && lpCapital !== null && lpCapital <= p1Limits.lpFloorAtoms;
   const lockReasons: LockReason[] = [];
   if (mode === 1) lockReasons.push("resolved");
   if (mode === 2) lockReasons.push("recovery");
@@ -205,13 +217,14 @@ export function decodeMarketHealth(
     drainOnlySides,
     lpCapital,
     lpDepleted,
+    lpHalted,
     lockReasons,
   };
 }
 
 export type HealthBadgeTone = "danger" | "warning" | "info";
 export interface HealthBadge {
-  id: "lp-depleted" | "payout-haircut" | "resolved" | "recovery" | "bankruptcy" | "loss-stale" | "repairable" | "drain-only";
+  id: "lp-depleted" | "lp-halted" | "payout-haircut" | "resolved" | "recovery" | "bankruptcy" | "loss-stale" | "repairable" | "drain-only";
   label: string;
   tone: HealthBadgeTone;
   detail: string;
@@ -233,7 +246,16 @@ export function healthBadges(h: MarketHealth): HealthBadge[] {
   if (h.lockReasons.includes("recovery")) {
     out.push({ id: "recovery", label: "In recovery", tone: "danger", detail: "This market is in recovery mode. New positions are blocked until it recovers." });
   }
-  if (h.lpDepleted) {
+  if (h.lpHalted) {
+    // P1: supersedes "LP depleted" (a depleted LP is halted under P1, and closes still work).
+    out.push({
+      id: "lp-halted",
+      label: "LP halted",
+      tone: "danger",
+      detail:
+        "The market's liquidity provider is at its capital floor, so trades that add to its exposure are paused. Trades that reduce its exposure still work.",
+    });
+  } else if (h.lpDepleted) {
     out.push({
       id: "lp-depleted",
       label: "LP depleted",

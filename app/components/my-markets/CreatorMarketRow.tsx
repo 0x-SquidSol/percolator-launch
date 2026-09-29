@@ -25,6 +25,7 @@ import { Tooltip } from "@/components/ui/Tooltip";
 import { subscribeSlab, getSnapshot } from "@/lib/priceStore/priceStore";
 import { formatUsdFromNumber, formatStatValue, formatSlotAge } from "@/lib/format";
 import { detectOracleMode, sanitizePriceE6, applyInvert, priceE6ToUsd } from "@/lib/oraclePrice";
+import { CreatorTranchePanel } from "@/components/limits/CreatorLimits";
 
 /** Same accrue-cliff threshold as useCreatedMarkets/CrankHealthCard — the
  *  asset's accrue slot (advances only via crank/trade) vs the current
@@ -437,6 +438,8 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
               home so creators never need the hidden /analytics/[slab] URL. */}
           <div className="mb-4 border-t border-[var(--border)]/30 pt-4">
             <SlabProvider slabAddress={slab}>
+              {/* Limits (P1 caps / P3 tranche; flag-gated, null when off) */}
+              <CreatorTranchePanel slab={slab} decimals={decimals} collateralSymbol="USDC" />
               <CreatorClaimPanel slabAddress={slab} />
             </SlabProvider>
           </div>

@@ -12,6 +12,7 @@ import { PositionNftPanel } from "@/components/trade/PositionNftPanel";
 import { PositionsDock } from "@/components/trade/PositionsDock";
 import dynamic from "next/dynamic";
 import { MarketInfoBar } from "@/components/trade/MarketInfoBar";
+import { MarketLimitsStrip } from "@/components/limits/MarketLimitsStrip";
 import { TradeMarketHealthBanner } from "@/components/market/MarketHealthBadges";
 import { AnalyticsDock } from "@/components/trade/AnalyticsDock";
 import { useIsLargeScreen } from "@/hooks/useIsLargeScreen";
@@ -537,6 +538,8 @@ function TradePageInner({ slab }: { slab: string }) {
       <MarketInfoBar slabAddress={slab} symbol={symbol} logoUrl={logoUrl} mintAddress={mintAddress} mainnetCa={chartMintAddress} />
       {/* P0b: v18 health — LP depleted / payout haircut / resolved / bankruptcy */}
       <TradeMarketHealthBanner slab={slab} />
+      {/* Limits (P1/P2/P3, flag-gated; null with every flag off) */}
+      <MarketLimitsStrip slab={slab} symbol={symbol} />
 
       {/* ════════════════ DESKTOP (≥ lg) — named grid ════════════════ */}
       {isLargeScreen && (

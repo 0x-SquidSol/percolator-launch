@@ -84,6 +84,11 @@ import { useWalletNetworkGuard } from "@/hooks/useWalletNetworkGuard";
 import { isOracleStaleBlocking } from "@/lib/oracle-stale-gate";
 import { invalidatePortfolio } from "@/lib/portfolio-invalidation";
 import { FEE_LEGS, legPercent, splitFeeAtoms } from "@/lib/fee-breakdown";
+import { useMarketLimits } from "@/hooks/useMarketLimits";
+import { deriveTicketLimits, sizeQToInput } from "@/lib/limits/ticket";
+import { takeFillResult } from "@/lib/limits/fill-check";
+import type { FillResult } from "@/lib/limits/fill-result";
+import { OrderTicketLimits } from "@/components/limits/OrderTicketLimits";
 
 const SIZE_PRESETS = [25, 50, 75, 100];
 const MAX_DISPLAY_LEVERAGE = 200;
@@ -445,6 +450,10 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // /api/markets/health. Blocks OPENS only — a close reduces the LP's risk and
   // is not gated on this (OrderTicketClosePanel keeps the legacy value).
   const marketHealth = useSingleMarketHealth(slabAddress);
+  // Limits UI (P1/P2/P3, flag-gated; returns state "off" and does no RPC when all flags are off).
+  const marketLimits = useMarketLimits(slabAddress);
+  const [limitsClampedToQ, setLimitsClampedToQ] = useState<bigint | null>(null);
+  const [limitsFill, setLimitsFill] = useState<{ fill: FillResult; requestedQ: bigint } | null>(null);
   const lpDepleted = marketHealth?.lpDepleted === true;
   const marketResolved = marketHealth?.lockReasons.includes("resolved") === true;
 
@@ -472,7 +481,15 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     : 0;
   const supabaseLeverage = Number(marketInfo?.max_leverage) || 0;
   const rawMaxLeverage = maxLeverageFromOnChain > 0 ? maxLeverageFromOnChain : supabaseLeverage || 1;
-  const maxLeverage = Math.min(MAX_DISPLAY_LEVERAGE, rawMaxLeverage);
+  // P3 leverage step-down: a crowd-joining side gets a lower cap (probe = current crowd).
+  const limitsStepDown = deriveTicketLimits({
+    limits: marketLimits, direction, sizeQ: 0n, takerPosQ: 0n, takerOwner: null, leverage: 1, limitPriceE6: 0n,
+  }).stepDown;
+  const maxLeverage = Math.min(
+    MAX_DISPLAY_LEVERAGE,
+    rawMaxLeverage,
+    limitsStepDown?.stepped ? Math.max(1, limitsStepDown.maxLeverage) : Number.POSITIVE_INFINITY,
+  );
 
   const availableLeverage = useMemo(() => availableLeverageFor(maxLeverage), [maxLeverage]);
   const capital = userAccount ? userAccount.account.capital : 0n;
@@ -768,6 +785,27 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     slippageBoundE6 = 0n;
   }
 
+  // ── Limits (P1/P2/P3) — every decision is lib/limits/ticket.ts ──
+  const ticketLimits = deriveTicketLimits({
+    limits: marketLimits,
+    direction,
+    sizeQ: positionSize,
+    takerPosQ: existingPositionSize,
+    takerOwner: publicKey ? publicKey.toBytes() : null,
+    leverage,
+    limitPriceE6: slippageBoundE6,
+    markE6: livePriceE6 ?? undefined,
+  });
+  const limitsBlocking = ticketLimits.issues.some((x) => x.severity === "error");
+  // P1: clamp the size input to the live headroom and SAY so (never silently).
+  const limitsClampTo = ticketLimits.clampToQ;
+  useEffect(() => {
+    if (limitsClampTo === null || !livePriceE6 || livePriceE6 <= 0n) return;
+    handleSizeChange(sizeQToInput(limitsClampTo, sizeUnit, livePriceE6));
+    setLimitsClampedToQ(limitsClampTo);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fire only when a new clamp is required
+  }, [limitsClampTo]);
+
   // ── Per-trade fill cap ──
   // The matcher will not fill more than `maxFillAbs` (base-token units) in one
   // trade, and going over does NOT partially fill — the wrapper rejects the
@@ -887,6 +925,17 @@ setEngineLockError(null);
           ),
         { maxRetries: 2, delayMs: 3000 },
       );
+      // P1: a confirmed TradeCpi can be a partial or ZERO fill (lib/limits/fill-check.ts).
+      const limitsFillResult = takeFillResult(sig);
+      setLimitsFill(limitsFillResult ? { fill: limitsFillResult, requestedQ: size } : null);
+      setLimitsClampedToQ(null);
+      if (limitsFillResult?.kind === "zero") {
+        // Never "Confirmed!" for a no-op: nothing filled, nothing to save.
+        setLastSig(sig ?? null);
+        setTradePhase("idle");
+        refreshSlab();
+        return;
+      }
       setTradePhase("confirming");
       setLastSig(sig ?? null);
 setEngineLockError(null);
@@ -964,7 +1013,8 @@ setEngineLockError(null);
     loading ||
     !marginInput ||
     positionSize <= 0n ||
-    !!blockingIssue;
+    !!blockingIssue ||
+    limitsBlocking;
 
   // ── Close mode ──────────────────────────────────────────────────────────
   const handleClosed = (percent: number) => {
@@ -1060,6 +1110,10 @@ setEngineLockError(null);
           onClick={() => setDirection("long")}
           data-testid="trade-side-long"
           data-side="long"
+          data-limits-halted={ticketLimits.halted.long ? "true" : undefined}
+          disabled={ticketLimits.halted.long}
+          aria-disabled={ticketLimits.halted.long}
+          title={ticketLimits.halted.long ? "Opening long is paused: the LP is at its capital floor" : undefined}
           aria-pressed={direction === "long"}
           className={`flex-1 rounded-none border py-2.5 text-[11px] font-bold uppercase tracking-[0.1em] transition-colors duration-150 ${
             direction === "long"
@@ -1073,6 +1127,10 @@ setEngineLockError(null);
           onClick={() => setDirection("short")}
           data-testid="trade-side-short"
           data-side="short"
+          data-limits-halted={ticketLimits.halted.short ? "true" : undefined}
+          disabled={ticketLimits.halted.short}
+          aria-disabled={ticketLimits.halted.short}
+          title={ticketLimits.halted.short ? "Opening short is paused: the LP is at its capital floor" : undefined}
           aria-pressed={direction === "short"}
           className={`flex-1 rounded-none border py-2.5 text-[11px] font-bold uppercase tracking-[0.1em] transition-colors duration-150 ${
             direction === "short"
@@ -1174,6 +1232,15 @@ setEngineLockError(null);
           cap, and the LP's remaining net-exposure capacity on the CHOSEN side
           (direction-aware, refreshed on a 20s poll). Without this row the
           only way to discover the limits was to trip them. */}
+      <OrderTicketLimits
+        limits={marketLimits}
+        ticket={ticketLimits}
+        direction={direction}
+        symbol={symbol}
+        clampedToQ={limitsClampedToQ}
+        fillResult={limitsFill?.fill ?? null}
+        requestedQ={limitsFill?.requestedQ ?? null}
+      />
       {!mockMode && fillCapNotional != null && (
         <div className="mb-3 space-y-0.5">
           <div className="flex items-center justify-between text-[10px]">

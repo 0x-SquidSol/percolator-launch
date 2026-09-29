@@ -251,3 +251,89 @@ export function projectCreatorCaps(
     maxSeniorAtoms: (juniorAtoms * BPS) / floor,
   };
 }
+
+export interface EarnTrancheInput {
+  seniorClaimAtoms: bigint;
+  juniorFloorBps: number;
+  seniorFeeShareBps: number;
+  /** Backing NAV of the vault's pots (the existing Earn vault total). */
+  backingNavAtoms: bigint;
+  /** Not-yet-cranked LP fee leg (0 when unknown). */
+  harvestableAtoms: bigint;
+  /** Vault LP value: max(0, capital + pnl − fee debt) — an ESTIMATE (the program uses the certified equity). */
+  lpValueAtoms: bigint;
+  totalShares: bigint;
+  /** Shares the user is looking at withdrawing (0 = none typed). */
+  withdrawShares: bigint;
+}
+
+export interface EarnTrancheView {
+  vaultValue: bigint;
+  seniorClaimEff: bigint;
+  senior: bigint;
+  junior: bigint;
+  sharePriceE6: bigint | null;
+  cushionBps: number | null;
+  impaired: boolean;
+  /** Backing alone does not cover the senior claim: part of the value sits in the LP. */
+  illiquid: boolean;
+  juniorFloorAtoms: bigint;
+  withdrawAtoms: bigint | null;
+  withdrawKind: "normal" | "impaired" | "illiquid";
+}
+
+/** Everything the Earn tranche card shows, from on-chain inputs. */
+export function earnTrancheView(i: EarnTrancheInput): EarnTrancheView | null {
+  const cEff = effectiveSeniorClaim(i.seniorClaimAtoms, i.harvestableAtoms, i.seniorFeeShareBps);
+  if (cEff === null) return null;
+  const v = vaultValue(i.backingNavAtoms, i.harvestableAtoms, i.lpValueAtoms);
+  const split = trancheSplit(v, cEff);
+  const impaired = seniorImpaired(v, cEff);
+  const illiquid = i.backingNavAtoms + i.harvestableAtoms < cEff;
+  const withdrawAtoms = i.withdrawShares > 0n ? seniorAtomsForRedemption(i.withdrawShares, i.totalShares, split.senior) : null;
+  return {
+    vaultValue: v,
+    seniorClaimEff: cEff,
+    senior: split.senior,
+    junior: split.junior,
+    sharePriceE6: seniorSharePriceE6(split.senior, i.totalShares),
+    cushionBps: firstLossCushionBps(split.junior, cEff),
+    impaired,
+    illiquid,
+    juniorFloorAtoms: juniorFloorAtoms(cEff, i.juniorFloorBps) ?? 0n,
+    withdrawAtoms,
+    withdrawKind: impaired ? "impaired" : illiquid ? "illiquid" : "normal",
+  };
+}
+
+/**
+ * Keep a rolling list of fee snapshots (one per `minGapSecs`, at most
+ * `maxAgeSecs` old) and return the APY over the OLDEST snapshot that is at
+ * least 24 h older than `now`. Pure: storage is the caller's.
+ */
+export function rollFeeSnapshots(
+  prev: FeeSnapshot[],
+  now: FeeSnapshot,
+  minGapSecs = 3_600,
+  maxAgeSecs = 8 * 86_400,
+): { list: FeeSnapshot[]; apyBps: number | null } {
+  const kept = prev.filter((s) => now.t - s.t <= maxAgeSecs && s.t <= now.t);
+  const last = kept[kept.length - 1];
+  const list = !last || now.t - last.t >= minGapSecs ? [...kept, now] : kept;
+  const base = list.find((s) => now.t - s.t >= MIN_APY_WINDOW_SECS) ?? null;
+  return { list, apyBps: base ? apyFromFeeSnapshots(base, now) : null };
+}
+
+/**
+ * Port of P3 `vault_lp_skew_rate_e9_view`: 0 unless bound with a slope; the
+ * OI denominator is `max(oi_eff_long_q, oi_eff_short_q)`.
+ */
+export function vaultSkewRateE9(
+  v: { bound: boolean; skewSlopeE9: bigint; skewMaxE9: bigint; lpNetQ: bigint } | null,
+  oiEffLongQ: bigint,
+  oiEffShortQ: bigint,
+): bigint {
+  if (!v || !v.bound || v.skewSlopeE9 === 0n) return 0n;
+  const oi = oiEffLongQ > oiEffShortQ ? oiEffLongQ : oiEffShortQ;
+  return skewFundingRateE9(v.lpNetQ, oi, v.skewSlopeE9, v.skewMaxE9);
+}

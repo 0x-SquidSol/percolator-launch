@@ -115,6 +115,7 @@ import {
   type CreateStepKind,
 } from "@/lib/create-market-v18";
 import { buildInitMatcherCtxArgs } from "@/lib/matcher-params";
+import { buildConfigureBackingFeeCapIx, matcherTag5Enabled } from "@/lib/limits/matcher-configure";
 import {
   inspectV17MatcherContext,
   isEmptyV17PortfolioMatcherConfig,
@@ -1171,9 +1172,27 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       // max_inventory 0 = unlimited LP). Existing markets are never reconfigured.
       data: encodeInitMatcherCtx(buildInitMatcherCtxArgs(Number(params.tradingFeeBps), derived.matcher)),
     });
+    // P2 carry-over: matcher tag 5 (owner-proof Configure) sets the LP's backing-fee
+    // consent cap, which tag 4 never could (lib/limits/matcher-configure.ts). Only once
+    // the matcher is upgraded (NEXT_PUBLIC_MATCHER_TAG5=1) and a cap is configured.
+    const backingFeeCapBps = Number(process.env.NEXT_PUBLIC_MATCHER_BACKING_FEE_CAP_BPS ?? "0") || 0;
+    const configureCapIxs =
+      matcherTag5Enabled() && backingFeeCapBps > 0
+        ? [
+            buildConfigureBackingFeeCapIx({
+              wrapperProgramId: programId,
+              matcherProgramId,
+              market: slabPk,
+              lpPortfolio: lpPortfolioKp.publicKey,
+              lpOwner: walletPk,
+              matcherCtx: matcherCtxKp.publicKey,
+              capBps: backingFeeCapBps,
+            }),
+          ]
+        : [];
     const m2Descriptor: TailTxDescriptor = {
       label: "Setting up the liquidity pool",
-      instructions: [createPortfolioIx, initPortfolioIx, createCtxIx, setMatcherConfigIx, initMatcherCtxIx],
+      instructions: [createPortfolioIx, initPortfolioIx, createCtxIx, setMatcherConfigIx, initMatcherCtxIx, ...configureCapIxs],
       computeUnits: 800_000,
       signers: [lpPortfolioKp, matcherCtxKp],
     };

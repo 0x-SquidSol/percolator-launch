@@ -5,6 +5,7 @@ import { RotaryDial } from "./RotaryDial";
 import { HoldToLaunch } from "./HoldToLaunch";
 import { MAX_LEVERAGE_X, MIN_LEVERAGE_X } from "@/lib/market-params";
 import { FeeBreakdown } from "@/components/FeeBreakdown";
+import { WizardTranchePanel } from "@/components/limits/CreatorLimits";
 
 /**
  * GH#2621: this dial used to floor initial margin at the OLD
@@ -189,6 +190,8 @@ export const StepControlRoom: FC<StepControlRoomProps> = ({
           {MAX_LEVERAGE}×, set by how much price-move headroom the protocol can guarantee at
           that margin.
         </p>
+        {/* P3 (flag-gated): the liquidity above is the creator's junior, first-loss tranche. */}
+        <WizardTranchePanel juniorUnits={lp} initialMarginBps={initialMarginBps} decimals={6} collateralSymbol={collateralSymbol} />
       </div>
 
       {/* ── pre-flight (auto-resolved, nothing to decide) ───────────────── */}

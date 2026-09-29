@@ -5,6 +5,7 @@ import { SlabProvider, useSlabState } from '@/components/providers/SlabProvider'
 import { useInsuranceLP } from '@/hooks/useInsuranceLP';
 import { useTokenMeta } from '@/hooks/useTokenMeta';
 import { DepositWithdrawPanel } from '@/components/earn/DepositWithdrawPanel';
+import { EarnTrancheCard } from '@/components/limits/EarnTrancheCard';
 import { MarketLogo } from '@/components/market/MarketLogo';
 import { formatCompact } from '@/lib/formatters';
 import type { MarketVaultInfo } from '@/hooks/useEarnStats';
@@ -109,6 +110,16 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
 
   return (
     <div className="space-y-3">
+      {/* P3 (flag-gated): senior/junior tranches, NAV share price, APY from real fees.
+          Withdrawal preview = the wallet's whole position. Null unless the vault owns the LP. */}
+      <EarnTrancheCard
+        slab={slab}
+        backingNavAtoms={state.vaultTotalAtoms}
+        totalShares={state.lpSupply}
+        withdrawShares={state.userLpBalance}
+        decimals={collateralDecimals}
+        collateralSymbol={collateralSymbol}
+      />
       {/* Selected-vault header + key figures + position */}
       <div className="border border-[var(--border)] bg-[var(--panel-bg)] hud-corners">
         <div className="h-px bg-gradient-to-r from-transparent via-[var(--accent)]/40 to-transparent" />
