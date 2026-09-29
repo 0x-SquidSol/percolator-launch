@@ -2,43 +2,51 @@
 
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { useClusterSlot } from "@/hooks/useClusterSlot";
+import { readV17AssetSlotLast, readV17MaxAccrualDtSlots } from "@/lib/v17-engine-clock";
 
 /**
- * H6 (2026-07-08): ENGINE accrue-staleness — distinct from `useOracleFreshness`,
- * which tracks the KEEPER'S PRICE PUSH cadence (`markEwmaLastSlot`, bumped on
- * every `UpdateHyperpMark`/`PushAuthMark`, ~10s, regardless of whether the
- * engine itself has accrued against that price).
+ * H6 (2026-07-08): ENGINE accrual staleness ("Crank behind") — distinct from
+ * `useOracleFreshness`, which tracks the KEEPER'S PRICE PUSH cadence.
  *
- * The engine only advances `lastGoodOracleSlot` when a crank/trade actually
- * ACCRUES the market against a fresh price. A market where the keeper is
- * still happily pushing AuthMark every ~10s (so `useOracleFreshness` reads
- * "fresh", and the UI shows a live, ticking green price) can still be
- * cliff-dead at the engine level if nothing has cranked/traded it in ~500
- * slots (~190s) — every trade/close on it reverts `EngineStale(19)` or
- * `EngineLockActive(21)`, permanently, until a maintainer re-seeds the
- * market. This is exactly the SOL/JUP/TRUMP situation verified live on
- * devnet (273k-283k slots past the cliff) in DEFINITIVE-PLAN-2026-07-08.md
- * §H6 — "the single most dangerous divergence": dead markets display a live
- * price. `useOracleFreshness` cannot catch this on its own; this hook reads
- * the ENGINE's own accrue slot instead of the oracle-push slot.
+ * What actually breaks trading when the crank stops is the engine's accrual
+ * clock, `AssetStateV16Account.slot_last` (see lib/v17-engine-clock.ts §2):
+ * it advances only when a crank/trade ACCRUES the market, one accrual covers at
+ * most `max_accrual_dt_slots` (500 on every live market), and trade / close /
+ * withdraw paths reject an asset whose `slot_last` lags (EngineStale(19) /
+ * EngineLockActive(21)). A market can show a live, ticking, freshly-pushed
+ * price and still be accrual-dead — that is the divergence this hook exists to
+ * catch (DEFINITIVE-PLAN-2026-07-08.md §H6, and tonight's clock freeze).
  *
- * `lastGoodOracleSlot` is exposed both at the wrapper-config level (asset 0,
- * what single-asset playground markets use) and per-asset in
- * `AssetOracleProfileV17` — see percolator-prog `last_good_oracle_slot`,
- * which only advances via crank/trade accrual, never via a bare price push
- * (percolator-prog README §"stamped last_good_oracle_slot").
+ * This hook used to measure `lastGoodOracleSlot` on the belief that it
+ * advances "only via crank". It does not: in AUTH_MARK (every live market)
+ * only `PushAuthMark` advances it, on every push, and no crank path touches it
+ * for that mode. So it tracked the keeper's push loop, not the crank — a dead
+ * crank under a live keeper read healthy, and the ~500-slot threshold it
+ * borrowed belongs to `max_accrual_dt_slots`, i.e. to `slot_last`. Push age is
+ * now owned by `useOracleFreshness`.
  */
-const ENGINE_STALE_SLOT_LAG = 450n; // cliff is ~500 slots; block with a safety margin
+
+/** Block this far inside the accrual window (10%), so the gate trips before trades revert. */
+const ACCRUAL_SAFETY_MARGIN_DIVISOR = 10n;
+/** Used only if the market's max_accrual_dt_slots is unreadable (live value is 500). */
+const FALLBACK_STALE_SLOT_LAG = 450n;
 
 export interface EngineFreshnessState {
-  /** True once the engine's accrue slot has fallen further than ~450 slots behind the live cluster slot. */
+  /** True once the engine's accrual clock has fallen further behind the live cluster slot than the market's accrual window (minus a 10% margin). */
   engineStale: boolean;
-  /** currentSlot - lastGoodOracleSlot, or null until both are known. */
+  /** currentSlot - engineSlotLast, or null until both are known. */
   slotLag: bigint | null;
   /** Live cluster slot, polled every ~10s (not the reactive slab-poll slot). */
   currentSlot: bigint | null;
-  /** The engine's last-accrued slot (wrapper-level `lastGoodOracleSlot`), or null if not yet loaded. */
-  lastGoodOracleSlot: bigint | null;
+  /** The asset-0 engine accrual clock (`AssetStateV16Account.slot_last`), or null if not yet loaded / never accrued. */
+  engineSlotLast: bigint | null;
+  /** Slot lag above which `engineStale` is true. */
+  staleSlotLag: bigint;
+}
+
+export function engineStaleSlotLag(maxAccrualDtSlots: bigint | null): bigint {
+  if (maxAccrualDtSlots === null) return FALLBACK_STALE_SLOT_LAG;
+  return maxAccrualDtSlots - maxAccrualDtSlots / ACCRUAL_SAFETY_MARGIN_DIVISOR;
 }
 
 /**
@@ -46,21 +54,22 @@ export interface EngineFreshnessState {
  * useOracleFreshness, avoiding duplicate getSlot() polling.
  */
 export function useEngineFreshness(): EngineFreshnessState {
-  const { wrapperConfigV17 } = useSlabState();
+  const { raw, wrapperConfigV17 } = useSlabState();
   const currentSlot = useClusterSlot();
 
-  // 0n means "never accrued yet" (e.g. a market mid-creation) — treat as
+  // v17/v18 only (the legacy v12 path has its own engine block). A slot_last
+  // of 0 means "never accrued yet" (e.g. a market mid-creation) — treat as
   // unknown rather than infinitely stale so a brand-new market doesn't
   // immediately trip the guard before its first crank lands.
-  const lastGoodOracleSlot = wrapperConfigV17 && wrapperConfigV17.lastGoodOracleSlot > 0n
-    ? wrapperConfigV17.lastGoodOracleSlot
+  const isV17 = wrapperConfigV17 != null && raw != null;
+  const engineSlotLast = isV17 ? readV17AssetSlotLast(raw) : null;
+  const staleSlotLag = engineStaleSlotLag(isV17 ? readV17MaxAccrualDtSlots(raw) : null);
+
+  const slotLag = currentSlot !== null && engineSlotLast !== null
+    ? currentSlot - engineSlotLast
     : null;
 
-  const slotLag = currentSlot !== null && lastGoodOracleSlot !== null
-    ? currentSlot - lastGoodOracleSlot
-    : null;
+  const engineStale = slotLag !== null && slotLag > staleSlotLag;
 
-  const engineStale = slotLag !== null && slotLag > ENGINE_STALE_SLOT_LAG;
-
-  return { engineStale, slotLag, currentSlot, lastGoodOracleSlot };
+  return { engineStale, slotLag, currentSlot, engineSlotLast, staleSlotLag };
 }
