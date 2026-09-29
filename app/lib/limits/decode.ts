@@ -1,0 +1,299 @@
+/**
+ * Pure byte decoders for the limits UI (plan §1). Offsets come only from
+ * `./constants` (verified against branch source). Every decoder is total: it
+ * returns `null` for a too-short buffer or for bytes the program itself would
+ * refuse (non-zero reserved bytes, inconsistent flags), so the UI can show
+ * "limits unavailable" instead of a guessed number.
+ */
+import * as C from "./constants";
+
+function dv(d: Uint8Array): DataView {
+  return new DataView(d.buffer, d.byteOffset, d.byteLength);
+}
+export function u128(d: Uint8Array, off: number): bigint {
+  const v = dv(d);
+  return v.getBigUint64(off, true) | (v.getBigUint64(off + 8, true) << 64n);
+}
+export function i128(d: Uint8Array, off: number): bigint {
+  const v = dv(d);
+  return v.getBigUint64(off, true) | (v.getBigInt64(off + 8, true) << 64n);
+}
+const u64 = (d: Uint8Array, off: number): bigint => dv(d).getBigUint64(off, true);
+const u32 = (d: Uint8Array, off: number): number => dv(d).getUint32(off, true);
+const u16 = (d: Uint8Array, off: number): number => dv(d).getUint16(off, true);
+const allZero = (d: Uint8Array, off: number, len: number): boolean => {
+  for (let k = off; k < off + len; k++) if (d[k] !== 0) return false;
+  return true;
+};
+
+// ── Market slab ──────────────────────────────────────────────────────────────
+
+export interface MarketEngineView {
+  currentSlot: bigint;
+  mode: number;
+  initialMarginBps: bigint;
+  maintenanceMarginBps: bigint;
+  maxAbsFundingE9PerSlot: bigint;
+  tradeFeeBaseBps: bigint;
+  marketId: bigint;
+  effectivePriceE6: bigint;
+  oiEffLongQ: bigint;
+  oiEffShortQ: bigint;
+  modeLong: number;
+  modeShort: number;
+}
+
+/** Bytes needed to decode asset `i`'s engine view and wrapper-slot records. */
+export const marketLimitsSliceLen = (i = 0): number => C.assetEngineOff(i) + 1301;
+
+export function decodeMarketEngineView(d: Uint8Array, assetIndex = 0): MarketEngineView | null {
+  const e = C.assetEngineOff(assetIndex);
+  if (d.length < e + C.A_MODE_SHORT + 1) return null;
+  const g = C.MARKET_GROUP_OFF;
+  const cfg = g + C.H_CONFIG;
+  return {
+    currentSlot: u64(d, g + C.H_CURRENT_SLOT),
+    mode: d[g + C.H_MODE],
+    initialMarginBps: u64(d, cfg + C.CFG_INITIAL_MARGIN_BPS),
+    maintenanceMarginBps: u64(d, cfg + C.CFG_MAINTENANCE_MARGIN_BPS),
+    maxAbsFundingE9PerSlot: u64(d, cfg + C.CFG_MAX_ABS_FUNDING_E9_PER_SLOT),
+    tradeFeeBaseBps: u64(d, C.HEADER_LEN + C.WCFG_TRADE_FEE_BASE_BPS),
+    marketId: u64(d, e + C.A_MARKET_ID),
+    effectivePriceE6: u64(d, e + C.A_EFFECTIVE_PRICE),
+    oiEffLongQ: u128(d, e + C.A_OI_EFF_LONG_Q),
+    oiEffShortQ: u128(d, e + C.A_OI_EFF_SHORT_Q),
+    modeLong: d[e + C.A_MODE_LONG],
+    modeShort: d[e + C.A_MODE_SHORT],
+  };
+}
+
+export interface AssetRiskLimits {
+  sideOiCapQ: bigint;
+  lpFloorAtoms: bigint;
+  lpExposureKBps: number;
+  execBandBps: number;
+  matcherExtMode: number;
+  /** True when every field is zero (deployed/zeroed slot = all protocol defaults). */
+  allDefault: boolean;
+}
+
+/** P1 `AssetRiskLimitsV17`; null when too short or when `validate_asset_risk_limits` would refuse. */
+export function decodeAssetRiskLimits(d: Uint8Array, assetIndex = 0): AssetRiskLimits | null {
+  const b = C.assetWrapperOff(assetIndex) + C.ASSET_RISK_LIMITS_OFF;
+  if (d.length < b + C.ASSET_RISK_LIMITS_LEN) return null;
+  if (d[b + C.RL_RESERVED0] !== 0 || !allZero(d, b + C.RL_RESERVED, 24)) return null;
+  const r: AssetRiskLimits = {
+    sideOiCapQ: u128(d, b + C.RL_SIDE_OI_CAP_Q),
+    lpFloorAtoms: u128(d, b + C.RL_LP_FLOOR_ATOMS),
+    lpExposureKBps: u32(d, b + C.RL_LP_EXPOSURE_K_BPS),
+    execBandBps: u16(d, b + C.RL_EXEC_BAND_BPS),
+    matcherExtMode: d[b + C.RL_MATCHER_EXT_MODE],
+    allDefault: allZero(d, b, C.ASSET_RISK_LIMITS_LEN),
+  };
+  if (
+    r.matcherExtMode > C.MATCHER_EXT_MODE_V1 ||
+    r.execBandBps > C.MAX_EXEC_BAND_BPS ||
+    r.lpExposureKBps > C.MAX_LP_EXPOSURE_K_BPS
+  ) {
+    return null;
+  }
+  return r;
+}
+
+export interface AssetVaultLp {
+  bound: boolean;
+  vaultLpPortfolio: Uint8Array;
+  lpNetQ: bigint;
+  levCapQ: bigint;
+  lpNetSlot: bigint;
+  skewSlopeE9: bigint;
+  skewMaxE9: bigint;
+  levMaxImrBps: number;
+}
+
+/** P3 `AssetVaultLpV18`; null when too short or `validate_asset_vault_lp` would refuse. */
+export function decodeAssetVaultLp(d: Uint8Array, assetIndex = 0): AssetVaultLp | null {
+  const b = C.assetWrapperOff(assetIndex) + C.ASSET_VAULT_LP_OFF;
+  if (d.length < b + C.ASSET_VAULT_LP_LEN) return null;
+  const flags = d[b + C.AV_FLAGS];
+  const key = d.slice(b + C.AV_VAULT_LP_PORTFOLIO, b + C.AV_VAULT_LP_PORTFOLIO + 32);
+  const bound = (flags & C.ASSET_VAULT_LP_FLAG_BOUND) !== 0;
+  const levMaxImrBps = u16(d, b + C.AV_LEV_MAX_IMR_BPS);
+  if (
+    (flags & ~C.ASSET_VAULT_LP_FLAG_BOUND) !== 0 ||
+    !allZero(d, b + C.AV_RESERVED0, 5) ||
+    !allZero(d, b + C.AV_RESERVED, 32) ||
+    levMaxImrBps > 10_000 ||
+    bound !== !allZero(key, 0, 32)
+  ) {
+    return null;
+  }
+  return {
+    bound,
+    vaultLpPortfolio: key,
+    lpNetQ: i128(d, b + C.AV_LP_NET_Q),
+    levCapQ: u128(d, b + C.AV_LEV_CAP_Q),
+    lpNetSlot: u64(d, b + C.AV_LP_NET_SLOT),
+    skewSlopeE9: u64(d, b + C.AV_SKEW_SLOPE_E9),
+    skewMaxE9: u64(d, b + C.AV_SKEW_MAX_E9),
+    levMaxImrBps,
+  };
+}
+
+// ── Portfolio ────────────────────────────────────────────────────────────────
+
+export interface PortfolioRiskView {
+  owner: Uint8Array;
+  capital: bigint;
+  pnl: bigint;
+  feeCredits: bigint;
+}
+
+export function decodePortfolioRisk(d: Uint8Array): PortfolioRiskView | null {
+  if (d.length < C.PF_LEGS + C.PF_MAX_LEGS * C.PF_LEG_LEN) return null;
+  return {
+    owner: d.slice(C.PF_OWNER, C.PF_OWNER + 32),
+    capital: u128(d, C.PF_CAPITAL),
+    pnl: i128(d, C.PF_PNL),
+    feeCredits: i128(d, C.PF_FEE_CREDITS),
+  };
+}
+
+/**
+ * Port of wrapper `signed_position_for_asset_view`: the first active leg for
+ * `(assetIndex, marketId)`, `+|basis|` Long / `-|basis|` Short. BASIS, not
+ * ADL-scaled — exactly what P1's caps use.
+ */
+export function signedPositionForAsset(d: Uint8Array, assetIndex: number, marketId: bigint): bigint {
+  if (d.length < C.PF_LEGS + C.PF_MAX_LEGS * C.PF_LEG_LEN) return 0n;
+  const v = dv(d);
+  for (let s = 0; s < C.PF_MAX_LEGS; s++) {
+    const l = C.PF_LEGS + s * C.PF_LEG_LEN;
+    if (d[l + C.LEG_ACTIVE] !== 1) continue;
+    if (v.getUint32(l + C.LEG_ASSET_INDEX, true) !== assetIndex) continue;
+    if (v.getBigUint64(l + C.LEG_MARKET_ID, true) !== marketId) continue;
+    const basis = i128(d, l + C.LEG_BASIS_POS_Q);
+    const mag = basis < 0n ? -basis : basis;
+    return d[l + C.LEG_SIDE] === 0 ? mag : -mag;
+  }
+  return 0n;
+}
+
+// ── Matcher context (P2) ─────────────────────────────────────────────────────
+
+export interface V2BlockView {
+  flags: number;
+  feeLoBps: number;
+  feeHiBps: number;
+  feeColdBps: number;
+  volAMilli: number;
+  volBDen: number;
+  volAlphaBps: number;
+  volWarmupLeft: number;
+  volMoveCap10bps: number;
+  volRefSlots: number;
+  thinRebateMultBps: number;
+  skewCapBps: number;
+  rebateCapBps: number;
+  maxMarkAgeSlots: number;
+  observedStaleSlots: number;
+  boundAssetPlus1: number;
+  skewRefInventory: bigint;
+  volVarE4: bigint;
+  volLastPriceE6: bigint;
+  volLastSlot: bigint;
+}
+
+export interface MatcherCtxView {
+  kind: number;
+  tradingFeeBps: number;
+  baseSpreadBps: number;
+  maxTotalBps: number;
+  impactKBps: number;
+  liquidityNotionalE6: bigint;
+  maxFillAbs: bigint;
+  inventoryBase: bigint;
+  maxInventoryAbs: bigint;
+  skewSpreadMultBps: number;
+  /** null = no v2 block (every v1 context; marker byte 0). */
+  v2: V2BlockView | null;
+}
+
+export function decodeMatcherCtx(d: Uint8Array): MatcherCtxView | null {
+  if (d.length < C.MC_V2_BLOCK + C.V2_BLOCK_LEN) return null;
+  const b = C.MC_V2_BLOCK;
+  const v2: V2BlockView | null =
+    d[b + C.V2.version] !== C.V2_BLOCK_VERSION
+      ? null
+      : {
+          flags: d[b + C.V2.flags],
+          feeLoBps: u16(d, b + C.V2.feeLoBps),
+          feeHiBps: u16(d, b + C.V2.feeHiBps),
+          feeColdBps: u16(d, b + C.V2.feeColdBps),
+          volAMilli: u16(d, b + C.V2.volAMilli),
+          volBDen: u16(d, b + C.V2.volBDen),
+          volAlphaBps: u16(d, b + C.V2.volAlphaBps),
+          volWarmupLeft: d[b + C.V2.volWarmupLeft],
+          volMoveCap10bps: d[b + C.V2.volMoveCap10bps],
+          volRefSlots: u16(d, b + C.V2.volRefSlots),
+          thinRebateMultBps: u16(d, b + C.V2.thinRebateMultBps),
+          skewCapBps: u16(d, b + C.V2.skewCapBps),
+          rebateCapBps: u16(d, b + C.V2.rebateCapBps),
+          maxMarkAgeSlots: u16(d, b + C.V2.maxMarkAgeSlots),
+          observedStaleSlots: u16(d, b + C.V2.observedStaleSlots),
+          boundAssetPlus1: u16(d, b + C.V2.boundAssetPlus1),
+          skewRefInventory: u64(d, b + C.V2.skewRefInventory),
+          volVarE4: u64(d, b + C.V2.volVarE4),
+          volLastPriceE6: u64(d, b + C.V2.volLastPriceE6),
+          volLastSlot: u64(d, b + C.V2.volLastSlot),
+        };
+  return {
+    kind: d[C.MC_KIND],
+    tradingFeeBps: u32(d, C.MC_TRADING_FEE_BPS),
+    baseSpreadBps: u32(d, C.MC_BASE_SPREAD_BPS),
+    maxTotalBps: u32(d, C.MC_MAX_TOTAL_BPS),
+    impactKBps: u32(d, C.MC_IMPACT_K_BPS),
+    liquidityNotionalE6: u128(d, C.MC_LIQUIDITY_NOTIONAL_E6),
+    maxFillAbs: u128(d, C.MC_MAX_FILL_ABS),
+    inventoryBase: i128(d, C.MC_INVENTORY_BASE),
+    maxInventoryAbs: u128(d, C.MC_MAX_INVENTORY_ABS),
+    skewSpreadMultBps: u16(d, C.MC_SKEW_SPREAD_MULT_BPS),
+    v2,
+  };
+}
+
+// ── P3 vault state PDA ───────────────────────────────────────────────────────
+
+export interface VaultLpStateView {
+  seniorClaimAtoms: bigint;
+  juniorDepositedAtoms: bigint;
+  juniorWithdrawnAtoms: bigint;
+  seniorFeeCreditedAtoms: bigint;
+  recalledAtoms: bigint;
+  assetIndex: number;
+  juniorFloorBps: number;
+  seniorFeeShareBps: number;
+  lpPortfolio: Uint8Array;
+  juniorOwner: Uint8Array;
+}
+
+/** `read_vault_lp_state` subset: kind byte + version + floor bound; null = refuse. */
+export function decodeVaultLpState(d: Uint8Array): VaultLpStateView | null {
+  if (d.length < C.VAULT_LP_STATE_ACCOUNT_LEN) return null;
+  if (d[C.HEADER_KIND_OFF] !== C.KIND_VAULT_LP_STATE) return null;
+  if (d[C.VS.version] !== C.VAULT_LP_STATE_VERSION) return null;
+  const floor = u16(d, C.VS.juniorFloorBps);
+  if (floor < C.VAULT_LP_MIN_JUNIOR_FLOOR_BPS || floor > 10_000) return null;
+  return {
+    seniorClaimAtoms: u128(d, C.VS.seniorClaimAtoms),
+    juniorDepositedAtoms: u128(d, C.VS.juniorDepositedAtoms),
+    juniorWithdrawnAtoms: u128(d, C.VS.juniorWithdrawnAtoms),
+    seniorFeeCreditedAtoms: u128(d, C.VS.seniorFeeCreditedAtoms),
+    recalledAtoms: u128(d, C.VS.recalledAtoms),
+    assetIndex: u16(d, C.VS.assetIndex),
+    juniorFloorBps: floor,
+    seniorFeeShareBps: u16(d, C.VS.seniorFeeShareBps),
+    lpPortfolio: d.slice(C.VS.lpPortfolio, C.VS.lpPortfolio + 32),
+    juniorOwner: d.slice(C.VS.juniorOwner, C.VS.juniorOwner + 32),
+  };
+}

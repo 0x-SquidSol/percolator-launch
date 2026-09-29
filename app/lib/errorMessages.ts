@@ -1,4 +1,5 @@
 import { resolveDevnetProgramIds } from "@/lib/program-ids";
+import { P2_ERROR_COPY } from "@/lib/limits/copy";
 /**
  * Percolator on-chain program error code to human-readable message mappings.
  * 
@@ -44,8 +45,8 @@ export { LIGHTHOUSE_USER_MESSAGE };
 // This was previously a stale v12 map whose codes were misaligned from ordinal 4
 // onward (e.g. 21 showed "Position size mismatch" but v17 21 = EngineLockActive).
 /**
- * P1 wrapper errors (appended after 61). Kept as its own table so the P1
- * release is a self-contained edit. Empty until the P1 codes are final.
+ * P1 wrapper errors (Custom 66..71, feat/p1-safety-release). The single
+ * source of P1 wording: lib/limits/errors.ts reuses this table.
  */
 export const P1_ERROR_MESSAGES: Record<number, string> = {
   // p1-safety-release-2026-09-29.md §3 (append-only; feat/p1-safety-release). Harmless before
@@ -432,6 +433,8 @@ export function humanizeError(rawMsg: string, context?: "trade"): string {
     // Code-overlap guard: the matcher's own custom codes are not wrapper codes.
     const origin = failingProgramId(rawMsg);
     if (origin && origin === MATCHER_PROGRAM_ID && origin !== WRAPPER_PROGRAM_ID) {
+      // P2 matcher v2 codes (8002..8005) have plain copy; anything else keeps the generic line.
+      if (P2_ERROR_COPY[code]) return P2_ERROR_COPY[code];
       return `The market's matcher rejected this fill (matcher error ${code}). Try a smaller size, or retry in a moment.`;
     }
     if (isNftProgramError(rawMsg) && NFT_ERROR_CODE_MAP[code]) {

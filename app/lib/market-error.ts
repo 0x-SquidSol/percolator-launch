@@ -20,6 +20,8 @@
 import { detectWalletError, extractErrorCode, failingProgramId } from "@/lib/errorMessages";
 import { resolveDevnetProgramIds } from "@/lib/program-ids";
 import type { LockReason, MarketHealthRow } from "@/lib/market-health";
+import { p3LimitsErrorCopy } from "@/lib/limits/errors";
+import { limitsFlags } from "@/lib/limits/flags";
 
 export type MarketTxAction = "open" | "close" | "deposit" | "withdraw" | "earn-deposit" | "earn-withdraw";
 
@@ -45,11 +47,18 @@ function has(h: MarketHealthRow, r: LockReason): boolean {
   return h.lockReasons.includes(r);
 }
 
-/** Hook for P1 codes (band, halt, exposure cap). Returns null = no refinement. */
+/**
+ * Hook for P1 codes (band, halt, exposure cap) and P3 (provisional ordinals,
+ * flag-gated, read from lib/limits/constants.ts). P1 66..71 already have copy
+ * in errorMessages.P1_ERROR_MESSAGES; this only refines by live health, and
+ * adds P3 copy (P3 ordinals are not in ERROR_CODE_MAP because they will move).
+ * Returns null = no refinement.
+ */
 export function refineP1(code: number, action: MarketTxAction, health: MarketHealthRow | null): string | null {
   // 69 LpFloorHalt / 68 LpExposureCapExceeded on an open with a depleted LP: the
   // honest message is "LP depleted", same as the pre-P1 Custom(49) state.
   if ((code === 69 || code === 68) && action === "open" && health?.lpDepleted) return MSG_LP_DEPLETED_OPEN;
+  if (limitsFlags().p3) return p3LimitsErrorCopy(code);
   return null;
 }
 
