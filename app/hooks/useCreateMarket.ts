@@ -113,6 +113,7 @@ import {
   sequentialStepKind,
   type CreateStepKind,
 } from "@/lib/create-market-v18";
+import { buildInitMatcherCtxArgs } from "@/lib/matcher-params";
 import {
   inspectV17MatcherContext,
   isEmptyV17PortfolioMatcherConfig,
@@ -1167,15 +1168,10 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
         lpOwner: walletPk, market: slabPk, lpPortfolio: lpPortfolioKp.publicKey,
         matcherCtx: matcherCtxKp.publicKey, matcherProg: matcherProgramId, matcherDelegate: matcherDelegatePk,
       }),
-      data: encodeInitMatcherCtx({
-        kind: 0, tradingFeeBps: Number(params.tradingFeeBps), baseSpreadBps: 50, maxTotalBps: 200,
-        impactKBps: 0, liquidityNotionalE6: 0n,
-        // LP GUARDRAILS (2026-07-27). These were i128::MAX / 0 — an unlimited,
-        // fixed-price counterparty with no skew, which is how Jimothy's LP was
-        // drained to $0 / -$2,479. Now sized to LP capital: see lib/market-params.ts.
-        maxFillAbs: derived.maxFillAbs, maxInventoryAbs: derived.maxInventoryAbs,
-        feeToInsuranceBps: 0, skewSpreadMultBps: derived.skewSpreadMultBps,
-      }),
+      // Matcher config for NEW markets: kind 1 (vAMM) + skew + FINITE non-zero
+      // caps, all from lib/matcher-params.ts (never 0: max_fill 0 = no fills,
+      // max_inventory 0 = unlimited LP). Existing markets are never reconfigured.
+      data: encodeInitMatcherCtx(buildInitMatcherCtxArgs(Number(params.tradingFeeBps), derived.matcher)),
     });
     const m2Descriptor: TailTxDescriptor = {
       label: "Setting up the liquidity pool",
@@ -2759,19 +2755,9 @@ export function useCreateMarket() {
                   matcherProg: matcherProgramId,
                   matcherDelegate: delegatePk,
                 }),
-                data: encodeInitMatcherCtx({
-                  kind: 0,
-                  tradingFeeBps: Number(params.tradingFeeBps),
-                  baseSpreadBps: 50,
-                  maxTotalBps: 200,
-                  impactKBps: 0,
-                  liquidityNotionalE6: 0n,
-                  // LP guardrails — mirrors the merged path. See lib/market-params.ts.
-                  maxFillAbs: derived.maxFillAbs,
-                  maxInventoryAbs: derived.maxInventoryAbs,
-                  feeToInsuranceBps: 0,
-                  skewSpreadMultBps: derived.skewSpreadMultBps,
-                }),
+                data: encodeInitMatcherCtx(
+                  buildInitMatcherCtxArgs(Number(params.tradingFeeBps), derived.matcher),
+                ),
               });
 
             const sendMatcherContextInitialization = async (
