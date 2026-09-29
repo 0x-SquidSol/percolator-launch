@@ -159,6 +159,13 @@ export async function loadMergedMarketRows(): Promise<MarketRegistryRow[] | null
       insurance_balance: live.insurance,
       vault_balance: live.vault,
       c_tot: live.cTot,
+      // Real per-market leverage cap from on-chain initialMarginBps. The stored
+      // column is 10 for every market (the indexer never derived it), which is
+      // correct only by coincidence for 1000bps markets and wrong for the rest
+      // (e.g. SOL 666bps -> 15x). Prefer the live value; fall back to the DB
+      // column when the engine-config region couldn't be read (RPC/parse gap),
+      // matching this file's "partial reads degrade to pre-merge behaviour" policy.
+      max_leverage: live.maxLeverage ?? m.max_leverage,
       // BUG FIX (2026-09-25): completeness signal for filtering markets whose
       // creation died partway through (e.g. failed at "Create Earn vault",
       // before stake-pool init ever ran) — see LiveMarketState.isComplete's
