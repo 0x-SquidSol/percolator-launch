@@ -75,18 +75,19 @@ export const AccountsCard: FC = () => {
       // would otherwise display ~$1.84e19 in the leaderboard).
       const safePnl = account.pnl !== undefined && !isSentinelValue(account.pnl) ? account.pnl : 0n;
       const hasValidMark = oraclePrice > 0n;
-      // computeMarkPnl returns the on-chain "coin-margined" native scale (see
-      // its doc comment) — NOT yet collateral/USDC-denominated. This row's PnL
-      // cell is formatted with the collateral token's decimals (same as the
-      // Capital column) and feeds the leaderboard sort, so it must be
-      // converted via computeMarkPnlCollateral first (mirrors PositionsDock /
-      // AccountRiskSidebar / ClosePositionModal's pnlNative -> pnlTokens step).
-      // The stale on-chain account.pnl fallback (no cached entry price) is in
-      // this SAME native scale, so one conversion below covers both branches.
-      const pnlNative = account.positionSize !== 0n && hasValidMark && account.entryPrice > 0n
-        ? computeMarkPnl(account.positionSize, account.entryPrice, oraclePrice)
+      // Two sources, two units:
+      //  - computeMarkPnl (entry known) returns the "coin-margined" native
+      //    scale — NOT collateral — so it goes through computeMarkPnlCollateral
+      //    (mirrors PositionsDock / AccountRiskSidebar / ClosePositionModal).
+      //  - the on-chain account.pnl fallback (no entry) is ALREADY collateral
+      //    atoms: the engine adds it straight to capital
+      //    (`account_haircut_equity`: capital + pnl), the SDK types it "P&L in
+      //    atoms", and estimateEntryFromPnl (lib/trading.ts) inverts it as
+      //    collateral. Converting it again multiplied it by the mark (a $5 PnL
+      //    on a $118 market rendered as $590 and sorted the leaderboard on it).
+      const computedPnl = account.positionSize !== 0n && hasValidMark && account.entryPrice > 0n
+        ? computeMarkPnlCollateral(computeMarkPnl(account.positionSize, account.entryPrice, oraclePrice), oraclePrice)
         : safePnl;
-      const computedPnl = hasValidMark ? computeMarkPnlCollateral(pnlNative, oraclePrice) : 0n;
       const liqDisplay = describeLiqPrice({
         liqPriceE6: liqPrice,
         positionSize: account.positionSize,
