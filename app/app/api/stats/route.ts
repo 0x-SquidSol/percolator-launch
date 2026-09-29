@@ -11,6 +11,7 @@ import { isActiveMarket, isSaneMarketValue, isZombieMarket } from "@/lib/activeM
 import { loadMergedMarketRows, type MarketRegistryRow } from "@/lib/market-registry";
 import { isPhantomOpenInterest } from "@/lib/phantom-oi";
 import { computeDisplayOiUsd } from "@/lib/oi-display";
+import { rawToUsd, sanitizePriceUsd } from "@/lib/market-usd";
 import { BLOCKED_SLAB_ADDRESSES } from "@/lib/blocklist";
 import { getClientIp } from "@/lib/get-client-ip";
 import { createUpstashRateLimiter } from "@/lib/upstash-rate-limit";
@@ -156,6 +157,40 @@ async function computeStatsFromMarketsApi(_request: NextRequest): Promise<(Retur
       if (displayOiUsd != null && isSaneMarketValue(displayOiUsd)) totalOpenInterest += displayOiUsd;
     }
 
+      // GH#2676: this path used to return a hard-coded `totalVolume24h: 0`
+      // under a comment about there being "no on-chain source for trade
+      // history". That is true of the DISCOVERY path below; it is not true
+      // here. These rows come from loadMergedMarketRows, which selects
+      // volume_24h and trade_count_24h, and the zombie filter above already
+      // reads row.volume_24h to decide visibility. The number was in hand and
+      // then discarded, so the dashboard showed $0 while the markets list it is
+      // meant to agree with showed ~$5.0K across the same rows.
+      //
+      // Converted with the SAME helper /api/markets uses, so the protocol total
+      // is the sum of the per-market figures a user can read rather than a
+      // second opinion about them.
+      let totalVolume24h = 0;
+      let trades24h = 0;
+      for (const m of visible) {
+        const row = m as Record<string, unknown>;
+        const volumeUsd = rawToUsd(
+          numericOrNull(row.volume_24h),
+          numericOrNull(row.decimals),
+          sanitizePriceUsd(numericOrNull(row.last_price)),
+        );
+        // null means "cannot be known" (no usable price, or a sentinel
+        // amount). For a SUM that is indistinguishable from adding 0 -- the
+        // guard is here for intent, not for arithmetic. The distinction is
+        // real where the value is published per row (/api/markets), and it is
+        // tested there, in __tests__/lib/market-usd.test.ts.
+        if (volumeUsd != null) totalVolume24h += volumeUsd;
+        const trades = numericOrNull(row.trade_count_24h);
+        if (trades != null && trades > 0) trades24h += trades;
+      }
+      // Re-round: summing 2dp values reintroduces the float artifact each one
+      // was rounded to remove.
+      totalVolume24h = Math.round(totalVolume24h * 100) / 100;
+
     const activeTotal = visible.filter((m: MarketRegistryRow) =>
       isActiveMarket(m as Parameters<typeof isActiveMarket>[0]),
     ).length;
@@ -164,12 +199,14 @@ async function computeStatsFromMarketsApi(_request: NextRequest): Promise<(Retur
       totalMarkets: visible.length,
       activeTotal,
       totalListedMarkets: visible.length,
-      // No on-chain source for trade history — honest zeros, same as the
-      // discovery path below.
-      totalVolume24h: 0,
-      totalOpenInterest,
-      totalTraders: 0,
-      trades24h: 0,
+        totalVolume24h,
+        totalOpenInterest,
+        // Still no source for a distinct-trader count on this path: the
+        // registry rows carry no trader column. Left at 0 deliberately; see
+        // GH#2676 for why it should probably be null, so the UI can tell
+        // "none" from "unknown".
+        totalTraders: 0,
+        trades24h,
       updatedAt: new Date().toISOString(),
       live: true,
     };

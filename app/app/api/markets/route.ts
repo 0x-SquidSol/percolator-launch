@@ -23,6 +23,7 @@ import { loadMergedMarketRows } from "@/lib/market-registry";
 import { isMarketauthComplete } from "@/lib/live-market-state";
 import { isPhantomOpenInterest, MIN_VAULT_FOR_OI } from "@/lib/phantom-oi";
 import { computeDisplayOiUsd } from "@/lib/oi-display";
+import { rawToUsd } from "@/lib/market-usd";
 import { validateSymbol, validateName } from "@/lib/market-metadata-validation";
 import { sanitizeLogoUrl } from "@/lib/token-metadata-validators";
 import { computeMarketHealthFromStats } from "@/lib/health";
@@ -204,7 +205,6 @@ const PLAYGROUND_CURATED_SLABS = _playgroundAllowedSlabs;
 const FUNDING_RATE_BPS_MAX = 10_000;
 
 /** Cap per-market USD contribution — prevents sentinel leakage ($10B > any real market). */
-const MAX_PER_MARKET_USD = 10_000_000_000;
 
 /**
  * GH#1208: Cap for c_tot raw value.
@@ -647,25 +647,9 @@ function fallbackMarketsResponse(request: NextRequest, reason: string): NextResp
   );
 }
 
-/**
- * Convert a raw on-chain token micro-unit amount to USD.
- * Returns null when the raw value is a sentinel/garbage or no price is available.
- * GH#1578: Explicitly return 0 when raw value is exactly 0 — isSaneMarketValue requires
- * v > 0 and would otherwise return null for zero-OI/volume markets.
- * (#1160: expose a pre-computed USD field so API consumers don't have to divide by 10^decimals themselves)
- */
-function rawToUsd(raw: number | null | undefined, decimals: number | null | undefined, priceUsd: number | null | undefined): number | null {
-  if (raw == null || !Number.isFinite(raw as number)) return null;
-  // GH#1578: zero is a valid and expected value — return 0 immediately without price check
-  if (raw === 0) return 0;
-  if (!isSaneMarketValue(raw)) return null;
-  const d = Math.min(Math.max(decimals ?? 6, 0), 18);
-  const p = priceUsd ?? 0;
-  if (p <= 0) return null;
-  const usd = (raw! / 10 ** d) * p;
-  // GH#1618: round to 2dp to eliminate IEEE-754 float artifacts (e.g. 4620.241999999999)
-  return usd > MAX_PER_MARKET_USD ? null : Math.round(usd * 100) / 100;
-}
+// rawToUsd moved to lib/market-usd.ts (GH#2676) so /api/stats computes the
+// protocol-wide 24h volume with the SAME conversion this route publishes
+// per market, instead of a second, slightly different one.
 
 /** Sanitize a numeric funding_rate from the DB view. Returns null for garbage values. */
 function sanitizeFundingRate(v: number | null | undefined): number | null {
