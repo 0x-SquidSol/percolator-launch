@@ -1,18 +1,19 @@
 "use client";
 
-import { useState } from "react";
 import { usePortfolio, isOpenPosition } from "@/hooks/usePortfolio";
 
 /**
  * PnL Chart — shows real portfolio PnL.
  * Previously used getMockPnlHistory. Now shows current PnL from positions.
  * Full historical chart requires trade history indexing (future work).
+ *
+ * GH#2677: a 24H/7D/30D/ALL range selector used to sit in the header. It only
+ * changed which button was highlighted — the figure is the CURRENT unrealized
+ * PnL under every range (no per-trader PnL history exists to slice), and it
+ * defaulted to "7D", a range it never represented. Removed until an
+ * equity-snapshot source exists; the header states what the number is.
  */
-
-const ranges = ["24H", "7D", "30D", "ALL"] as const;
-
 export function PnlChart() {
-  const [range, setRange] = useState<typeof ranges[number]>("7D");
   const { totalUnrealizedPnl, positions, loading } = usePortfolio();
 
   // Only OPEN positions contribute PnL — exclude closed (size-0 "Flat") ones so
@@ -33,21 +34,9 @@ export function PnlChart() {
         <p className="text-[9px] font-medium uppercase tracking-[0.2em] text-[var(--text-secondary)]">
           Portfolio PnL
         </p>
-        <div className="flex gap-1">
-          {ranges.map((r) => (
-            <button
-              key={r}
-              onClick={() => setRange(r)}
-              className={`px-2 py-0.5 text-[9px] font-medium transition-colors ${
-                range === r
-                  ? "bg-[var(--accent)]/10 text-[var(--accent)]"
-                  : "text-[var(--text-secondary)] hover:text-[var(--text)]"
-              }`}
-            >
-              {r}
-            </button>
-          ))}
-        </div>
+        <p className="text-[9px] font-medium text-[var(--text-secondary)]">
+          Unrealized · now
+        </p>
       </div>
 
       {/* Chart area */}

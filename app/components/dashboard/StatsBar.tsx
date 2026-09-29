@@ -61,16 +61,16 @@ export function StatsBar() {
 
   const cards = [
     {
-      label: "Total PnL",
+      // GH#2677: this is the mark-to-market PnL of OPEN positions — not an
+      // all-time figure (realized PnL is not tracked anywhere), so it must not
+      // say "All time". A "Today's PnL" card that sat here was a hard-coded
+      // "--" with no data source (no per-trader PnL history exists); it read as
+      // "you made nothing today" beside live figures, so it is removed until an
+      // equity-snapshot source exists (see the issue for the plan).
+      label: "Unrealized PnL",
       value: loading ? "..." : formatUsd(totalPnl),
-      sub: "All time",
+      sub: "Open positions",
       color: totalPnl >= 0 ? "text-[var(--long)]" : "text-[var(--short)]",
-    },
-    {
-      label: "Today's PnL",
-      value: "--",
-      sub: "Last 24h",
-      color: "text-[var(--text-secondary)]",
     },
     {
       label: "Win Rate",
@@ -87,7 +87,7 @@ export function StatsBar() {
   ];
 
   return (
-    <div className="grid grid-cols-2 gap-px overflow-hidden border border-[var(--border)] bg-[var(--border)] lg:grid-cols-4">
+    <div className="grid grid-cols-1 gap-px overflow-hidden border border-[var(--border)] bg-[var(--border)] sm:grid-cols-3">
       {cards.map((card) => (
         <div
           key={card.label}
