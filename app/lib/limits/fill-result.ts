@@ -29,3 +29,29 @@ export function classifyFill(beforeQ: bigint, afterQ: bigint | null, requestedQ:
   if (absD >= absR) return { kind: "full", filledQ: d };
   return { kind: "partial", filledQ: d };
 }
+
+/** Thrown by a close whose confirmed TradeCpi filled nothing (P1 zero fill). */
+export class ZeroFillError extends Error {
+  readonly zeroFill = true;
+  constructor(message: string) {
+    super(message);
+    this.name = "ZeroFillError";
+  }
+}
+
+export function isZeroFillError(e: unknown): e is ZeroFillError {
+  return e instanceof ZeroFillError || (typeof e === "object" && e !== null && (e as { zeroFill?: unknown }).zeroFill === true);
+}
+
+/**
+ * What a CONFIRMED close means, from its measured fill: a zero fill is not a
+ * close (the caller must keep the modal open and say so — never "closed");
+ * a partial fill closed only part of it; unknown/null = the legacy path
+ * (P1 flag off, or the post-trade read could not be pinned).
+ */
+export function closeOutcome(fill: FillResult | null): "closed" | "partial" | "no-fill" {
+  if (!fill) return "closed";
+  if (fill.kind === "zero") return "no-fill";
+  if (fill.kind === "partial") return "partial";
+  return "closed";
+}

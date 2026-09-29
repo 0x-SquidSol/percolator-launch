@@ -24,6 +24,28 @@ import { readAndPlanPreResolve } from "@/lib/pre-resolve";
 import { getConfig } from "@/lib/config";
 import { DEVNET_PROGRAM_IDS } from "@/lib/program-ids";
 import { parseMarketCreationError } from "@/lib/parseMarketError";
+import { closeSlabState, closeSlabUntilClosed, type CloseSlabState } from "@/lib/limits/close-slab";
+import type { Connection } from "@solana/web3.js";
+import { COPY } from "@/lib/limits/copy";
+
+/** Slab state after `sig`, read at (at least) the tx's slot so a cached pre-close read can't answer. */
+export async function readCloseSlabStateAfter(
+  connection: { getSignatureStatuses: Connection["getSignatureStatuses"]; getAccountInfo: Connection["getAccountInfo"] },
+  slab: PublicKey,
+  sig: string,
+): Promise<CloseSlabState> {
+  try {
+    const st = await connection.getSignatureStatuses([sig]);
+    const slot = st.value[0]?.slot;
+    const info = await connection.getAccountInfo(
+      slab,
+      slot == null ? "confirmed" : { commitment: "confirmed", minContextSlot: slot },
+    );
+    return closeSlabState(info ? new Uint8Array(info.data) : null);
+  } catch {
+    return "unknown";
+  }
+}
 
 /**
  * CloseSlab (IX_TAG.CloseSlab = 13) instruction in percolator-prog.
@@ -226,11 +248,36 @@ export function useCloseMarket() {
         tx.add(ix);
 
         const signed = await walletCompat.signTransaction(tx);
-        const sig = await connection.sendRawTransaction(signed.serialize(), {
+        let sig = await connection.sendRawTransaction(signed.serialize(), {
           skipPreflight: false,
           preflightCommitment: "confirmed",
         });
         await connection.confirmTransaction(sig, "confirmed");
+
+        // P1 F4: CloseSlab can return Ok WITHOUT closing (it persists a fee-leg re-book /
+        // scan-progress step). Read the slab at the tx's own slot and call CloseSlab again
+        // until it is closed (lib/limits/close-slab.ts). The market is Resolved by now, so
+        // the re-send is CloseSlab alone. Bounded; each re-send is a new wallet signature.
+        const closed = await closeSlabUntilClosed({
+          firstSig: sig,
+          readState: (s) => readCloseSlabStateAfter(connection, slabPk, s),
+          rebookedMessage: COPY.closeRebooked,
+          resend: async () => {
+            const { blockhash: bh } = await connection.getLatestBlockhash("confirmed");
+            const again = new Transaction({ recentBlockhash: bh, feePayer: walletCompat.publicKey });
+            again.add(ComputeBudgetProgram.requestHeapFrame({ bytes: 131072 }));
+            again.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }));
+            again.add(ix);
+            const signedAgain = await walletCompat.signTransaction!(again);
+            const s2 = await connection.sendRawTransaction(signedAgain.serialize(), {
+              skipPreflight: false,
+              preflightCommitment: "confirmed",
+            });
+            await connection.confirmTransaction(s2, "confirmed");
+            return s2;
+          },
+        });
+        sig = closed.signature;
 
         // Clean up localStorage
         localStorage.removeItem("percolator-pending-slab-keypair");
@@ -241,7 +288,9 @@ export function useCloseMarket() {
         const msg = err instanceof Error ? err.message : String(err);
 
         // Parse common CloseSlab failures
-        if (msg.includes("0xd") || msg.includes("EngineInsufficientBalance")) {
+        if (msg === COPY.closeRebooked) {
+          setError(msg);
+        } else if (msg.includes("0xd") || msg.includes("EngineInsufficientBalance")) {
           setError(
             "Cannot close: the slab vault or insurance fund still has tokens. " +
             "Complete market creation to use those funds, or contact support to drain them."

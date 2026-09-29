@@ -52,7 +52,7 @@ export const P1_ERROR_MESSAGES: Record<number, string> = {
   // p1-safety-release-2026-09-29.md §3 (append-only; feat/p1-safety-release). Harmless before
   // the P1 deploy: the deployed wrapper never returns these codes.
   66: "The fill price was too far from the market's oracle price, so the program refused it. Try again; if it keeps happening the market's price feed may be moving fast.",
-  67: "This wallet can't trade against its own liquidity or its own market. Use a different wallet to trade here.",
+  67: "This wallet owns this market's liquidity or created the market, so it can only close positions here, not open or add to them. Use a different wallet to trade.",
   68: "This trade would give the market's liquidity provider more exposure than its capital allows. Try a smaller size.",
   69: "The market's liquidity provider is at its capital floor, so new positions are paused. Closing positions still works.",
   70: "This side of the market has reached its open-interest cap. Try a smaller size or the other side.",

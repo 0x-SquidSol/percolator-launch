@@ -91,5 +91,30 @@ fn main() {
         let e = r.mag(); let nt = r.mag(); let im = r.pick(&[0, 100, 5000, 10_000, 10_001]);
         out.push(format!("{{\"f\":\"leverage_gate_ok\",\"e\":\"{e}\",\"n\":\"{nt}\",\"imr\":\"{im}\",\"out\":{}}}", b(p3::leverage_gate_ok(e, nt, im))));
     }
+    // ── P1 (e74809b1 additions) ──
+    for _ in 0..400 {
+        let b0 = r.signed() % 1_000_000_000; let a0 = if r.below(4) == 0 { 0 } else { r.signed() % 1_000_000_000 };
+        out.push(format!("{{\"f\":\"position_change_reduce_only\",\"b\":\"{b0}\",\"a\":\"{a0}\",\"out\":{}}}", b(p1::position_change_reduce_only(b0, a0))));
+        out.push(format!("{{\"f\":\"floored_lp_move_allowed\",\"b\":\"{b0}\",\"a\":\"{a0}\",\"out\":{}}}", b(p1::floored_lp_move_allowed(b0, a0))));
+        let cb = r.signed() % 1_000_000; let ca = if r.below(3) == 0 { 0 } else { r.signed() % 1_000_000 };
+        let lb = r.signed() % 1_000_000; let la = r.signed() % 1_000_000; let cap = (r.mag() % 1_000_000) as u128; let fl = r.below(2) == 0;
+        let g = match p1::lp_fill_gate(cb, ca, lb, la, cap, fl) { p1::LpGate::Allow => "allow", p1::LpGate::FloorHalt => "floor-halt", p1::LpGate::CapExceeded => "cap-exceeded" };
+        out.push(format!("{{\"f\":\"lp_fill_gate\",\"cb\":\"{cb}\",\"ca\":\"{ca}\",\"lb\":\"{lb}\",\"la\":\"{la}\",\"cap\":\"{cap}\",\"fl\":{},\"out\":\"{g}\"}}", b(fl)));
+        let req = r.pick(&[0, 1, 5, 50, 500, 1023, 2000]); let base = r.pick(&[0, 5, 10, 30]); let signed_ = { let t = r.below(3000); r.pick(&[0, 10, 60, 1100, t]) }; let pm = r.pick(&[0, 1, 50, 500, 1023]) as u16; let mm = r.pick(&[0, 50, 100, 1000, 10_000]);
+        out.push(format!("{{\"f\":\"requested_fee_permitted\",\"req\":\"{req}\",\"base\":\"{base}\",\"signed\":\"{signed_}\",\"pm\":{pm},\"mm\":\"{mm}\",\"out\":{}}}", b(p1::requested_fee_permitted(req, base, signed_, pm, mm))));
+    }
+    // ── P2 requested_fee_bps ──
+    for _ in 0..200 {
+        let o = r.pick(&[0, 1, 1_000, 1_000_000, 150_000_000]); let ex = { let t = r.below(300_000_000); r.pick(&[0, o, o.saturating_add(1), o / 2, t]) };
+        out.push(format!("{{\"f\":\"requested_fee_bps\",\"o\":\"{o}\",\"ex\":\"{ex}\",\"out\":{}}}", v2::requested_fee_bps(o, ex)));
+    }
+    // ── P3 (0be66041 additions) ──
+    for _ in 0..300 {
+        let cap = r.mag(); let pnl = r.signed(); let fee = r.signed();
+        let ce = p3::conservative_equity(cap, pnl, fee);
+        out.push(format!("{{\"f\":\"conservative_equity\",\"c\":\"{cap}\",\"p\":\"{pnl}\",\"fc\":\"{fee}\",\"out\":{}}}", ce.map(|x| format!("\"{x}\"")).unwrap_or("null".into())));
+        let lb = r.signed() % 100_000_000_000; let la = r.signed() % 100_000_000_000; let eq = r.mag(); let lev = r.pick(&[0, 1, 10_000, 50_000]) as u32; let pr = r.pick(&[0, 1, 1_000_000, 150_000_000]);
+        out.push(format!("{{\"f\":\"vault_lp_exposure_allowed\",\"lb\":\"{lb}\",\"la\":\"{la}\",\"eq\":\"{eq}\",\"lev\":{lev},\"pr\":\"{pr}\",\"out\":{}}}", b(p3::vault_lp_exposure_allowed(lb, la, eq, lev, pr, 1_000_000))));
+    }
     println!("[\n{}\n]", out.join(",\n"));
 }

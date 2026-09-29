@@ -61,6 +61,13 @@ interface DepositWithdrawPanelProps {
   cooldownRemainingSlots?: bigint;
   /** Deposit callback */
   onDeposit: (amount: bigint) => Promise<void>;
+  /**
+   * P3 (limits UI): when set, deposits are refused by the program for this vault right now
+   * (senior impaired / pending-fee genesis / stale valuation). The Deposit button is disabled
+   * and this reason is shown. Withdrawals are unaffected.
+   */
+  depositBlockedReason?: string | null;
+  depositBlockKind?: string | null;
   /** Withdraw callback — see `WithdrawStepResult` (S2 fix). */
   onWithdraw: (lpAmount: bigint) => Promise<WithdrawStepResult | void>;
 }
@@ -81,6 +88,8 @@ export function DepositWithdrawPanel({
   cooldownRemainingSlots = 0n,
   onDeposit,
   onWithdraw,
+  depositBlockedReason = null,
+  depositBlockKind = null,
 }: DepositWithdrawPanelProps) {
   const { connected } = useWalletCompat();
   const [tab, setTab] = useState<Tab>('deposit');
@@ -220,6 +229,7 @@ export function DepositWithdrawPanel({
     if (loading || !vaultAvailable) return false;
     if (rawAmount <= 0n) return false;
     if (tab === 'deposit' && rawAmount > userBalance) return false;
+    if (tab === 'deposit' && depositBlockedReason) return false;
     if (tab === 'withdraw') {
       if (rawAmount > userLpBalance) return false;
       if (!cooldownElapsed) return false;
@@ -233,6 +243,7 @@ export function DepositWithdrawPanel({
     userBalance,
     userLpBalance,
     cooldownElapsed,
+    depositBlockedReason,
   ]);
 
   if (!connected) {
@@ -495,6 +506,18 @@ export function DepositWithdrawPanel({
         {txSuccess && (
           <div role="status" aria-live="polite" className="mb-4 p-3 bg-[var(--cyan)]/5 border border-[var(--cyan)]/20 rounded-sm">
             <p className="text-[11px] text-[var(--cyan)]">{txSuccess}</p>
+          </div>
+        )}
+
+        {tab === 'deposit' && depositBlockedReason && (
+          <div
+            role="status"
+            data-testid="earn-deposit-blocked"
+            data-reason={depositBlockKind ?? ''}
+            className="mb-3 border border-[var(--warning)]/30 bg-[var(--warning)]/5 px-3 py-2"
+          >
+            <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--warning)]">Deposits paused</p>
+            <p className="mt-1 text-[10px] leading-relaxed text-[var(--text-secondary)]">{depositBlockedReason}</p>
           </div>
         )}
 

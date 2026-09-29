@@ -14,6 +14,8 @@ export const COPY = {
     "matcher-fill": () => "Limited by the market's per-trade size.",
     "matcher-inventory": () => "Limited by how much net exposure the LP will carry.",
     "lp-halt": () => "The LP is at its capital floor: only trades that reduce its exposure can fill.",
+    "same-owner": () => "This wallet owns the LP or created the market, so it can only reduce or close its position.",
+    "vault-lp-exposure": (lev: string) => `Limited by the Earn vault LP's cap: at most ${lev}× the creator's first-loss capital.`,
     none: () => "",
   },
   clamped: (max: string, sym: string, reason: string) => `Size reduced to ${max} ${sym}. ${reason}`.trim(),
@@ -22,11 +24,13 @@ export const COPY = {
   halted: (side: string) =>
     `Opening ${side} is paused: the market's liquidity provider is at its capital floor. Reducing and closing positions still work.`,
   sameOwner:
-    "This wallet owns this market's liquidity or created the market, so it can't trade against it. Use a different wallet.",
+    "This wallet owns this market's liquidity or created the market, so it can only close positions here, not open or add to them. Use a different wallet to trade.",
   limitsUnavailable: "Limits unavailable. Showing no cap.",
   quoteSettlesAtMark:
     "On this program version fills settle at the mark price. The quote above only decides how much can fill and whether your slippage limit passes.",
-  quoteCharged: "The quoted price is charged: the difference from the mark is paid to the market's liquidity.",
+  quoteCharged: "The quoted price is charged: the difference from the mark is paid to the market's LP as a fee. Your signature caps it at the fee shown.",
+  feeOverProtocolMax: (bps: string) => `The quote's fee is above this market's protocol maximum (${bps} bps), so the trade would be refused. Reduce the size.`,
+  feeOverMarketMax: "The quote's fee plus the base fee is above this market's maximum trading fee, so the trade would be refused. Reduce the size.",
   quoteClipped: (fill: string) => `Quote caps this trade at ${fill}.`,
   quoteSlippage: (s: string) =>
     `Your slippage limit (${s}) is tighter than the quote; the trade would be refused. Raise slippage or reduce size.`,
@@ -42,6 +46,9 @@ export const COPY = {
   withdrawIlliquid:
     "Part of the vault's value is in the LP's open positions. Your redemption may wait for a recall (permissionless) or the keeper.",
   depositsPausedImpaired: "Deposits are paused while the senior tranche is impaired.",
+  depositsPausedHarvest: "The first Earn deposit waits until this vault's pending LP fees are cranked.",
+  valuationStale: "Vault value needs a refresh (the LP holds positions and its health certificate is stale).",
+  excludesUncrankedFees: "excludes uncranked fees",
   apyInsufficient: "Needs 24 h of fee history",
   resolvedVault: "This market is resolved. Vault settlement for resolved markets is not available yet.",
   fundingPay: (amt: string) => `Skew funding: you pay ${amt}/h`,
@@ -54,8 +61,9 @@ export const COPY = {
     `Your junior tranche is first-loss capital. Traders' profits are paid from it before Earn depositors lose anything. It can't be withdrawn while the LP holds positions, or below ${floor} of Earn deposits.`,
   wizardAfterLaunch: "Junior deposit is added after launch.",
   closeRebooked: "Fees were re-booked; press Close again to finish.",
-  closeHalted:
-    "The market's LP is at its capital floor and your close would add to its exposure, so the program may refuse it until the LP recovers. Closes on the other side of the book still work.",
+  closeZeroFill:
+    "Market at capacity — no fill. Your close landed but the LP had no room to take it, so your position did not change. Try a smaller percentage or again shortly.",
+  closePartial: (filled: string, requested: string) => `Partially closed: ${filled} of ${requested}. The rest of your position is still open.`,
 } as const;
 
 /** Matcher v2 error copy (Custom 8002..8005, matcher program only). */
@@ -79,6 +87,15 @@ export const P3_ERROR_COPY_BY_NAME: Record<keyof typeof P3_ERR, string> = {
   VaultLpLeverageStepDown:
     "Leverage too high for this side while the book is crowded. Lower leverage or trade the other side.",
   VaultLpBoundCannotClose: "This vault owns the market's LP and can't be closed.",
+  VaultLpExposureCapExceeded:
+    "This trade is larger than the Earn vault's LP can take: its exposure is capped at a multiple of the creator's first-loss capital. Reduce the size.",
+  VaultLpMatcherNotApproved: "The protocol has not approved this pricing engine for the market's vault LP.",
+  VaultLpUseSettleResolved: "This market is resolved: the vault's LP is settled through the vault (senior first), not closed directly.",
+  VaultLpReleaseRefused: "Nothing to release: the vault's backing does not exceed what Earn depositors are owed.",
+  VaultLpHarvestPending:
+    "This vault has LP fees waiting to be credited. They must be cranked before the first Earn deposit, so the first depositor can't buy them at 1:1. Try again shortly.",
+  VaultLpValuationStale:
+    "The vault's LP has open positions and needs a refresh before the vault can be priced. Try again: the refresh is permissionless and usually lands within seconds.",
 };
 
 /** P3 copy re-keyed by the CURRENT provisional ordinals. */

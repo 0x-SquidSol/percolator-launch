@@ -8,7 +8,7 @@
  * ~/percolator-ops/ledger/frontend-limits-plan-2026-09-30.md §1):
  *   - engine/wrapper layout: `examples/dump_layout.rs` on
  *     `deploy/v18.2-wrapper@6377376a` + engine `35ddd692` (P1 asserts no layout change);
- *   - P1: `percolator-prog feat/p1-safety-release@6066399f` `src/v16_program.rs`
+ *   - P1: `percolator-prog feat/p1-safety-release@e74809b1` `src/v16_program.rs`
  *     (`ASSET_RISK_LIMITS_OFF` :376, `AssetRiskLimitsV17` :2370, `risk_limits_v17` :9212,
  *     errors :1125-1142, tag 93 :385);
  *   - P2: `percolator-match feat/p2-matcher-v2@4a0f696` `src/vamm.rs` `MatcherCtx` :89,
@@ -16,11 +16,9 @@
  *   - P3: `percolator-prog feat/p3-vault-owned-lp@c7437518` (`ASSET_VAULT_LP_OFF` :381,
  *     `VaultLpStateV18` :5470, `AssetVaultLpV18` :5573, errors :1148-1166).
  *
- * P3 IS PROVISIONAL: its branch collides with P1 on tag 93 and on errors 66+
- * (security review P3-W1). The builder committed to moving P3 tags to >= 94
- * and errors after P1's 71. Until P3 is rebased, the P3 numbers below are
- * our best prediction (P1's final ordinals + P3's enum order) and are keyed
- * BY NAME so a renumber is a one-line change here.
+ * P3 numbers are read from `feat/p3-vault-owned-lp@0be66041`, which is REBASED
+ * onto P1 (tags 94..102, errors 72..85 appended after P1's 71; ordinals computed
+ * by parsing the enum). P3 is still in review, so they stay keyed BY NAME.
  */
 
 // ── Shared layout ────────────────────────────────────────────────────────────
@@ -45,9 +43,23 @@ export const H_MODE = 626;
 /** V16ConfigAccount (relative to the config start = MARKET_GROUP_OFF + H_CONFIG), packed. */
 export const CFG_MAINTENANCE_MARGIN_BPS = 54;
 export const CFG_INITIAL_MARGIN_BPS = 62;
+export const CFG_MAX_TRADING_FEE_BPS = 70; // u64
 export const CFG_MAX_ABS_FUNDING_E9_PER_SLOT = 126;
 /** WrapperConfigV16 (relative to HEADER_LEN). */
 export const WCFG_TRADE_FEE_BASE_BPS = 128;
+/** LP fee leg claim (rustc offset_of!, deployed 6377376a; identical on the P3 tree). */
+export const WCFG_LP_FEE_ACCRUED_ATOMS = 496; // u128
+export const WCFG_LP_FEE_WITHDRAWN_ATOMS = 512; // u128
+
+/** MarketGroupV16HeaderAccount money/epoch fields (relative to MARKET_GROUP_OFF; rustc offset_of!). */
+export const H_VAULT = 285; // u128
+export const H_INSURANCE = 301; // u128
+export const H_SOURCE_INSURANCE_CREDIT_RESERVED_TOTAL = 445; // u128
+export const H_INSURANCE_DOMAIN_BUDGET_REMAINING_TOTAL = 461; // u128
+export const H_RISK_EPOCH = 549; // u64
+export const H_ASSET_SET_EPOCH = 557; // u64
+export const H_ORACLE_EPOCH = 589; // u64
+export const H_FUNDING_EPOCH = 597; // u64
 
 /** AssetStateV16Account (relative to the engine slot base). */
 export const A_MARKET_ID = 0;
@@ -62,7 +74,19 @@ export const PF_OWNER = HEADER_LEN + 100;
 export const PF_CAPITAL = HEADER_LEN + 132;
 export const PF_PNL = HEADER_LEN + 148;
 export const PF_FEE_CREDITS = HEADER_LEN + 292;
+export const PF_ACTIVE_BITMAP = HEADER_LEN + 332; // [u64; 1]
 export const PF_LEGS = HEADER_LEN + 340;
+export const PF_HEALTH_CERT = HEADER_LEN + 9044; // HealthCertV16Account (121 B)
+export const PF_STALE_STATE = HEADER_LEN + 9165; // u8
+export const PF_B_STALE_STATE = HEADER_LEN + 9166; // u8
+/** HealthCertV16Account (packed; rustc offset_of!). */
+export const CERT_EQUITY = 0; // i128
+export const CERT_ORACLE_EPOCH = 80;
+export const CERT_FUNDING_EPOCH = 88;
+export const CERT_RISK_EPOCH = 96;
+export const CERT_ASSET_SET_EPOCH = 104;
+export const CERT_ACTIVE_BITMAP = 112; // [u64; 1]
+export const CERT_VALID = 120; // u8 bool
 export const PF_LEG_LEN = 152;
 export const PF_MAX_LEGS = 16;
 /** PortfolioLegV16Account (packed). */
@@ -88,7 +112,11 @@ export const RL_LP_EXPOSURE_K_BPS = 32; //   u32
 export const RL_EXEC_BAND_BPS = 36; //       u16
 export const RL_MATCHER_EXT_MODE = 38; //    u8
 export const RL_RESERVED0 = 39; //           u8, must be 0
-export const RL_RESERVED = 40; //            [u8; 24], must be 0
+/** P1 e74809b1: P2 fee channel protocol max (0 = channel OFF). Only effective with ext mode 1. */
+export const RL_MAX_REQUESTED_FEE_BPS = 40; // u16
+export const RL_RESERVED = 42; //            [u8; 22], must be 0
+export const RL_RESERVED_LEN = 22;
+export const MAX_REQUESTED_FEE_BPS = 1023;
 export const DEFAULT_EXEC_BAND_BPS = 500;
 export const MAX_EXEC_BAND_BPS = 10_000;
 export const MAX_LP_EXPOSURE_K_BPS = 10_000_000;
@@ -164,9 +192,12 @@ export const AV_SKEW_SLOPE_E9 = 72; //     u64
 export const AV_SKEW_MAX_E9 = 80; //       u64
 export const AV_LEV_MAX_IMR_BPS = 88; //   u16
 export const AV_FLAGS = 90; //             u8, bit0 bound
-export const AV_RESERVED0 = 91; //         [u8;5]
-export const AV_RESERVED = 96; //          [u8;32]
+export const AV_RESERVED0 = 91; //         u8, must be 0
+export const AV_VAULT_LP_MAX_LEV_BPS = 92; // u32 (P3-H2; 0 = default 1x)
+export const AV_APPROVED_MATCHER_PROGRAM = 96; // [u8;32] (P3-H2)
 export const ASSET_VAULT_LP_FLAG_BOUND = 1;
+export const VAULT_LP_DEFAULT_MAX_LEV_BPS = 10_000;
+export const VAULT_LP_MAX_LEV_BPS = 50_000;
 
 export const VAULT_LP_STATE_SEED = "vault_lp";
 export const KIND_VAULT_LP_STATE = 9;
@@ -190,10 +221,7 @@ export const VS = {
 export const VAULT_LP_STATE_ACCOUNT_LEN = HEADER_LEN + 256;
 export const VAULT_LP_MIN_JUNIOR_FLOOR_BPS = 1_000;
 
-/**
- * P3 tags (PROVISIONAL). Branch c7437518 uses 93..98; P1 owns 93, so P3 moves
- * to >= 94. Predicted: +1 on each. Not sent by this app yet.
- */
+/** P3 tags (feat/p3-vault-owned-lp@0be66041). Not sent by this app. */
 export const P3_TAG = {
   InitVaultLp: 94,
   VaultLpSetMatcher: 95,
@@ -201,12 +229,12 @@ export const P3_TAG = {
   WithdrawJuniorTranche: 97,
   VaultLpRecall: 98,
   SetVaultLpRisk: 99,
+  VaultLpConvertPnl: 100,
+  VaultLpSettleResolved: 101,
+  VaultLpReleaseSurplus: 102,
 } as const;
 
-/**
- * P3 wrapper errors (PROVISIONAL): P3's enum order appended after P1's 71.
- * Map BY NAME — verify against the rebased P3 enum before enabling P3.
- */
+/** P3 wrapper errors: ordinals parsed from the enum at 8d651c45 (appended after P1's 71). Map BY NAME. */
 export const P3_ERR = {
   VaultLpAlreadyBound: 72,
   VaultLpNotBound: 73,
@@ -216,4 +244,10 @@ export const P3_ERR = {
   VaultLpExclusiveCounterparty: 77,
   VaultLpLeverageStepDown: 78,
   VaultLpBoundCannotClose: 79,
+  VaultLpExposureCapExceeded: 80,
+  VaultLpMatcherNotApproved: 81,
+  VaultLpUseSettleResolved: 82,
+  VaultLpReleaseRefused: 83,
+  VaultLpHarvestPending: 84,
+  VaultLpValuationStale: 85,
 } as const;

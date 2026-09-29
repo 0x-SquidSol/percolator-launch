@@ -89,8 +89,6 @@ import { deriveTicketLimits, sizeQToInput } from "@/lib/limits/ticket";
 import { takeFillResult } from "@/lib/limits/fill-check";
 import type { FillResult } from "@/lib/limits/fill-result";
 import { OrderTicketLimits } from "@/components/limits/OrderTicketLimits";
-import { LimitsNotice } from "@/components/limits/LimitsRow";
-import { COPY } from "@/lib/limits/copy";
 
 const SIZE_PRESETS = [25, 50, 75, 100];
 const MAX_DISPLAY_LEVERAGE = 200;
@@ -799,9 +797,6 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     markE6: livePriceE6 ?? undefined,
   });
   const limitsBlocking = ticketLimits.issues.some((x) => x.severity === "error");
-  // Closing a long sells (the "short" direction), closing a short buys.
-  const limitsCloseHalted =
-    existingPositionSize !== 0n && ticketLimits.halted[existingPositionSize > 0n ? "short" : "long"];
   // P1: clamp the size input to the live headroom and SAY so (never silently).
   const limitsClampTo = ticketLimits.clampToQ;
   useEffect(() => {
@@ -924,7 +919,14 @@ setEngineLockError(null);
         async () =>
           trade(
             bindConfirmedLimitPrice(
-              { lpIdx, userIdx: userAccount!.idx, size },
+              {
+                lpIdx,
+                userIdx: userAccount!.idx,
+                size,
+                // P2 fee channel: sign base + the quote's fee (the taker's consent cap); only when
+                // the protocol enabled the channel for this asset — else the base fee as before.
+                ...(ticketLimits.fee?.channel.enabled ? { feeBps: ticketLimits.fee.signedFeeBps } : {}),
+              },
               snapshotLimitPriceE6,
             ),
           ),
@@ -1057,13 +1059,6 @@ setEngineLockError(null);
     return (
       <div className="relative p-3.5">
         {openCloseToggle}
-        {/* P1: while the LP is at its floor, a close that GROWS the LP's exposure (you are on
-            the minority side) is refused too — P1 only lets LP-reducing fills through. */}
-        {existingPositionSize !== 0n && limitsCloseHalted && (
-          <LimitsNotice tone="warning" title="Close may be refused" testId="limits-close-halt-notice">
-            {COPY.closeHalted}
-          </LimitsNotice>
-        )}
         <OrderTicketClosePanel
           slabAddress={slabAddress}
           positionSize={existingPositionSize}

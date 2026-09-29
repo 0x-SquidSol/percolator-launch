@@ -7,7 +7,6 @@
  * result. Pure renderer of `deriveTicketLimits` (lib/limits/ticket.ts).
  */
 import { type FC } from "react";
-import { UNLIMITED_CAPACITY } from "@/lib/marketCapacity";
 import { COPY } from "@/lib/limits/copy";
 import type { TicketLimits } from "@/lib/limits/ticket";
 import type { MarketLimits } from "@/hooks/useMarketLimits";
@@ -16,6 +15,7 @@ import { bandEdgesE6, effectiveLpExposureKBps } from "@/lib/limits/risk-limits";
 import type { Side } from "@/lib/limits/risk-limits";
 import { formatUsdPriceE6 } from "@/lib/format";
 import { LimitsNotice, LimitsRow, fmtBandPct, fmtBps } from "./LimitsRow";
+import { fmtQ } from "@/lib/limits/format";
 
 export interface OrderTicketLimitsProps {
   limits: MarketLimits;
@@ -28,15 +28,7 @@ export interface OrderTicketLimitsProps {
   requestedQ: bigint | null;
 }
 
-/** base q -> "12.4" (token units, POS_SCALE 1e6), trimmed. */
-export function fmtQ(q: bigint): string {
-  if (q === UNLIMITED_CAPACITY) return "∞";
-  const neg = q < 0n;
-  const a = neg ? -q : q;
-  const whole = a / 1_000_000n;
-  const frac = (a % 1_000_000n).toString().padStart(6, "0").slice(0, 4).replace(/0+$/, "");
-  return `${neg ? "−" : ""}${whole.toLocaleString()}${frac ? `.${frac}` : ""}`;
-}
+export { fmtQ };
 
 function reasonCopy(t: TicketLimits, limits: MarketLimits, side: Side): string {
   const lim = t.sideLimits?.[side];
@@ -54,6 +46,12 @@ function reasonCopy(t: TicketLimits, limits: MarketLimits, side: Side): string {
       return COPY.reason["matcher-inventory"]();
     case "lp-halt":
       return COPY.reason["lp-halt"]();
+    case "same-owner":
+      return COPY.reason["same-owner"]();
+    case "vault-lp-exposure": {
+      const lev = limits.vaultLp?.vaultLpMaxLevBps || 10_000;
+      return COPY.reason["vault-lp-exposure"]((lev / 10_000).toFixed(lev % 10_000 === 0 ? 0 : 2));
+    }
     default:
       return "";
   }
@@ -157,7 +155,8 @@ export const OrderTicketLimits: FC<OrderTicketLimitsProps> = ({ limits, ticket, 
 const QuotePanel: FC<{ limits: MarketLimits; ticket: TicketLimits; symbol: string }> = ({ limits, ticket, symbol }) => {
   const q = ticket.quote!;
   const mark = limits.engine?.effectivePriceE6 ?? 0n;
-  const charged = limits.flags.p2FeeCharged;
+  // Charged when the protocol enabled the fee channel on-chain (or the manual override flag).
+  const charged = ticket.fee?.charged ?? limits.flags.p2FeeCharged;
   const slippage = ticket.issues.find((x) => x.kind === "quote-slippage");
   return (
     <div
@@ -205,10 +204,18 @@ const QuotePanel: FC<{ limits: MarketLimits; ticket: TicketLimits; symbol: strin
       <LimitsRow
         testId="limits-quote-row"
         data={{ row: charged ? "fee-charged" : "settles" }}
-        label={charged ? "Charged" : "Settles at"}
-        value={charged ? "Quote" : "Mark"}
+        label={charged ? "Fee charged (quote)" : "Settles at"}
+        value={charged && ticket.fee ? `${fmtBps(ticket.fee.requestedBps)} · you sign ≤ ${ticket.fee.signedFeeBps} bps` : "Mark"}
+        valueClass={charged ? "text-[var(--warning)]" : undefined}
       />
       <p className="pt-1 text-[9px] leading-relaxed text-[var(--text-dim)]">{charged ? COPY.quoteCharged : COPY.quoteSettlesAtMark}</p>
+      {ticket.issues
+        .filter((x) => x.kind === "fee-over-max")
+        .map((x) => (
+          <p key={x.kind} className="text-[9px] text-[var(--short)]" data-testid="limits-quote-fee-over-max">
+            {x.message}
+          </p>
+        ))}
       {slippage && (
         <p className="text-[9px] text-[var(--warning)]" data-testid="limits-quote-slippage-warning">
           {slippage.message}

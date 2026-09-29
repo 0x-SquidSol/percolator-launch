@@ -3,31 +3,28 @@
 /**
  * P3 Earn tranche card (plan §2 P3-a/b/c): NAV share price, senior vs junior
  * tranche sizes, first-loss cushion, withdrawal effect, APY from REAL fee
- * credits, and the risk disclosure. Flag NEXT_PUBLIC_LIMITS_P3; renders
- * nothing when off, or when the market's vault does not own its LP.
+ * credits, and the risk disclosure. Values follow the program's own NAV path:
+ * the vault LP is valued from its CERTIFIED equity (or conservative equity when
+ * flat), pending LP fees are the on-chain harvestable leg. When the LP's
+ * certificate is stale the card says so instead of guessing. Pure renderer:
+ * the rail passes the one `useMarketLimits` instance it also gates deposits with.
  */
-import { useEffect, useMemo, useState, type FC } from "react";
-import { useMarketLimits, type MarketLimits } from "@/hooks/useMarketLimits";
+import { useEffect, useState, type FC } from "react";
+import type { MarketLimits } from "@/hooks/useMarketLimits";
 import { COPY } from "@/lib/limits/copy";
-import { earnTrancheView, rollFeeSnapshots, type FeeSnapshot } from "@/lib/limits/vault-tranche";
+import { rollFeeSnapshots, type EarnTrancheView, type FeeSnapshot } from "@/lib/limits/vault-tranche";
 import { formatTokenAmount } from "@/lib/format";
 import { LimitsNotice, LimitsRow } from "./LimitsRow";
 
-export interface EarnTrancheCardProps {
+export interface EarnTrancheCardViewProps {
+  limits: MarketLimits;
+  view: EarnTrancheView | null;
   slab: string;
-  /** Existing Earn vault NAV (useInsuranceLP.vaultTotalAtoms). */
-  backingNavAtoms: bigint;
-  totalShares: bigint;
-  /** Shares typed into the withdraw box (0 = none). */
   withdrawShares: bigint;
   decimals: number;
   collateralSymbol: string;
+  nowSecs?: number;
 }
-
-export const EarnTrancheCard: FC<EarnTrancheCardProps> = (p) => {
-  const limits = useMarketLimits(p.slab);
-  return <EarnTrancheCardView limits={limits} {...p} />;
-};
 
 const SNAP_KEY = (slab: string) => `perc.limits.feeSnapshots.${slab}`;
 
@@ -52,33 +49,8 @@ function saveSnaps(slab: string, list: FeeSnapshot[]): void {
   }
 }
 
-export const EarnTrancheCardView: FC<EarnTrancheCardProps & { limits: MarketLimits; nowSecs?: number }> = ({
-  limits,
-  slab,
-  backingNavAtoms,
-  totalShares,
-  withdrawShares,
-  decimals,
-  collateralSymbol,
-  nowSecs,
-}) => {
+export const EarnTrancheCardView: FC<EarnTrancheCardViewProps> = ({ limits, view, slab, withdrawShares, decimals, collateralSymbol, nowSecs }) => {
   const vs = limits.vaultState;
-  const lp = limits.lp;
-  const view = useMemo(() => {
-    if (!vs) return null;
-    const lpValue = lp ? lpEquityInitRawPositive(lp.capital, lp.pnl, lp.feeCredits) : 0n;
-    return earnTrancheView({
-      seniorClaimAtoms: vs.seniorClaimAtoms,
-      juniorFloorBps: vs.juniorFloorBps,
-      seniorFeeShareBps: vs.seniorFeeShareBps,
-      backingNavAtoms,
-      harvestableAtoms: 0n,
-      lpValueAtoms: lpValue,
-      totalShares,
-      withdrawShares,
-    });
-  }, [vs, lp, backingNavAtoms, totalShares, withdrawShares]);
-
   const [apyBps, setApyBps] = useState<number | null>(null);
   useEffect(() => {
     if (!vs) return;
@@ -97,13 +69,15 @@ export const EarnTrancheCardView: FC<EarnTrancheCardProps & { limits: MarketLimi
     return <div data-testid="limits-tranche-card" data-state="loading" className="mb-3 h-24 animate-pulse border border-[var(--border)] bg-[var(--bg-elevated)]" />;
   }
   if (!vs || !view) return null; // vault does not own an LP on this market
-  const fmt = (a: bigint) => `${formatTokenAmount(a, decimals)} ${collateralSymbol}`;
+  const fmt = (a: bigint | null) => (a === null ? "—" : `${formatTokenAmount(a, decimals)} ${collateralSymbol}`);
   const resolved = limits.engine?.mode === 1;
+  const status = view.impaired === null ? "stale" : view.impaired ? "impaired" : "covered";
 
   return (
     <div
       data-testid="limits-tranche-card"
-      data-status={view.impaired ? "impaired" : "covered"}
+      data-status={status}
+      data-valuation={view.valuation}
       data-state={limits.state}
       className="mb-3 border border-[var(--border)] bg-[var(--panel-bg)] p-3 space-y-0.5"
     >
@@ -111,10 +85,14 @@ export const EarnTrancheCardView: FC<EarnTrancheCardProps & { limits: MarketLimi
         <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--text-muted)]">Vault tranches</p>
         <span
           className={`border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider ${
-            view.impaired ? "border-[var(--short)]/40 text-[var(--short)]" : "border-[var(--long)]/40 text-[var(--long)]"
+            status === "impaired"
+              ? "border-[var(--short)]/40 text-[var(--short)]"
+              : status === "stale"
+                ? "border-[var(--warning)]/40 text-[var(--warning)]"
+                : "border-[var(--long)]/40 text-[var(--long)]"
           }`}
         >
-          {view.impaired ? "Impaired" : "Covered"}
+          {status === "impaired" ? "Impaired" : status === "stale" ? "Needs refresh" : "Covered"}
         </span>
       </div>
       <LimitsRow
@@ -125,12 +103,31 @@ export const EarnTrancheCardView: FC<EarnTrancheCardProps & { limits: MarketLimi
         value={view.sharePriceE6 === null ? "—" : (Number(view.sharePriceE6) / 1e6).toFixed(6)}
       />
       <LimitsRow label="Senior (Earn)" value={fmt(view.senior)} />
-      <LimitsRow label="Junior (creator)" value={fmt(view.junior)} />
+      <LimitsRow
+        testId="limits-junior-value"
+        data={{ valuation: view.valuation }}
+        label="Junior (creator)"
+        tooltip={
+          view.valuation === "certified"
+            ? "Includes the vault LP at its certified equity (the program's own valuation)."
+            : view.valuation === "flat"
+              ? "The vault LP is flat; valued at its capital net of losses and fee debt."
+              : COPY.valuationStale
+        }
+        value={fmt(view.junior)}
+      />
       <LimitsRow
         label="First-loss cushion"
         tooltip="Junior tranche as a share of Earn deposits: how much trader profit the creator's capital covers before Earn depositors lose anything."
         value={view.cushionBps === null ? "—" : `${(view.cushionBps / 100).toFixed(1)}%`}
         valueClass={view.cushionBps !== null && view.cushionBps < 1_000 ? "text-[var(--warning)]" : undefined}
+      />
+      <LimitsRow
+        testId="limits-pending-fees"
+        data={{ excludes: view.excludesUncrankedFees ? "true" : "false" }}
+        label="Pending LP fees"
+        tooltip="LP fees earned but not yet cranked into the vault. They are priced into the share value already."
+        value={view.excludesUncrankedFees ? <span className="text-[var(--text-dim)]">{COPY.excludesUncrankedFees}</span> : fmt(view.harvestable)}
       />
       <LimitsRow
         testId="limits-apy"
@@ -139,6 +136,7 @@ export const EarnTrancheCardView: FC<EarnTrancheCardProps & { limits: MarketLimi
         tooltip="Annualised from LP fees actually credited to the senior tranche on-chain. Never a projection."
         value={apyBps === null ? <span className="text-[var(--text-dim)]">{COPY.apyInsufficient}</span> : `${(apyBps / 100).toFixed(2)}%`}
       />
+      {view.valuation === "stale" && <p className="text-[9px] text-[var(--warning)]">{COPY.valuationStale}</p>}
       {withdrawShares > 0n && (
         <p
           className={`pt-1 text-[9px] leading-relaxed ${view.withdrawKind === "normal" ? "text-[var(--text-secondary)]" : "text-[var(--warning)]"}`}
@@ -148,9 +146,10 @@ export const EarnTrancheCardView: FC<EarnTrancheCardProps & { limits: MarketLimi
           {view.withdrawAtoms !== null && COPY.withdrawReceive(fmt(view.withdrawAtoms))}{" "}
           {view.withdrawKind === "impaired" && COPY.withdrawImpaired(fmt(view.senior))}
           {view.withdrawKind === "illiquid" && COPY.withdrawIlliquid}
+          {view.withdrawKind === "stale" && COPY.valuationStale}
         </p>
       )}
-      {view.impaired && <p className="text-[9px] text-[var(--short)]">{COPY.depositsPausedImpaired}</p>}
+      {view.impaired === true && <p className="text-[9px] text-[var(--short)]">{COPY.depositsPausedImpaired}</p>}
       {resolved && <p className="text-[9px] text-[var(--warning)]">{COPY.resolvedVault}</p>}
       <div className="pt-2">
         <LimitsNotice tone="info" testId="limits-risk-disclosure">
@@ -160,10 +159,3 @@ export const EarnTrancheCardView: FC<EarnTrancheCardProps & { limits: MarketLimi
     </div>
   );
 };
-
-function lpEquityInitRawPositive(capital: bigint, pnl: bigint, feeCredits: bigint): bigint {
-  // LP value for V: capital + pnl − fee debt (positive pnl counted, as the certified equity does), floored at 0.
-  const debt = feeCredits < 0n ? -feeCredits : feeCredits;
-  const v = capital + pnl - debt;
-  return v < 0n ? 0n : v;
-}

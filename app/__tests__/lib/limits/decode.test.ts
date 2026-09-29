@@ -38,14 +38,14 @@ const hex = (h: string) => new Uint8Array(Buffer.from(h, "hex"));
 describe("constants agree with rustc's repr(C) layout (offset_of!)", () => {
   it("AssetRiskLimitsV17", () => {
     const o = layouts.offsets;
-    expect([o["rl.side_oi_cap_q"], o["rl.lp_floor_atoms"], o["rl.lp_exposure_k_bps"], o["rl.exec_band_bps"], o["rl.matcher_ext_mode"], o["rl._reserved0"], o["rl._reserved"]]).toEqual([
-      C.RL_SIDE_OI_CAP_Q, C.RL_LP_FLOOR_ATOMS, C.RL_LP_EXPOSURE_K_BPS, C.RL_EXEC_BAND_BPS, C.RL_MATCHER_EXT_MODE, C.RL_RESERVED0, C.RL_RESERVED,
+    expect([o["rl.side_oi_cap_q"], o["rl.lp_floor_atoms"], o["rl.lp_exposure_k_bps"], o["rl.exec_band_bps"], o["rl.matcher_ext_mode"], o["rl._reserved0"], o["rl.max_requested_fee_bps"], o["rl._reserved"]]).toEqual([
+      C.RL_SIDE_OI_CAP_Q, C.RL_LP_FLOOR_ATOMS, C.RL_LP_EXPOSURE_K_BPS, C.RL_EXEC_BAND_BPS, C.RL_MATCHER_EXT_MODE, C.RL_RESERVED0, C.RL_MAX_REQUESTED_FEE_BPS, C.RL_RESERVED,
     ]);
   });
   it("AssetVaultLpV18", () => {
     const o = layouts.offsets;
-    expect([o["av.lp_net_q"], o["av.lev_cap_q"], o["av.lp_net_slot"], o["av.skew_slope_e9"], o["av.skew_max_e9"], o["av.lev_max_imr_bps"], o["av.flags"], o["av._reserved0"], o["av._reserved"]]).toEqual([
-      C.AV_LP_NET_Q, C.AV_LEV_CAP_Q, C.AV_LP_NET_SLOT, C.AV_SKEW_SLOPE_E9, C.AV_SKEW_MAX_E9, C.AV_LEV_MAX_IMR_BPS, C.AV_FLAGS, C.AV_RESERVED0, C.AV_RESERVED,
+    expect([o["av.lp_net_q"], o["av.lev_cap_q"], o["av.lp_net_slot"], o["av.skew_slope_e9"], o["av.skew_max_e9"], o["av.lev_max_imr_bps"], o["av.flags"], o["av._reserved0"], o["av.vault_lp_max_lev_bps"], o["av.approved_matcher_program"]]).toEqual([
+      C.AV_LP_NET_Q, C.AV_LEV_CAP_Q, C.AV_LP_NET_SLOT, C.AV_SKEW_SLOPE_E9, C.AV_SKEW_MAX_E9, C.AV_LEV_MAX_IMR_BPS, C.AV_FLAGS, C.AV_RESERVED0, C.AV_VAULT_LP_MAX_LEV_BPS, C.AV_APPROVED_MATCHER_PROGRAM,
     ]);
   });
   it("VaultLpStateV18 (absolute = HEADER_LEN + struct offset)", () => {
@@ -119,8 +119,14 @@ describe("P1 AssetRiskLimitsV17 from Rust-laid-out bytes", () => {
       lpExposureKBps: 50_000,
       execBandBps: 300,
       matcherExtMode: 1,
+      maxRequestedFeeBps: 40,
       allDefault: false,
     });
+  });
+  it("refuses a fee-channel max above 1023 (validate_asset_risk_limits)", () => {
+    const d = liveMarket("pengu-market-v18-healthy").slice();
+    new DataView(d.buffer).setUint16(C.assetWrapperOff(0) + C.ASSET_RISK_LIMITS_OFF + C.RL_MAX_REQUESTED_FEE_BPS, 1024, true);
+    expect(decodeAssetRiskLimits(d)).toBeNull();
   });
   it("refuses a band above the setter max", () => {
     const d = liveMarket("pengu-market-v18-healthy").slice();
@@ -144,6 +150,19 @@ describe("P3 decoders from Rust-laid-out bytes", () => {
     expect(v.skewSlopeE9).toBe(2_000n);
     expect(v.skewMaxE9).toBe(900n);
     expect(v.levMaxImrBps).toBe(5_000);
+    expect(v.vaultLpMaxLevBps).toBe(20_000);
+    expect(v.approvedMatcherProgram.every((b) => b === 0x5a)).toBe(true);
+  });
+  it("refuses vault_lp_max_lev_bps above 50000 and a non-zero _reserved0", () => {
+    const d = liveMarket("pengu-market-v18-healthy").slice();
+    d.set(hex(layouts.assetVaultLpHex), C.assetWrapperOff(0) + C.ASSET_VAULT_LP_OFF);
+    const b = C.assetWrapperOff(0) + C.ASSET_VAULT_LP_OFF;
+    const bad = d.slice();
+    new DataView(bad.buffer).setUint32(b + C.AV_VAULT_LP_MAX_LEV_BPS, 50_001, true);
+    expect(decodeAssetVaultLp(bad)).toBeNull();
+    const bad2 = d.slice();
+    bad2[b + C.AV_RESERVED0] = 1;
+    expect(decodeAssetVaultLp(bad2)).toBeNull();
   });
   it("refuses bound flag without a key (validate_asset_vault_lp)", () => {
     const d = liveMarket("pengu-market-v18-healthy").slice();
@@ -203,5 +222,44 @@ describe("live portfolio (ANSEM, 2SewEcvf) — cross-checked against the SDK par
     expect(pos).toBe(-16_511_677_058n);
     expect(signedPositionForAsset(pf, 0, e.marketId + 999n)).toBe(0n);
     expect(signedPositionForAsset(pf, 1, e.marketId)).toBe(0n);
+  });
+});
+
+describe("P3 valuation offsets agree with rustc offset_of! (deployed 6377376a; identical on P3 0be66041)", () => {
+  const nav = JSON.parse(readFileSync(join(FX, "limits", "rust-nav-offsets.json"), "utf8")) as Record<string, number>;
+  it("wrapper cfg, group header, portfolio, health cert", () => {
+    expect(C.WCFG_LP_FEE_ACCRUED_ATOMS).toBe(nav["wcfg.lp_fee_accrued_atoms"]);
+    expect(C.WCFG_LP_FEE_WITHDRAWN_ATOMS).toBe(nav["wcfg.lp_fee_withdrawn_atoms"]);
+    expect(C.H_VAULT).toBe(nav["hdr.vault"]);
+    expect(C.H_INSURANCE).toBe(nav["hdr.insurance"]);
+    expect(C.H_SOURCE_INSURANCE_CREDIT_RESERVED_TOTAL).toBe(nav["hdr.source_insurance_credit_reserved_total_atoms"]);
+    expect(C.H_INSURANCE_DOMAIN_BUDGET_REMAINING_TOTAL).toBe(nav["hdr.insurance_domain_budget_remaining_total"]);
+    expect([C.H_RISK_EPOCH, C.H_ASSET_SET_EPOCH, C.H_ORACLE_EPOCH, C.H_FUNDING_EPOCH]).toEqual([
+      nav["hdr.risk_epoch"], nav["hdr.asset_set_epoch"], nav["hdr.oracle_epoch"], nav["hdr.funding_epoch"],
+    ]);
+    expect(C.PF_ACTIVE_BITMAP).toBe(C.HEADER_LEN + nav["pf.active_bitmap"]);
+    expect(C.PF_HEALTH_CERT).toBe(C.HEADER_LEN + nav["pf.health_cert"]);
+    expect(C.PF_STALE_STATE).toBe(C.HEADER_LEN + nav["pf.stale_state"]);
+    expect(C.PF_B_STALE_STATE).toBe(C.HEADER_LEN + nav["pf.b_stale_state"]);
+    expect([C.CERT_EQUITY, C.CERT_ORACLE_EPOCH, C.CERT_FUNDING_EPOCH, C.CERT_RISK_EPOCH, C.CERT_ASSET_SET_EPOCH, C.CERT_ACTIVE_BITMAP, C.CERT_VALID]).toEqual([
+      nav["cert.certified_equity"], nav["cert.cert_oracle_epoch"], nav["cert.cert_funding_epoch"], nav["cert.cert_risk_epoch"],
+      nav["cert.cert_asset_set_epoch"], nav["cert.active_bitmap_at_cert"], nav["cert.valid"],
+    ]);
+    expect(nav["bitmap.size"]).toBe(8);
+  });
+
+  it("live ANSEM portfolio: active bitmap marks its one leg; cert bool byte is 0/1; epochs are plausible vs the market", () => {
+    const pf = jsonAccount("2SewEcvf.portfolio.json");
+    const market = jsonAccount("5bVTTMRc.ansem.market.json");
+    const r = decodePortfolioRisk(pf)!;
+    const e = decodeMarketEngineView(market)!;
+    expect(r.activeBitmap & 1n).toBe(1n); // leg slot 0 is active (the -16.5B short)
+    expect([0, 1]).toContain(r.cert.validByte);
+    expect([0, 1]).toContain(r.staleState);
+    expect(r.cert.riskEpoch <= e.riskEpoch).toBe(true);
+    expect(r.cert.oracleEpoch <= e.oracleEpoch).toBe(true);
+    // v18.2 slab: the fee-leg claim is consistent (withdrawn <= accrued)
+    expect(e.lpFeeWithdrawnAtoms <= e.lpFeeAccruedAtoms).toBe(true);
+    expect(e.maxTradingFeeBps).toBeGreaterThan(0n);
   });
 });

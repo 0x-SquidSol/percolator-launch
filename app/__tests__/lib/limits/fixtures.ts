@@ -25,6 +25,16 @@ export function marketLimits(over: Partial<MarketLimits> = {}): MarketLimits {
       oiEffShortQ: 400_000_000n,
       modeLong: 0,
       modeShort: 0,
+      vaultAtoms: 5_000_000_000n,
+      insuranceAtoms: 50_000_000n,
+      sourceInsuranceCreditReservedTotal: 0n,
+      insuranceDomainBudgetRemainingTotal: 0n,
+      lpFeeAccruedAtoms: 3_000_000n,
+      lpFeeWithdrawnAtoms: 1_000_000n,
+      riskEpoch: 7n,
+      assetSetEpoch: 1n,
+      oracleEpoch: 900n,
+      fundingEpoch: 900n,
     },
     riskLimits: { sideOiCapQ: 0n, lpFloorAtoms: 0n, lpExposureKBps: 0, execBandBps: 0, matcherExtMode: 0, allDefault: true },
     bandBps: 500,
@@ -37,14 +47,30 @@ export function marketLimits(over: Partial<MarketLimits> = {}): MarketLimits {
       skewSlopeE9: 1_000n,
       skewMaxE9: 500n,
       levMaxImrBps: 5_000,
+      vaultLpMaxLevBps: 0,
+      approvedMatcherProgram: new Uint8Array(32).fill(3),
     },
     lp: {
       owner: OWNER_LP,
       capital: 100_000_000n,
       pnl: 0n,
       feeCredits: 0n,
-      address: new PublicKey(new Uint8Array(32).fill(7)),
+      // NOT the vault LP key (fill 7): the base fixture exercises P1 caps alone; the
+      // P3-H2 vault-LP cap has its own tests with `vaultBoundLp()`.
+      address: new PublicKey(new Uint8Array(32).fill(8)),
       posQ: -400_000_000n,
+      activeBitmap: 1n,
+      staleState: 0,
+      bStaleState: 0,
+      cert: {
+        certifiedEquity: 120_000_000n,
+        oracleEpoch: 900n,
+        fundingEpoch: 900n,
+        riskEpoch: 7n,
+        assetSetEpoch: 1n,
+        activeBitmapAtCert: 1n,
+        validByte: 1,
+      },
     },
     matcher: {
       kind: 2,
@@ -78,5 +104,15 @@ export function marketLimits(over: Partial<MarketLimits> = {}): MarketLimits {
     },
     assetAdmin: null,
     ...over,
+  };
+}
+
+/** The market's LP IS the asset's bound vault LP (P3-H2 cap applies). */
+export function vaultBoundLp(levBps = 0): MarketLimits {
+  const m = marketLimits();
+  return {
+    ...m,
+    vaultLp: { ...m.vaultLp!, vaultLpMaxLevBps: levBps },
+    lp: { ...m.lp!, address: new PublicKey(new Uint8Array(32).fill(7)) },
   };
 }

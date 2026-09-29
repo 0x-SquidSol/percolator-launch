@@ -5,7 +5,11 @@ import { SlabProvider, useSlabState } from '@/components/providers/SlabProvider'
 import { useInsuranceLP } from '@/hooks/useInsuranceLP';
 import { useTokenMeta } from '@/hooks/useTokenMeta';
 import { DepositWithdrawPanel } from '@/components/earn/DepositWithdrawPanel';
-import { EarnTrancheCard } from '@/components/limits/EarnTrancheCard';
+import { EarnTrancheCardView } from '@/components/limits/EarnTrancheCard';
+import { useMarketLimits } from '@/hooks/useMarketLimits';
+import { earnViewFromLimits } from '@/lib/limits/earn';
+import { earnDepositBlock } from '@/lib/limits/vault-tranche';
+import { COPY } from '@/lib/limits/copy';
 import { MarketLogo } from '@/components/market/MarketLogo';
 import { formatCompact } from '@/lib/formatters';
 import type { MarketVaultInfo } from '@/hooks/useEarnStats';
@@ -83,6 +87,20 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
 
   const symbol = vault?.symbol ?? `${slab.slice(0, 4)}…`;
 
+  // P3 (flag-gated; "off" = no RPC): one limits read model feeds the tranche card AND the
+  // deposit gate, which mirrors the program's own tag-75 refusals (lib/limits/vault-tranche.ts).
+  const marketLimits = useMarketLimits(slab);
+  const trancheView = earnViewFromLimits(marketLimits, state.vaultTotalAtoms, state.lpSupply, state.userLpBalance);
+  const depositBlock = earnDepositBlock(trancheView, state.lpSupply);
+  const depositBlockedReason =
+    depositBlock === 'senior-impaired'
+      ? COPY.depositsPausedImpaired
+      : depositBlock === 'harvest-pending'
+        ? COPY.depositsPausedHarvest
+        : depositBlock === 'valuation-stale'
+          ? COPY.valuationStale
+          : null;
+
   // Report the resolved deposit up so the table's "Your Deposit" column fills in
   // for this row as the user browses vaults.
   useEffect(() => {
@@ -112,10 +130,10 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
     <div className="space-y-3">
       {/* P3 (flag-gated): senior/junior tranches, NAV share price, APY from real fees.
           Withdrawal preview = the wallet's whole position. Null unless the vault owns the LP. */}
-      <EarnTrancheCard
+      <EarnTrancheCardView
+        limits={marketLimits}
+        view={trancheView}
         slab={slab}
-        backingNavAtoms={state.vaultTotalAtoms}
-        totalShares={state.lpSupply}
         withdrawShares={state.userLpBalance}
         decimals={collateralDecimals}
         collateralSymbol={collateralSymbol}
@@ -180,6 +198,8 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
         pendingRedemptionShares={state.pendingRedemptionShares}
         cooldownRemainingSlots={state.cooldownRemainingSlots}
         onDeposit={handleDeposit}
+        depositBlockedReason={depositBlockedReason}
+        depositBlockKind={depositBlock}
         onWithdraw={handleWithdraw}
       />
     </div>

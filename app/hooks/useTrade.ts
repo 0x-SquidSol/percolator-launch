@@ -31,6 +31,7 @@ import { applyConfirmedFill, getPortfolioRawSnapshot, isLpPortfolio, makePortfol
 import { limitsFlags } from "@/lib/limits/flags";
 import { decodeMarketEngineView, signedPositionForAsset } from "@/lib/limits/decode";
 import { measureFill, recordFillResult } from "@/lib/limits/fill-check";
+import { tradeFeeBpsToSign } from "@/lib/limits/fee-channel";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { detectOracleMode, resolveMarketPriceE6 } from "@/lib/oraclePrice";
 import { assertKnownProgram, assertCanonicalMatcher } from "@/lib/programAllowlist";
@@ -389,6 +390,12 @@ export function useTrade(slabAddress: string) {
        */
       sizes?: bigint[];
       limitPriceE6?: bigint;
+      /**
+       * P2 fee channel (lib/limits/fee-channel.ts): the taker-SIGNED fee cap, base +
+       * the quote's requested fee, when the protocol enabled the channel for this asset.
+       * Omitted => the market's base trade fee (the only value accepted without it).
+       */
+      feeBps?: bigint;
     }) => {
       if (inflightRef.current) throw new Error("Trade already in progress");
       inflightRef.current = true;
@@ -602,7 +609,7 @@ export function useTrade(slabAddress: string) {
                     assetIndex: 0,
                     marketId: tradeMarketId,
                     sizeQ: legSize.toString(),
-                    feeBps: wrapperConfigV17?.tradeFeeBps ?? 30n,
+                    feeBps: tradeFeeBpsToSign(params.feeBps, wrapperConfigV17?.tradeFeeBps),
                     limitPrice: effectiveLimitPriceE6.toString(),
                   })),
                   maxSlippageAtoms: 0n,
@@ -622,7 +629,7 @@ export function useTrade(slabAddress: string) {
                   assetIndex: 0,
                   marketId: tradeMarketId,
                   sizeQ: params.size.toString(),
-                  feeBps: wrapperConfigV17?.tradeFeeBps ?? 30n,
+                  feeBps: tradeFeeBpsToSign(params.feeBps, wrapperConfigV17?.tradeFeeBps),
                   limitPrice: effectiveLimitPriceE6.toString(),
                   backingFeeCapBps: 0,
                 }),

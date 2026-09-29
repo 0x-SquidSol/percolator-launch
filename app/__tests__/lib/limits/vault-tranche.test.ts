@@ -137,19 +137,21 @@ describe("earnTrancheView", () => {
     juniorFloorBps: 1_000,
     seniorFeeShareBps: 10_000,
     backingNavAtoms: 1_000_000_000n,
-    harvestableAtoms: 0n,
-    lpValueAtoms: 200_000_000n,
+    harvestableAtoms: 0n as bigint | null,
+    lpValue: { kind: "certified", atoms: 200_000_000n } as const,
     totalShares: 1_000_000_000n,
     withdrawShares: 0n,
   };
   it("covered: price 1.0, 20% cushion, normal withdrawal", () => {
     const v = earnTrancheView({ ...base, withdrawShares: 100_000_000n })!;
+    expect(v.valuation).toBe("certified");
     expect(v.sharePriceE6).toBe(1_000_000n);
     expect(v.junior).toBe(200_000_000n);
     expect(v.cushionBps).toBe(2_000);
     expect(v.withdrawAtoms).toBe(100_000_000n);
     expect(v.withdrawKind).toBe("normal");
     expect(v.juniorFloorAtoms).toBe(100_000_000n);
+    expect(v.excludesUncrankedFees).toBe(false);
   });
   it("illiquid: backing short of C, junior in the LP covers it", () => {
     const v = earnTrancheView({ ...base, backingNavAtoms: 900_000_000n })!;
@@ -158,12 +160,38 @@ describe("earnTrancheView", () => {
     expect(v.withdrawKind).toBe("illiquid");
   });
   it("impaired: junior exhausted, price below 1, redemptions pay pro-rata of senior", () => {
-    const v = earnTrancheView({ ...base, backingNavAtoms: 700_000_000n, lpValueAtoms: 100_000_000n, withdrawShares: 100_000_000n })!;
+    const v = earnTrancheView({ ...base, backingNavAtoms: 700_000_000n, lpValue: { kind: "certified", atoms: 100_000_000n }, withdrawShares: 100_000_000n })!;
     expect(v.impaired).toBe(true);
     expect(v.sharePriceE6).toBe(800_000n);
     expect(v.withdrawAtoms).toBe(80_000_000n);
     expect(v.withdrawKind).toBe("impaired");
     expect(v.junior).toBe(0n);
+  });
+  it("pending (harvestable) fees count: into V AND into C_eff (senior share 100%)", () => {
+    const v = earnTrancheView({ ...base, harvestableAtoms: 50_000_000n })!;
+    expect(v.seniorClaimEff).toBe(1_050_000_000n);
+    expect(v.vaultValue).toBe(1_250_000_000n);
+    expect(v.junior).toBe(200_000_000n);
+    expect(v.backingCover).toBe(1_050_000_000n);
+  });
+  it("unreadable fee leg => counted as 0 and labelled", () => {
+    const v = earnTrancheView({ ...base, harvestableAtoms: null })!;
+    expect(v.excludesUncrankedFees).toBe(true);
+    expect(v.harvestable).toBe(0n);
+  });
+  it("stale LP: covered by backing => senior known (liveness shortcut), junior unknown", () => {
+    const v = earnTrancheView({ ...base, lpValue: { kind: "stale" } })!;
+    expect(v.valuation).toBe("stale");
+    expect(v.senior).toBe(1_000_000_000n);
+    expect(v.junior).toBeNull();
+    expect(v.impaired).toBe(false);
+  });
+  it("stale LP and backing short => nothing guessed", () => {
+    const v = earnTrancheView({ ...base, backingNavAtoms: 900_000_000n, lpValue: { kind: "stale" }, withdrawShares: 1n })!;
+    expect(v.senior).toBeNull();
+    expect(v.sharePriceE6).toBeNull();
+    expect(v.impaired).toBeNull();
+    expect(v.withdrawKind).toBe("stale");
   });
 });
 

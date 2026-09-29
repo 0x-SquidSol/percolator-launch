@@ -2,9 +2,9 @@
 /**
  * Rust parity: every vector in fixtures/limits/rust-parity-vectors.json was
  * emitted by the REAL Rust function (scripts/limits-parity/main.rs):
- *   - P1 `risk_limits_v17` extracted verbatim from feat/p1-safety-release@6066399f;
- *   - P2 `percolator_match::v2` from feat/p2-matcher-v2@49fb7dc (crate path dep);
- *   - P3 `vault_lp_v18.rs` from feat/p3-vault-owned-lp WIP (superset of c7437518).
+ *   - P1 `risk_limits_v17` extracted verbatim from feat/p1-safety-release@e74809b1 (committed);
+ *   - P2 `percolator_match::v2` from feat/p2-matcher-v2@4a0f696 (crate path dep);
+ *   - P3 `vault_lp_v18.rs` from feat/p3-vault-owned-lp@0be66041 (committed).
  * The TS ports must agree on every one.
  */
 import { describe, it, expect } from "vitest";
@@ -19,7 +19,11 @@ import {
   lpFillHeadroomQ,
   lpFloorHalts,
   sideOiGrowthAllowed,
+  positionChangeReduceOnly,
+  flooredLpMoveAllowed,
+  lpFillGate,
 } from "@/lib/limits/risk-limits";
+import { requestedFeeBps, requestedFeePermitted } from "@/lib/limits/fee-channel";
 import { adaptiveFeeBps, cpImpactBps, quoteAdaptive, skewNetBps } from "@/lib/limits/matcher-quote";
 import {
   juniorWithdrawAllowed,
@@ -29,6 +33,8 @@ import {
   skewFundingRateE9,
   stepImrBps,
   trancheSplit,
+  conservativeEquity,
+  vaultLpExposureAllowed,
 } from "@/lib/limits/vault-tranche";
 import type { V2BlockView } from "@/lib/limits/decode";
 
@@ -106,13 +112,20 @@ export const EVAL: Record<string, (v: V) => unknown> = {
   skew_funding_rate_e9: (v) => skewFundingRateE9(B(v.lp), B(v.oi), B(v.sl), B(v.mx)).toString(),
   step_imr_bps: (v) => stepImrBps(B(v.la), B(v.cap), B(v.base), N(v.mi)).toString(),
   leverage_gate_ok: (v) => leverageGateOk(B(v.e), B(v.n), B(v.imr)),
+  position_change_reduce_only: (v) => positionChangeReduceOnly(B(v.b), B(v.a)),
+  floored_lp_move_allowed: (v) => flooredLpMoveAllowed(B(v.b), B(v.a)),
+  lp_fill_gate: (v) => lpFillGate(B(v.cb), B(v.ca), B(v.lb), B(v.la), B(v.cap), v.fl as boolean),
+  requested_fee_permitted: (v) => requestedFeePermitted(B(v.req), B(v.base), B(v.signed), N(v.pm), B(v.mm)),
+  requested_fee_bps: (v) => Number(requestedFeeBps(B(v.o), B(v.ex))),
+  conservative_equity: (v) => opt(conservativeEquity(B(v.c), B(v.p), B(v.fc))),
+  vault_lp_exposure_allowed: (v) => vaultLpExposureAllowed(B(v.lb), B(v.la), B(v.eq), N(v.lev), B(v.pr)),
 };
 
 describe("limits: TS ports agree with the Rust functions on every emitted vector", () => {
   it("fixture covers every ported function", () => {
     const seen = new Set(vectors.map((v) => v.f));
     for (const f of Object.keys(EVAL)) expect(seen.has(f), f).toBe(true);
-    expect(vectors.length).toBeGreaterThan(6000);
+    expect(vectors.length).toBeGreaterThan(8500);
   });
 
   for (const f of Object.keys(EVAL)) {

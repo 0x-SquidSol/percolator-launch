@@ -3,14 +3,23 @@
  * by MarketLimits fixtures (no RPC). Also pins the zero-fill copy:
  * "Market at capacity — no fill", never a success message.
  */
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+// The Earn deposit panel renders a connect prompt without a wallet.
+vi.mock("@/hooks/useWalletCompat", () => ({
+  useWalletCompat: () => ({ connected: true, publicKey: null }),
+  useConnectionCompat: () => ({ connection: {} }),
+}));
+import { cleanup, fireEvent, render } from "@testing-library/react";
 import { OrderTicketLimits } from "@/components/limits/OrderTicketLimits";
 import { MarketLimitsStripView } from "@/components/limits/MarketLimitsStrip";
 import { EarnTrancheCardView } from "@/components/limits/EarnTrancheCard";
 import { PositionLimitsRow } from "@/components/limits/PositionLimitsRow";
 import { CreatorTranchePanelView, WizardTranchePanel } from "@/components/limits/CreatorLimits";
 import { deriveTicketLimits } from "@/lib/limits/ticket";
+import { earnViewFromLimits } from "@/lib/limits/earn";
+import { DepositWithdrawPanel } from "@/components/earn/DepositWithdrawPanel";
+import { COPY } from "@/lib/limits/copy";
 import { __setLimitsFlagsForTest } from "@/lib/limits/flags";
 import { marketLimits, OWNER_A, ALL_ON } from "../lib/limits/fixtures";
 
@@ -97,20 +106,101 @@ describe("EarnTrancheCardView", () => {
     const { getByTestId } = render(
       <EarnTrancheCardView
         limits={marketLimits()}
+        view={earnViewFromLimits(marketLimits(), 1_000_000_000n, 1_000_000_000n, 100_000_000n)}
         slab="SLAB"
-        backingNavAtoms={1_000_000_000n}
-        totalShares={1_000_000_000n}
         withdrawShares={100_000_000n}
         decimals={6}
         collateralSymbol="USDC"
         nowSecs={1_700_000_000}
       />,
     );
-    expect(getByTestId("limits-tranche-card").dataset.status).toBe("covered");
-    expect(getByTestId("limits-share-price").dataset.priceE6).toBe("1000000");
+    const card = getByTestId("limits-tranche-card");
+    expect(card.dataset.status).toBe("covered");
+    expect(card.dataset.valuation).toBe("certified");
+    // C_eff = 1e9 + 2e6 harvestable; senior = C_eff => price 1.002
+    expect(getByTestId("limits-share-price").dataset.priceE6).toBe("1002000");
+    expect(getByTestId("limits-pending-fees").dataset.excludes).toBe("false");
+    expect(getByTestId("limits-junior-value").dataset.valuation).toBe("certified");
     expect(getByTestId("limits-apy").dataset.state).toBe("insufficient-history");
     expect(getByTestId("limits-withdraw-effect").dataset.kind).toBe("normal");
     expect(getByTestId("limits-risk-disclosure").textContent).toContain("senior tranche");
+  });
+});
+
+describe("EarnTrancheCardView stale valuation", () => {
+  it("says 'Needs refresh' instead of guessing when the LP certificate is stale and backing is short", () => {
+    const L = marketLimits({ lp: { ...marketLimits().lp!, staleState: 1 } });
+    const { getByTestId } = render(
+      <EarnTrancheCardView limits={L} view={earnViewFromLimits(L, 900_000_000n, 1_000_000_000n, 0n)} slab="S2" withdrawShares={0n} decimals={6} collateralSymbol="USDC" nowSecs={1} />,
+    );
+    const card = getByTestId("limits-tranche-card");
+    expect(card.dataset.status).toBe("stale");
+    expect(card.textContent).toContain("Needs refresh");
+    expect(getByTestId("limits-share-price").dataset.priceE6).toBe("");
+  });
+});
+
+describe("DepositWithdrawPanel deposit gate", () => {
+  it("disables Deposit and shows the reason when the program would refuse", () => {
+    const { getByTestId } = render(
+      <DepositWithdrawPanel
+        userBalance={10_000_000n}
+        userLpBalance={0n}
+        vaultBalance={1n}
+        lpSupply={1n}
+        vaultAvailable
+        decimals={6}
+        collateralSymbol="USDC"
+        loading={false}
+        cooldownElapsed
+        onDeposit={async () => {}}
+        onWithdraw={async () => {}}
+        depositBlockedReason={COPY.depositsPausedImpaired}
+        depositBlockKind="senior-impaired"
+      />,
+    );
+    const input = getByTestId("earn-deposit-input") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "1" } });
+    expect((getByTestId("earn-deposit-submit") as HTMLButtonElement).disabled).toBe(true);
+    const b = getByTestId("earn-deposit-blocked");
+    expect(b.dataset.reason).toBe("senior-impaired");
+    expect(b.textContent).toContain("impaired");
+  });
+  it("control: without a block the same deposit is enabled", () => {
+    const { getByTestId, queryByTestId } = render(
+      <DepositWithdrawPanel
+        userBalance={10_000_000n}
+        userLpBalance={0n}
+        vaultBalance={1n}
+        lpSupply={1n}
+        vaultAvailable
+        decimals={6}
+        collateralSymbol="USDC"
+        loading={false}
+        cooldownElapsed
+        onDeposit={async () => {}}
+        onWithdraw={async () => {}}
+      />,
+    );
+    fireEvent.change(getByTestId("earn-deposit-input"), { target: { value: "1" } });
+    expect((getByTestId("earn-deposit-submit") as HTMLButtonElement).disabled).toBe(false);
+    expect(queryByTestId("earn-deposit-blocked")).toBeNull();
+  });
+});
+
+describe("Quote panel with the P2 fee channel on", () => {
+  it("labels the quote as charged and shows the signed cap", () => {
+    const L = marketLimits({
+      matcher: { ...marketLimits().matcher!, inventoryBase: 0n },
+      riskLimits: { ...marketLimits().riskLimits!, matcherExtMode: 1, maxRequestedFeeBps: 50 },
+      engine: { ...marketLimits().engine!, maxTradingFeeBps: 100n },
+    });
+    const { getAllByTestId, getByTestId } = render(
+      <OrderTicketLimits limits={L} ticket={ticketFor(L)} direction="long" symbol="SOL" clampedToQ={null} fillResult={null} requestedQ={null} />,
+    );
+    const row = getAllByTestId("limits-quote-row").find((r) => r.dataset.row === "fee-charged")!;
+    expect(row.textContent).toContain("you sign ≤ 41 bps");
+    expect(getByTestId("limits-quote").textContent).toContain("The quoted price is charged");
   });
 });
 

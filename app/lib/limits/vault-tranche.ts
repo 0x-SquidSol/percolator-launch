@@ -258,52 +258,106 @@ export interface EarnTrancheInput {
   seniorFeeShareBps: number;
   /** Backing NAV of the vault's pots (the existing Earn vault total). */
   backingNavAtoms: bigint;
-  /** Not-yet-cranked LP fee leg (0 when unknown). */
-  harvestableAtoms: bigint;
-  /** Vault LP value: max(0, capital + pnl − fee debt) — an ESTIMATE (the program uses the certified equity). */
-  lpValueAtoms: bigint;
+  /** `harvestableFeeAtoms(...)`; null = unreadable (then counted as 0 and labelled). */
+  harvestableAtoms: bigint | null;
+  /** `vaultLpValueAtoms(...)` — certified equity, flat conservative equity, or stale. */
+  lpValue: VaultLpValue;
   totalShares: bigint;
   /** Shares the user is looking at withdrawing (0 = none typed). */
   withdrawShares: bigint;
 }
 
 export interface EarnTrancheView {
-  vaultValue: bigint;
+  valuation: "certified" | "flat" | "stale";
+  /** True when the pending (uncranked) LP fee leg could not be read and is excluded. */
+  excludesUncrankedFees: boolean;
+  harvestable: bigint;
   seniorClaimEff: bigint;
-  senior: bigint;
-  junior: bigint;
+  /** Backing + harvestable: what covers the senior without touching the LP. */
+  backingCover: bigint;
+  /** null while stale (unless backing alone covers the senior — the program's liveness shortcut). */
+  vaultValue: bigint | null;
+  senior: bigint | null;
+  junior: bigint | null;
   sharePriceE6: bigint | null;
   cushionBps: number | null;
-  impaired: boolean;
-  /** Backing alone does not cover the senior claim: part of the value sits in the LP. */
+  impaired: boolean | null;
+  /** Backing alone does not cover the senior: part of the value sits in the LP. */
   illiquid: boolean;
   juniorFloorAtoms: bigint;
   withdrawAtoms: bigint | null;
-  withdrawKind: "normal" | "impaired" | "illiquid";
+  withdrawKind: "normal" | "impaired" | "illiquid" | "stale";
 }
 
-/** Everything the Earn tranche card shows, from on-chain inputs. */
+/** Everything the Earn tranche card shows, mirroring the P3 NAV path (tags 75/77). */
 export function earnTrancheView(i: EarnTrancheInput): EarnTrancheView | null {
-  const cEff = effectiveSeniorClaim(i.seniorClaimAtoms, i.harvestableAtoms, i.seniorFeeShareBps);
+  const excludes = i.harvestableAtoms === null;
+  const h = i.harvestableAtoms ?? 0n;
+  const cEff = effectiveSeniorClaim(i.seniorClaimAtoms, h, i.seniorFeeShareBps);
   if (cEff === null) return null;
-  const v = vaultValue(i.backingNavAtoms, i.harvestableAtoms, i.lpValueAtoms);
+  const cover = i.backingNavAtoms + h;
+  const illiquid = cover < cEff;
+  const floor = juniorFloorAtoms(cEff, i.juniorFloorBps) ?? 0n;
+  if (i.lpValue.kind === "stale") {
+    // Liveness shortcut: backing + harvestable >= C_eff => the senior is whole without the LP.
+    const senior = illiquid ? null : cEff;
+    return {
+      valuation: "stale",
+      excludesUncrankedFees: excludes,
+      harvestable: h,
+      seniorClaimEff: cEff,
+      backingCover: cover,
+      vaultValue: null,
+      senior,
+      junior: null,
+      sharePriceE6: senior === null ? null : seniorSharePriceE6(senior, i.totalShares),
+      cushionBps: null,
+      impaired: illiquid ? null : false,
+      illiquid,
+      juniorFloorAtoms: floor,
+      withdrawAtoms: senior !== null && i.withdrawShares > 0n ? seniorAtomsForRedemption(i.withdrawShares, i.totalShares, senior) : null,
+      withdrawKind: illiquid ? "stale" : "normal",
+    };
+  }
+  const v = vaultValue(i.backingNavAtoms, h, i.lpValue.atoms);
   const split = trancheSplit(v, cEff);
   const impaired = seniorImpaired(v, cEff);
-  const illiquid = i.backingNavAtoms + i.harvestableAtoms < cEff;
-  const withdrawAtoms = i.withdrawShares > 0n ? seniorAtomsForRedemption(i.withdrawShares, i.totalShares, split.senior) : null;
   return {
-    vaultValue: v,
+    valuation: i.lpValue.kind,
+    excludesUncrankedFees: excludes,
+    harvestable: h,
     seniorClaimEff: cEff,
+    backingCover: cover,
+    vaultValue: v,
     senior: split.senior,
     junior: split.junior,
     sharePriceE6: seniorSharePriceE6(split.senior, i.totalShares),
     cushionBps: firstLossCushionBps(split.junior, cEff),
     impaired,
     illiquid,
-    juniorFloorAtoms: juniorFloorAtoms(cEff, i.juniorFloorBps) ?? 0n,
-    withdrawAtoms,
+    juniorFloorAtoms: floor,
+    withdrawAtoms: i.withdrawShares > 0n ? seniorAtomsForRedemption(i.withdrawShares, i.totalShares, split.senior) : null,
     withdrawKind: impaired ? "impaired" : illiquid ? "illiquid" : "normal",
   };
+}
+
+export type EarnDepositBlock = "harvest-pending" | "valuation-stale" | "senior-impaired";
+
+/**
+ * Port of the bound-vault gate in wrapper `handle_deposit_to_lp_vault` (tag 75, P3):
+ *   1. genesis (no senior shares) while fees are harvestable -> VaultLpHarvestPending;
+ *   2. only when backing + harvestable < C_eff is the LP valued: stale -> VaultLpValuationStale,
+ *      impaired -> VaultLpSeniorImpaired.
+ * `totalShares` is the registry's outstanding shares (the app reads the LP mint supply).
+ */
+export function earnDepositBlock(view: EarnTrancheView | null, totalShares: bigint): EarnDepositBlock | null {
+  if (!view) return null;
+  if (totalShares === 0n && view.harvestable !== 0n) return "harvest-pending";
+  if (view.backingCover < view.seniorClaimEff) {
+    if (view.valuation === "stale") return "valuation-stale";
+    if (view.impaired) return "senior-impaired";
+  }
+  return null;
 }
 
 /**
@@ -336,4 +390,121 @@ export function vaultSkewRateE9(
   if (!v || !v.bound || v.skewSlopeE9 === 0n) return 0n;
   const oi = oiEffLongQ > oiEffShortQ ? oiEffLongQ : oiEffShortQ;
   return skewFundingRateE9(v.lpNetQ, oi, v.skewSlopeE9, v.skewMaxE9);
+}
+
+// ── P3 vault valuation (feat/p3-vault-owned-lp@0be66041) ─────────────────────────────────────
+
+/** `conservative_equity`: max(0, capital + min(pnl,0) + min(fee,0)); null on overflow like Rust. */
+export function conservativeEquity(capital: bigint, pnl: bigint, feeCredits: bigint): bigint | null {
+  const I128_MAX = (1n << 127n) - 1n;
+  if (capital > I128_MAX) return null;
+  const e = capital + (pnl < 0n ? pnl : 0n) + (feeCredits < 0n ? feeCredits : 0n);
+  return e <= 0n ? 0n : e;
+}
+
+/**
+ * Port of wrapper `lp_vault_harvestable_fee_atoms`: what a tag-78 crank could
+ * harvest into NAV right now = min(LP fee claim, engine surplus available, vault).
+ * `null` = the program would fail (withdrawn > accrued: EngineCounterUnderflow).
+ */
+export function harvestableFeeAtoms(e: {
+  lpFeeAccruedAtoms: bigint;
+  lpFeeWithdrawnAtoms: bigint;
+  insuranceAtoms: bigint;
+  sourceInsuranceCreditReservedTotal: bigint;
+  insuranceDomainBudgetRemainingTotal: bigint;
+  vaultAtoms: bigint;
+}): bigint | null {
+  if (e.lpFeeWithdrawnAtoms > e.lpFeeAccruedAtoms) return null;
+  const claim = e.lpFeeAccruedAtoms - e.lpFeeWithdrawnAtoms;
+  const sat = (a: bigint, b: bigint) => (a > b ? a - b : 0n);
+  const avail = sat(sat(e.insuranceAtoms, e.sourceInsuranceCreditReservedTotal), e.insuranceDomainBudgetRemainingTotal);
+  let m = claim < avail ? claim : avail;
+  if (e.vaultAtoms < m) m = e.vaultAtoms;
+  return m;
+}
+
+export type VaultLpValue =
+  | { kind: "certified"; atoms: bigint }
+  | { kind: "flat"; atoms: bigint }
+  | { kind: "stale" };
+
+/**
+ * Port of wrapper `vault_lp_value_atoms`: a CURRENT health certificate (not stale, valid,
+ * all four epochs + active bitmap match the market) => max(0, certified_equity); else a
+ * FLAT LP (empty bitmap) => conservative_equity; else the program refuses
+ * (VaultLpValuationStale) => "stale" (the UI must not guess a number).
+ */
+export function vaultLpValueAtoms(
+  lp: {
+    capital: bigint;
+    pnl: bigint;
+    feeCredits: bigint;
+    activeBitmap: bigint;
+    staleState: number;
+    bStaleState: number;
+    cert: {
+      certifiedEquity: bigint;
+      oracleEpoch: bigint;
+      fundingEpoch: bigint;
+      riskEpoch: bigint;
+      assetSetEpoch: bigint;
+      activeBitmapAtCert: bigint;
+      validByte: number;
+    };
+  },
+  m: { oracleEpoch: bigint; fundingEpoch: bigint; riskEpoch: bigint; assetSetEpoch: bigint },
+): VaultLpValue {
+  const c = lp.cert;
+  const current =
+    lp.staleState === 0 &&
+    lp.bStaleState === 0 &&
+    c.validByte === 1 &&
+    c.oracleEpoch === m.oracleEpoch &&
+    c.fundingEpoch === m.fundingEpoch &&
+    c.riskEpoch === m.riskEpoch &&
+    c.assetSetEpoch === m.assetSetEpoch &&
+    c.activeBitmapAtCert === lp.activeBitmap;
+  if (current) return { kind: "certified", atoms: c.certifiedEquity <= 0n ? 0n : c.certifiedEquity };
+  if (lp.activeBitmap === 0n) {
+    const e = conservativeEquity(lp.capital, lp.pnl, lp.feeCredits);
+    return e === null ? { kind: "stale" } : { kind: "flat", atoms: e };
+  }
+  return { kind: "stale" };
+}
+
+/**
+ * Port of `vault_lp_exposure_allowed` (P3-H2): a fill that does not grow |lp| is
+ * always allowed; otherwise floor(|after|·price/S) <= floor(equity·lev/1e4).
+ * `null` inputs that overflow u128 in Rust return false (fail closed).
+ */
+export function vaultLpExposureAllowed(
+  lpBeforeQ: bigint,
+  lpAfterQ: bigint,
+  equityAtoms: bigint,
+  levBps: number,
+  priceE6: bigint,
+  posScale = POS_SCALE,
+): boolean {
+  if (!joinsCrowd(lpBeforeQ, lpAfterQ)) return true;
+  const U128_MAX_ = (1n << 128n) - 1n;
+  const a = lpAfterQ < 0n ? -lpAfterQ : lpAfterQ;
+  if (posScale === 0n) return false;
+  const prod = a * priceE6;
+  if (prod > U128_MAX_) return false;
+  const notional = prod / posScale;
+  const p = equityAtoms * BigInt(levBps);
+  if (p > U128_MAX_) return false;
+  return notional <= p / BPS;
+}
+
+/**
+ * Largest |LP position| that `vaultLpExposureAllowed` admits when growing:
+ * floor(a·price/S) <= F  <=>  a <= floor(((F+1)·S − 1) / price), F = floor(E·lev/1e4).
+ * Zero price => 0 (fail closed).
+ */
+export function vaultLpCapQ(equityAtoms: bigint, levBps: number, priceE6: bigint, posScale = POS_SCALE): bigint {
+  if (priceE6 === 0n) return 0n;
+  const F = (equityAtoms * BigInt(levBps)) / BPS;
+  return ((F + 1n) * posScale - 1n) / priceE6;
 }

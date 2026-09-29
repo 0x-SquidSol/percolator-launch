@@ -5,13 +5,15 @@
  */
 import { UNLIMITED_CAPACITY } from "@/lib/marketCapacity";
 import { COPY } from "./copy";
+import { feeChannelOf, signedFeeForQuote, type FeeChannel, type SignedFeeVerdict } from "./fee-channel";
+import { VAULT_LP_DEFAULT_MAX_LEV_BPS } from "./constants";
 import type { MarketLimits } from "@/hooks/useMarketLimits";
-import { maxTradeSizePerSide, sameOwnerBlocked, type Side, type SideLimit } from "./risk-limits";
+import { maxTradeSizePerSide, sameOwnerBlocked, sameOwnerRoomQ, type Side, type SideLimit } from "./risk-limits";
 import { preTradeQuote, quoteFailsLimit, type PreTradeQuote } from "./matcher-quote";
 import { stepDownMaxLeverage } from "./vault-tranche";
 
 export interface TicketIssue {
-  kind: "halted" | "same-owner" | "step-down" | "quote-slippage" | "limits-unavailable";
+  kind: "halted" | "same-owner" | "step-down" | "quote-slippage" | "limits-unavailable" | "fee-over-max";
   severity: "error" | "warning";
   title: string;
   message: string;
@@ -38,9 +40,13 @@ export interface TicketLimits {
   sideLimits: Record<Side, SideLimit> | null;
   halted: Record<Side, boolean>;
   sameOwner: boolean;
+  /** The wallet owns the LP or created the market: it may only reduce/close (P1 item 2). */
+  sameOwnerCloseOnly: boolean;
   /** Set when the requested size exceeds the side max: clamp the input to this. */
   clampToQ: bigint | null;
   quote: PreTradeQuote | null;
+  /** P2 fee channel for this asset + the fee the ticket must SIGN for this quote. */
+  fee: { channel: FeeChannel; signedFeeBps: bigint; requestedBps: bigint; verdict: SignedFeeVerdict; charged: boolean } | null;
   stepDown: { maxLeverage: number; stepped: boolean; baseMaxLeverage: number; crowdBps: number } | null;
   issues: TicketIssue[];
 }
@@ -49,8 +55,10 @@ const NONE: TicketLimits = {
   sideLimits: null,
   halted: { long: false, short: false },
   sameOwner: false,
+  sameOwnerCloseOnly: false,
   clampToQ: null,
   quote: null,
+  fee: null,
   stepDown: null,
   issues: [],
 };
@@ -78,22 +86,34 @@ export function deriveTicketLimits(i: TicketLimitsInput): TicketLimits {
         matcher: L.matcher
           ? { maxFillAbs: L.matcher.maxFillAbs, maxInventoryAbs: L.matcher.maxInventoryAbs, inventoryBase: L.matcher.inventoryBase }
           : null,
+        vaultLp: boundVaultLpCap(L),
       });
+      // P1 item 2 (2e7f87de): the LP owner / creator may still CLOSE — cap each side at the
+      // taker's reducing room instead of blocking the whole ticket.
+      if (sameOwnerBlocked(i.takerOwner, L.lp?.owner ?? null, L.assetAdmin)) {
+        out.sameOwnerCloseOnly = true;
+        for (const side of ["long", "short"] as const) {
+          const room = sameOwnerRoomQ(i.takerPosQ, side);
+          if (room < out.sideLimits[side].maxQ) out.sideLimits[side] = { maxQ: room, reason: "same-owner", halted: out.sideLimits[side].halted };
+        }
+      }
       out.halted = { long: out.sideLimits.long.halted, short: out.sideLimits.short.halted };
       const lim = out.sideLimits[i.direction];
       if (lim.halted) {
         out.issues.push({ kind: "halted", severity: "error", title: "Opening paused", message: COPY.halted(i.direction) });
-      } else if (i.sizeQ > 0n && lim.maxQ !== UNLIMITED_CAPACITY && i.sizeQ > lim.maxQ) {
+      } else if (i.sizeQ > 0n && lim.maxQ > 0n && lim.maxQ !== UNLIMITED_CAPACITY && i.sizeQ > lim.maxQ) {
         out.clampToQ = lim.maxQ;
       }
     }
-    out.sameOwner = sameOwnerBlocked(i.takerOwner, L.lp?.owner ?? null, L.assetAdmin);
-    if (out.sameOwner) out.issues.push({ kind: "same-owner", severity: "error", title: "Can't trade this market from this wallet", message: COPY.sameOwner });
+    // Blocked only when this ticket's direction cannot reduce the taker (room 0).
+    out.sameOwner = out.sameOwnerCloseOnly && sameOwnerRoomQ(i.takerPosQ, i.direction) === 0n;
+    if (out.sameOwner) out.issues.push({ kind: "same-owner", severity: "error", title: "Can't open from this wallet", message: COPY.sameOwner });
   }
 
   // ── P2 quote ─────────────────────────────────────────────────────────────
   if (L.flags.p2 && L.matcher && i.sizeQ > 0n) {
-    const mark = i.markE6 ?? e.effectivePriceE6;
+    // The wrapper hands the matcher the engine's effective_price (not the UI's live tick).
+    const mark = e.effectivePriceE6;
     const lim = out.sideLimits?.[i.direction];
     out.quote = preTradeQuote(L.matcher, mark, out.clampToQ ?? i.sizeQ, i.direction === "long", {
       bandBps: L.bandBps ?? undefined,
@@ -101,6 +121,27 @@ export function deriveTicketLimits(i: TicketLimitsInput): TicketLimits {
     });
     if (out.quote && quoteFailsLimit(out.quote.quotePriceE6, i.limitPriceE6, i.direction === "long")) {
       out.issues.push({ kind: "quote-slippage", severity: "warning", title: "Slippage limit too tight", message: COPY.quoteSlippage("your limit") });
+    }
+    // P2 fee channel (P1 e74809b1): the quote is CHARGED when the protocol enabled it for the asset.
+    const channel = feeChannelOf(L.riskLimits);
+    if (out.quote) {
+      const f = signedFeeForQuote(
+        e.tradeFeeBaseBps,
+        out.quote.quotePriceE6,
+        mark,
+        channel,
+        e.maxTradingFeeBps,
+        out.quote.kind === "legacy" ? out.quote.maxTotalBps : undefined,
+      );
+      out.fee = { channel, ...f, charged: channel.enabled || L.flags.p2FeeCharged };
+      if (f.verdict !== "ok") {
+        out.issues.push({
+          kind: "fee-over-max",
+          severity: "error",
+          title: "Quote fee over the limit",
+          message: f.verdict === "over-protocol-max" ? COPY.feeOverProtocolMax(String(channel.protocolMaxBps)) : COPY.feeOverMarketMax,
+        });
+      }
     }
   }
 
@@ -124,6 +165,18 @@ export function deriveTicketLimits(i: TicketLimitsInput): TicketLimits {
     }
   }
   return out;
+}
+
+/**
+ * P3-H2 vault-LP exposure cap, when the market's LP is the asset's bound vault LP
+ * (flag P3). `vault_lp_max_lev_bps` 0 => the protocol default 1x.
+ */
+export function boundVaultLpCap(L: MarketLimits): { levBps: number } | null {
+  if (!L.flags.p3 || !L.vaultLp?.bound || !L.lp) return null;
+  const key = L.lp.address.toBytes();
+  const same = key.length === L.vaultLp.vaultLpPortfolio.length && key.every((b, k) => b === L.vaultLp!.vaultLpPortfolio[k]);
+  if (!same) return null;
+  return { levBps: L.vaultLp.vaultLpMaxLevBps === 0 ? VAULT_LP_DEFAULT_MAX_LEV_BPS : L.vaultLp.vaultLpMaxLevBps };
 }
 
 /** base-q -> the ticket's size-input string (token units = q / 1e6, or USD at `priceE6`). */

@@ -1,6 +1,6 @@
 /**
  * P1 wrapper safety release: client ports of `risk_limits_v17` (percolator-prog
- * `feat/p1-safety-release@6066399f`, `src/v16_program.rs` `mod risk_limits_v17`) plus the
+ * `feat/p1-safety-release@e74809b1`, `src/v16_program.rs` `mod risk_limits_v17`) plus the
  * processor's input gathering (`lp_floor_and_cap_q_view`,
  * `lp_trade_headroom_before_matcher`, `ensure_protocol_side_oi_cap_view`).
  *
@@ -17,6 +17,7 @@ import {
   POS_SCALE,
 } from "./constants";
 import { UNLIMITED_CAPACITY, remainingSideCapacityQ } from "@/lib/marketCapacity";
+import { conservativeEquity, vaultLpCapQ } from "./vault-tranche";
 
 export type Side = "long" | "short";
 
@@ -195,6 +196,8 @@ export type SizeLimitReason =
   | "side-oi"
   | "matcher-fill"
   | "matcher-inventory"
+  | "vault-lp-exposure"
+  | "same-owner"
   | "none";
 
 export interface SideLimit {
@@ -217,6 +220,12 @@ export interface SizeLimitInputs {
   takerPosQ: bigint;
   /** Matcher caps; null = unknown. `maxFillAbs == 0` = no per-fill cap. */
   matcher: { maxFillAbs: bigint; maxInventoryAbs: bigint; inventoryBase: bigint | null } | null;
+  /**
+   * P3-H2: the LP IS the asset's bound vault LP => its protocol exposure cap
+   * (`|pos|·mark <= conservative_equity · lev / 1e4`, default 1x) also applies.
+   * Checked post-fill by the program (refusal Custom(80), not a clip).
+   */
+  vaultLp?: { levBps: number } | null;
 }
 
 export interface LpRiskState {
@@ -252,13 +261,23 @@ export function maxTradeSizePerSide(i: SizeLimitInputs): Record<Side, SideLimit>
     let halted = false;
     if (risk && i.lp) {
       const h = lpTradeHeadroomQ(i.lp.posQ, side, risk.capQ, risk.floorBreached);
+      // P1 e74809b1: a request that is reduce-only for the TAKER skips the LP halt and
+      // headroom clip (up to |taker position|; a larger size would flip, so it is judged
+      // normally). Allowed sizes = [0, |pos|] ∪ [0, h] => max(|pos|, h).
+      const closeRoom = sameOwnerRoomQ(i.takerPosQ, side);
+      const room = closeRoom > h ? closeRoom : h;
       if (risk.floorBreached) {
-        halted = h === 0n;
-        cands.push({ q: h, r: "lp-halt" });
+        halted = room === 0n;
+        cands.push({ q: room, r: "lp-halt" });
       } else {
-        cands.push({ q: h, r: "lp-exposure" });
+        cands.push({ q: room, r: "lp-exposure" });
       }
       cands.push({ q: sideOiHeadroomQ(i.oiEffLongQ, i.oiEffShortQ, i.takerPosQ, i.lp.posQ, side, oiCap), r: "side-oi" });
+      if (i.vaultLp) {
+        const eq = conservativeEquity(i.lp.capital, i.lp.pnl, i.lp.feeCredits) ?? 0n;
+        const vcap = vaultLpCapQ(eq, i.vaultLp.levBps, i.priceE6);
+        cands.push({ q: lpFillHeadroomQ(i.lp.posQ, lpDeltaSignFor(side), vcap), r: "vault-lp-exposure" });
+      }
     }
     if (i.matcher) {
       if (i.matcher.maxFillAbs > 0n) cands.push({ q: i.matcher.maxFillAbs, r: "matcher-fill" });
@@ -281,6 +300,52 @@ export function maxTradeSizePerSide(i: SizeLimitInputs): Record<Side, SideLimit>
 export function clampSizeQ(requestedQ: bigint, limit: SideLimit): { sizeQ: bigint; clamped: boolean } {
   if (requestedQ <= limit.maxQ) return { sizeQ: requestedQ, clamped: false };
   return { sizeQ: limit.maxQ, clamped: true };
+}
+
+/**
+ * `position_change_reduce_only` (P1 2e7f87de): a change is reduce-only iff it ends flat,
+ * or keeps the same side with no larger magnitude (no flip, no growth).
+ */
+export function positionChangeReduceOnly(beforeQ: bigint, afterQ: bigint): boolean {
+  if (afterQ === 0n) return true;
+  return beforeQ !== 0n && beforeQ > 0n === afterQ > 0n && abs(afterQ) <= abs(beforeQ);
+}
+
+export type LpGate = "allow" | "floor-halt" | "cap-exceeded";
+
+/**
+ * `lp_fill_gate` (P1 e74809b1), the post-fill LP rule on every route:
+ * 1. reduce-only for the counterparty (the taker) => always allowed — exits are never
+ *    trapped by the halt or the cap;
+ * 2. a fill that does not grow the LP's magnitude => allowed;
+ * 3. else a floored LP halts; an LP past its cap is refused.
+ */
+export function lpFillGate(
+  counterpartyBeforeQ: bigint,
+  counterpartyAfterQ: bigint,
+  lpBeforeQ: bigint,
+  lpAfterQ: bigint,
+  capQ: bigint,
+  floorBreached: boolean,
+): LpGate {
+  if (positionChangeReduceOnly(counterpartyBeforeQ, counterpartyAfterQ)) return "allow";
+  if (!lpRiskIncreasing(lpBeforeQ, lpAfterQ)) return "allow";
+  if (floorBreached) return "floor-halt";
+  if (abs(lpAfterQ) > capQ) return "cap-exceeded";
+  return "allow";
+}
+
+/** `floored_lp_move_allowed`: on the non-clipping routes a floored LP may not grow. */
+export const flooredLpMoveAllowed = (beforeQ: bigint, afterQ: bigint): boolean => !lpRiskIncreasing(beforeQ, afterQ);
+
+/**
+ * Item 2 with the reduce-only exemption (P1 2e7f87de): a same-owner / creator taker may
+ * only CLOSE. Largest |size| such a taker can send in `side`: |position| when the side
+ * reduces it (clipped so it cannot flip), else 0.
+ */
+export function sameOwnerRoomQ(takerPosQ: bigint, side: Side): bigint {
+  const reduces = (takerPosQ > 0n && side === "short") || (takerPosQ < 0n && side === "long");
+  return reduces ? abs(takerPosQ) : 0n;
 }
 
 /** Same-owner rule (P1 item 2): taker owner == LP owner, or == a non-zero asset_admin. */

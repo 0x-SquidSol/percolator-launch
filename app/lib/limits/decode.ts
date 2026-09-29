@@ -33,6 +33,7 @@ export interface MarketEngineView {
   mode: number;
   initialMarginBps: bigint;
   maintenanceMarginBps: bigint;
+  maxTradingFeeBps: bigint;
   maxAbsFundingE9PerSlot: bigint;
   tradeFeeBaseBps: bigint;
   marketId: bigint;
@@ -41,6 +42,17 @@ export interface MarketEngineView {
   oiEffShortQ: bigint;
   modeLong: number;
   modeShort: number;
+  /** Money + epoch fields for the P3 vault valuation (harvestable fees, cert currency). */
+  vaultAtoms: bigint;
+  insuranceAtoms: bigint;
+  sourceInsuranceCreditReservedTotal: bigint;
+  insuranceDomainBudgetRemainingTotal: bigint;
+  lpFeeAccruedAtoms: bigint;
+  lpFeeWithdrawnAtoms: bigint;
+  riskEpoch: bigint;
+  assetSetEpoch: bigint;
+  oracleEpoch: bigint;
+  fundingEpoch: bigint;
 }
 
 /** Bytes needed to decode asset `i`'s engine view and wrapper-slot records. */
@@ -56,6 +68,7 @@ export function decodeMarketEngineView(d: Uint8Array, assetIndex = 0): MarketEng
     mode: d[g + C.H_MODE],
     initialMarginBps: u64(d, cfg + C.CFG_INITIAL_MARGIN_BPS),
     maintenanceMarginBps: u64(d, cfg + C.CFG_MAINTENANCE_MARGIN_BPS),
+    maxTradingFeeBps: u64(d, cfg + C.CFG_MAX_TRADING_FEE_BPS),
     maxAbsFundingE9PerSlot: u64(d, cfg + C.CFG_MAX_ABS_FUNDING_E9_PER_SLOT),
     tradeFeeBaseBps: u64(d, C.HEADER_LEN + C.WCFG_TRADE_FEE_BASE_BPS),
     marketId: u64(d, e + C.A_MARKET_ID),
@@ -64,6 +77,16 @@ export function decodeMarketEngineView(d: Uint8Array, assetIndex = 0): MarketEng
     oiEffShortQ: u128(d, e + C.A_OI_EFF_SHORT_Q),
     modeLong: d[e + C.A_MODE_LONG],
     modeShort: d[e + C.A_MODE_SHORT],
+    vaultAtoms: u128(d, g + C.H_VAULT),
+    insuranceAtoms: u128(d, g + C.H_INSURANCE),
+    sourceInsuranceCreditReservedTotal: u128(d, g + C.H_SOURCE_INSURANCE_CREDIT_RESERVED_TOTAL),
+    insuranceDomainBudgetRemainingTotal: u128(d, g + C.H_INSURANCE_DOMAIN_BUDGET_REMAINING_TOTAL),
+    lpFeeAccruedAtoms: u128(d, C.HEADER_LEN + C.WCFG_LP_FEE_ACCRUED_ATOMS),
+    lpFeeWithdrawnAtoms: u128(d, C.HEADER_LEN + C.WCFG_LP_FEE_WITHDRAWN_ATOMS),
+    riskEpoch: u64(d, g + C.H_RISK_EPOCH),
+    assetSetEpoch: u64(d, g + C.H_ASSET_SET_EPOCH),
+    oracleEpoch: u64(d, g + C.H_ORACLE_EPOCH),
+    fundingEpoch: u64(d, g + C.H_FUNDING_EPOCH),
   };
 }
 
@@ -73,6 +96,8 @@ export interface AssetRiskLimits {
   lpExposureKBps: number;
   execBandBps: number;
   matcherExtMode: number;
+  /** P2 fee channel protocol maximum (bps); 0 = channel off. */
+  maxRequestedFeeBps: number;
   /** True when every field is zero (deployed/zeroed slot = all protocol defaults). */
   allDefault: boolean;
 }
@@ -81,19 +106,21 @@ export interface AssetRiskLimits {
 export function decodeAssetRiskLimits(d: Uint8Array, assetIndex = 0): AssetRiskLimits | null {
   const b = C.assetWrapperOff(assetIndex) + C.ASSET_RISK_LIMITS_OFF;
   if (d.length < b + C.ASSET_RISK_LIMITS_LEN) return null;
-  if (d[b + C.RL_RESERVED0] !== 0 || !allZero(d, b + C.RL_RESERVED, 24)) return null;
+  if (d[b + C.RL_RESERVED0] !== 0 || !allZero(d, b + C.RL_RESERVED, C.RL_RESERVED_LEN)) return null;
   const r: AssetRiskLimits = {
     sideOiCapQ: u128(d, b + C.RL_SIDE_OI_CAP_Q),
     lpFloorAtoms: u128(d, b + C.RL_LP_FLOOR_ATOMS),
     lpExposureKBps: u32(d, b + C.RL_LP_EXPOSURE_K_BPS),
     execBandBps: u16(d, b + C.RL_EXEC_BAND_BPS),
     matcherExtMode: d[b + C.RL_MATCHER_EXT_MODE],
+    maxRequestedFeeBps: u16(d, b + C.RL_MAX_REQUESTED_FEE_BPS),
     allDefault: allZero(d, b, C.ASSET_RISK_LIMITS_LEN),
   };
   if (
     r.matcherExtMode > C.MATCHER_EXT_MODE_V1 ||
     r.execBandBps > C.MAX_EXEC_BAND_BPS ||
-    r.lpExposureKBps > C.MAX_LP_EXPOSURE_K_BPS
+    r.lpExposureKBps > C.MAX_LP_EXPOSURE_K_BPS ||
+    r.maxRequestedFeeBps > C.MAX_REQUESTED_FEE_BPS
   ) {
     return null;
   }
@@ -109,9 +136,12 @@ export interface AssetVaultLp {
   skewSlopeE9: bigint;
   skewMaxE9: bigint;
   levMaxImrBps: number;
+  /** P3-H2 vault-LP exposure cap, bps of conservative equity (0 = default 1x). */
+  vaultLpMaxLevBps: number;
+  approvedMatcherProgram: Uint8Array;
 }
 
-/** P3 `AssetVaultLpV18`; null when too short or `validate_asset_vault_lp` would refuse. */
+/** P3 `AssetVaultLpV18` (@8d651c45); null when too short or `validate_asset_vault_lp` would refuse. */
 export function decodeAssetVaultLp(d: Uint8Array, assetIndex = 0): AssetVaultLp | null {
   const b = C.assetWrapperOff(assetIndex) + C.ASSET_VAULT_LP_OFF;
   if (d.length < b + C.ASSET_VAULT_LP_LEN) return null;
@@ -119,10 +149,11 @@ export function decodeAssetVaultLp(d: Uint8Array, assetIndex = 0): AssetVaultLp 
   const key = d.slice(b + C.AV_VAULT_LP_PORTFOLIO, b + C.AV_VAULT_LP_PORTFOLIO + 32);
   const bound = (flags & C.ASSET_VAULT_LP_FLAG_BOUND) !== 0;
   const levMaxImrBps = u16(d, b + C.AV_LEV_MAX_IMR_BPS);
+  const vaultLpMaxLevBps = u32(d, b + C.AV_VAULT_LP_MAX_LEV_BPS);
   if (
     (flags & ~C.ASSET_VAULT_LP_FLAG_BOUND) !== 0 ||
-    !allZero(d, b + C.AV_RESERVED0, 5) ||
-    !allZero(d, b + C.AV_RESERVED, 32) ||
+    d[b + C.AV_RESERVED0] !== 0 ||
+    vaultLpMaxLevBps > C.VAULT_LP_MAX_LEV_BPS ||
     levMaxImrBps > 10_000 ||
     bound !== !allZero(key, 0, 32)
   ) {
@@ -137,25 +168,54 @@ export function decodeAssetVaultLp(d: Uint8Array, assetIndex = 0): AssetVaultLp 
     skewSlopeE9: u64(d, b + C.AV_SKEW_SLOPE_E9),
     skewMaxE9: u64(d, b + C.AV_SKEW_MAX_E9),
     levMaxImrBps,
+    vaultLpMaxLevBps,
+    approvedMatcherProgram: d.slice(b + C.AV_APPROVED_MATCHER_PROGRAM, b + C.AV_APPROVED_MATCHER_PROGRAM + 32),
   };
 }
 
 // ── Portfolio ────────────────────────────────────────────────────────────────
+
+export interface HealthCertView {
+  certifiedEquity: bigint;
+  oracleEpoch: bigint;
+  fundingEpoch: bigint;
+  riskEpoch: bigint;
+  assetSetEpoch: bigint;
+  activeBitmapAtCert: bigint;
+  /** Raw bool byte: 0/1 are the only values the engine decodes (anything else => not current). */
+  validByte: number;
+}
 
 export interface PortfolioRiskView {
   owner: Uint8Array;
   capital: bigint;
   pnl: bigint;
   feeCredits: bigint;
+  activeBitmap: bigint;
+  staleState: number;
+  bStaleState: number;
+  cert: HealthCertView;
 }
 
 export function decodePortfolioRisk(d: Uint8Array): PortfolioRiskView | null {
-  if (d.length < C.PF_LEGS + C.PF_MAX_LEGS * C.PF_LEG_LEN) return null;
+  if (d.length < C.PF_B_STALE_STATE + 1) return null;
   return {
     owner: d.slice(C.PF_OWNER, C.PF_OWNER + 32),
     capital: u128(d, C.PF_CAPITAL),
     pnl: i128(d, C.PF_PNL),
     feeCredits: i128(d, C.PF_FEE_CREDITS),
+    activeBitmap: u64(d, C.PF_ACTIVE_BITMAP),
+    staleState: d[C.PF_STALE_STATE],
+    bStaleState: d[C.PF_B_STALE_STATE],
+    cert: {
+      certifiedEquity: i128(d, C.PF_HEALTH_CERT + C.CERT_EQUITY),
+      oracleEpoch: u64(d, C.PF_HEALTH_CERT + C.CERT_ORACLE_EPOCH),
+      fundingEpoch: u64(d, C.PF_HEALTH_CERT + C.CERT_FUNDING_EPOCH),
+      riskEpoch: u64(d, C.PF_HEALTH_CERT + C.CERT_RISK_EPOCH),
+      assetSetEpoch: u64(d, C.PF_HEALTH_CERT + C.CERT_ASSET_SET_EPOCH),
+      activeBitmapAtCert: u64(d, C.PF_HEALTH_CERT + C.CERT_ACTIVE_BITMAP),
+      validByte: d[C.PF_HEALTH_CERT + C.CERT_VALID],
+    },
   };
 }
 

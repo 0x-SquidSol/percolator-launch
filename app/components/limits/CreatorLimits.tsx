@@ -18,7 +18,8 @@ import { limitsFlags } from "@/lib/limits/flags";
 import { COPY } from "@/lib/limits/copy";
 import { VAULT_LP_MIN_JUNIOR_FLOOR_BPS } from "@/lib/limits/constants";
 import { defaultLpExposureKBps, lpEquityInitRaw, lpExposureCapQ, maxTradeSizePerSide, nonnegEquity, effectiveLpExposureKBps } from "@/lib/limits/risk-limits";
-import { earnTrancheView, juniorWithdrawableAtoms, projectCreatorCaps } from "@/lib/limits/vault-tranche";
+import { juniorWithdrawableAtoms, projectCreatorCaps } from "@/lib/limits/vault-tranche";
+import { earnViewFromLimits } from "@/lib/limits/earn";
 import { formatTokenAmount } from "@/lib/format";
 import { LimitsNotice, LimitsRow } from "./LimitsRow";
 import { fmtQ } from "./OrderTicketLimits";
@@ -93,22 +94,14 @@ export const CreatorTranchePanelView: FC<{
   const e = limits.engine;
   const lp = limits.lp;
   const vs = limits.flags.p3 ? limits.vaultState : null;
-  const lpValue = lp ? (() => { const v = lp.capital + lp.pnl - (lp.feeCredits < 0n ? -lp.feeCredits : lp.feeCredits); return v < 0n ? 0n : v; })() : 0n;
-  const view = vs
-    ? earnTrancheView({
-        seniorClaimAtoms: vs.seniorClaimAtoms,
-        juniorFloorBps: vs.juniorFloorBps,
-        seniorFeeShareBps: vs.seniorFeeShareBps,
-        backingNavAtoms,
-        harvestableAtoms: 0n,
-        lpValueAtoms: lpValue,
-        totalShares,
-        withdrawShares: 0n,
-      })
-    : null;
+  const view = earnViewFromLimits(limits, backingNavAtoms, totalShares, 0n);
   const lpFlat = lp ? lp.posQ === 0n : false;
   const withdrawable =
-    view && vs ? (lpFlat ? juniorWithdrawableAtoms(view.vaultValue, view.seniorClaimEff, backingNavAtoms, vs.juniorFloorBps) : 0n) : null;
+    view && vs && view.vaultValue !== null
+      ? lpFlat
+        ? juniorWithdrawableAtoms(view.vaultValue, view.seniorClaimEff, view.backingCover, vs.juniorFloorBps)
+        : 0n
+      : null;
   const sides =
     limits.flags.p1 && e && limits.riskLimits
       ? maxTradeSizePerSide({
@@ -132,7 +125,11 @@ export const CreatorTranchePanelView: FC<{
       <p className="mb-1 text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--text-muted)]">Risk &amp; caps</p>
       {view && (
         <>
-          <LimitsRow label="Junior at risk" value={fmt(view.junior)} valueClass={view.junior === 0n ? "text-[var(--short)]" : undefined} />
+          <LimitsRow
+            label="Junior at risk"
+            value={view.junior === null ? "Needs refresh" : fmt(view.junior)}
+            valueClass={view.junior === 0n ? "text-[var(--short)]" : undefined}
+          />
           <LimitsRow label="Cushion vs Earn" value={view.cushionBps === null ? "—" : `${(view.cushionBps / 100).toFixed(1)}%`} />
           <LimitsRow
             label="Withdrawable now"
@@ -149,7 +146,7 @@ export const CreatorTranchePanelView: FC<{
           value={`${sides.long.halted ? "Paused" : fmtQ(sides.long.maxQ)} / ${sides.short.halted ? "Paused" : fmtQ(sides.short.maxQ)}`}
         />
       )}
-      {view?.impaired && (
+      {view?.impaired === true && (
         <LimitsNotice tone="error" title="Senior impaired" testId="limits-creator-impaired">
           Your junior tranche is exhausted: further trader profits are paid by Earn depositors, and new Earn deposits are paused.
         </LimitsNotice>

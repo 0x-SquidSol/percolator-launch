@@ -20,9 +20,15 @@ import { isMockSlab } from "@/lib/mock-trade-data";
 import { useWalletCompat } from "@/hooks/useWalletCompat";
 import { invalidatePortfolio } from "@/lib/portfolio-invalidation";
 import { diagnoseTradeRejection } from "@/lib/tradeRejectDiagnosis";
+import { takeFillResult } from "@/lib/limits/fill-check";
+import { ZeroFillError, closeOutcome, isZeroFillError, type FillResult } from "@/lib/limits/fill-result";
+import { COPY } from "@/lib/limits/copy";
+import { fmtQ } from "@/lib/limits/format";
 
 export interface ClosePositionResult {
   signature: string | null;
+  /** P1: measured fill of the confirmed close (null = not measured: flag off / unpinned read). */
+  fill?: FillResult | null;
 }
 
 export interface UseClosePositionReturn {
@@ -384,6 +390,19 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
         );
 
         setLastSig(sig ?? null);
+        // P1: a confirmed TradeCpi can be a ZERO fill (the wrapper clipped the close to
+        // LP headroom 0). useTrade measured it (lib/limits/fill-check.ts); a zero fill is
+        // NOT a close — throw so every caller keeps its modal open and shows the reason.
+        const fill = takeFillResult(sig);
+        const outcome = closeOutcome(fill);
+        if (outcome === "no-fill") {
+          throw new ZeroFillError(COPY.closeZeroFill);
+        }
+        if (outcome === "partial" && fill?.filledQ != null) {
+          const f = fill.filledQ < 0n ? -fill.filledQ : fill.filledQ;
+          const r = closeSize < 0n ? -closeSize : closeSize;
+          setError(COPY.closePartial(fmtQ(f), fmtQ(r)));
+        }
         setPhase("confirming");
         setTimeout(() => setPhase("idle"), 2000);
         // The site-wide PositionsBar reads its OWN usePortfolio instance, which
@@ -395,9 +414,15 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
         // all and can't drift. usePortfolio subscribes and runs its reconcile
         // burst (PORTFOLIO_RECONCILE_MS). See lib/portfolio-invalidation.ts.
         invalidatePortfolio();
-        return { signature: sig ?? null };
+        return { signature: sig ?? null, fill };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
+        if (isZeroFillError(e)) {
+          // Not a tx failure: the close landed and filled nothing. Plain copy, no diagnosis.
+          setError(msg);
+          setPhase("idle");
+          throw e;
+        }
         console.error("[useClosePosition] error:", msg);
         setError(safeExplainMarketTxError(msg, "close", marketHealth) ?? humanizeError(msg, "trade"));
         // #2643: refine an ambiguous Custom(9) from pre-trade state (no-op for

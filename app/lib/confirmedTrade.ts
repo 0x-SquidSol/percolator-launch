@@ -3,6 +3,8 @@ export interface ConfirmedTradeParams {
   userIdx: number;
   size: bigint;
   limitPriceE6?: bigint;
+  /** P2 fee channel: taker-signed fee cap (lib/limits/fee-channel.ts). */
+  feeBps?: bigint;
 }
 
 /**
