@@ -5,11 +5,7 @@ import { useEngineState } from "@/hooks/useEngineState";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { useEngineFreshness } from "@/hooks/useEngineFreshness";
 import { InfoIcon } from "@/components/ui/Tooltip";
-import {
-  V17_MARKET_GROUP_OFF,
-  V17_MARKET_GROUP_LEN,
-  V17_MARKET_ASSET_SLOT_LEN,
-} from "@percolatorct/sdk";
+import { readV17AssetSlotLast, readV17MaxAccrualDtSlots } from "@/lib/v17-engine-clock";
 
 // A1: v17 markets carry no legacy engine block, so this card always fell
 // through to "Not available on v17 markets yet" — and even the v12 code path
@@ -20,31 +16,12 @@ import {
 //
 // The real "is this market still being cranked" signal on v17 is the asset's
 // accrue slot (`AssetStateV16Account.slot_last`), which advances only via
-// crank/trade — NOT PushAuthMark, the display-price push (see
-// v17_engine_accrue_staleness). There is no SDK parser for it yet, so it's
-// read directly off raw bytes here. The ~500-slot (~190s) threshold below
-// matches the on-chain accrue cliff past which trades/closes/cranks start
-// reverting EngineStale(19)/EngineLockActive(21).
-//
-// Offset derivation (fully-packed repr(C) Pod struct, zero padding — verified
-// by reproducing the SDK's own offsets exactly): AssetStateV16Account =
-// market_id(8) + retired_slot(8) + lifecycle(1) + raw_oracle_target_price(8) +
-// effective_price(8) + fund_px_last(8) = 41 bytes before slot_last (u64).
-// Continuing the same packed sum through a_long..oi_eff_long_q lands exactly
-// on the SDK's V17_ASSET_STATE_OI_LONG_REL=273, cross-confirming the method.
-const V17_ASSET_SLOT_WRAPPER_SIZE = 512; // 512-byte T-wrapper preceding AssetStateV16Account in each slot
-const V17_ASSET_STATE_SLOT_LAST_REL = 41; // slot_last offset within AssetStateV16Account
-const V17_STALE_THRESHOLD_SLOTS = 500; // ~190s accrue cliff (EngineStale/EngineLockActive)
-
-/** Read `AssetStateV16Account.slot_last` for one asset slot of a v17 market-group account. */
-function readV17AssetSlotLast(data: Uint8Array, assetIndex = 0): bigint | null {
-  const slotsBase = V17_MARKET_GROUP_OFF + V17_MARKET_GROUP_LEN;
-  const slotBase = slotsBase + assetIndex * V17_MARKET_ASSET_SLOT_LEN;
-  const off = slotBase + V17_ASSET_SLOT_WRAPPER_SIZE + V17_ASSET_STATE_SLOT_LAST_REL;
-  if (off + 8 > data.length) return null;
-  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  return dv.getBigUint64(off, true);
-}
+// crank/trade — NOT PushAuthMark, the display-price push. Read with the shared
+// v18-correct reader (lib/v17-engine-clock.ts; this file used to hardcode the
+// v17 512-byte wrapper and read zeros on v18 → permanent "STALE"). The
+// threshold is the market's own `max_accrual_dt_slots` — one accrual covers at
+// most that many slots, so past it trades/closes start reverting.
+const V17_STALE_THRESHOLD_FALLBACK_SLOTS = 500; // live max_accrual_dt_slots on every devnet market
 
 export const CrankHealthCard: FC = () => {
   const { engine, loading, isV17 } = useEngineState();
@@ -78,6 +55,7 @@ export const CrankHealthCard: FC = () => {
 
   if (isV17) {
     const slotLast = raw ? readV17AssetSlotLast(raw) : null;
+    const maxAccrualDt = raw ? readV17MaxAccrualDtSlots(raw) : null;
     if (slotLast == null) {
       return (
         <div className="rounded-none border border-[var(--border)]/50 bg-[var(--bg)]/80 p-2">
@@ -86,7 +64,7 @@ export const CrankHealthCard: FC = () => {
       );
     }
     lastCrank = Number(slotLast);
-    maxStaleness = V17_STALE_THRESHOLD_SLOTS;
+    maxStaleness = maxAccrualDt !== null ? Number(maxAccrualDt) : V17_STALE_THRESHOLD_FALLBACK_SLOTS;
     lifetimeLiquidations = null; // legacy engine-only counter — "—" on v17
     lifetimeForceCloses = null;
   } else {

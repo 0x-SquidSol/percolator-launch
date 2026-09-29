@@ -8,14 +8,12 @@ import { useMarketDiscovery } from "./useMarketDiscovery";
 import {
   isV17MarketAccount,
   parseMarketGroupV17OI,
-  V17_MARKET_GROUP_OFF,
-  V17_MARKET_GROUP_LEN,
-  V17_MARKET_ASSET_SLOT_LEN,
   type DiscoveredMarket,
   type V17MarketGroupOI,
 } from "@percolatorct/sdk";
 import { fetchTokenMeta } from "@/lib/tokenMeta";
 import { isLpPortfolio } from "@/lib/userAccountScan";
+import { readV17AssetSlotLast } from "@/lib/v17-engine-clock";
 
 /** v17 portfolio account magic (PERCV16\0), base64 for the memcmp filter. */
 const V17_PORTFOLIO_MAGIC_B64 = Buffer.from([
@@ -38,25 +36,9 @@ const V17_PF_OWNER_OFF = 116;
  * state so pending or failed scans are never rendered as confirmed-empty.
  */
 // v17 market group accounts carry no v12 config — the asset's accrue slot
-// (slot_last) has no SDK parser yet, so it's read directly off raw bytes.
-// Offset derivation (fully-packed repr(C) Pod struct, zero padding — verified
-// by reproducing the SDK's own offsets exactly): AssetStateV16Account =
-// market_id(8) + retired_slot(8) + lifecycle(1) + raw_oracle_target_price(8) +
-// effective_price(8) + fund_px_last(8) = 41 bytes before slot_last (u64).
-// Continuing the same packed sum through a_long..oi_eff_long_q lands exactly
-// on the SDK's V17_ASSET_STATE_OI_LONG_REL=273, cross-confirming the method.
-const V17_ASSET_SLOT_WRAPPER_SIZE = 512; // 512-byte T-wrapper preceding AssetStateV16Account in each slot
-const V17_ASSET_STATE_SLOT_LAST_REL = 41; // slot_last offset within AssetStateV16Account
-
-/** Read `AssetStateV16Account.slot_last` for one asset slot of a v17 market-group account. */
-function readV17AssetSlotLast(data: Uint8Array, assetIndex = 0): bigint | null {
-  const slotsBase = V17_MARKET_GROUP_OFF + V17_MARKET_GROUP_LEN;
-  const slotBase = slotsBase + assetIndex * V17_MARKET_ASSET_SLOT_LEN;
-  const off = slotBase + V17_ASSET_SLOT_WRAPPER_SIZE + V17_ASSET_STATE_SLOT_LAST_REL;
-  if (off + 8 > data.length) return null;
-  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  return dv.getBigUint64(off, true);
-}
+// (slot_last) is read off raw bytes by the shared v18-correct reader in
+// lib/v17-engine-clock.ts (a local copy here hardcoded the v17 512-byte wrapper
+// and read zeros on v18, so every market looked ~505M slots crank-stale).
 
 export interface CreatedMarket extends DiscoveredMarket {
   /** Formatted label for display (token symbol or truncated address) — best
