@@ -16,6 +16,8 @@ import { isSaneMarketValue } from "@/lib/activeMarketFilter";
  * for ~$397 of volume).
  */
 export const Q_SCALE = 1_000_000;
+/** log10(Q_SCALE) — the `decimals` to pass to token-amount formatters for a Q quantity. */
+export const Q_DECIMALS = 6;
 
 /** Cap per-market USD contribution — prevents sentinel leakage ($10B > any real market). */
 export const MAX_PER_MARKET_USD = 10_000_000_000;
@@ -40,4 +42,20 @@ export function qToUsd(
   const usd = (rawQ / Q_SCALE) * p;
   // GH#1618: round to 2dp to eliminate IEEE-754 float artifacts.
   return usd > MAX_PER_MARKET_USD ? null : Math.round(usd * 100) / 100;
+}
+
+/**
+ * 24h volume in USD for a /api/markets row: the API's own `volume_24h_usd`
+ * when present (already Q-scaled server-side), else `volume_24h` (Q) at the
+ * row's `last_price`. `volume_24h` is NEVER dollars — formatting it as currency
+ * directly (LiveMarketRail, MarketInfoBar) showed SOL's 3_396_789 Q as "$3.4M"
+ * for ~$397 of volume. null = unknown, 0 = a real zero.
+ */
+export function rowVolumeUsd(
+  row: { volume_24h?: number | null; volume_24h_usd?: number | null; last_price?: number | null } | null | undefined,
+): number | null {
+  if (!row) return null;
+  const usd = row.volume_24h_usd;
+  if (typeof usd === "number" && Number.isFinite(usd)) return usd;
+  return qToUsd(row.volume_24h, row.last_price);
 }

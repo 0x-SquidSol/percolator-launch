@@ -333,7 +333,10 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
             </StatCell>
             <StatCell label="Max Leverage" loading={loading}>
               <span className="text-sm font-mono tabular-nums text-[var(--text)]">
-                {marketInfo?.maxLeverage ?? 10}×
+                {/* marketInfo.maxLeverage is real (useEarnStats derives it from on-chain
+                    initialMarginBps); when marketInfo hasn't resolved it is UNKNOWN —
+                    the old `?? 10` invented a 10x cap. */}
+                {marketInfo ? `${marketInfo.maxLeverage}×` : '—'}
               </span>
             </StatCell>
           </div>

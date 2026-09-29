@@ -9,6 +9,8 @@ import { isBlockedSlab } from '@/lib/blocklist';
 import { sanitizeOnChainValue } from '@/lib/health';
 import { PLAYGROUND_SLAB_META } from '@/lib/playground-slab-meta';
 import { parseV17RiskParams } from '@/lib/v17-engine-config';
+import { leverageFromMarginBps } from '@/lib/market-params';
+import { qToUsd, rowVolumeUsd } from '@/lib/q-usd';
 import { pollWhenVisible } from '@/lib/pollWhenVisible';
 import { getMultipleAccountsInfoChunked } from '@/lib/rpc-chunk';
 
@@ -385,9 +387,12 @@ async function fetchCuratedVaultsOnChain(
  * a hardcoded 10x, including SOL. Mirrors computeMaxLeverage() in
  * app/api/markets/route.ts.
  */
-function computeMaxLeverageFromBps(bps: bigint | null | undefined): number {
+export function computeMaxLeverageFromBps(bps: bigint | null | undefined): number {
   if (bps == null || bps <= 0n) return 10;
-  const lev = Math.floor(10000 / Number(bps));
+  // Shared derivation (lib/market-params.ts): a bare floor(10000 / bps) showed a
+  // 3x launch (3334 bps) as 2x; rounding is only valid on an exact launch
+  // round-trip, otherwise floor to 0.1x (never above the engine's cap).
+  const lev = leverageFromMarginBps(Number(bps));
   return Number.isFinite(lev) && lev > 0 ? lev : 10;
 }
 
@@ -478,7 +483,7 @@ export function buildMarketVaultInfo(
   const totalOIUsdField = Number(row?.total_open_interest_usd ?? NaN);
   const totalOI = Number.isFinite(totalOIUsdField) && totalOIUsdField >= 0 && !isSentinel(totalOIUsdField)
     ? totalOIUsdField
-    : isSentinel(totalOIRaw) ? 0 : (totalOIRaw / collDivisor) * oiPriceUsd;
+    : isSentinel(totalOIRaw) ? 0 : (qToUsd(totalOIRaw, oiPriceUsd) ?? 0);
 
   // Real on-chain initialMarginBps first (accurate per-market cap); Supabase
   // max_leverage as secondary (populated on networks where the DB is live);
@@ -487,8 +492,14 @@ export function buildMarketVaultInfo(
   const tradingFeeBpsRaw = Number(row?.trading_fee_bps ?? 10);
   const tradingFeeBps = tradingFeeBpsRaw > 5_000 ? 0 : tradingFeeBpsRaw;
 
+  // volume_24h is engine Q (base-asset amount, scale 1e6) — NOT dollars. It was
+  // divided by the collateral decimals only, so it read as USD without the
+  // price factor: COLLECT (~$0.019) showed ~51x its real volume, which feeds
+  // the fee-revenue estimate (volume24h x tradingFeeBps).
   const volume24hRaw = Number(row?.volume_24h ?? 0);
-  const volume24h = isSentinel(volume24hRaw) ? 0 : volume24hRaw / collDivisor;
+  const volume24h = isSentinel(volume24hRaw)
+    ? 0
+    : (rowVolumeUsd(row as { volume_24h?: number | null; volume_24h_usd?: number | null; last_price?: number | null } | undefined) ?? 0);
 
   const insuranceRaw = Number(row?.insurance_fund ?? 0);
   const insuranceFund = insuranceRaw > 0 && insuranceRaw < 1e13 ? insuranceRaw : 0;
