@@ -14,6 +14,8 @@ import { unpackAccount, getMint } from "@solana/spl-token";
 import { useStakeDepositByPool } from "@/hooks/useStakeDepositByPool";
 import { useStakeWithdrawByPool } from "@/hooks/useStakeWithdrawByPool";
 import { parseHumanAmount, formatHumanAmount } from "@/lib/parseAmount";
+import { formatTokenAmount } from "@/lib/format";
+import { checkDepositAmount, depositAmountMessage } from "@/lib/deposit-guard";
 import { orderStakePools, stakedOrderValue } from "@/lib/stake-pool-order";
 import { subscribeSlab, getSnapshot } from "@/lib/priceStore/priceStore";
 import { formatMarkPrice } from "@/lib/format";
@@ -587,6 +589,14 @@ function DepositWidget({
 
   const pool = pools.find((p) => p.id === selectedPool) ?? pools[0];
   const amountNum = parseFloat(amount) || 0;
+  // Exact deposit amount in base units (null = unparseable / too many decimals)
+  // for the wallet-balance check; the float `amountNum` is display-only.
+  let depositRaw: bigint | null = 0n;
+  if (amount) {
+    try { depositRaw = parseHumanAmount(amount, balanceDecimals); } catch { depositRaw = null; }
+  }
+  const depositStatus = depositRaw === null ? "empty" : checkDepositAmount(depositRaw, walletBalanceRaw);
+  const depositAmountError = depositAmountMessage(depositStatus, walletBalanceRaw, balanceDecimals, "USDC");
   const withdrawAmountNum = parseFloat(withdrawAmount) || 0;
 
   // Bug #12: the Junior (first-loss) tranche selector was removed — DepositJunior
@@ -697,6 +707,10 @@ function DepositWidget({
       // Use string-based BigInt parsing to avoid float precision loss at large amounts.
       const rawAmount = parseHumanAmount(amount, balanceDecimals);
       if (rawAmount <= 0n) return;
+      if (walletBalanceRaw !== null && rawAmount > walletBalanceRaw) {
+        setTxStatus({ type: "error", msg: depositAmountMessage("exceeds", walletBalanceRaw, balanceDecimals, "USDC") ?? "Exceeds your wallet balance" });
+        return;
+      }
       const sig = await deposit(rawAmount);
       setAmount("");
       setTxStatus({ type: "success", msg: `Deposit confirmed: ${sig.slice(0, 8)}…` });
@@ -710,7 +724,7 @@ function DepositWidget({
       const msg = e instanceof Error ? e.message : String(e);
       setTxStatus({ type: "error", msg });
     }
-  }, [pool, amount, balanceDecimals, deposit, depositLoading, onTxSuccess]);
+  }, [pool, amount, balanceDecimals, walletBalanceRaw, deposit, depositLoading, onTxSuccess]);
 
   const handleWithdraw = useCallback(async () => {
     if (!pool || !withdrawPosition || withdrawLoading) return;
@@ -794,7 +808,7 @@ function DepositWidget({
                 {connected && walletBalance !== null && (
                   <button
                     type="button"
-                    onClick={() => setAmount(String(walletBalance))}
+                    onClick={() => { if (walletBalanceRaw !== null) setAmount(formatTokenAmount(walletBalanceRaw, balanceDecimals)); }}
                     className="text-[10px] text-[var(--text-muted)] tabular-nums transition-colors hover:text-[var(--accent-text)] cursor-pointer"
                     style={{ fontFamily: "var(--font-mono)" }}
                     title="Click to use max balance"
@@ -816,7 +830,7 @@ function DepositWidget({
                 />
                 <button
                   type="button"
-                  onClick={() => { if (walletBalance !== null && walletBalance > 0) setAmount(String(walletBalance)); }}
+                  onClick={() => { if (walletBalanceRaw !== null && walletBalanceRaw > 0n) setAmount(formatTokenAmount(walletBalanceRaw, balanceDecimals)); }}
                   className="border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-[10px] font-medium uppercase tracking-[0.15em] text-[var(--text-secondary)] transition-colors hover:border-[var(--accent)]/30 hover:text-[var(--accent-text)]"
                 >
                   MAX
@@ -831,8 +845,10 @@ function DepositWidget({
                       key={pct}
                       type="button"
                       onClick={() => {
-                        const val = (walletBalance * pct) / 100;
-                        setAmount(val.toFixed(2));
+                        // Exact base-unit math, rounded DOWN — toFixed(2) rounds
+                        // to nearest, so "100%" of 10.006 became 10.01 (> balance).
+                        if (walletBalanceRaw === null) return;
+                        setAmount(formatTokenAmount((walletBalanceRaw * BigInt(pct)) / 100n, balanceDecimals));
                         setTxStatus(null);
                       }}
                       className="flex-1 rounded-sm border border-[var(--border)] bg-[var(--bg)] py-1 text-[10px] font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--accent)]/30 hover:text-[var(--accent-text)]"
@@ -843,6 +859,12 @@ function DepositWidget({
                 </div>
               )}
             </div>
+
+            {depositStatus === "exceeds" && (
+              <p role="alert" data-testid="stake-deposit-amount-error" className="text-[11px] text-[var(--short)]">
+                {depositAmountError}
+              </p>
+            )}
 
             {/* LP estimate */}
             {amountNum > 0 && (
@@ -893,10 +915,10 @@ function DepositWidget({
               </button>
             ) : (
               <button
-                disabled={amountNum <= 0 || depositLoading}
+                disabled={amountNum <= 0 || depositLoading || depositStatus === "exceeds"}
                 onClick={handleDeposit}
                 className={`w-full rounded-sm py-3 text-[12px] font-semibold uppercase tracking-[0.1em] transition-all duration-200 ${
-                  amountNum > 0 && !depositLoading
+                  amountNum > 0 && !depositLoading && depositStatus !== "exceeds"
                     ? "border border-[var(--accent)]/50 bg-[var(--accent)]/[0.10] text-[var(--accent-text)] hover:border-[var(--accent)] hover:bg-[var(--accent)]/[0.18]"
                     : "border border-[var(--border)] bg-[var(--bg)] text-[var(--text-secondary)] cursor-not-allowed"
                 }`}

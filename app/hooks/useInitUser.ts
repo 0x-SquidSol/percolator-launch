@@ -29,6 +29,7 @@ import { useSlabState } from "@/components/providers/SlabProvider";
 import { assertKnownProgram } from "@/lib/programAllowlist";
 import { humanizeError } from "@/lib/errorMessages";
 import { fetchPortfolioIdentity } from "@/lib/v18-wire";
+import { assertDepositWithinBalance, DepositExceedsBalanceError } from "@/lib/deposit-guard";
 
 // ---------------------------------------------------------------------------
 // v17 portfolio discovery helper — mirrors useDeposit's findV17Portfolio.
@@ -218,16 +219,25 @@ export function useInitUser(slabAddress: string) {
                 clampedDeposit = requestedDeposit;
                 depositAccounts = { userAta, vaultTokenAta };
               } else if (ataInfo === null) {
-                clampedDeposit = 0n; // ATA absent — nothing to deposit
+                // ATA absent: the wallet holds none, so any requested deposit
+                // is over-balance — refuse rather than silently init-only.
+                assertDepositWithinBalance(requestedDeposit, 0n);
+                clampedDeposit = 0n;
                 depositAccounts = null;
               } else {
                 // SPL / Token-2022 token account: amount is a u64 LE at offset 64.
                 const ataBalance =
                   ataInfo.data.length >= 72 ? ataInfo.data.readBigUInt64LE(64) : 0n;
-                clampedDeposit = requestedDeposit < ataBalance ? requestedDeposit : ataBalance;
+                // Never SILENTLY shrink the deposit: an over-balance request
+                // used to be clamped here, so the user typed N and only the
+                // wallet's (smaller) balance moved with no warning. Refuse
+                // instead — BEFORE the account-creation tx is sent.
+                assertDepositWithinBalance(requestedDeposit, ataBalance);
+                clampedDeposit = requestedDeposit;
                 depositAccounts = clampedDeposit > 0n ? { userAta, vaultTokenAta } : null;
               }
-            } catch {
+            } catch (guardErr) {
+              if (guardErr instanceof DepositExceedsBalanceError) throw guardErr;
               // Deterministic setup (ATA / vault derivation) failed — fall through
               // to init-only; the user can deposit manually afterward.
               depositAccounts = null;

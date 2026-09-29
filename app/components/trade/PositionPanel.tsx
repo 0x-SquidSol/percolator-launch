@@ -6,6 +6,8 @@ import { useUserAccount } from "@/hooks/useUserAccount";
 import { useMarketConfig } from "@/hooks/useMarketConfig";
 import { useClosePosition } from "@/hooks/useClosePosition";
 import { useDeposit } from "@/hooks/useDeposit";
+import { useWalletAtaBalance } from "@/hooks/useWalletAtaBalance";
+import { checkDepositAmount, depositAmountMessage } from "@/lib/deposit-guard";
 import { useEngineState } from "@/hooks/useEngineState";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { useTokenMeta } from "@/hooks/useTokenMeta";
@@ -122,6 +124,8 @@ export const AddMarginModal: FC<AddMarginModalProps> = ({ slabAddress, userIdx, 
   const [amount, setAmount] = useState("");
   const [lastSig, setLastSig] = useState<string | null>(null);
   const { deposit, loading, error } = useDeposit(slabAddress);
+  const { config: marginMktConfig } = useSlabState();
+  const { balance: walletBalance } = useWalletAtaBalance(marginMktConfig?.collateralMint, lastSig);
 
   let parsedAmount: bigint = 0n;
   let parseError: string | null = null;
@@ -133,7 +137,11 @@ export const AddMarginModal: FC<AddMarginModalProps> = ({ slabAddress, userIdx, 
     }
   }
 
-  const canSubmit = !loading && amount.length > 0 && !parseError && parsedAmount > 0n;
+  // An amount above the wallet's collateral balance is rejected inline (same
+  // treatment as Withdraw) instead of being left for the chain to revert.
+  const amountStatus = parseError ? "empty" : checkDepositAmount(parsedAmount, walletBalance);
+  const amountError = depositAmountMessage(amountStatus, walletBalance, decimals, symbol);
+  const canSubmit = !loading && amount.length > 0 && !parseError && parsedAmount > 0n && amountStatus === "ok";
 
   async function handleDeposit() {
     if (!canSubmit) return;
@@ -185,6 +193,20 @@ export const AddMarginModal: FC<AddMarginModalProps> = ({ slabAddress, userIdx, 
           />
           {parseError && (
             <p className="text-[10px] text-[var(--short)]">{parseError}</p>
+          )}
+          {!parseError && amountError && (
+            <p role="alert" data-testid="add-margin-amount-error" className={`text-[10px] ${amountStatus === "exceeds" ? "text-[var(--short)]" : "text-[var(--text-secondary)]"}`}>
+              {amountError}
+            </p>
+          )}
+          {walletBalance !== null && walletBalance > 0n && (
+            <button
+              type="button"
+              onClick={() => setAmount(formatTokenAmount(walletBalance, decimals))}
+              className="self-start text-[10px] font-medium uppercase tracking-[0.1em] text-[var(--accent)] hover:underline"
+            >
+              Max: {formatTokenAmount(walletBalance, decimals, 3)} {symbol}
+            </button>
           )}
         </div>
 

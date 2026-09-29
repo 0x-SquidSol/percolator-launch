@@ -185,4 +185,33 @@ describe("DepositWithdrawPanel", () => {
     fireEvent.click(claimButton);
     expect(onWithdraw).not.toHaveBeenCalled();
   });
+  it("shows an inline error and disables submit when the deposit exceeds the wallet balance", () => {
+    const onDeposit = vi.fn(async () => undefined);
+    render(
+      <DepositWithdrawPanel
+        {...defaultProps}
+        onDeposit={onDeposit}
+        userBalance={2_000_000n}
+        lpSupply={0n}
+        vaultBalance={0n}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Deposit Amount"), { target: { value: "1000" } });
+    expect(screen.getByTestId("earn-deposit-amount-error").textContent).toMatch(
+      /exceeds your wallet balance \(2 USDC available\)/i,
+    );
+    const submit = screen.getAllByRole("button", { name: /^deposit$/i }).at(-1) as HTMLButtonElement; // [tab, submit]
+    expect(submit.disabled).toBe(true);
+    fireEvent.click(submit);
+    expect(onDeposit).not.toHaveBeenCalled();
+    // Within balance -> no error, submit enabled.
+    fireEvent.change(screen.getByLabelText("Deposit Amount"), { target: { value: "2" } });
+    expect(screen.queryByTestId("earn-deposit-amount-error")).toBeNull();
+  });
+
+  it("does not flash the over-balance error while the balance is still loading", () => {
+    render(<DepositWithdrawPanel {...defaultProps} loading={true} userBalance={0n} />);
+    fireEvent.change(screen.getByLabelText("Deposit Amount"), { target: { value: "5" } });
+    expect(screen.queryByTestId("earn-deposit-amount-error")).toBeNull();
+  });
 });

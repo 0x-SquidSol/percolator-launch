@@ -77,6 +77,7 @@ import { isSentinelValue } from "@/lib/health";
 import { DepositWithdrawCard } from "@/components/trade/DepositWithdrawCard";
 import { useInitUser } from "@/hooks/useInitUser";
 import { AUTO_DEPOSIT_AMOUNT } from "@/hooks/useAutoDeposit";
+import { depositAmountMessage } from "@/lib/deposit-guard";
 import { useWalletNetworkGuard } from "@/hooks/useWalletNetworkGuard";
 import { isOracleStaleBlocking } from "@/lib/oracle-stale-gate";
 import { invalidatePortfolio } from "@/lib/portfolio-invalidation";
@@ -1419,12 +1420,18 @@ setEngineLockError(null);
             const bal = walletAtaBalance ?? 0n;
             const suggestedStarter = bal > 0n && bal < AUTO_DEPOSIT_AMOUNT ? bal : AUTO_DEPOSIT_AMOUNT;
             // The user chooses the starter deposit — read the editable field,
-            // falling back to the suggested default when cleared, clamped to
-            // the wallet balance so the folded init+deposit tx can't bounce.
+            // falling back to the suggested default when cleared. An amount
+            // above the wallet balance is NOT silently clamped (that used to
+            // deposit less than what was typed with no warning): it shows an
+            // inline error and disables the CTA, like Withdraw does.
             const enteredStarter = starterAmountInput ? parsePercToNative(starterAmountInput, decimals) : 0n;
-            let starterDeposit = enteredStarter > 0n ? enteredStarter : suggestedStarter;
-            if (bal > 0n && starterDeposit > bal) starterDeposit = bal;
+            const starterDeposit = enteredStarter > 0n ? enteredStarter : suggestedStarter;
+            const starterOver = canOneClick && starterDeposit > bal;
+            const starterError = starterOver
+              ? depositAmountMessage("exceeds", bal, decimals, collateralSymbol)
+              : null;
             const onClickDirect = async () => {
+              if (starterOver) return;
               setInitCtaError(null);
               try {
                 // PERC-onboarding-1: useInitUser folds Deposit into the SAME
@@ -1476,12 +1483,29 @@ setEngineLockError(null);
                       placeholder={(Number(suggestedStarter) / 10 ** decimals).toString()}
                       aria-label={`Starter deposit amount in ${collateralSymbol}`}
                     />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        starterTouchedRef.current = true;
+                        setStarterAmountInput(formatTokenAmount(bal, decimals));
+                      }}
+                      aria-label="Deposit full wallet balance"
+                      disabled={initLoading}
+                      className="text-[10px] font-medium uppercase tracking-[0.1em] text-[var(--accent)] hover:underline disabled:opacity-50"
+                    >
+                      Max
+                    </button>
                     <span className="text-[10px] text-[var(--text-secondary)]">{collateralSymbol}</span>
                   </div>
                 )}
+                {starterError && (
+                  <p role="alert" data-testid="starter-deposit-error" className="mb-1.5 text-[10px] text-[var(--short)]">
+                    {starterError}
+                  </p>
+                )}
                 <button
                   onClick={canOneClick ? onClickDirect : () => setShowInlineDeposit((v) => !v)}
-                  disabled={initLoading}
+                  disabled={initLoading || starterOver}
                   className={`w-full rounded-none py-2.5 text-[11px] font-bold uppercase tracking-[0.1em] transition-[filter] duration-150 hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-70 ${
                     direction === "long" ? "bg-[var(--long)] text-black" : "bg-[var(--short)] text-white"
                   }`}

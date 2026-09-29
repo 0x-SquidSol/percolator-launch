@@ -30,6 +30,7 @@ import { useSlabState } from "@/components/providers/SlabProvider";
 import { assertKnownProgram } from "@/lib/programAllowlist";
 import { humanizeError } from "@/lib/errorMessages";
 import { fetchPortfolioIdentity } from "@/lib/v18-wire";
+import { assertDepositWithinBalance, readTokenBalance } from "@/lib/deposit-guard";
 
 // v17 portfolio account size = SDK V17_PORTFOLIO_ACCOUNT_LEN (9347). MUST be the full length:
 // InitPortfolio reallocs up to 9347 and adds NO lamports, so funding rent for a smaller size
@@ -182,6 +183,14 @@ export function useDeposit(slabAddress: string) {
             // RPC error — fall through, let the tx surface any on-chain failure
           }
         }
+
+        // Wallet-balance guard (after the network check above, so a wrong-network
+        // slab reports "switch networks" rather than a bogus 0 balance): never build (or send the InitPortfolio tx
+        // below for) a deposit larger than what the wallet holds. Withdraw
+        // rejects over-amounts up front; deposit must too instead of relying on
+        // the chain's `require_token_balance` revert. A failed balance READ
+        // (null) is not blocking — the chain still validates.
+        assertDepositWithinBalance(params.amount, await readTokenBalance(connection, userAta));
 
         const instructions: TransactionInstruction[] = [];
 

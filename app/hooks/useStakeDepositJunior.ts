@@ -17,6 +17,7 @@ import {
 } from "@solana/spl-token";
 import { sendTx } from "@/lib/tx";
 import { getConfig } from "@/lib/config";
+import { assertDepositWithinBalance, readTokenBalance } from "@/lib/deposit-guard";
 
 export interface StakeDepositJuniorParams {
   /** The slab (market) address this pool belongs to. Used for PDA derivation. */
@@ -129,6 +130,7 @@ export function useStakeDepositJunior({ slabAddress, collateralMint }: StakeDepo
         }
 
         const userCollateralAta = await getAssociatedTokenAddress(collMintPk, wallet.publicKey);
+        assertDepositWithinBalance(amount, await readTokenBalance(connection, userCollateralAta));
         const userLpAta = await getAssociatedTokenAddress(lpMint, wallet.publicKey);
 
         const instructions: TransactionInstruction[] = [];

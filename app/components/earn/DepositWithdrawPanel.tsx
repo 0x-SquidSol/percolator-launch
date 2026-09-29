@@ -367,6 +367,12 @@ export function DepositWithdrawPanel({
           </div>
         </div>
 
+        {tab === 'deposit' && !loading && rawAmount > userBalance && (
+          <p role="alert" data-testid="earn-deposit-amount-error" className="mb-3 text-[11px] text-[var(--short)]">
+            Exceeds your wallet balance ({maxAmount} {collateralSymbol} available)
+          </p>
+        )}
+
         {/* Preview */}
         {vaultAvailable && rawAmount > 0n && tab === 'deposit' && (
           <div className="mb-4 p-3 bg-[var(--bg)] border border-[var(--border)] rounded-sm">

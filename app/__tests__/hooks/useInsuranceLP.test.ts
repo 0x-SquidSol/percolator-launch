@@ -572,9 +572,10 @@ describe("useInsuranceLP", () => {
   describe("Deposit (v17 LP Vault — DepositToLpVault tag 75)", () => {
     // v17: deposit() is now DepositToLpVault (tag 75) — a real on-chain tx.
     it("should call sendTx with deposit amount", async () => {
-      // ATA exists — no createATA needed
+      // ATA exists — no createATA needed. Wallet holds 10M base units
+      // (the deposit guard refuses amounts above the wallet balance).
       mockConnection.getAccountInfo.mockResolvedValue({
-        data: Buffer.alloc(165),
+        data: (() => { const b = Buffer.alloc(165); b.writeBigUInt64LE(10_000_000n, 64); return b; })(),
         lamports: 2_000_000,
         executable: false,
         owner: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
@@ -587,6 +588,22 @@ describe("useInsuranceLP", () => {
       });
 
       expect(sendTx).toHaveBeenCalledTimes(1);
+    });
+
+    it("refuses to build a deposit above the wallet's collateral balance", async () => {
+      mockConnection.getAccountInfo.mockResolvedValue({
+        data: (() => { const b = Buffer.alloc(165); b.writeBigUInt64LE(400_000n, 64); return b; })(),
+        lamports: 2_000_000,
+        executable: false,
+        owner: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+      });
+
+      const { result } = renderHook(() => useInsuranceLP());
+
+      await act(async () => {
+        await expect(result.current.deposit(500_000n)).rejects.toThrow(/exceeds your wallet balance/i);
+      });
+      expect(sendTx).not.toHaveBeenCalled();
     });
 
     // v17 DUAL-DOMAIN. The vault is bound to a pot at CreateLpVault and it is NOT
@@ -603,7 +620,7 @@ describe("useInsuranceLP", () => {
         domain: 3,
       } as never);
       mockConnection.getAccountInfo.mockResolvedValue({
-        data: Buffer.alloc(176),
+        data: (() => { const b = Buffer.alloc(176); b.writeBigUInt64LE(10_000_000n, 64); return b; })(),
         lamports: 2_000_000,
         executable: false,
         owner: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),

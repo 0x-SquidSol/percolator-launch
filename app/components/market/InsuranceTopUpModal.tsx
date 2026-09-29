@@ -10,6 +10,9 @@ import { isMockSlab } from "@/lib/mock-trade-data";
 import { useInsuranceLP } from "@/hooks/useInsuranceLP";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { useTokenMeta } from "@/hooks/useTokenMeta";
+import { useWalletAtaBalance } from "@/hooks/useWalletAtaBalance";
+import { checkDepositAmount, depositAmountMessage } from "@/lib/deposit-guard";
+import { formatTokenAmount } from "@/lib/format";
 
 interface InsuranceTopUpModalProps {
   slabAddress: string;
@@ -53,6 +56,14 @@ export const InsuranceTopUpModal: FC<InsuranceTopUpModalProps> = ({
   const decimals = tokenMeta?.decimals ?? 6;
 
   const [amount, setAmount] = useState("");
+  const { balance: walletBalance } = useWalletAtaBalance(config?.collateralMint ?? null);
+  const amountNumParsed = parseFloat(amount);
+  const amountBase =
+    amountNumParsed > 0 && Number.isFinite(amountNumParsed)
+      ? BigInt(Math.floor(amountNumParsed * 10 ** decimals))
+      : 0n;
+  const amountStatus = checkDepositAmount(amountBase, walletBalance);
+  const amountError = depositAmountMessage(amountStatus, walletBalance, decimals, "USDC");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -101,6 +112,11 @@ export const InsuranceTopUpModal: FC<InsuranceTopUpModalProps> = ({
 
     if (!wallet.publicKey) {
       setError("Please connect your wallet first");
+      return;
+    }
+
+    if (!mockMode && amountStatus === "exceeds") {
+      setError(amountError);
       return;
     }
 
@@ -260,6 +276,21 @@ export const InsuranceTopUpModal: FC<InsuranceTopUpModalProps> = ({
                     step="0.01"
                   />
                 </div>
+                {!mockMode && amountStatus === "exceeds" && (
+                  <p role="alert" data-testid="insurance-topup-amount-error" className="mt-1 text-[11px] text-[var(--short)]">
+                    {amountError}
+                  </p>
+                )}
+                {!mockMode && walletBalance !== null && walletBalance > 0n && (
+                  <button
+                    type="button"
+                    onClick={() => setAmount(formatTokenAmount(walletBalance, decimals))}
+                    disabled={isLoading}
+                    className="mt-1 text-[10px] font-medium uppercase tracking-[0.1em] text-[var(--accent)] hover:underline disabled:opacity-50"
+                  >
+                    Max: {formatTokenAmount(walletBalance, decimals, 3)}
+                  </button>
+                )}
                 <div className="mt-1 flex gap-1">
                   {[100, 500, 1000, 5000].map((preset) => (
                     <button
@@ -356,6 +387,7 @@ export const InsuranceTopUpModal: FC<InsuranceTopUpModalProps> = ({
                     isLoading ||
                     !amount ||
                     parseFloat(amount) <= 0 ||
+                    (!mockMode && amountStatus === "exceeds") ||
                     !wallet.publicKey ||
                     (!lpState.mintExists && !mockMode)
                   }

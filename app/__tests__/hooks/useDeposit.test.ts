@@ -71,7 +71,9 @@ describe("useDeposit", () => {
     // Mock connection
     mockConnection = {
       getAccountInfo: vi.fn().mockResolvedValue({
-        data: Buffer.alloc(100),
+        // Doubles as slab data AND the collateral ATA read by the deposit
+        // guard (u64 LE balance @ 64) — wallet holds u64::MAX.
+        data: (() => { const b = Buffer.alloc(100); b.writeBigUInt64LE(2n ** 64n - 1n, 64); return b; })(),
         executable: false,
         lamports: 1000000,
         owner: mockProgramId,
@@ -133,6 +135,52 @@ describe("useDeposit", () => {
       });
 
       expect(getAta).toHaveBeenCalledWith(mockWalletPubkey, mockCollateralMint);
+    });
+  });
+
+  describe("wallet-balance guard", () => {
+    const setBalance = (n: bigint) => {
+      mockConnection.getAccountInfo.mockResolvedValue({
+        data: (() => { const b = Buffer.alloc(100); b.writeBigUInt64LE(n, 64); return b; })(),
+        executable: false,
+        lamports: 1000000,
+        owner: mockProgramId,
+      });
+    };
+
+    it("refuses to build a deposit above the wallet balance (no tx sent)", async () => {
+      setBalance(1_000_000n);
+      const { result } = renderHook(() => useDeposit(mockSlabAddress));
+      await act(async () => {
+        await expect(
+          result.current.deposit({ userIdx: 1, amount: 5_000_000n }),
+        ).rejects.toThrow(/exceeds your wallet balance/i);
+      });
+      expect(sendTx).not.toHaveBeenCalled();
+      expect(result.current.error).toMatch(/exceeds your wallet balance/i);
+    });
+
+    it("allows a deposit equal to the balance", async () => {
+      setBalance(1_000_000n);
+      const { result } = renderHook(() => useDeposit(mockSlabAddress));
+      await act(async () => {
+        await result.current.deposit({ userIdx: 1, amount: 1_000_000n });
+      });
+      expect(sendTx).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not block when the balance READ fails (chain still validates)", async () => {
+      // slab-fetch path also uses getAccountInfo; fail only the ATA read.
+      const orig = mockConnection.getAccountInfo;
+      mockConnection.getAccountInfo = vi.fn(async (pk: PublicKey) => {
+        if (pk.equals(mockUserAta)) throw new Error("429");
+        return orig(pk);
+      });
+      const { result } = renderHook(() => useDeposit(mockSlabAddress));
+      await act(async () => {
+        await result.current.deposit({ userIdx: 1, amount: 5_000_000n });
+      });
+      expect(sendTx).toHaveBeenCalledTimes(1);
     });
   });
 

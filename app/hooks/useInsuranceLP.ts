@@ -31,6 +31,7 @@ import {
 import { sendTx } from '@/lib/tx';
 import { useSlabState } from '../components/providers/SlabProvider';
 import { assertKnownProgram } from '@/lib/programAllowlist';
+import { assertDepositWithinBalance, readTokenBalance } from '@/lib/deposit-guard';
 import { useParams } from 'next/navigation';
 import { sanitizeOnChainValue } from '@/lib/health';
 import { pollWhenVisible } from '@/lib/pollWhenVisible';
@@ -626,6 +627,8 @@ export function useInsuranceLP() {
       const collateralMint = slabState.config.collateralMint;
       const vaultTokenAta = await getAssociatedTokenAddress(collateralMint, vaultPda, true);
       const sourceTokenAta = await getAssociatedTokenAddress(collateralMint, wallet.publicKey);
+      // Never build an LP-vault deposit above the wallet's collateral balance.
+      assertDepositWithinBalance(amount, await readTokenBalance(connection, sourceTokenAta));
       const depositorLpAta = await getAssociatedTokenAddress(lpMintPda, wallet.publicKey);
 
       const ixs = [];

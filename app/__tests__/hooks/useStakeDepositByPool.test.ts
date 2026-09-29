@@ -106,7 +106,10 @@ describe('useStakeDepositByPool', () => {
         if (pubkey.equals(mockPool)) {
           return { data: buildPoolAccountData(), owner: new PublicKey('GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3') };
         }
-        return { data: Buffer.alloc(165), owner: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') };
+        // Token account holding 1B base units (deposit guard reads u64 LE @ 64).
+        const tokenData = Buffer.alloc(165);
+        tokenData.writeBigUInt64LE(1_000_000_000n, 64);
+        return { data: tokenData, owner: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') };
       }),
     };
 
@@ -141,6 +144,24 @@ describe('useStakeDepositByPool', () => {
     const args = (depositAccounts as ReturnType<typeof vi.fn>).mock.calls[0][0] as { slab: PublicKey };
     expect(args.slab.toBase58()).toBe(mockSlabAddress);
     expect(sendTx).toHaveBeenCalled();
+  });
+
+  it('refuses a deposit above the wallet collateral balance (no tx sent)', async () => {
+    const base = mockConnection.getAccountInfo.getMockImplementation() as (pk: PublicKey) => Promise<unknown>;
+    mockConnection.getAccountInfo.mockImplementation(async (pk: PublicKey) => {
+      const r = (await base(pk)) as { data: Buffer };
+      if (r.data.length === 165) {
+        const d = Buffer.alloc(165);
+        d.writeBigUInt64LE(500_000n, 64); // wallet holds 0.5
+        return { ...r, data: d };
+      }
+      return r;
+    });
+    const { result } = renderHook(() => useStakeDepositByPool(DEFAULT_PARAMS));
+    await act(async () => {
+      await expect(result.current.deposit(1_000_000n)).rejects.toThrow(/exceeds your wallet balance/i);
+    });
+    expect(sendTx).not.toHaveBeenCalled();
   });
 
   it('rejects when wallet not connected', async () => {
@@ -209,8 +230,11 @@ describe('useStakeDepositByPool', () => {
         return { data: buildPoolAccountData(), owner: new PublicKey('GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3') };
       }
       callIdx++;
-      if (callIdx >= 3) return null; // LP ATA doesn't exist
-      return { data: Buffer.alloc(165), owner: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') };
+      // calls: 1 slab, 2 collateral balance (deposit guard), 3 collateral ATA, 4 LP ATA
+      if (callIdx >= 4) return null; // LP ATA doesn't exist
+      const tokenData = Buffer.alloc(165);
+      tokenData.writeBigUInt64LE(1_000_000_000n, 64);
+      return { data: tokenData, owner: new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') };
     });
 
     const { result } = renderHook(() => useStakeDepositByPool(DEFAULT_PARAMS));
