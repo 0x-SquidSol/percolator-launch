@@ -8,6 +8,8 @@ import { useFundWallet, useWallets } from "@privy-io/react-auth/solana";
 import { getConfig } from "@/lib/config";
 import { usePreferredWallet, resolveActiveWallet } from "@/hooks/usePreferredWallet";
 import { buildSolflareBrowseUrl } from "@/lib/solflare";
+import { usePrivyLogin } from "@/hooks/usePrivySafe";
+import { useWalletNeedsReconnect } from "@/hooks/useWalletNeedsReconnect";
 
 /**
  * Privy-backed connect button. Split into its own module (loaded via
@@ -19,7 +21,7 @@ import { buildSolflareBrowseUrl } from "@/lib/solflare";
  */
 export const ConnectButtonPrivyInner: FC = () => {
   const { ready, authenticated, logout, exportWallet, user } = usePrivy();
-  const { wallets } = useWallets();
+  const { ready: walletsReady, wallets } = useWallets();
   const { fundWallet } = useFundWallet();
   const { preferredAddress, setPreferredAddress } = usePreferredWallet();
   const searchParams = useSearchParams();
@@ -29,6 +31,20 @@ export const ConnectButtonPrivyInner: FC = () => {
   const activeWallet = useMemo(() => {
     return resolveActiveWallet(wallets, preferredAddress);
   }, [wallets, preferredAddress]);
+
+  // PrivyLoginBridge's action: connectWallet() while a Privy session exists.
+  const reconnectWallet = usePrivyLogin();
+
+  // Session restored but no wallet that can sign (e.g. extension locked
+  // overnight). Before this the button kept rendering the linked address from
+  // `user.wallet`, so the header looked connected while every other Connect
+  // CTA saw `connected === false`.
+  const needsReconnect = useWalletNeedsReconnect({
+    privyReady: ready,
+    authenticated,
+    walletsReady: walletsReady === true,
+    hasActiveWallet: !!activeWallet,
+  });
 
   const { login } = useLogin({
     onComplete: ({ loginAccount }) => {
@@ -100,6 +116,34 @@ export const ConnectButtonPrivyInner: FC = () => {
       >
         Loading…
       </button>
+    );
+  }
+
+  if (needsReconnect) {
+    return (
+      <div className="flex items-center gap-1">
+        <button
+          onClick={() => reconnectWallet()}
+          className="min-h-10 rounded-sm border border-[var(--warning)]/50 bg-[var(--warning)]/10 px-4 text-[13px] font-medium text-[var(--text)] transition-all duration-200 hover:bg-[var(--warning)]/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)]"
+          aria-label="Reconnect wallet"
+          title={displayAddress ? `Reconnect ${displayAddress}` : undefined}
+        >
+          Reconnect wallet
+        </button>
+        <button
+          onClick={() => {
+            setPreferredAddress(null);
+            logout();
+          }}
+          className="min-h-10 rounded-sm border border-[var(--border)] px-2 text-[13px] text-[var(--text-muted)] transition-colors hover:text-[var(--error)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+          aria-label="Disconnect"
+          title="Disconnect"
+        >
+          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+            <path d="M3 3l8 8M11 3l-8 8" />
+          </svg>
+        </button>
+      </div>
     );
   }
 

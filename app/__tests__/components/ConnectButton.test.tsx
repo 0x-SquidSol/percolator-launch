@@ -30,7 +30,11 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => mockSearchParams,
 }));
 
-vi.mock("@/hooks/usePrivySafe", () => ({ usePrivyAvailable: () => true }));
+vi.mock("@/hooks/usePrivySafe", () => ({
+  usePrivyAvailable: () => true,
+  // ConnectButtonPrivyInner reads the bridge action for its Reconnect state.
+  usePrivyLogin: () => vi.fn(),
+}));
 
 const mockLogout = vi.fn();
 const mockLogin = vi.fn();
