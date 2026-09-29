@@ -49,6 +49,8 @@ const mockUsePrivy = vi.fn();
 const mockUseWallets = vi.fn();
 const mockUseLogin = vi.fn();
 const mockLogin = vi.fn();
+const mockUseConnectWallet = vi.fn();
+const mockConnectWallet = vi.fn();
 // The variadic Privy signer (`useSignTransaction().signTransaction`) — this is
 // the ATTEMPT 3 fallback `signAllTransactions` reaches when the wallet has no
 // wallet-standard batch-signing feature. It still resolves with N signed
@@ -70,6 +72,10 @@ vi.mock("@privy-io/react-auth", () => ({
   useLogin: (callbacks: any) => {
     mockUseLogin(callbacks);
     return { login: mockLogin };
+  },
+  useConnectWallet: (callbacks: any) => {
+    mockUseConnectWallet(callbacks);
+    return { connectWallet: mockConnectWallet };
   },
 }));
 

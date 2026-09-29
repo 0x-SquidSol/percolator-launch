@@ -9,7 +9,9 @@ import { createContext, useCallback, useContext } from "react";
 export const PrivyAvailableContext = createContext<boolean>(false);
 
 /**
- * Context holding Privy's login function.
+ * Context holding the Privy "connect wallet" action: `login()` when there is no
+ * Privy session, `connectWallet()` when there is one but its wallet is gone
+ * (see PrivyLoginBridge in PrivyProviderClient.tsx).
  * Provided by WalletProvider when Privy is available.
  */
 export const PrivyLoginContext = createContext<(() => void) | null>(null);
@@ -23,9 +25,10 @@ export function usePrivyAvailable(): boolean {
 }
 
 /**
- * Safe hook that returns Privy's login function, or a no-op if unavailable.
+ * Safe hook that returns the Privy connect action, or a no-op if unavailable.
  * Use this instead of `usePrivy().login` in components that need to trigger
- * the wallet connect modal but should work without Privy.
+ * the wallet connect modal but should work without Privy — `login()` alone
+ * silently does nothing while a Privy session exists.
  */
 export function usePrivyLogin(): () => void {
   const login = useContext(PrivyLoginContext);

@@ -1,7 +1,13 @@
 "use client";
 
-import { FC, ReactNode, useMemo } from "react";
-import { PrivyProvider, useLogin, usePrivy, type WalletListEntry } from "@privy-io/react-auth";
+import { FC, ReactNode, useCallback, useMemo } from "react";
+import {
+  PrivyProvider,
+  useConnectWallet,
+  useLogin,
+  usePrivy,
+  type WalletListEntry,
+} from "@privy-io/react-auth";
 import {
   toSolanaWalletConnectors,
   useWallets,
@@ -316,11 +322,20 @@ const PrivyWalletApiBridge: FC<{ children: ReactNode }> = ({ children }) => {
 };
 
 /**
- * Bridge that exposes Privy's login function via context so components
+ * Bridge that exposes a "connect wallet" action via context so components
  * outside the Privy tree can trigger wallet connection safely.
+ *
+ * The action must never be a silent no-op. Privy's session (refresh token)
+ * outlives the wallet connection: after e.g. an overnight extension lock,
+ * Privy's silent reconnect fails, `authenticated` stays true, and no Solana
+ * wallet is connected. `login()` in that state only logs "Attempted to log
+ * in, but user is already logged in" (@privy-io/react-auth 3.41.0) and
+ * returns — so every Connect CTA was dead. When authenticated we therefore
+ * open `connectWallet()`, which re-prompts the external wallet.
  */
 const PrivyLoginBridge: FC<{ children: ReactNode }> = ({ children }) => {
   const { setPreferredAddress } = usePreferredWallet();
+  const { authenticated } = usePrivy();
 
   const { login } = useLogin({
     onComplete: ({ loginAccount }) => {
@@ -332,8 +347,29 @@ const PrivyLoginBridge: FC<{ children: ReactNode }> = ({ children }) => {
     },
   });
 
+  // #2620 semantics for (re)connects: the wallet the user explicitly connects
+  // becomes the active signer. `useConnectWallet` subscribes to Privy's global
+  // `connectWallet` event, so this also covers the header's Reconnect button.
+  // Privy does not fire it for wallet-login or link flows (those go through
+  // `onComplete` above).
+  const { connectWallet } = useConnectWallet({
+    onSuccess: ({ wallet }) => {
+      if (wallet.type === "solana") {
+        setPreferredAddress(wallet.address);
+      }
+    },
+  });
+
+  const connect = useCallback(() => {
+    if (authenticated) {
+      connectWallet({ walletChainType: "solana-only" });
+      return;
+    }
+    login();
+  }, [authenticated, connectWallet, login]);
+
   return (
-    <PrivyLoginContext.Provider value={login}>
+    <PrivyLoginContext.Provider value={connect}>
       {children}
     </PrivyLoginContext.Provider>
   );
