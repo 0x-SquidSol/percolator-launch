@@ -30,7 +30,7 @@ import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { detectOracleMode, resolveMarketPriceE6, priceE6ToUsd, sanitizePriceE6, applyInvert } from "@/lib/oraclePrice";
 import { subscribeSlab, getSnapshot } from "@/lib/priceStore/priceStore";
 import { formatStatValue } from "@/lib/format";
-import { qToUsd, Q_DECIMALS } from "@/lib/q-usd";
+import { qToUsd, Q_DECIMALS, rowVolumeUsd } from "@/lib/q-usd";
 import { MIN_VAULT_FOR_OI } from "@/lib/phantom-oi";
 
 /** Max sane price (USD) for both active-market filtering and display capping.
@@ -492,8 +492,14 @@ function MarketsPageInner() {
     // that reverting the whole conversion fix left the 3687-test suite
     // bit-identical.
     const getOI = (m: MergedMarket): bigint => openInterestOf(m, sanitizeOnChainValue);
-    const volumeSortKey = (m: MergedMarket): bigint =>
-      isSupabaseSentinel(m.supabase?.volume_24h) ? 0n : numericToBigInt(m.supabase?.volume_24h);
+    // 24h volume in USD. volume_24h is engine Q (POS_SCALE 1e6) of the BASE token, so raw
+    // values are not comparable across markets with different prices — a sub-cent memecoin's
+    // raw Q dwarfs SOL's. Sort on the same USD figure the row renders (rowVolumeUsd).
+    const volumeUsdSortKey = (m: MergedMarket): number => {
+      if (isSupabaseSentinel(m.supabase?.volume_24h)) return 0;
+      const usd = rowVolumeUsd(m.supabase ?? null);
+      return usd != null && Number.isFinite(usd) && usd > 0 ? usd : 0;
+    };
     // USD-aware OI sort key: converts raw token OI → USD using market price.
     // Markets with no valid price return 0 so they sort to the bottom in USD mode.
     // Fixes #1327: no-price markets with huge raw token OI were floating above real USD markets.
@@ -513,9 +519,10 @@ function MarketsPageInner() {
           // path. This sort was the one place that skipped the sentinel check, so
           // a u64::MAX volume_24h sorted to the top of the table while rendering
           // as "—" — the exact "two conversions out of step" this consolidates.
-          const volA = volumeSortKey(a) || getOI(a);
-          const volB = volumeSortKey(b) || getOI(b);
-          return volB > volA ? 1 : volB < volA ? -1 : 0;
+          // Fall back to USD open interest (also price-normalised) when there's no volume.
+          const volA = volumeUsdSortKey(a) || getOIUsdSortKey(a);
+          const volB = volumeUsdSortKey(b) || getOIUsdSortKey(b);
+          return volB - volA;
         }
         case "oi": {
           // In USD mode: sort by USD-equivalent OI; no-price markets → 0 → bottom (fix #1327)

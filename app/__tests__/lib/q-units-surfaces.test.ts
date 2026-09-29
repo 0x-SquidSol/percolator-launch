@@ -76,3 +76,25 @@ describe("Q-unit conversions are not decimals-based", () => {
     expect(s).toMatch(/qToUsd\(raw, p\)/);
   });
 });
+
+describe("/markets volume sort is USD-normalised", () => {
+  // Raw volume_24h is base-token Q: COLLECT's 85.4B Q (~$1,657) would outrank SOL's
+  // 3.4M Q (~$398) by 25,000x on raw Q, and a sub-cent memecoin always tops the list.
+  it("sorts on rowVolumeUsd (with the sentinel guard), falling back to USD OI", () => {
+    const page = src("app/markets/page.tsx");
+    const sortBlock = page.slice(page.indexOf("const volumeUsdSortKey"), page.indexOf('case "oi"'));
+    expect(sortBlock).toMatch(/isSupabaseSentinel\(m\.supabase\?\.volume_24h\)/);
+    expect(sortBlock).toMatch(/rowVolumeUsd\(m\.supabase/);
+    expect(sortBlock).toMatch(/volumeUsdSortKey\(a\) \|\| getOIUsdSortKey\(a\)/);
+    expect(page).not.toMatch(/const volumeSortKey = \(m: MergedMarket\): bigint/);
+  });
+  it("the USD ordering differs from the raw-Q ordering on live numbers", () => {
+    const sol = { volume_24h: 3_396_789, last_price: 117.029874 };
+    const collect = { volume_24h: 85_420_329_419, last_price: 0.019395 };
+    expect(collect.volume_24h).toBeGreaterThan(sol.volume_24h); // raw Q: COLLECT first
+    expect(rowVolumeUsd(collect)!).toBeGreaterThan(rowVolumeUsd(sol)!); // USD: also COLLECT ($1,657 > $398)
+    const pengu = { volume_24h: 50_000_000_000, last_price: 0.0000001 }; // $5 of volume
+    expect(pengu.volume_24h).toBeGreaterThan(sol.volume_24h); // raw Q would put it above SOL
+    expect(rowVolumeUsd(pengu)!).toBeLessThan(rowVolumeUsd(sol)!); // USD correctly ranks it below
+  });
+});
