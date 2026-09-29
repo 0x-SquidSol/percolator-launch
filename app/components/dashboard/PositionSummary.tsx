@@ -51,7 +51,8 @@ function PositionCard({ pos, symbol, decimals = 6 }: { pos: PortfolioPosition; s
     capital: pos.account?.capital ?? 0n,
     markPriceE6: pos.oraclePriceE6,
     maintenanceMarginBps: pos.maintenanceMarginBps,
-    hasResolvedEntry: pos.entryPriceSource !== "unknown",
+    // Same verdict as the Entry cell, so the two cannot contradict (#2671).
+    hasResolvedEntry: entryDisplay.known,
     formatPrice: formatUsdPriceE6,
     unknownText: "—",
   });

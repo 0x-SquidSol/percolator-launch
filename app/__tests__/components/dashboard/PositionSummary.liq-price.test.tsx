@@ -34,8 +34,13 @@ const pos = (over: Record<string, unknown>) => ({
   unrealizedPnl: 0n,
   pnlPercent: 0,
   maintenanceMarginBps: 500n,
-  entryPriceSource: "onchain",
-  account: { positionSize: 1_000_000n, capital: 200_000_000n, entryPrice: 100_000_000n },
+  // GH#2660: "onchain" was never a member of EntryPriceSource ("cache" |
+  // "derived" | "unknown"), and v17 stores no entry price, so
+  // `account.entryPrice` is structurally 0n. Both fields were impossible, and
+  // the non-zero raw entry is what hid the dashboard's Entry-cell defect.
+  effectiveEntryPrice: 100_000_000n,
+  entryPriceSource: "cache",
+  account: { positionSize: 1_000_000n, capital: 200_000_000n, entryPrice: 0n },
   liquidationPriceE6: 0n,
   ...over,
 });
@@ -48,7 +53,7 @@ describe("PositionSummary Liq cell", () => {
   });
 
   it("shows the price when a liquidation price exists", () => {
-    state.positions = [pos({ liquidationPriceE6: 80_000_000n, account: { positionSize: 1_000_000n, capital: 50_000_000n, entryPrice: 100_000_000n } })];
+    state.positions = [pos({ liquidationPriceE6: 80_000_000n, account: { positionSize: 1_000_000n, capital: 50_000_000n, entryPrice: 0n } })];
     render(<PositionSummary />);
     expect(screen.queryByText(/mgn/)).toBeNull();
     expect(screen.getByText(/80/)).toBeInTheDocument();

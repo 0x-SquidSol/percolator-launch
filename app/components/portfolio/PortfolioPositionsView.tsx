@@ -238,7 +238,7 @@ function PositionCard({
     posSize,
     markE6,
     liquidationPriceE6,
-    pos.entryPriceSource !== "unknown",
+    entryDisplay.known,
   );
   const severity = getLiquidationSeverityForState(liveLiquidationState);
   // The risk figure that survives a missing liquidation price: capital over
@@ -252,7 +252,8 @@ function PositionCard({
     capital: pos.account?.capital ?? 0n,
     markPriceE6: markE6,
     maintenanceMarginBps: pos.maintenanceMarginBps,
-    hasResolvedEntry: pos.entryPriceSource !== "unknown",
+    // Same verdict as the Entry cell, so the two cannot contradict (#2671).
+    hasResolvedEntry: entryDisplay.known,
     formatPrice: formatUsdPriceE6,
     unknownText: "—",
   });

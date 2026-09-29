@@ -27,9 +27,20 @@ export const DERIVED_ENTRY_TOOLTIP =
   "Estimated from this position's on-chain PnL — no entry price was saved on this device. " +
   "Percolator doesn't store entry price on-chain.";
 
-/** True when `entryE6` is a real (cached or PnL-derived) entry, not the mark placeholder. */
-export function isEntryKnown(entryE6: bigint | null | undefined, source: EntryPriceSource): boolean {
-  return source !== "unknown" && entryE6 != null && entryE6 > 0n;
+/**
+ * True when `entryE6` is a real (cached or PnL-derived) entry, not the mark placeholder.
+ *
+ * An ALLOWLIST, not `source !== "unknown"` (#2671, @0x-SquidSol): the denylist
+ * fails open — a missing/undefined source (a fixture, mock data, a JS caller)
+ * or a member added later would print the mark as the entry. Test fixtures
+ * using the non-member "onchain" sailed straight through it.
+ */
+export function isEntryKnown(
+  entryE6: bigint | null | undefined,
+  source: EntryPriceSource | null | undefined,
+): boolean {
+  const trusted = source === "cache" || source === "derived";
+  return trusted && entryE6 != null && entryE6 > 0n;
 }
 
 /**
@@ -39,7 +50,10 @@ export function isEntryKnown(entryE6: bigint | null | undefined, source: EntryPr
  * ClosePositionModal → no PnL). Risk math (liq price, locked margin) keeps
  * using the raw resolved `.entry`.
  */
-export function displayEntryE6(entryE6: bigint | null | undefined, source: EntryPriceSource): bigint {
+export function displayEntryE6(
+  entryE6: bigint | null | undefined,
+  source: EntryPriceSource | null | undefined,
+): bigint {
   return isEntryKnown(entryE6, source) ? (entryE6 as bigint) : 0n;
 }
 
@@ -51,7 +65,7 @@ export interface EntryPriceDisplay {
 
 export function describeEntryPrice(input: {
   entryE6: bigint | null | undefined;
-  source: EntryPriceSource;
+  source: EntryPriceSource | null | undefined;
   formatPrice?: (priceE6: bigint) => string;
   unknownText?: string;
 }): EntryPriceDisplay {

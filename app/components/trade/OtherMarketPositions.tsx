@@ -46,7 +46,7 @@ import {
   computePositionInitialMargin,
   UNKNOWN_ENTRY_TOOLTIP,
 } from "@/lib/trading";
-import { displayEntryE6 } from "@/lib/entry-price-display";
+import { displayEntryE6, isEntryKnown } from "@/lib/entry-price-display";
 import {
   formatTokenAmount,
   formatUsdPriceE6,
@@ -152,7 +152,7 @@ const OtherMarketRow: FC<{
   // position that may be deep underwater (a realized loss is settled out of
   // capital and `pnl` reset to 0 on-chain — see resolveEntryPrice). Gate the
   // display on the hook's own verdict instead of on `entryE6 > 0n`.
-  const pnlIsKnown = pos.entryPriceSource !== "unknown";
+  const pnlIsKnown = isEntryKnown(pos.effectiveEntryPrice, pos.entryPriceSource);
   const markE6 = livePriceE6 != null && livePriceE6 > 0n ? livePriceE6 : pos.oraclePriceE6;
   const hasValidMark = markE6 > 0n;
 

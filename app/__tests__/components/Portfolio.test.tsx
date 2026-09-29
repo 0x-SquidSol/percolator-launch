@@ -123,6 +123,12 @@ describe("Portfolio Component Tests", () => {
               engine: {},
             },
             // Enriched fields from usePortfolio
+            // GH#2660: entryPriceSource and effectiveEntryPrice are what the
+            // hook really emits and what the row reads. Omitting them left the
+            // position in a state that cannot occur on v17, and a PnL is only
+            // displayable when the entry it derives from actually resolved.
+            effectiveEntryPrice: 100000000n,
+            entryPriceSource: "cache",
             unrealizedPnl: 0n,
             oraclePriceE6: 100000000n,
             pnlPercent: 0,
@@ -176,6 +182,12 @@ describe("Portfolio Component Tests", () => {
               engine: {},
             },
             // Enriched fields from usePortfolio
+            // GH#2660: entryPriceSource and effectiveEntryPrice are what the
+            // hook really emits and what the row reads. Omitting them left the
+            // position in a state that cannot occur on v17, and a PnL is only
+            // displayable when the entry it derives from actually resolved.
+            effectiveEntryPrice: 100000000n,
+            entryPriceSource: "cache",
             unrealizedPnl: 0n,
             oraclePriceE6: 95000000n,
             pnlPercent: 0,
@@ -573,6 +585,9 @@ describe("Portfolio Component Tests", () => {
       },
       collateralMint2: mockPublicKey,
       effectiveEntryPrice: 100000000n,
+      // #2671 allowlist: a position with NO source cannot occur (the hook
+      // always emits one) and is now treated as an unresolved entry.
+      entryPriceSource: "cache",
       unrealizedPnl: -900000n,
       oraclePriceE6: 92000000n,
       pnlPercent: -90,
