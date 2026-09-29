@@ -70,6 +70,12 @@ import { WarmupProgress } from "./WarmupProgress";
 import { useMarketFillCap } from "@/hooks/useMarketFillCap";
 import { TradeHistory } from "./TradeHistory";
 import { InfoIcon } from "@/components/ui/Tooltip";
+import {
+  computePositionLeverage,
+  describePositionLeverage,
+  POSITION_LEVERAGE_LABEL,
+  POSITION_LEVERAGE_TITLE,
+} from "@/lib/position-leverage";
 import { sanitizeSymbol } from "@/lib/symbol-utils";
 import { useOracleFreshness } from "@/hooks/useOracleFreshness";
 import { useEngineFreshness } from "@/hooks/useEngineFreshness";
@@ -296,6 +302,18 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
   const payableCapacity = (engine?.vault ?? 0n) + (insuranceBalance ?? 0n);
   const pnlIsCapped = hasValidMark && pnlTokens > 0n && payableCapacity > 0n && pnlTokens > payableCapacity;
 
+  // Current effective leverage on the cross-margined portfolio (notional /
+  // (capital + pnl)); NOT entry leverage — see lib/position-leverage.ts.
+  const leverageDisplay = describePositionLeverage(
+    computePositionLeverage({
+      sizeQ: account.positionSize,
+      markPriceE6: hasValidMark ? currentPriceE6 : null,
+      capital: account.capital,
+      pnl: account.pnl,
+      collateralDecimals: decimals,
+    }),
+  );
+
   const liqPriceE6 = computeLiqPrice(entryPriceE6, account.capital, account.positionSize, maintenanceBps);
   // Long-side clamp: liq at/below $0 with a live position = cannot be
   // liquidated by price (excess collateral) — formatLiqPrice renders "∞".
@@ -367,6 +385,12 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
               <th className="whitespace-nowrap px-4 py-2 text-left font-medium">Market</th>
               <th className="whitespace-nowrap px-3 py-2 text-left font-medium">Side</th>
               <th className="whitespace-nowrap px-3 py-2 text-right font-medium">Size</th>
+              <th className="whitespace-nowrap px-3 py-2 text-right font-medium">
+                <span className="inline-flex items-center justify-end gap-1">
+                  {POSITION_LEVERAGE_LABEL}
+                  <InfoIcon tooltip={POSITION_LEVERAGE_TITLE} />
+                </span>
+              </th>
               <th className="whitespace-nowrap px-3 py-2 text-right font-medium">Entry</th>
               <th className="whitespace-nowrap px-3 py-2 text-right font-medium">Mark</th>
               <th className="whitespace-nowrap px-3 py-2 text-right font-medium">Liq. Price</th>
@@ -405,6 +429,14 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
                     title="Size reflects your confirmed trade — balance is still settling"
                   />
                 )}
+              </td>
+              <td
+                className={`whitespace-nowrap px-3 py-2.5 text-right ${leverageDisplay.known ? "text-[var(--text)]" : "text-[var(--text-dim)]"}`}
+                style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}
+                title={leverageDisplay.title}
+                data-testid="position-leverage"
+              >
+                {leverageDisplay.text}
               </td>
               <td className={`whitespace-nowrap px-3 py-2.5 text-right ${pnlIsKnown ? "text-[var(--text)]" : "text-[var(--text-dim)]"}`} style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}>
                 {pnlIsKnown ? formatUsdPriceE6(entryPriceE6) : (

@@ -31,7 +31,7 @@ import { PublicKey } from "@solana/web3.js";
 import { isMockMode } from "@/lib/mock-mode";
 import { getMockPortfolioPositions } from "@/lib/mock-trade-data";
 import { useTraderStats } from "@/hooks/useTraderStats";
-import { formatLeverage, RISK_LEVERAGE_LABEL, RISK_LEVERAGE_TITLE } from "@/lib/leverage-display";
+import { computePositionLeverage, describePositionLeverage, POSITION_LEVERAGE_LABEL } from "@/lib/position-leverage";
 import { InfoIcon } from "@/components/ui/Tooltip";
 
 const ConnectButton = dynamic(
@@ -205,10 +205,22 @@ function PositionCard({
   const posEntry = displayEntryE6(pos.effectiveEntryPrice, pos.entryPriceSource);
   const side = posSize > 0n ? "Long" : posSize < 0n ? "Short" : "Flat";
   const sizeAbs = posSize < 0n ? -posSize : posSize;
-  const { liquidationPriceE6, leverage } = pos;
+  const { liquidationPriceE6 } = pos;
   const hasPosition = posSize !== 0n;
 
   const markE6 = livePriceE6 != null && livePriceE6 > 0n ? livePriceE6 : pos.oraclePriceE6;
+  // Current effective leverage on this market's cross-margined portfolio at the
+  // LIVE mark: nominal notional / (capital + pnl). Not entry leverage (not on
+  // chain). See lib/position-leverage.ts.
+  const leverageDisplay = describePositionLeverage(
+    computePositionLeverage({
+      sizeQ: pos.account?.positionSize ?? 0n,
+      markPriceE6: markE6 > 0n ? markE6 : null,
+      capital: pos.account?.capital,
+      pnl: pos.account?.pnl,
+      collateralDecimals: decimals,
+    }),
+  );
   // Live PnL/ROE: EXACTLY usePortfolio's corrected math with the live mark
   // substituted — see computeLivePositionPnl's doc comment (lib/trading.ts)
   // for the coin-margined-native → collateral conversion + ROE-vs-initial-
@@ -304,12 +316,13 @@ function PositionCard({
               }`}>
                 {side.toUpperCase()}
               </span>
-              {leverage > 0 && (
+              {leverageDisplay.known && (
                 <span
                   className="rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-[10px] font-bold text-[var(--accent)]"
-                  title={RISK_LEVERAGE_TITLE}
+                  title={leverageDisplay.title}
+                  data-testid="position-leverage-badge"
                 >
-                  Risk {formatLeverage(leverage)}
+                  {POSITION_LEVERAGE_LABEL} {leverageDisplay.text}
                 </span>
               )}
             </div>
@@ -397,11 +410,11 @@ function PositionCard({
             </div>
             <div>
               <p className="inline-flex items-center text-[9px] font-medium uppercase tracking-[0.15em] text-[var(--text)]">
-                {RISK_LEVERAGE_LABEL}
-                <InfoIcon tooltip={RISK_LEVERAGE_TITLE} />
+                {POSITION_LEVERAGE_LABEL}
+                <InfoIcon tooltip={leverageDisplay.title} />
               </p>
               <p className="text-[12px] text-[var(--text-secondary)]" style={{ fontFamily: "var(--font-jetbrains-mono)", fontVariantNumeric: "tabular-nums" }}>
-                {leverage > 0 ? formatLeverage(leverage) : "—"}
+                {leverageDisplay.text}
               </p>
             </div>
             <div>

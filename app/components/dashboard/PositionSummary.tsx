@@ -8,6 +8,7 @@ import { describeLiqPrice } from "@/lib/liq-price-display";
 import { describeEntryPrice } from "@/lib/entry-price-display";
 import { UNKNOWN_ENTRY_TOOLTIP } from "@/lib/trading";
 import { LiqPriceValue } from "@/components/trade/LiqPriceValue";
+import { computePositionLeverage, describePositionLeverage, POSITION_LEVERAGE_LABEL } from "@/lib/position-leverage";
 
 import { GlowButton } from "@/components/ui/GlowButton";
 import { useWalletCompat } from "@/hooks/useWalletCompat";
@@ -33,6 +34,16 @@ function PositionCard({ pos, symbol, decimals = 6 }: { pos: PortfolioPosition; s
   const side = posSize > 0n ? "Long" : posSize < 0n ? "Short" : "Flat";
   const sizeAbs = posSize < 0n ? -posSize : posSize;
   const severity = getLiquidationSeverity(pos.liquidationDistancePct);
+  // Current effective leverage: nominal notional / (capital + pnl) at the live mark.
+  const leverageDisplay = describePositionLeverage(
+    computePositionLeverage({
+      sizeQ: pos.account?.positionSize ?? 0n,
+      markPriceE6: pos.oraclePriceE6 > 0n ? pos.oraclePriceE6 : null,
+      capital: pos.account?.capital,
+      pnl: pos.account?.pnl,
+      collateralDecimals: decimals,
+    }),
+  );
   const hasPosition = posSize !== 0n;
   // PERC-297: Guard PnL display when oracle price is unavailable
   const hasValidOracle = pos.oraclePriceE6 > 0n;
@@ -99,9 +110,9 @@ function PositionCard({ pos, symbol, decimals = 6 }: { pos: PortfolioPosition; s
             >
               {side.toUpperCase()}
             </span>
-            {pos.leverage > 0 && (
-              <span className="text-[9px] font-bold text-[var(--warning)]">
-                {pos.leverage.toFixed(1)}×
+            {leverageDisplay.known && (
+              <span className="text-[9px] font-bold text-[var(--warning)]" title={leverageDisplay.title}>
+                {POSITION_LEVERAGE_LABEL} {leverageDisplay.text}
               </span>
             )}
           </div>

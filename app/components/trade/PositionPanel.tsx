@@ -26,6 +26,11 @@ import {
 } from "@/lib/trading";
 import { InfoIcon } from "@/components/ui/Tooltip";
 import {
+  computePositionLeverage,
+  describePositionLeverage,
+  POSITION_LEVERAGE_LABEL,
+} from "@/lib/position-leverage";
+import {
   adlSideFactor,
   effectiveExposureQ,
   isDeleveraged,
@@ -54,8 +59,6 @@ import { LiqPriceValue } from "./LiqPriceValue";
 import {
   formatLeverage,
   ORDER_LEVERAGE_TITLE,
-  RISK_LEVERAGE_LABEL,
-  RISK_LEVERAGE_TITLE,
 } from "@/lib/leverage-display";
 
 function abs(n: bigint): bigint {
@@ -428,24 +431,25 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
 
   const pnlBarWidth = Math.min(100, Math.max(0, Math.abs(roe)));
 
-  // 3.1: Leverage = notional / capital. Notional = contracts × markPrice / 1e6.
-  // Old formula used raw contract count which gives ~0 for coin-margined positions.
-  // NOMINAL, deliberately. This drives risk leverage and margin health, and the
+  // Leverage = notional / equity (capital + pnl) on the cross-margined
+  // portfolio — the CURRENT effective figure (lib/position-leverage.ts), not
+  // entry leverage (the chain stores none). Notional is NOMINAL on purpose: the
   // engine still charges margin against the leg's full basis after ADL
-  // (`risk_notional_ceil(leg.basis_pos_q…)`, v16.rs:9707). Using the reduced
-  // exposure here would shrink the denominator and render a deleveraged
-  // position as SAFER than it is — the same unsafe direction lib/v17-engine-config.ts
-  // was written to eliminate.
-  const notionalE6 = absNominal * currentPriceE6;
-  const accountLeverage = hasPosition && account.capital > 0n && currentPriceE6 > 0n
-    ? Number(notionalE6 / 1_000_000n) / Number(account.capital)
-    : 0;
+  // (`risk_notional_ceil(leg.basis_pos_q…)`, v16.rs:9707), so the reduced
+  // exposure would render a deleveraged position as SAFER than it is — the
+  // same unsafe direction lib/v17-engine-config.ts was written to eliminate.
+  const leverageDisplay = describePositionLeverage(
+    computePositionLeverage({
+      sizeQ: hasPosition ? account.positionSize : 0n,
+      markPriceE6: currentPriceE6 > 0n ? currentPriceE6 : null,
+      capital: account.capital,
+      pnl: account.pnl,
+      collateralDecimals: decimals,
+    }),
+  );
+  // The order-ticket slider value is a local-only memory of what the user
+  // picked, shown separately and labelled as such.
   const savedOrderLeverage = getEntryLeverage(slabAddress, userAccount.idx, account.owner.toBase58());
-  const displayLeverage = savedOrderLeverage ?? accountLeverage;
-  const displayLeverageKind = savedOrderLeverage != null ? "Order" : "Risk";
-  const leverageTitle = savedOrderLeverage != null
-    ? `${ORDER_LEVERAGE_TITLE} ${RISK_LEVERAGE_LABEL} is ${formatLeverage(accountLeverage)} because all collateral in this slab account backs liquidation.`
-    : RISK_LEVERAGE_TITLE;
 
   // Shared with the other four surfaces that show a liquidation price — this
   // was the only one computing it. Nominal size, not ADL-reduced exposure:
@@ -574,12 +578,13 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             <span className="text-[10px] text-[var(--text-secondary)] font-mono">
               {symbol}/USD
             </span>
-            {/* Leverage badge */}
+            {/* Leverage badge: current effective (cross-margin) leverage */}
             <span
               className="text-[8px] bg-[var(--accent)]/10 text-[var(--accent)] px-1 py-0.5"
-              title={leverageTitle}
+              title={leverageDisplay.title}
+              data-testid="position-leverage-badge"
             >
-              {displayLeverageKind} {formatLeverage(displayLeverage)}
+              {POSITION_LEVERAGE_LABEL} {leverageDisplay.text}
             </span>
             {/* 5.7: ADL rank indicator */}
             <AdlRankBadge rank={adlRank} adlNeeded={adlNeeded} />
@@ -698,11 +703,11 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
               </div>
               <div className="flex items-center justify-between py-1.5">
                 <span className="inline-flex items-center text-[10px] uppercase tracking-[0.15em] text-[var(--text)]">
-                  {RISK_LEVERAGE_LABEL}
-                  <InfoIcon tooltip={RISK_LEVERAGE_TITLE} />
+                  {POSITION_LEVERAGE_LABEL}
+                  <InfoIcon tooltip={leverageDisplay.title} />
                 </span>
                 <span className="text-[11px] text-[var(--text-secondary)]" style={{ fontFamily: "var(--font-mono)" }}>
-                  {formatLeverage(accountLeverage)}
+                  {leverageDisplay.text}
                 </span>
               </div>
               {savedOrderLeverage != null && (

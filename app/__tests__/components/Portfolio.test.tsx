@@ -564,6 +564,52 @@ describe("Portfolio Component Tests", () => {
     });
   });
 
+  describe("position leverage badge (current effective, notional / equity)", () => {
+    const pos = (capital: bigint, pnl: bigint, positionSize = 40_000_000n) => ({
+      slabAddress: "test-slab-lev",
+      symbol: "SOL",
+      idx: 0,
+      collateralMint: mockPublicKey,
+      account: { kind: AccountKind.User, owner: mockPublicKey, capital, positionSize, pnl, entryPrice: 100000000n },
+      market: { slabAddress: mockPublicKey, config: { collateralMint: mockPublicKey }, engine: {} },
+      effectiveEntryPrice: 100000000n,
+      entryPriceSource: "cache",
+      unrealizedPnl: 0n,
+      oraclePriceE6: 100_000_000n, // $100 mark
+      effectiveSize: positionSize,
+      pnlPercent: 0,
+      leverage: 999, // the stale hook figure must NOT be what is shown
+      liquidationPriceE6: 80000000n,
+      liquidationDistancePct: 100,
+      initialMarginBps: 1000n,
+    });
+    const renderWith = (p: ReturnType<typeof pos>) => {
+      vi.mocked(useWalletCompat).mockReturnValue({ connected: true, publicKey: mockPublicKey });
+      vi.mocked(usePortfolio).mockReturnValue({
+        positions: [p], totalPnl: 0n, totalDeposited: 1n, atRiskCount: 0, loading: false, refresh: vi.fn(),
+      } as never);
+      vi.mocked(useMultiTokenMeta).mockReturnValue(
+        new Map([[mockPublicKey.toBase58(), { symbol: "SOL", decimals: 6 }]]),
+      );
+      render(<PortfolioPage />);
+    };
+
+    it("shows Lev = |size| x mark / (capital + pnl): 40 x $100 on $1000 = 4x", () => {
+      renderWith(pos(1_000_000_000n, 0n));
+      expect(screen.getByTestId("position-leverage-badge").textContent).toBe("Lev 4×");
+    });
+
+    it("uses equity (capital + pnl): -$500 pnl doubles it to 8x", () => {
+      renderWith(pos(1_000_000_000n, -500_000_000n));
+      expect(screen.getByTestId("position-leverage-badge").textContent).toBe("Lev 8×");
+    });
+
+    it("shows no leverage badge (dash in the stat) when equity <= 0", () => {
+      renderWith(pos(1_000_000_000n, -1_000_000_000n));
+      expect(screen.queryByTestId("position-leverage-badge")).toBeNull();
+    });
+  });
+
   describe("PORT-007: AtRiskBanner", () => {
     const buildPosition = (overrides: Record<string, unknown> = {}) => ({
       slabAddress: "test-slab-risk",
