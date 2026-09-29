@@ -2,6 +2,7 @@
 
 import { useState, useCallback } from "react";
 import { PublicKey, Transaction, ComputeBudgetProgram } from "@solana/web3.js";
+import type { TransactionInstruction } from "@solana/web3.js";
 import { getAssociatedTokenAddress, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import {
   parseHeader,
@@ -19,6 +20,9 @@ import {
 } from "@percolatorct/sdk";
 import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
 import { planCloseMarket } from "@/lib/close-market-plan";
+import { readAndPlanPreResolve } from "@/lib/pre-resolve";
+import { getConfig } from "@/lib/config";
+import { DEVNET_PROGRAM_IDS } from "@/lib/program-ids";
 import { parseMarketCreationError } from "@/lib/parseMarketError";
 
 /**
@@ -146,6 +150,7 @@ export function useCloseMarket() {
         // no such lifecycle (and no authority-epoch lane: 0n).
         let authorityEpoch = 0n;
         let resolveIx: ReturnType<typeof buildIx> | null = null;
+        let preResolveCranks: TransactionInstruction[] = [];
         if (isV17Account(data)) {
           const plan = planCloseMarket(data);
           if (!plan.ok) {
@@ -158,6 +163,24 @@ export function useCloseMarket() {
           }
           authorityEpoch = plan.authorityEpoch;
           if (plan.resolve) {
+            // P0b pre-resolve gate (fee-flow audit F4): crank the Live-only LP (78) and
+            // staker (87 → stake 12) legs in THIS tx before ResolveMarket, and refuse
+            // when a leg is owed that can't be cranked or the creator's own fees are
+            // unclaimed — CloseSlab would burn them. lib/pre-resolve.ts.
+            const gate = await readAndPlanPreResolve(connection, {
+              programId,
+              stakeProgramId: new PublicKey((getConfig() as { vaultProgramId?: string }).vaultProgramId ?? DEVNET_PROGRAM_IDS.stake),
+              cranker: walletCompat.publicKey,
+              market: slabPk,
+              marketData: data,
+            });
+            if (gate.blockers.length > 0) {
+              setError(`Cannot reclaim yet: ${gate.blockers.join(" ")}`);
+              setLoading(false);
+              return null;
+            }
+            for (const w of gate.warnings) console.warn("[useCloseMarket] pre-resolve:", w);
+            preResolveCranks = gate.cranks;
             resolveIx = buildIx({
               programId,
               keys: buildAccountMetas(ACCOUNTS_RESOLVE_MARKET, {
@@ -196,7 +219,9 @@ export function useCloseMarket() {
         // v17 wrapper installs a custom 128KB heap allocator and aborts unless the
         // tx requests the full heap frame. Must be the FIRST instruction. (issue #176)
         tx.add(ComputeBudgetProgram.requestHeapFrame({ bytes: 131072 }));
+        // 1.4M already covers the pre-resolve cranks (gate.extraComputeUnits ≤ 250k).
         tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }));
+        for (const c of preResolveCranks) tx.add(c);
         if (resolveIx) tx.add(resolveIx);
         tx.add(ix);
 
