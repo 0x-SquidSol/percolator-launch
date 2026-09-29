@@ -45,6 +45,7 @@ import { useMarketFillCap } from "@/hooks/useMarketFillCap";
 import { remainingSideCapacityQ, wouldExceedInventoryCap, UNLIMITED_CAPACITY } from "@/lib/marketCapacity";
 import { isBlockedSlab } from "@/lib/blocklist";
 import { humanizeError, isEngineLockError, withTransientRetry } from "@/lib/errorMessages";
+import { useSingleMarketHealth } from "@/hooks/useMarketHealth";
 import { PublicKey } from "@solana/web3.js";
 import { diagnoseTradeRejection } from "@/lib/tradeRejectDiagnosis";
 import { explorerTxUrl, getNetwork } from "@/lib/config";
@@ -132,6 +133,10 @@ interface TicketValidationCtx {
   marketPaused: boolean;
   vaultEmpty: boolean;
   lpUnderfunded: boolean;
+  /** v18: the matcher LP portfolio has 0 capital (market health). */
+  lpDepleted: boolean;
+  /** v18: header.mode == Resolved (market health). */
+  marketResolved: boolean;
   riskGateActive: boolean;
   oracleUnavailable: boolean;
   oracleStale: boolean;
@@ -180,7 +185,16 @@ function buildValidationIssues(ctx: TicketValidationCtx): ValidationIssue[] {
   if (ctx.vaultEmpty) {
     issues.push({ severity: "error", title: "No vault liquidity", message: "This market has no LP deposits. Trading will be enabled once liquidity is added to the vault." });
   }
-  if (ctx.lpUnderfunded) {
+  if (ctx.marketResolved) {
+    issues.push({ severity: "error", title: "Market resolved", message: "This market is resolved. New positions can't be opened; existing positions can still be closed and funds withdrawn." });
+  }
+  if (ctx.lpDepleted) {
+    issues.push({
+      severity: "error",
+      title: "LP depleted",
+      message: "The market's liquidity provider has no capital left, so there is no counterparty for a new position. Opening is disabled until the LP is re-funded; closing still works.",
+    });
+  } else if (ctx.lpUnderfunded) {
     issues.push({ severity: "error", title: "Liquidity unavailable", message: "The LP has no capital. Trades cannot execute until the LP is funded." });
   }
   if (ctx.riskGateActive) {
@@ -425,6 +439,13 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const lpIdx = lpEntry?.idx ?? 0;
   const hasValidLP = lpEntry !== null;
   const lpUnderfunded = hasValidLP && lpEntry!.account.capital === 0n;
+  // P0b: on v17/v18 `accounts` is always [] (gotcha #2), so the check above is
+  // dead there. The live v18 signal is the LP portfolio's capital from
+  // /api/markets/health. Blocks OPENS only — a close reduces the LP's risk and
+  // is not gated on this (OrderTicketClosePanel keeps the legacy value).
+  const marketHealth = useSingleMarketHealth(slabAddress);
+  const lpDepleted = marketHealth?.lpDepleted === true;
+  const marketResolved = marketHealth?.lockReasons.includes("resolved") === true;
 
   const { market: marketInfo } = useMarketInfo(slabAddress);
   const symbol = marketInfo?.symbol ?? collateralSymbol;
@@ -801,7 +822,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     marketRetired: !mockMode && isBlockedSlab(slabAddress),
     marketPaused: !!header?.paused,
     vaultEmpty,
-    lpUnderfunded,
+    lpUnderfunded: lpUnderfunded || lpDepleted,
+    lpDepleted,
+    marketResolved,
     riskGateActive,
     oracleUnavailable,
     oracleStale,

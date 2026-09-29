@@ -265,3 +265,29 @@ export function healthBadges(h: MarketHealth): HealthBadge[] {
   }
   return out;
 }
+
+// ── /api/markets/health wire (route + client hook share these) ──────────────
+
+export const MAX_HEALTH_SLABS = 50;
+
+/** JSON row served by /api/markets/health (bigints as decimal strings). */
+export interface MarketHealthRow {
+  lpCapital: string | null;
+  lpDepleted: boolean;
+  payoutHaircutBps: number;
+  openProfitAtoms: string;
+  realizableProfitAtoms: string;
+  lockReasons: LockReason[];
+  badges: HealthBadge[];
+}
+
+/** `slabs` query param → distinct canonical base58 keys, or null if invalid / empty / > MAX. */
+export function parseSlabsParam(raw: string | null): string[] | null {
+  if (!raw) return null;
+  const parts = [...new Set(raw.split(",").map((s) => s.trim()).filter(Boolean))];
+  if (parts.length === 0 || parts.length > MAX_HEALTH_SLABS) return null;
+  for (const p of parts) {
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(p)) return null;
+  }
+  return parts;
+}

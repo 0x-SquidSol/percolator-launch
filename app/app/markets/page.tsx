@@ -26,6 +26,9 @@ import { useMultiTokenMeta } from "@/hooks/useMultiTokenMeta";
 import { useAllMarketStats } from "@/hooks/useAllMarketStats";
 import { MarketLogo } from "@/components/market/MarketLogo";
 import { WatchButton } from "@/components/market/WatchButton";
+import { MarketHealthBadges } from "@/components/market/MarketHealthBadges";
+import { useMarketHealth } from "@/hooks/useMarketHealth";
+import { MAX_HEALTH_SLABS } from "@/lib/market-health";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { detectOracleMode, resolveMarketPriceE6, priceE6ToUsd, sanitizePriceE6, applyInvert } from "@/lib/oraclePrice";
 import { subscribeSlab, getSnapshot } from "@/lib/priceStore/priceStore";
@@ -685,6 +688,12 @@ function MarketsPageInner() {
   }, [debouncedSearch, leverageFilter, oracleFilter, sortBy]);
 
   const displayedMarkets = filtered.slice(0, displayCount);
+  // P0b: v18 health (LP depleted / payout haircut / resolved) for the visible rows.
+  const healthSlabs = useMemo(
+    () => displayedMarkets.slice(0, MAX_HEALTH_SLABS).map((m) => m.slabAddress),
+    [displayedMarkets],
+  );
+  const { health: marketHealth } = useMarketHealth(healthSlabs);
   const loading = discoveryLoading || statsLoading;
   const showDegradedBanner = Boolean(loadErrorMessage && !loading && filtered.length > 0);
 
@@ -1181,6 +1190,7 @@ function MarketsPageInner() {
                               no price
                             </span>
                           )}
+                          <MarketHealthBadges row={marketHealth[m.slabAddress]} compact hideInfo />
                           {/* After the status badges, so it never splits that
                               cluster; shrink-0 so it survives truncation. */}
                           <WatchButton slab={m.slabAddress} symbol={displaySymbol} />
