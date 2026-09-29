@@ -22,7 +22,7 @@
  * publishes a $0.00 liquidity aggregate as a FINISHED figure.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toCreatorMarketDetail, type CreatorMarketDetail } from "@/components/my-markets/types";
 import { setMarketIdentity } from "@/lib/marketIdentityCache";
 import { applyResolved } from "@/lib/incremental-details";
@@ -31,6 +31,14 @@ export function useCreatorMarketDetails(slabs: string[]) {
   const slabsKey = useMemo(() => [...slabs].sort().join(","), [slabs]);
   const [details, setDetails] = useState<Record<string, CreatorMarketDetail>>({});
   const [loading, setLoading] = useState(false);
+  // Bumped by refetch(). Callers (e.g. /my-markets after a creator-fee claim)
+  // need to re-read the claimable amounts — which live in `details`, NOT in the
+  // markets list — so the claim-all count + Unclaimed total update without a
+  // full page reload. `/api/markets/[slab]` is CDN-cached (s-maxage=10), so a
+  // refetch (refreshKey > 0) also cache-busts to get the freshly-decremented
+  // on-chain value instead of the ~10s-stale cached one.
+  const [refreshKey, setRefreshKey] = useState(0);
+  const refetch = useCallback(() => setRefreshKey((k) => k + 1), []);
 
   useEffect(() => {
     const list = slabsKey ? slabsKey.split(",") : [];
@@ -60,7 +68,11 @@ export function useCreatorMarketDetails(slabs: string[]) {
     for (const slab of list) {
       void (async () => {
         try {
-          const res = await fetch(`/api/markets/${slab}`);
+          // A refetch (refreshKey > 0) busts the route's s-maxage=10 CDN cache
+          // so a just-claimed market reports its decremented on-chain fee, not
+          // the stale cached value. The initial load stays cache-friendly.
+          const url = refreshKey > 0 ? `/api/markets/${slab}?_cb=${refreshKey}` : `/api/markets/${slab}`;
+          const res = await fetch(url, refreshKey > 0 ? { cache: "no-store" } : undefined);
           if (!res.ok) return null;
           const body = (await res.json()) as { market?: Record<string, unknown> };
           if (!body.market) return null;
@@ -94,7 +106,7 @@ export function useCreatorMarketDetails(slabs: string[]) {
         .finally(settle);
     }
     return () => { cancelled = true; };
-  }, [slabsKey]);
+  }, [slabsKey, refreshKey]);
 
-  return { details, detailsLoading: loading };
+  return { details, detailsLoading: loading, refetch };
 }

@@ -90,7 +90,16 @@ const MyMarketsPage: FC = () => {
   }, []);
 
   const slabs = useMemo(() => myMarkets.map((m) => m.slabAddress.toBase58()), [myMarkets]);
-  const { details, detailsLoading } = useCreatorMarketDetails(slabs);
+  const { details, detailsLoading, refetch: refetchDetails } = useCreatorMarketDetails(slabs);
+
+  // After a creator-fee claim, refresh BOTH the markets list AND the per-market
+  // details — the claimable amounts (and thus the claim-all count + Unclaimed
+  // total) live in `details`, which refetchMarkets does not touch. Without the
+  // details refetch the aggregate stayed stale until a full page reload.
+  const handleClaimed = useCallback(() => {
+    refetchMarkets?.();
+    refetchDetails();
+  }, [refetchMarkets, refetchDetails]);
   // Identity on its own clock: the session cache synchronously, then ONE bulk
   // directory call (~150ms) instead of waiting out each market's per-slab
   // detail (~520-1020ms, blocked on an on-chain LP scan). #2569.
@@ -316,7 +325,7 @@ const MyMarketsPage: FC = () => {
           markets={myMarkets}
           details={details}
           identities={identities}
-          onClaimed={refetchMarkets}
+          onClaimed={handleClaimed}
         />
 
         {/* Tier-2 tiles */}
@@ -377,7 +386,7 @@ const MyMarketsPage: FC = () => {
                 detail={details[slab] ?? null}
                 identity={identities[slab] ?? null}
                 chainCurrentSlot={chainCurrentSlot}
-                onClaimed={refetchMarkets}
+                onClaimed={handleClaimed}
                 expanded={expandedSlab === slab}
                 onToggleExpand={() => setExpandedSlab((cur) => (cur === slab ? null : slab))}
               />

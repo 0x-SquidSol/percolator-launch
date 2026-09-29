@@ -16,7 +16,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 
 import { useCreatorMarketDetails } from "../../hooks/useCreatorMarketDetails";
 
@@ -172,5 +172,37 @@ describe("a previous wallet's response must not land in the current list", () =>
     rerender({ slabs: [] });
     await waitFor(() => expect(result.current.detailsLoading).toBe(false));
     expect(result.current.details).toEqual({});
+  });
+});
+
+describe("refetch() re-reads details (e.g. after a creator-fee claim), cache-busting the CDN", () => {
+  it("re-fetches with a cache-bust param and applies the fresh value", async () => {
+    // Repro for the stale claim-all/Unclaimed aggregate: the claimable amounts
+    // live in `details`, and there was no way to re-read them without a full
+    // reload. refetch() re-runs the per-slab fetch; since /api/markets/[slab] is
+    // CDN-cached (s-maxage=10), the refetch must bust it to see the just-claimed
+    // (decremented) on-chain value, not the ~10s-stale cached one.
+    const urls: string[] = [];
+    let call = 0;
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      urls.push(String(url));
+      call += 1;
+      // call 1 = pre-claim symbol; call 2 (refetch) = a changed value, proving
+      // the refetch re-applied fresh data.
+      const symbol = call === 1 ? "COLLECT" : "COLLECT2";
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ market: { slab_address: SLAB_A, symbol, vault_balance: 1_000_000 } }),
+      } as unknown as Response);
+    }));
+
+    const { result } = renderHook(() => useCreatorMarketDetails([SLAB_A]));
+    await waitFor(() => expect(result.current.details[SLAB_A]?.symbol).toBe("COLLECT"));
+    expect(urls[0]).toBe(`/api/markets/${SLAB_A}`); // initial load: cache-friendly, no bust
+
+    await act(async () => { result.current.refetch(); });
+    await waitFor(() => expect(result.current.details[SLAB_A]?.symbol).toBe("COLLECT2"));
+    // the refetch cache-busted the route so it isn't served the stale cache
+    expect(urls.some((u) => u.includes(`/api/markets/${SLAB_A}?_cb=`))).toBe(true);
   });
 });
