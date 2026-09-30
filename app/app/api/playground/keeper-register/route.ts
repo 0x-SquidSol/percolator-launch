@@ -370,7 +370,6 @@ export async function POST(req: NextRequest) {
   // Resolve the dexType from the pool's mainnet owner program ONLY. The client
   // dexType string is a hint and is ignored: it cannot tell Meteora DLMM from
   // DAMM (E2E B21). An unreachable RPC is a retryable 503, never a guess.
-  let normalizedDexType: KeeperDexType;
   const classified = await classifyPoolByOwner(dexPoolAddress);
   if (classified === "missing") {
     return NextResponse.json(
@@ -398,7 +397,7 @@ export async function POST(req: NextRequest) {
       { status: 503, headers: { "Retry-After": "5" } },
     );
   }
-  normalizedDexType = classified;
+  const normalizedDexType: KeeperDexType = classified;
 
   // Raydium CLMM is withheld from new markets. THIS is the real gate: the
   // client-side filter (SUPPORTED_DEX_IDS / BLOCKED_DEX_IDS) only shapes the
