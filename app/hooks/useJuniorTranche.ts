@@ -15,9 +15,12 @@ import { useConnectionCompat, useWalletCompat } from '@/hooks/useWalletCompat';
 import { useSlabState } from '@/components/providers/SlabProvider';
 import { sendTx } from '@/lib/tx';
 import { assertDepositWithinBalance, readTokenBalance } from '@/lib/deposit-guard';
-import { decodeLpVaultRegistryDomain, decodeVaultLpState } from '@/lib/limits/decode';
+import { decodeLpVaultRegistryDomain, decodeMarketEngineView, decodeTerminalBacking, decodeVaultLpState } from '@/lib/limits/decode';
+import { harvestableFeeAtoms } from '@/lib/limits/vault-tranche';
 import {
   buildDepositJuniorTrancheIx,
+  buildLpVaultCrankFeesIx,
+  buildVaultLpReleaseSurplusIx,
   buildWithdrawJuniorTrancheIx,
   deriveLpVaultRegistryPda,
   deriveVaultLpState,
@@ -37,7 +40,7 @@ export function useJuniorTranche(slabAddress: string | null) {
     const market = new PublicKey(slabAddress);
     const registry = deriveLpVaultRegistryPda(prog, market);
     const vaultLpState = deriveVaultLpState(prog, market);
-    const [ri, si] = await connection.getMultipleAccountsInfo([registry, vaultLpState], 'confirmed');
+    const [ri, si, mi] = await connection.getMultipleAccountsInfo([registry, vaultLpState, market], 'confirmed');
     const st = si && si.owner.equals(prog) ? decodeVaultLpState(new Uint8Array(si.data)) : null;
     if (!st) throw new Error("This market has no vault-owned LP.");
     if (!new PublicKey(st.juniorOwner).equals(wallet.publicKey)) throw new Error('Only the junior owner can move the junior tranche.');
@@ -55,6 +58,8 @@ export function useJuniorTranche(slabAddress: string | null) {
     const mint = config.collateralMint;
     return {
       vm,
+      domain,
+      marketData: mi ? new Uint8Array(mi.data) : null,
       owner: wallet.publicKey,
       mint,
       ownerAta: getAssociatedTokenAddressSync(mint, wallet.publicKey),
@@ -90,10 +95,45 @@ export function useJuniorTranche(slabAddress: string | null) {
     [connection, wallet, context],
   );
 
+  /**
+   * RESOLVED market (next P3 FINAL, F-14): the junior's only terminal exit, tag 102 with the
+   * resolved tail, paying up to `physical - C` (Earn seniors keep their claim). 78 goes first in
+   * the same tx when fees or a claim-free residual are still pending.
+   */
+  const releaseResolved = useCallback(
+    async (amount: bigint): Promise<string> => {
+      setBusy(true);
+      setError(null);
+      try {
+        if (amount <= 0n) throw new Error('Enter an amount greater than zero.');
+        const c = await context();
+        const engine = c.marketData ? decodeMarketEngineView(c.marketData) : null;
+        const tb = c.marketData ? decodeTerminalBacking(c.marketData, c.domain) : null;
+        const needHarvest = (engine ? harvestableFeeAtoms(engine) ?? 0n : 0n) > 0n || (tb ? tb.residual : 0n) > 0n;
+        const ixs = [
+          createAssociatedTokenAccountIdempotentInstruction(c.owner, c.ownerAta, c.owner, c.mint),
+          ...(needHarvest
+            ? [buildLpVaultCrankFeesIx({ programId: c.vm.programId, cranker: c.owner, market: c.vm.market, registry: c.vm.registry, ledger: c.vm.ledger, siblingLedger: c.vm.siblingLedger, domain: c.domain, bound: { vaultLpState: c.vm.vaultLpState } })]
+            : []),
+          buildVaultLpReleaseSurplusIx(c.vm, c.owner, amount, c.domain, { destToken: c.ownerAta, vaultToken: c.vaultToken, vaultAuthority: c.vaultAuthority }),
+        ];
+        return await sendTx({ connection, wallet, instructions: ixs });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setError(msg);
+        throw e;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [connection, wallet, context],
+  );
+
   return {
     busy,
     error,
     deposit: (amount: bigint) => run('deposit', amount),
     withdraw: (amount: bigint) => run('withdraw', amount),
+    releaseResolved,
   };
 }

@@ -23,7 +23,8 @@ import { DEFAULT_JUNIOR_FLOOR_BPS, juniorFloorAtoms, maxWizardFloorBps, validate
 import { backingSeedPerDomain } from "@/lib/market-params";
 import { COPY } from "@/lib/limits/copy";
 import { defaultLpExposureKBps, lpEquityInitRaw, lpExposureCapQ, maxTradeSizePerSide, nonnegEquity, effectiveLpExposureKBps } from "@/lib/limits/risk-limits";
-import { juniorWithdrawableAtoms, projectCreatorCaps } from "@/lib/limits/vault-tranche";
+import { juniorResolvedSurplusAtoms, juniorWithdrawableAtoms, projectCreatorCaps } from "@/lib/limits/vault-tranche";
+import { decodeTerminalBacking } from "@/lib/limits/decode";
 import { earnViewFromLimits } from "@/lib/limits/earn";
 import { formatTokenAmount } from "@/lib/format";
 import { LimitsNotice, LimitsRow } from "./LimitsRow";
@@ -111,7 +112,9 @@ export const JuniorTrancheActionsView: FC<{
   error: string | null;
   onDeposit: (atoms: bigint) => void;
   onWithdraw: (atoms: bigint) => void;
-}> = ({ withdrawableAtoms, decimals, collateralSymbol, busy, error, onDeposit, onWithdraw }) => {
+  /** RESOLVED market: the junior's terminal exit (102) takes only what is above the seniors' claim. */
+  resolved?: { surplusAtoms: bigint | null; onRelease: (atoms: bigint) => void } | null;
+}> = ({ withdrawableAtoms, decimals, collateralSymbol, busy, error, onDeposit, onWithdraw, resolved }) => {
   const [raw, setRaw] = useState("");
   let atoms = 0n;
   try {
@@ -120,6 +123,34 @@ export const JuniorTrancheActionsView: FC<{
     atoms = 0n;
   }
   const canWithdraw = atoms > 0n && withdrawableAtoms !== null && atoms <= withdrawableAtoms;
+  if (resolved) {
+    const s = resolved.surplusAtoms;
+    return (
+      <div data-testid="limits-junior-actions" data-mode="resolved" className="mb-3 border border-[var(--border)] bg-[var(--panel-bg)] p-3">
+        <p className="mb-1 text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--text-muted)]">Junior tranche (market resolved)</p>
+        <p className="text-[9px] leading-relaxed text-[var(--text-secondary)]">{COPY.juniorResolvedExplain}</p>
+        <LimitsRow
+          label="Available to you"
+          testId="limits-junior-resolved-surplus"
+          value={s === null ? "—" : `${formatTokenAmount(s, decimals)} ${collateralSymbol}`}
+        />
+        <button
+          type="button"
+          data-testid="limits-junior-release-resolved"
+          disabled={busy || s === null || s <= 0n}
+          onClick={() => s !== null && resolved.onRelease(s)}
+          className="mt-2 w-full border border-[var(--accent)]/50 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Take the junior surplus
+        </button>
+        {error && (
+          <p data-testid="limits-junior-error" className="mt-2 text-[9px] text-[var(--short)]">
+            {error}
+          </p>
+        )}
+      </div>
+    );
+  }
   return (
     <div data-testid="limits-junior-actions" className="mb-3 border border-[var(--border)] bg-[var(--panel-bg)] p-3">
       <p className="mb-1 text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--text-muted)]">Junior tranche</p>
@@ -160,6 +191,13 @@ export const JuniorTrancheActionsView: FC<{
   );
 };
 
+function juniorResolvedSurplus(raw: Uint8Array | null | undefined, assetIndex: number, seniorClaim: bigint): bigint | null {
+  if (!raw) return null;
+  // own + sibling domain = both domains of the vault's asset
+  const tb = decodeTerminalBacking(raw, assetIndex * 2);
+  return tb ? juniorResolvedSurplusAtoms(tb.physical, seniorClaim) : null;
+}
+
 /** Floors the wizard offers (the program accepts 1000..=10000). */
 export const WIZARD_FLOOR_CHOICES_BPS = [1_000, 2_000, 3_000, 5_000] as const;
 
@@ -173,7 +211,7 @@ export const CreatorTranchePanel: FC<{ slab: string; decimals: number; collatera
 const CreatorTranchePanelLive: FC<{ slab: string; decimals: number; collateralSymbol: string }> = ({ slab, decimals, collateralSymbol }) => {
   const limits = useMarketLimits(slab);
   const { state: lpState } = useInsuranceLP();
-  const { assetProfile } = useSlabState();
+  const { assetProfile, raw: slabRaw } = useSlabState();
   const wallet = useWalletCompat();
   const junior = useJuniorTranche(slab);
   const vs = limits.flags.p3 ? limits.vaultState : null;
@@ -196,6 +234,11 @@ const CreatorTranchePanelLive: FC<{ slab: string; decimals: number; collateralSy
           error={junior.error}
           onDeposit={(a) => void junior.deposit(a).catch(() => undefined)}
           onWithdraw={(a) => void junior.withdraw(a).catch(() => undefined)}
+          resolved={
+            limits.engine?.mode === 1 && vs
+              ? { surplusAtoms: juniorResolvedSurplus(slabRaw, vs.assetIndex, vs.seniorClaimAtoms), onRelease: (a) => void junior.releaseResolved(a).catch(() => undefined) }
+              : null
+          }
         />
       )}
       <CreatorTranchePanelView

@@ -29,6 +29,10 @@ export interface EarnP3Context {
   harvestable: bigint | null;
   registryShares: bigint | null;
   mode: number;
+  /** F-14: Resolved + no materialized portfolio + c_tot 0. */
+  terminalFlat?: boolean;
+  /** F-14 claim-free residual (decodeTerminalBacking); null = unreadable. */
+  terminalResidual?: bigint | null;
 }
 
 export type EarnTxPlan =
@@ -45,7 +49,11 @@ export function earnTxPlan(op: EarnOp, c: EarnP3Context): EarnTxPlan {
   const tail = { vaultLpState: c.vaultLpState, lpPortfolio: c.lpPortfolio };
   const pending = c.harvestable !== null && c.harvestable > 0n;
   const live = c.mode === MARKET_MODE_LIVE;
-  if (op === TAG_EXECUTE_REDEMPTION) return { ok: true, tail, prependHarvest: pending };
+  if (op === TAG_EXECUTE_REDEMPTION) {
+    // F-14: at terminal-flat a residual also makes 77 refuse 84 until 78 absorbed it.
+    const residual = !live && c.terminalFlat === true && (c.terminalResidual ?? 0n) > 0n;
+    return { ok: true, tail, prependHarvest: pending || residual };
+  }
   // 75
   const genesis = c.registryShares === 0n;
   return { ok: true, tail, prependHarvest: pending && genesis && live };

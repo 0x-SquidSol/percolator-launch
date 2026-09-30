@@ -328,3 +328,13 @@ export const VAULT_LP_MATCHER_CTX_LEN = 320;
 export const MATCHER_DELEGATE_SEED = "matcher";
 /** `vault_lp_v18::PIN_*` (07a1d0eb): the protocol's vAMM pin, shown to the creator (read-only). */
 export const PIN = { kind: 1, tradingFeeBps: 10, baseSpreadBps: 10, maxTotalBps: 100, impactKBps: 50, maxFillUsd: 5_000n, maxInventoryUsd: 25_000n, liquidityUsd: 250_000n } as const;
+
+// ── P3 F-14 (next FINAL; WIP 31efd250): terminal residual + physical idle backing ─────────────
+/** Engine header (relative to MARKET_GROUP_OFF), engine 35ddd692, rustc offset_of!. */
+export const H_BACKING_PROVIDER_EARNINGS_TOTAL = 397; // u128
+export const H_SOURCE_FRESH_BACKING_TOTAL_NUM = 429; // u128 (x BOUND_SCALE)
+/** EngineAssetSlotV16Account: backing buckets (domain even = long, odd = short). */
+export const SLOT_BACKING_LONG = 963;
+export const SLOT_BACKING_SHORT = 1060;
+export const BUCKET_FRESH_UNLIENED_BACKING_NUM = 8; // u128 (x BOUND_SCALE)
+export const BOUND_SCALE = 1_000_000_000_000n;

@@ -25,6 +25,7 @@ import {
   decodeMarketEngineView,
   decodeResolvedMarket,
   decodeResolvedPortfolio,
+  decodeTerminalBacking,
   decodeVaultLpState,
 } from '@/lib/limits/decode';
 import { deriveLpVaultRegistryPda, deriveVaultLpState } from '@/lib/limits/p3-ix';
@@ -116,6 +117,7 @@ export function useResolvedExit(slabAddress: string | null) {
       portfolios,
       boundVault: bound,
       harvestableAtoms: engine ? harvestableFeeAtoms(engine) : null,
+      terminalResidualAtoms: decodeTerminalBacking(md, domain)?.residual ?? null,
     });
     const [vaultAuthority] = deriveVaultAuthority(prog, market);
     const payer = wallet.publicKey ?? market;

@@ -463,3 +463,32 @@ export function decodeResolvedPortfolio(d: Uint8Array): ResolvedPortfolioView | 
     receiptFinalized: d[r + C.RECEIPT_FINALIZED] !== 0,
   };
 }
+
+/**
+ * P3 F-14 terminal quantities (wrapper `vault_terminal_residual_atoms` /
+ * `vault_physical_idle_backing_atoms`):
+ *  - residual = vault - (c_tot + insurance + backing_provider_earnings_total
+ *               + source_fresh_backing_total_num / BOUND_SCALE), saturating: vault tokens no
+ *    counter owns. On a terminal-flat Resolved bound market, 77 refuses 84 while it is non-zero
+ *    and tag 78 absorbs it into the vault's pot;
+ *  - physical = sum over the registry's own + sibling domain of floor(fresh_unliened / BOUND_SCALE):
+ *    what Resolved seniors are paid from (min(physical, C)); the junior's 102 takes physical - C.
+ */
+export function decodeTerminalBacking(d: Uint8Array, registryDomain: number): { residual: bigint; physical: bigint } | null {
+  const g = C.MARKET_GROUP_OFF;
+  if (!isV18MarketHeader(d) || d.length < g + C.MARKET_GROUP_LEN) return null;
+  const owned =
+    u128(d, g + C.H_C_TOT) +
+    u128(d, g + C.H_INSURANCE) +
+    u128(d, g + C.H_BACKING_PROVIDER_EARNINGS_TOTAL) +
+    u128(d, g + C.H_SOURCE_FRESH_BACKING_TOTAL_NUM) / C.BOUND_SCALE;
+  const vault = u128(d, g + C.H_VAULT);
+  const residual = vault > owned ? vault - owned : 0n;
+  let physical = 0n;
+  for (const dom of [registryDomain, registryDomain ^ 1]) {
+    const off = C.assetEngineOff(Math.floor(dom / 2)) + (dom % 2 === 0 ? C.SLOT_BACKING_LONG : C.SLOT_BACKING_SHORT) + C.BUCKET_FRESH_UNLIENED_BACKING_NUM;
+    if (d.length < off + 16) return null;
+    physical += u128(d, off) / C.BOUND_SCALE;
+  }
+  return { residual, physical };
+}

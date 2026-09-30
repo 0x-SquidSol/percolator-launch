@@ -23,7 +23,9 @@ import {
   decodeLpVaultRegistryShares,
   decodeMarketEngineView,
   decodeResolvedMarket,
+  decodeLpVaultRegistryDomain,
   decodeResolvedPortfolio,
+  decodeTerminalBacking,
   decodeVaultLpState,
 } from "../../lib/limits/decode";
 import { harvestableFeeAtoms } from "../../lib/limits/vault-tranche";
@@ -64,7 +66,12 @@ function earnCtx(programId: PublicKey, market: PublicKey) {
   const sd = a.vaultLpStateB64 ? b64(a.vaultLpStateB64) : null;
   const view = decodeMarketEngineView(md);
   const st = sd ? decodeVaultLpState(sd) : null;
+  const rm = decodeResolvedMarket(md);
+  const dom = decodeLpVaultRegistryDomain(rd);
+  const tb = dom !== null ? decodeTerminalBacking(md, dom) : null;
   return {
+    terminalFlat: !!rm && rm.mode === 1 && rm.materializedPortfolioCount === 0n && rm.cTot === 0n,
+    terminalResidual: tb ? tb.residual : null,
     bound: decodeLpVaultRegistryBound(rd),
     vaultLpState: deriveVaultLpState(programId, market),
     lpPortfolio: st ? new PublicKey(st.lpPortfolio) : null,
@@ -168,7 +175,10 @@ if (cmd === "bind") {
     portfolios.push({ key, view, isVaultLp, escrowed: !isVaultLp && !PublicKey.isOnCurve(owner.toBytes()) && !owner.equals(registry) });
   }
   const engine = decodeMarketEngineView(md);
-  const plan = planResolvedExit({ market: m, nowSlot: big("nowSlot"), portfolios, boundVault: bound, harvestableAtoms: engine ? harvestableFeeAtoms(engine) : null });
+  const plan = planResolvedExit({
+    market: m, nowSlot: big("nowSlot"), portfolios, boundVault: bound, harvestableAtoms: engine ? harvestableFeeAtoms(engine) : null,
+    terminalResidualAtoms: decodeTerminalBacking(md, domain)?.residual ?? null,
+  });
   const steps: ExitStep[] = plan.phase === "sweep" || plan.phase === "owner-window" ? plan.steps : [];
   const blockers = plan.phase === "not-resolved" ? [] : plan.blockers.map((b) => b.kind);
   const summary: J = { phase: plan.phase, steps: steps.map((s) => ({ kind: s.kind, portfolio: "portfolio" in s ? s.portfolio : "" })), blockers };

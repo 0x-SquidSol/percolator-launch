@@ -85,6 +85,8 @@ export const COPY = {
     "others-remain": (n: string) =>
       `Your accounts are closed, but ${n} other account${n === "1" ? "" : "s"} still hold a position or balance on this market, so it cannot be reclaimed until they close.`,
   } as const,
+  juniorResolvedExplain:
+    "Earn depositors are paid first: each redeems up to their claim from the vault's backing. You can take what is left above their remaining claim once the market is fully closed out.",
   adlExitTrapped:
     "The other side of this market has fully closed, and your position cannot settle until the drained side is reset. Nothing was sent. Try again in a moment, after the next market crank.",
   closePartial: (filled: string, requested: string) => `Partially closed: ${filled} of ${requested}. The rest of your position is still open.`,
@@ -144,8 +146,10 @@ export const P3_ERROR_COPY_BY_NAME: Record<keyof typeof P3_ERR, string> = {
   VaultLpJuniorWithdrawRefused:
     "Junior withdrawal refused: it would take the junior below its floor, or the vault's backing does not cover Earn deposits right now.",
   VaultLpRecallRefused: "Nothing to recall: the vault's backing already covers Earn deposits.",
+  // 77. Next P3 FINAL: also returned by TradeNoCpi / BatchTradeNoCpi that grow either side on a
+  // P3 asset (the app never sends those; __tests__/lib/limits/no-nocpi-on-p3.test.ts).
   VaultLpExclusiveCounterparty:
-    "This market's LP is the Earn vault. New positions can only trade against it; reducing an old position still works.",
+    "On this market every trade that adds risk goes through the market's matcher against the Earn vault's LP. Direct account-to-account trades and trades against any other LP are refused. Reducing or closing a position still works.",
   VaultLpLeverageStepDown:
     "Leverage too high for this side while the book is crowded. Lower leverage or trade the other side.",
   VaultLpBoundCannotClose: "This vault owns the market's LP and can't be closed.",

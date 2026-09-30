@@ -124,3 +124,25 @@ describe("JuniorTrancheActionsView (96 / 97)", () => {
     expect(getByTestId("limits-junior-error").textContent).toBe("nope");
   });
 });
+
+describe("JuniorTrancheActionsView resolved mode (102)", () => {
+  it("shows physical - C and releases exactly that; hidden top-up/withdraw", async () => {
+    const { JuniorTrancheActionsView } = await import("@/components/limits/CreatorLimits");
+    const onRelease = vi.fn();
+    const { getByTestId, queryByTestId } = render(
+      <JuniorTrancheActionsView withdrawableAtoms={0n} decimals={6} collateralSymbol="USDC" busy={false} error={null} onDeposit={() => undefined} onWithdraw={() => undefined} resolved={{ surplusAtoms: 2_500_000n, onRelease }} />,
+    );
+    expect(getByTestId("limits-junior-actions").dataset.mode).toBe("resolved");
+    expect(getByTestId("limits-junior-resolved-surplus").textContent).toContain("2.5");
+    expect(queryByTestId("limits-junior-deposit")).toBeNull();
+    fireEvent.click(getByTestId("limits-junior-release-resolved"));
+    expect(onRelease).toHaveBeenCalledWith(2_500_000n);
+  });
+  it("nothing above the seniors' claim => disabled", async () => {
+    const { JuniorTrancheActionsView } = await import("@/components/limits/CreatorLimits");
+    const { getByTestId } = render(
+      <JuniorTrancheActionsView withdrawableAtoms={0n} decimals={6} collateralSymbol="USDC" busy={false} error={null} onDeposit={() => undefined} onWithdraw={() => undefined} resolved={{ surplusAtoms: 0n, onRelease: () => undefined }} />,
+    );
+    expect((getByTestId("limits-junior-release-resolved") as HTMLButtonElement).disabled).toBe(true);
+  });
+});

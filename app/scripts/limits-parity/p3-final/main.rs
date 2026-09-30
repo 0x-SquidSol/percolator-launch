@@ -83,6 +83,13 @@ fn main() {
         o("hdr.materialized_portfolio_count", offset_of!(MarketGroupV16HeaderAccount, materialized_portfolio_count)),
         o("hdr.mode", offset_of!(MarketGroupV16HeaderAccount, mode)),
         o("hdr.resolved_slot", offset_of!(MarketGroupV16HeaderAccount, resolved_slot)),
+        // F-14 terminal residual + physical idle backing (engine 35ddd692)
+        o("hdr.backing_provider_earnings_total", offset_of!(MarketGroupV16HeaderAccount, backing_provider_earnings_total)),
+        o("hdr.source_fresh_backing_total_num", offset_of!(MarketGroupV16HeaderAccount, source_fresh_backing_total_num)),
+        o("slot.backing_long", offset_of!(percolator::EngineAssetSlotV16Account, backing_long)),
+        o("slot.backing_short", offset_of!(percolator::EngineAssetSlotV16Account, backing_short)),
+        o("bucket.fresh_unliened_backing_num", offset_of!(percolator::BackingBucketV16Account, fresh_unliened_backing_num)),
+        o("boundScaleLog10", (percolator::BOUND_SCALE as f64).log10() as usize),
         // portfolio, RELATIVE to HEADER_LEN (the app's PF_* = HEADER_LEN + field)
         o("pf.owner", offset_of!(PortfolioAccountV16Account, owner)),
         o("pf.capital", offset_of!(PortfolioAccountV16Account, capital)),

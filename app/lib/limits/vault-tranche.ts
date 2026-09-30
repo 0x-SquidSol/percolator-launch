@@ -508,3 +508,12 @@ export function vaultLpCapQ(equityAtoms: bigint, levBps: number, priceE6: bigint
   const F = (equityAtoms * BigInt(levBps)) / BPS;
   return ((F + 1n) * posScale - 1n) / priceE6;
 }
+
+/**
+ * F-14 (next P3 FINAL): what the junior's Resolved exit (102) can take: the pots' physical idle
+ * backing above the remaining senior claim, `physical - C` (never negative). Earn seniors are
+ * priced min(physical, C), so this is exactly what is left once every senior is whole.
+ */
+export function juniorResolvedSurplusAtoms(physical: bigint, seniorClaim: bigint): bigint {
+  return physical > seniorClaim ? physical - seniorClaim : 0n;
+}

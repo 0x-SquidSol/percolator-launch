@@ -89,8 +89,11 @@ export function planResolvedExit(input: {
   portfolios: readonly ExitPortfolio[];
   boundVault: boolean;
   harvestableAtoms: bigint | null;
+  /** F-14 claim-free residual (decodeTerminalBacking); 78 absorbs it at terminal-flat. */
+  terminalResidualAtoms?: bigint | null;
 }): ResolvedExitPlan {
   const { market, nowSlot, portfolios, boundVault, harvestableAtoms } = input;
+  const residual = input.terminalResidualAtoms ?? 0n;
   if (market.mode !== MARKET_MODE_RESOLVED) return { phase: "not-resolved" };
   const blockers: ExitBlocker[] = [];
 
@@ -126,7 +129,9 @@ export function planResolvedExit(input: {
   }
 
   const terminalFlat = market.materializedPortfolioCount === 0n && market.cTot === 0n;
-  if (terminalFlat && boundVault && harvestableAtoms !== null && harvestableAtoms > 0n) {
+  // F-14: 78 on a terminal-flat Resolved bound market harvests pending fees AND absorbs the
+  // claim-free residual; 77 refuses 84 until it has run. (78 with neither fails NoFeesToCrank.)
+  if (terminalFlat && boundVault && ((harvestableAtoms !== null && harvestableAtoms > 0n) || residual > 0n)) {
     return { phase: "sweep", steps: [{ kind: "harvest" }], blockers };
   }
   if (terminalFlat) return { phase: "ready", blockers };

@@ -4,7 +4,7 @@
  * bound vault then fails closed on-chain, never mispriced).
  */
 import { PublicKey, type Connection } from "@solana/web3.js";
-import { decodeLpVaultRegistryBound, decodeLpVaultRegistryShares, decodeMarketEngineView, decodeVaultLpState } from "./decode";
+import { decodeLpVaultRegistryBound, decodeLpVaultRegistryDomain, decodeLpVaultRegistryShares, decodeMarketEngineView, decodeResolvedMarket, decodeTerminalBacking, decodeVaultLpState } from "./decode";
 import { deriveLpVaultRegistryPda, deriveVaultLpState } from "./p3-ix";
 import { harvestableFeeAtoms } from "./vault-tranche";
 import type { EarnP3Context } from "./earn-ixs";
@@ -20,7 +20,12 @@ export async function readEarnP3Context(connection: Connection, programId: Publi
     const rd = new Uint8Array(r.data);
     const view = decodeMarketEngineView(md);
     const st = s && s.owner.equals(programId) ? decodeVaultLpState(new Uint8Array(s.data)) : null;
+    const rm = decodeResolvedMarket(md);
+    const dom = decodeLpVaultRegistryDomain(rd);
+    const tb = dom !== null ? decodeTerminalBacking(md, dom) : null;
     return {
+      terminalFlat: !!rm && rm.mode === 1 && rm.materializedPortfolioCount === 0n && rm.cTot === 0n,
+      terminalResidual: tb ? tb.residual : null,
       bound: decodeLpVaultRegistryBound(rd),
       vaultLpState,
       lpPortfolio: st ? new PublicKey(st.lpPortfolio) : null,

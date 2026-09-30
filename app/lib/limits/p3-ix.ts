@@ -397,3 +397,43 @@ export function buildResolvedClosePortfolioIx(p: {
     data: Buffer.from(encodeClosePortfolio(p.portfolioId, p.matcherSequence, p.positionEpoch)),
   });
 }
+
+/**
+ * 102 VaultLpReleaseSurplus (junior owner). Live: [owner (s), market (w), registry,
+ * vault_lp_state (w), lp (w), own ledger (w), sibling ledger (w)], data [102, amount u128,
+ * source_domain u16] — backing surplus back into vault-LP capital. RESOLVED (next P3 FINAL, F-14:
+ * the junior's ONLY terminal exit, after terminal-flat): pays up to `physical - C` in SPL, with
+ * the tail [7] junior dest token (w, owner = junior), [8] vault token (w), [9] vault authority,
+ * [10] token program. The LP is key-only there (it may be closed and GC'd).
+ */
+export function encodeVaultLpReleaseSurplus(amount: bigint, sourceDomain: number): Uint8Array {
+  u128("amount", amount);
+  u16("source_domain", sourceDomain);
+  const out = new Uint8Array(19);
+  const dv = new DataView(out.buffer);
+  out[0] = P3_TAG.VaultLpReleaseSurplus;
+  putU128(dv, 1, amount);
+  dv.setUint16(17, sourceDomain, true);
+  return out;
+}
+export function buildVaultLpReleaseSurplusIx(
+  m: VaultLpMarket,
+  juniorOwner: PublicKey,
+  amount: bigint,
+  sourceDomain: number,
+  resolved: { destToken: PublicKey; vaultToken: PublicKey; vaultAuthority: PublicKey } | null,
+): TransactionInstruction {
+  const keys = [
+    meta(juniorOwner, true, false),
+    meta(m.market, false, true),
+    meta(m.registry, false, false),
+    meta(m.vaultLpState, false, true),
+    meta(m.lpPortfolio, false, true),
+    meta(m.ledger, false, true),
+    meta(m.siblingLedger, false, true),
+  ];
+  if (resolved) {
+    keys.push(meta(resolved.destToken, false, true), meta(resolved.vaultToken, false, true), meta(resolved.vaultAuthority, false, false), meta(TOKEN_PROGRAM_ID, false, false));
+  }
+  return new TransactionInstruction({ programId: m.programId, keys, data: Buffer.from(encodeVaultLpReleaseSurplus(amount, sourceDomain)) });
+}
