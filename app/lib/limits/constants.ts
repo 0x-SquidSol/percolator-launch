@@ -288,6 +288,8 @@ export const P3_ERR = {
   VaultLpSeniorDrawRequired: WRAPPER_ERR.VaultLpSeniorDrawRequired,
   /** d119eebd (B24): the redemption's pot can't fund the payout; recall (98) first, or redeem fewer shares. */
   VaultLpRedeemNeedsRecall: WRAPPER_ERR.VaultLpRedeemNeedsRecall,
+  /** 4b1a5d30: a senior draw is outstanding; LP risk-increasing fills, 97, 102 and 98 are paused. */
+  VaultLpPausedForSeniorDraw: WRAPPER_ERR.VaultLpPausedForSeniorDraw,
 } as const;
 
 // ── P3 end-to-end (round 4; FINAL feat/p3-vault-owned-lp@07a1d0eb + engine 35ddd692) ────────

@@ -179,6 +179,8 @@ export const P3_ERROR_COPY_BY_NAME: Record<keyof typeof P3_ERR, string> = {
     "The vault's LP has a loss that hasn't been booked yet, so the vault can't be priced. Nothing moved. Try again: the app refreshes the LP first, and the refresh is permissionless.",
   VaultLpRedeemNeedsRecall:
     "Part of the backing for this redemption is currently held by the vault's LP, so this pot can't pay it out yet. The app recalls that backing into Earn and retries in the same transaction when it can; if the LP has open positions it can't be recalled right now. Nothing moved and your LP shares stay in escrow: redeem fewer shares, or try again later.",
+  VaultLpPausedForSeniorDraw:
+    "Paused while Earn covers a loss. The vault's LP took a loss bigger than the creator's junior tranche, so new positions against it and junior withdrawals are paused until the vault recovers. Closing positions and Earn deposits and withdrawals still work; nothing moved.",
   VaultLpMultiAssetMarket:
     "An Earn vault can only own the LP of a single-asset market, and this market has more than one asset slot, so the vault can't take its LP. Create a new market to get a vault-owned LP.",
 };

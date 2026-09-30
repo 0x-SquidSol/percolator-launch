@@ -57,6 +57,8 @@ export function earnErrorMessage(err: unknown, action: EarnAction, ctx: EarnErro
     // d119eebd senior draw (P3 only; no other program in an Earn tx uses these codes).
     case WRAPPER_ERR.VaultLpSeniorDrawRequired:
       return P3_ERROR_COPY_BY_NAME.VaultLpSeniorDrawRequired;
+    case WRAPPER_ERR.VaultLpPausedForSeniorDraw:
+      return P3_ERROR_COPY_BY_NAME.VaultLpPausedForSeniorDraw;
     case WRAPPER_ERR.VaultLpRedeemNeedsRecall:
       return action === "claim" ? P3_ERROR_COPY_BY_NAME.VaultLpRedeemNeedsRecall : humanizeError(raw);
     case WRAPPER_ERR.EngineStale:

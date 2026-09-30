@@ -22,13 +22,14 @@ describe("WRAPPER_ERR == the wrapper's PercolatorError (oracle, rustc ordinals)"
     expect(v).toEqual(v.map((_, i) => i));
     expect(read("lib/wrapper-errors.ts")).toContain(fx.p3Sha.slice(0, 8));
   });
-  it("the ordinals the gate-100 sweep asked about (39b138c8): nothing shifted, 87/88 appended", () => {
+  it("the ordinals the gate-100 sweep asked about (4b1a5d30): nothing shifted, 87/88/89 appended", () => {
     expect(WRAPPER_ERR.EngineStale).toBe(19);
     expect(WRAPPER_ERR.EngineLockActive).toBe(21);
     expect(WRAPPER_ERR.EngineCounterUnderflow).toBe(25);
     expect(WRAPPER_ERR.LpVaultZeroSharesMinted).toBe(41);
     expect(WRAPPER_ERR.VaultLpSeniorDrawRequired).toBe(87);
     expect(WRAPPER_ERR.VaultLpRedeemNeedsRecall).toBe(88);
+    expect(WRAPPER_ERR.VaultLpPausedForSeniorDraw).toBe(89);
   });
   it("P1_ERR / P3_ERR are views of WRAPPER_ERR", () => {
     for (const [n, c] of Object.entries(P1_ERR)) expect(c).toBe((WRAPPER_ERR as Record<string, number>)[n]);

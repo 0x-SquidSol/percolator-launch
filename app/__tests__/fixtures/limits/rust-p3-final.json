@@ -1,5 +1,5 @@
 {
-    "p3Sha": "39b138c8b0773a446c36da4d3e6ca358ee06ee83",
+    "p3Sha": "4b1a5d30c5282dfbaae0ac91e6e6e3a696e064ea",
     "p1Sha": "3acb34ae83b4038a88a02731d1aa023142ef6c11",
     "engineSha": "35ddd692",
     "vectors": {
@@ -412,7 +412,8 @@
         "VaultLpValuationStale": 85,
         "VaultLpMultiAssetMarket": 86,
         "VaultLpSeniorDrawRequired": 87,
-        "VaultLpRedeemNeedsRecall": 88
+        "VaultLpRedeemNeedsRecall": 88,
+        "VaultLpPausedForSeniorDraw": 89
     },
     "allErrors": {
         "InvalidMagic": 0,
@@ -503,7 +504,8 @@
         "VaultLpValuationStale": 85,
         "VaultLpMultiAssetMarket": 86,
         "VaultLpSeniorDrawRequired": 87,
-        "VaultLpRedeemNeedsRecall": 88
+        "VaultLpRedeemNeedsRecall": 88,
+        "VaultLpPausedForSeniorDraw": 89
     },
     "layout": {
         "marketGroupOff": 592,

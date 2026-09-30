@@ -41,6 +41,17 @@ describe("87 / 88 are in the one constants module with copy", () => {
   });
 });
 
+describe("89 VaultLpPausedForSeniorDraw (4b1a5d30): one calm, specific message", () => {
+  it("is in the constants module and maps everywhere the app shows wrapper errors", () => {
+    expect(C.P3_ERR.VaultLpPausedForSeniorDraw).toBe(89);
+    const copy = P3_ERROR_COPY_BY_NAME.VaultLpPausedForSeniorDraw;
+    expect(copy).toMatch(/^Paused while Earn covers a loss\./);
+    expect(copy).toMatch(/nothing moved/);
+    const e = new Error('{"InstructionError":[2,{"Custom":89}]}');
+    expect(earnErrorMessage(e, "claim", { p3Bound: true })).toBe(copy);
+  });
+});
+
 describe("75 / 77 pass the vault LP WRITABLE (d119eebd); 78's tail is state only", () => {
   const base = (n: number) => Array.from({ length: n }, () => ({ pubkey: k(), isSigner: false, isWritable: true }));
   it("75 and 77", () => {

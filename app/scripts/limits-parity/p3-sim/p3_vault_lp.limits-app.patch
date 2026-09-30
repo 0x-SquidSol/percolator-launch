@@ -1,10 +1,10 @@
 diff --git a/tests/p3_vault_lp.rs b/tests/p3_vault_lp.rs
-index 2f1a2b85..a5c4b37b 100644
+index 06fa2fd7..0057ee1a 100644
 --- a/tests/p3_vault_lp.rs
 +++ b/tests/p3_vault_lp.rs
-@@ -3285,3 +3285,651 @@ fn p3_terminal_crank_is_a_noop_success_when_nothing_is_pending() {
-     env.paid_out += env.tok(junior_dest) as u128;
-     env.assert_conserved("terminal no-op crank");
+@@ -3330,3 +3330,651 @@ fn p3_recall_cap_is_post_maintenance_fee() {
+     assert!(after_equity >= 0);
+     env.assert_conserved("recall post-fee");
  }
 +
 +// ── limits-UI lane repro (NOT part of the P3 branch; local worktree only) ────────────────
@@ -255,7 +255,7 @@ index 2f1a2b85..a5c4b37b 100644
 +        let d = env.svm.get_account(&lp_kp.pubkey()).unwrap().data;
 +        let j = serde_json::json!({"programId": env.pid.to_string(), "market": env.market.to_string(), "registry": env.registry.to_string(),
 +            "vaultLp": lp_kp.pubkey().to_string(), "ctx": ctx_kp.pubkey().to_string(), "delegate": delegate.to_string(),
-+            "matcher": CANONICAL_MATCHER.to_string(), "dataB64": limits_b64(&d), "headP3": "39b138c8"});
++            "matcher": CANONICAL_MATCHER.to_string(), "dataB64": limits_b64(&d), "headP3": "4b1a5d30"});
 +        std::fs::write(path, j.to_string()).unwrap();
 +    }
 +

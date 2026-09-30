@@ -1,5 +1,5 @@
 //! Round-4 oracle: the app's P3 end-to-end surface against the REAL P3 crate
-//! (percolator-prog feat/p3-vault-owned-lp@39b138c8 FINAL (senior draw + D-P3-30 recall cap) + engine 35ddd692), path deps only —
+//! (percolator-prog feat/p3-vault-owned-lp@4b1a5d30 FINAL (senior draw, recall cap, pause code 89) + engine 35ddd692), path deps only —
 //! nothing is copied. Build it OUTSIDE both repos (see Cargo.toml.example) and run:
 //!   cargo run --quiet -- vectors.txt > app/__tests__/fixtures/limits/rust-p3-final.json
 //! Emits: every app encoder's hex decoded by `ix::Instruction::decode` (with __short/__long
@@ -74,6 +74,7 @@ fn main() {
         ("VaultLpMultiAssetMarket", E::VaultLpMultiAssetMarket as u32),
         ("VaultLpSeniorDrawRequired", E::VaultLpSeniorDrawRequired as u32),
         ("VaultLpRedeemNeedsRecall", E::VaultLpRedeemNeedsRecall as u32),
+        ("VaultLpPausedForSeniorDraw", E::VaultLpPausedForSeniorDraw as u32),
     ];
     out.push(format!("\"errors\":{{{}}}", errs.iter().map(|(n, v)| format!("\"{n}\":{v}")).collect::<Vec<_>>().join(",")));
     // EVERY PercolatorError variant, by name (all_errors.rs, generated from the enum source by
@@ -185,5 +186,5 @@ fn main() {
     }
     out.push(format!("\"registryBound\":[{}]", bound.join(",")));
 
-    println!("{{\"p3Sha\":\"39b138c8b0773a446c36da4d3e6ca358ee06ee83\",\"p1Sha\":\"3acb34ae83b4038a88a02731d1aa023142ef6c11\",\"engineSha\":\"35ddd692\",{}}}", out.join(","));
+    println!("{{\"p3Sha\":\"4b1a5d30c5282dfbaae0ac91e6e6e3a696e064ea\",\"p1Sha\":\"3acb34ae83b4038a88a02731d1aa023142ef6c11\",\"engineSha\":\"35ddd692\",{}}}", out.join(","));
 }

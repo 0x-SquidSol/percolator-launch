@@ -71,8 +71,8 @@ const EXPECT_DECODED: Record<string, Record<string, string | number>> = {
 };
 
 describe("P3 final head: app encoders vs the real ix::Instruction::decode", () => {
-  it("fixture is from the FINAL P3 head (39b138c8: senior draw + D-P3-30 recall cap, on P1 3acb34ae)", () => {
-    expect(rust.p3Sha).toBe("39b138c8b0773a446c36da4d3e6ca358ee06ee83");
+  it("fixture is from the FINAL P3 head (4b1a5d30: senior draw, recall cap, pause code 89, on P1 3acb34ae)", () => {
+    expect(rust.p3Sha).toBe("4b1a5d30c5282dfbaae0ac91e6e6e3a696e064ea");
     expect((rust as unknown as { p1Sha: string }).p1Sha).toBe("3acb34ae83b4038a88a02731d1aa023142ef6c11");
     // SDK 8's fixture was generated at 424fe7e4. Since then tag 94's ACCOUNT list changed twice
     // (path B removed; auto-pin tail [8] matcher / [9] ctx / [10] delegate added in 07a1d0eb) but
