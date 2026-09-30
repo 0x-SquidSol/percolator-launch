@@ -52,6 +52,8 @@ export interface KeeperRegisterProofParams {
   dexType: string;
   symbol?: string;
   label?: string;
+  /** sha256 of the bound markets-row payload (lib/keeper-register-memo.ts, memo v2); "" = none. */
+  payloadDigest?: string;
 }
 
 /**
@@ -71,6 +73,7 @@ export function canonicalizeKeeperRegisterParams(
     dexType: p.dexType ?? "",
     label: p.label ?? "",
     mainnetCA: p.mainnetCA ?? "",
+    payloadDigest: p.payloadDigest ?? "",
     slabAddress: p.slabAddress ?? "",
     symbol: p.symbol ?? "",
   };

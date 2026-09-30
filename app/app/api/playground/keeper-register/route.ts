@@ -29,19 +29,22 @@
  *      message if the Blob write fails (never throws uncaught — market creation
  *      itself already landed on-chain regardless of this route's outcome).
  *
- * Authentication (UX WP-7, 2026-09-30 — SECURITY REVIEW REQUIRED before merge): two paths —
+ * Authentication (UX WP-7, 2026-09-30; security review FIX-FIRST applied the same day,
+ * re-review required before merge): two paths —
  *   a) Creation-transaction proof: `proofTx` is the signature of the market's M1 transaction.
- *      That transaction carries an SPL Memo `percolator:keeper-register:v1:<sha256(canonical
- *      params)>` signed by the creator (lib/keeper-register-memo.ts). The route fetches it and
- *      accepts only if it succeeded, the memo matches THIS request's parameters exactly (slab,
- *      pool, CA, dex type, symbol, label), and the memo's signer is the market's creator: the
- *      admin of an InitMarket for this slab in the same tx, or (P3) the vault's on-chain
- *      junior_owner. A stranger cannot repoint a market (they cannot put a memo in the
- *      creator's tx), the creator needs no extra wallet prompt, and there is no replay window or
- *      server nonce. This REPLACES the H1v2 signed-message proof (`deployer` + `signature`).
- *      Because the proof is historical, the call no longer has to happen before StakeInitPool
- *      rotates marketauth.
- *   b) Admin bypass: header `x-admin-secret` matching ADMIN_API_SECRET (maintainer fixes).
+ *      That transaction carries ONE SPL Memo `percolator:keeper-register:v2:<sha256(canonical
+ *      params)>` signed by the creator (lib/keeper-register-memo.ts). The route accepts only if
+ *      the tx succeeded, it has exactly one registration memo and that memo matches THIS request
+ *      exactly (slab, pool, CA, dex type, symbol, label AND a digest of the full markets-row
+ *      payload), and the same tx contains the WRAPPER's InitMarket for this slab whose admin is
+ *      the memo's signer. The slab must be a wrapper-owned v18 market account.
+ *      The proof is public (a landed tx), so ANYONE can replay it, but only to submit the exact
+ *      registration the creator signed, and what it may write is limited: it never overwrites a
+ *      creator-registered row, never re-activates a retired one, and never changes a row's pool
+ *      or CA (lib/market-registration.ts, mode "proof"). This REPLACES the H1v2 signed-message
+ *      proof; there is no other user path (the P3 junior-owner path was removed, review M-2).
+ *   b) Admin bypass: header `x-admin-secret` matching ADMIN_API_SECRET (maintainer fixes; the
+ *      only path that may change or re-activate an existing row).
  *
  * Body: {
  *   slabAddress:    string  — devnet market account
@@ -52,7 +55,8 @@
  *   symbol?:        string  — token symbol (e.g. "SOL")
  *   label?:         string  — human label (e.g. "SOL/USDC — Raydium CLMM")
  *   proofTx?:       string  — required unless using the admin bypass: the market's
- *                             creation-tx signature (see Authentication above)
+ *                             creation-tx signature (base58, 64 bytes; see Authentication)
+ *   payload?:       object  — the markets-row fields (bound by the memo's payload digest)
  * }
  *
  * Environment:
@@ -62,22 +66,27 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { checkAdminSecret } from "@/lib/admin-secret";
-import { verifyKeeperRegisterProofTx } from "@/lib/keeper-register-memo";
+import {
+  isKeeperDexTypeOrEmpty,
+  isTxSignature,
+  keeperMemoParams,
+  validateRegistrationPayload,
+  verifyKeeperRegisterProofTx,
+} from "@/lib/keeper-register-memo";
 import { UNSUPPORTED_POOL_COPY } from "@/lib/wizard-copy";
-import { deriveVaultLpState } from "@/lib/limits/p3-ix";
-import { decodeVaultLpState } from "@/lib/limits/decode";
+import { isV18MarketHeader } from "@/lib/limits/decode";
 import { PublicKey } from "@solana/web3.js";
 import * as Sentry from "@sentry/nextjs";
 import type { RegisteredMarket } from "@/lib/playground-registered-markets";
 import { upsertRegisteredMarket } from "@/lib/playground-registered-markets";
 import { KEEPER_DEX_TYPES, type KeeperDexType } from "@/lib/dex-type";
 import { classifyPoolsByOwner, type PoolClass } from "@/lib/dex-pool-owner";
-import { getConfig, getAllProgramIds } from "@/lib/config";
+import { getConfig } from "@/lib/config";
 import { getServerConnection } from "@/lib/server-rpc";
 import { getServiceClient, getServerNetwork } from "@/lib/supabase";
 import { resolveTokenLogo } from "@/lib/token-logo";
 import { sanitizeLogoUrl } from "@/lib/token-metadata-validators";
-import { upsertRegisteredMarketRow, type RegistrationRow } from "@/lib/market-registration";
+import { upsertRegisteredMarketRow } from "@/lib/market-registration";
 import { checkSymbol, checkName } from "@/lib/market-metadata-validation";
 
 export const dynamic = "force-dynamic";
@@ -176,67 +185,56 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // H1: authenticate the caller before any mainnet RPC or registry write — this
-  // route used to be reachable by anyone with a slabAddress, letting a griefer
-  // inject or repoint any market's pricing pool. Two accepted paths (see the
-  // file header doc comment): admin bypass, or wallet-signed proof that the
-  // caller actually administers this specific slab.
-  // Kick the logo lookup off NOW, before the two RPC round-trips below (slab
-  // ownership + pool classification), so it overlaps them instead of adding its
-  // own latency. It used to run just before the DB write, where its two
-  // sequential 5s-timeout fetches could add up to 10s to a launch — and this
-  // route is awaited between M3a and M4, so that delay was on the critical path.
-  // Deliberately not awaited here; see the bounded await at the write.
-  const logoPromise: Promise<string | null> = mainnetCA
-    ? resolveTokenLogo(mainnetCA).catch(() => null)
-    : Promise.resolve(null);
+  // Review Info I-1: only the keeper's own dex vocabulary is hashed / recorded.
+  if (!isKeeperDexTypeOrEmpty(dexType)) {
+    return NextResponse.json({ error: "Invalid dexType" }, { status: 400 });
+  }
+  // Review M-1: every payload field the row takes is shape-checked (and, on the proof path,
+  // bound by the memo's payload digest below).
+  const payloadCheck = validateRegistrationPayload(payload ?? null);
+  if (!payloadCheck.ok) return NextResponse.json({ error: payloadCheck.error }, { status: 400 });
+  const boundPayload = payloadCheck.payload;
 
-  // The slab's on-chain admin/marketauth, captured by the ownership check below
-  // so the registration write can record who actually administers this market.
+  // H1: authenticate the caller before any mainnet RPC, third-party lookup or registry write.
+  // The market's creator, proven by the creation tx (the proof path only).
   let slabAdmin: string | null = null;
+  const admin = isAdminBypass(req);
 
-  if (!isAdminBypass(req)) {
+  if (!admin) {
     // UX WP-7 (SECURITY REVIEW REQUIRED before merge): the creator proves the registration with
     // the transaction that CREATED the market. Its M1 carries an SPL Memo, signed by the creator,
     // binding exactly these parameters (lib/keeper-register-memo.ts). This REPLACES the H1v2
     // signed-message proof (no signMessage prompt, no replay window, no parallel user auth path;
     // the admin bypass above stays the maintainer path).
-    if (!proofTx || typeof proofTx !== "string") {
+    if (proofTx === undefined || proofTx === null || proofTx === "") {
       return NextResponse.json({ error: "Missing required field: proofTx (the market-creation transaction signature)" }, { status: 400 });
     }
+    // Review L-2: a malformed signature never costs an RPC call.
+    if (!isTxSignature(proofTx)) {
+      return NextResponse.json({ error: "Invalid proofTx: expected a transaction signature" }, { status: 400 });
+    }
     try {
+      const wrapper = getConfig().programId as string;
       const connection = getServerConnection("confirmed");
-      const slabPubkey = new PublicKey(slabAddress);
-      const accountInfo = await connection.getAccountInfo(slabPubkey);
+      const accountInfo = await connection.getAccountInfo(new PublicKey(slabAddress));
       if (!accountInfo) {
         return NextResponse.json({ error: "Slab account does not exist on-chain" }, { status: 400 });
       }
-      const programIds = getAllProgramIds();
-      if (!programIds.includes(accountInfo.owner.toBase58())) {
-        return NextResponse.json({ error: "Slab account not owned by a known percolator program" }, { status: 400 });
-      }
-      // P3: the vault's on-chain junior owner is the creator too (accepted when the memo is not in
-      // the InitMarket tx itself).
-      let juniorOwner: string | null = null;
-      try {
-        const st = await connection.getAccountInfo(deriveVaultLpState(accountInfo.owner, slabPubkey));
-        const decoded = st ? decodeVaultLpState(new Uint8Array(st.data)) : null;
-        juniorOwner = decoded ? new PublicKey(decoded.juniorOwner).toBase58() : null;
-      } catch {
-        juniorOwner = null;
+      // Review L-1: the slab must be a market account of THIS wrapper (owner + v18 market header).
+      if (accountInfo.owner.toBase58() !== wrapper || !isV18MarketHeader(new Uint8Array(accountInfo.data))) {
+        return NextResponse.json({ error: "Slab account is not a market of this deployment's program" }, { status: 400 });
       }
       const tx = await connection.getTransaction(proofTx, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
       const verdict = await verifyKeeperRegisterProofTx(
         tx,
-        { slabAddress, dexPoolAddress, mainnetCA: mainnetCA ?? "", dexType: dexType ?? "", symbol, label },
-        programIds,
-        juniorOwner,
+        await keeperMemoParams({ slabAddress, dexPoolAddress, mainnetCA, dexType, symbol, label, payload: boundPayload }),
+        wrapper,
       );
       if (!verdict.ok) {
         Sentry.captureMessage("[playground/keeper-register] creation-tx proof refused", {
           level: "warning",
           tags: { endpoint: "/api/playground/keeper-register", auth: "memo-fail" },
-          extra: { slabAddress, proofTx, reason: verdict.reason },
+          extra: { slabAddress, reason: verdict.reason },
         });
         // Not landed yet reads as "not found": the client retries with backoff.
         const status = verdict.reason === "proof transaction not found" ? 409 : 403;
@@ -248,6 +246,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Failed to verify the market-creation proof on-chain" }, { status: 503 });
     }
   }
+
+  // Kick the logo lookup off only AFTER auth (review L-2: a refused request never reaches a
+  // third party), overlapping the pool classification below. Not awaited here; see the bounded
+  // await at the write.
+  const logoPromise: Promise<string | null> = mainnetCA
+    ? resolveTokenLogo(mainnetCA).catch(() => null)
+    : Promise.resolve(null);
 
   // Resolve the dexType from the pool's mainnet owner program ONLY. The client
   // dexType string is a hint and is ignored: it cannot tell Meteora DLMM from
@@ -325,17 +330,16 @@ export async function POST(req: NextRequest) {
   // is proven, then removed (rollout step 4). Runs FIRST so a DB failure fails
   // the registration outright rather than leaving the blob ahead of the row.
   //
-  // Everything above has already verified the caller against the slab's live
-  // on-chain marketauth, so this write is authenticated. See
-  // lib/market-registration.ts for why an 'auto' row may be overwritten.
-  // `deployer` must be the wallet that ADMINISTERS the market. On the signed
-  // path that is the verified deployer (already proven equal to the on-chain
-  // marketauth); on the admin-bypass path nobody signed, so fall back to the
-  // marketauth read from chain rather than writing something that merely looks
-  // plausible. Every pre-existing row has the sim-USDC MINT in this column —
-  // that is the mistake this avoids repeating.
-  // The creator proven by the creation tx; on the admin (maintainer) path, the deployer it names.
-  const registeredDeployer = slabAdmin ?? (isAdminBypass(req) ? deployer ?? null : null);
+  // What each auth path may write is decided in lib/market-registration.ts:
+  // the PROOF path (a public, replayable creation tx) may create a row or
+  // replace the indexer's 'auto' guess, but never overwrites a creator-
+  // registered row, never re-activates a retired one, and never changes a
+  // row's pool / CA. Only the admin path may.
+  //
+  // `deployer` must be the wallet that ADMINISTERS the market: on the proof
+  // path the creator the creation tx proves; on the admin path the deployer the
+  // maintainer names.
+  const registeredDeployer = slabAdmin ?? (admin ? deployer ?? null : null);
   if (!registeredDeployer) {
     return NextResponse.json(
       { ok: false, registered: false, error: "Cannot determine the market's deployer" },
@@ -347,9 +351,11 @@ export async function POST(req: NextRequest) {
   // DERIVED fields (floored max_leverage, oracle_authority's crank-wallet rule,
   // initial_price_e6, lp_collateral). Falling back to literals here would give
   // every market the column defaults — 10x and 10bps — regardless of what the
-  // creator chose. Identity fields stay pinned to values this route has already
-  // verified, so a crafted payload cannot repoint the row.
-  const p = (payload ?? {}) as Record<string, unknown>;
+  // creator chose. On the proof path every one of these fields is covered by the
+  // memo's payload digest (a replay cannot change them), and they are all
+  // shape-checked (validateRegistrationPayload). The pool / CA / slab come from
+  // the verified request, never from the payload.
+  const p = boundPayload ?? {};
   const str = (v: unknown): string | null => (typeof v === "string" && v.length > 0 ? v : null);
   const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
@@ -396,24 +402,25 @@ export async function POST(req: NextRequest) {
     max_leverage: num(p.max_leverage),
     trading_fee_bps: num(p.trading_fee_bps),
     logo_url: resolvedLogo,
-  });
+  }, admin ? "admin" : "proof");
   if (!dbResult.ok) {
-    // Surface the underlying cause. This is a devnet playground and the launch
-    // UI is the only place this failure is ever seen — a bare "Failed to
-    // register market" left a real production failure with no diagnosable
-    // signal anywhere.
+    // Log the underlying cause server-side: a bare "Failed to register market"
+    // with no log line left a real production failure undiagnosable.
     console.error(
       "[playground/keeper-register] markets row write failed:",
       dbResult.error,
       dbResult.detail ?? "(no detail)",
     );
+    // Review M-1: the database's own error text stays in the server log (the proof path is
+    // reachable by anyone who has the public creation tx).
+    return NextResponse.json({ ok: false, registered: false, error: dbResult.error }, { status: dbResult.status });
+  }
+  // A maintainer retired this (creator-registered) market: the proof path cannot re-enroll it,
+  // and the blob is not re-written for it either. Final (not retryable).
+  if (dbResult.action === "unchanged" && !dbResult.keeperActive) {
     return NextResponse.json(
-      {
-        ok: false,
-        registered: false,
-        error: dbResult.detail ? `${dbResult.error}: ${dbResult.detail}` : dbResult.error,
-      },
-      { status: dbResult.status },
+      { ok: false, registered: false, error: "This market's live price was turned off by a maintainer." },
+      { status: 403 },
     );
   }
 

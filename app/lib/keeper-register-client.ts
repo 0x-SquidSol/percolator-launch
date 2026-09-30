@@ -121,3 +121,26 @@ export function loadProofTx(slab: string): string | null {
     return null;
   }
 }
+
+const PAYLOAD_KEY = (slab: string) => `perc.keeperPayload.${slab}`;
+
+/**
+ * The markets-row payload the creation-tx memo was built with (its digest is in the memo, memo
+ * v2), so a registration retried after a reload sends the SAME payload and still verifies.
+ */
+export function saveProofPayload(slab: string, payload: MarketRegistrationPayload): void {
+  try {
+    window.localStorage.setItem(PAYLOAD_KEY(slab), JSON.stringify(payload));
+  } catch {
+    /* private mode: the in-memory copy still has it */
+  }
+}
+export function loadProofPayload(slab: string): MarketRegistrationPayload | null {
+  try {
+    const raw = window.localStorage.getItem(PAYLOAD_KEY(slab));
+    const v: unknown = raw ? JSON.parse(raw) : null;
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as MarketRegistrationPayload) : null;
+  } catch {
+    return null;
+  }
+}

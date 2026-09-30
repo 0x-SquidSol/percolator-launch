@@ -16,7 +16,7 @@ type Captured = { op: "insert" | "update"; payload: Record<string, unknown> } | 
 
 /** Minimal supabase double covering only the calls this function makes. */
 function fakeSupabase(opts: {
-  existing?: { id: string; metadata_source: string } | null;
+  existing?: { id: string; metadata_source: string; dex_pool_address?: string | null; mainnet_ca?: string | null; keeper_status?: string } | null;
   readError?: boolean;
   insertError?: { code?: string } | null;
   updateError?: boolean;
@@ -75,11 +75,11 @@ const row = (over: Partial<RegistrationRow> = {}): RegistrationRow => ({
   ...over,
 });
 
-describe("upsertRegisteredMarketRow", () => {
+describe("upsertRegisteredMarketRow (admin path)", () => {
   it("inserts when no row exists, as manual + active", async () => {
     const fake = fakeSupabase({ existing: null });
-    const res = await upsertRegisteredMarketRow(fake.client as never, row());
-    expect(res).toEqual({ ok: true, action: "inserted" });
+    const res = await upsertRegisteredMarketRow(fake.client as never, row(), "admin");
+    expect(res).toEqual({ ok: true, action: "inserted", keeperActive: true });
     expect(fake.captured?.op).toBe("insert");
     expect(fake.captured?.payload.metadata_source).toBe("manual");
     expect(fake.captured?.payload.keeper_status).toBe("active");
@@ -87,8 +87,8 @@ describe("upsertRegisteredMarketRow", () => {
 
   it("OVERWRITES an indexer-written 'auto' row — the creator beats the guess", async () => {
     const fake = fakeSupabase({ existing: { id: "1", metadata_source: "auto" } });
-    const res = await upsertRegisteredMarketRow(fake.client as never, row({ symbol: "REAL" }));
-    expect(res).toEqual({ ok: true, action: "updated" });
+    const res = await upsertRegisteredMarketRow(fake.client as never, row({ symbol: "REAL" }), "admin");
+    expect(res).toEqual({ ok: true, action: "updated", keeperActive: true });
     expect(fake.captured?.op).toBe("update");
     expect(fake.captured?.payload.symbol).toBe("REAL");
     expect(fake.captured?.payload.metadata_source).toBe("manual");
@@ -96,14 +96,14 @@ describe("upsertRegisteredMarketRow", () => {
 
   it("is idempotent over an existing 'manual' row (the retry path)", async () => {
     const fake = fakeSupabase({ existing: { id: "1", metadata_source: "manual" } });
-    const res = await upsertRegisteredMarketRow(fake.client as never, row());
-    expect(res).toEqual({ ok: true, action: "updated" });
+    const res = await upsertRegisteredMarketRow(fake.client as never, row(), "admin");
+    expect(res).toEqual({ ok: true, action: "updated", keeperActive: true });
   });
 
   it("always sets keeper_status='active' — registration is what enrolls a market", async () => {
     for (const existing of [null, { id: "1", metadata_source: "auto" as const }]) {
       const fake = fakeSupabase({ existing });
-      await upsertRegisteredMarketRow(fake.client as never, row());
+      await upsertRegisteredMarketRow(fake.client as never, row(), "admin");
       expect(fake.captured?.payload.keeper_status).toBe("active");
     }
   });
@@ -114,7 +114,7 @@ describe("upsertRegisteredMarketRow", () => {
     const fake = fakeSupabase({ existing: { id: "1", metadata_source: "manual" } });
     await upsertRegisteredMarketRow(
       fake.client as never,
-      row({ max_leverage: null, trading_fee_bps: null, oracle_authority: null }),
+      row({ max_leverage: null, trading_fee_bps: null, oracle_authority: null }), "admin"
     );
     expect(fake.captured?.payload).not.toHaveProperty("max_leverage");
     expect(fake.captured?.payload).not.toHaveProperty("trading_fee_bps");
@@ -125,7 +125,7 @@ describe("upsertRegisteredMarketRow", () => {
     const fake = fakeSupabase({ existing: null });
     await upsertRegisteredMarketRow(
       fake.client as never,
-      row({ max_leverage: 4, trading_fee_bps: 30, oracle_authority: "CRANK1" }),
+      row({ max_leverage: 4, trading_fee_bps: 30, oracle_authority: "CRANK1" }), "admin"
     );
     expect(fake.captured?.payload.max_leverage).toBe(4);
     expect(fake.captured?.payload.trading_fee_bps).toBe(30);
@@ -135,20 +135,20 @@ describe("upsertRegisteredMarketRow", () => {
   it("falls back to UPDATE when a concurrent insert wins the race (23505)", async () => {
     // The indexer's discovery pass can insert between our read and our write.
     const fake = fakeSupabase({ existing: null, insertError: { code: "23505" } });
-    const res = await upsertRegisteredMarketRow(fake.client as never, row());
-    expect(res).toEqual({ ok: true, action: "updated" });
+    const res = await upsertRegisteredMarketRow(fake.client as never, row(), "admin");
+    expect(res).toEqual({ ok: true, action: "updated", keeperActive: true });
   });
 
   it("reports a read failure rather than blindly inserting", async () => {
     const fake = fakeSupabase({ readError: true });
-    const res = await upsertRegisteredMarketRow(fake.client as never, row());
+    const res = await upsertRegisteredMarketRow(fake.client as never, row(), "admin");
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.status).toBe(500);
   });
 
   it("reports an update failure", async () => {
     const fake = fakeSupabase({ existing: { id: "1", metadata_source: "auto" }, updateError: true });
-    const res = await upsertRegisteredMarketRow(fake.client as never, row());
+    const res = await upsertRegisteredMarketRow(fake.client as never, row(), "admin");
     expect(res.ok).toBe(false);
   });
 
@@ -158,14 +158,14 @@ describe("upsertRegisteredMarketRow", () => {
     // is delegated — sending it raw is what failed the first live launch, and
     // what made POST /api/markets fail every time before that.
     const fake = fakeSupabase({ existing: null });
-    await upsertRegisteredMarketRow(fake.client as never, row({ oracle_mode: "keeper" }));
+    await upsertRegisteredMarketRow(fake.client as never, row({ oracle_mode: "keeper" }), "admin");
     expect(fake.captured?.payload.oracle_mode).toBe("admin");
   });
 
   it("leaves the other oracle modes untouched", async () => {
     for (const mode of ["pyth", "hyperp", "admin"]) {
       const fake = fakeSupabase({ existing: null });
-      await upsertRegisteredMarketRow(fake.client as never, row({ oracle_mode: mode }));
+      await upsertRegisteredMarketRow(fake.client as never, row({ oracle_mode: mode }), "admin");
       expect(fake.captured?.payload.oracle_mode).toBe(mode);
     }
   });
@@ -177,13 +177,13 @@ describe("registration completeness (what the markets page needs)", () => {
     // once registration marks the row 'manual' the indexer's logo pass can
     // never touch it again. Registration is the only chance.
     const fake = fakeSupabase({ existing: null });
-    await upsertRegisteredMarketRow(fake.client as never, row({ logo_url: "https://cdn/x.png" }));
+    await upsertRegisteredMarketRow(fake.client as never, row({ logo_url: "https://cdn/x.png" }), "admin");
     expect(fake.captured?.payload.logo_url).toBe("https://cdn/x.png");
   });
 
   it("omits logo_url when resolution failed, rather than blanking an existing one", async () => {
     const fake = fakeSupabase({ existing: { id: "1", metadata_source: "auto" } });
-    await upsertRegisteredMarketRow(fake.client as never, row({ logo_url: null }));
+    await upsertRegisteredMarketRow(fake.client as never, row({ logo_url: null }), "admin");
     expect(fake.captured?.payload).not.toHaveProperty("logo_url");
   });
 
@@ -191,7 +191,7 @@ describe("registration completeness (what the markets page needs)", () => {
     const fake = fakeSupabase({ existing: null });
     await upsertRegisteredMarketRow(
       fake.client as never,
-      row({ symbol: "TRIP", name: "TripleT", max_leverage: 10, trading_fee_bps: 30, logo_url: "L" }),
+      row({ symbol: "TRIP", name: "TripleT", max_leverage: 10, trading_fee_bps: 30, logo_url: "L" }), "admin"
     );
     const p = fake.captured!.payload;
     for (const k of ["symbol", "name", "max_leverage", "trading_fee_bps", "logo_url",
@@ -200,5 +200,54 @@ describe("registration completeness (what the markets page needs)", () => {
     }
     expect(p.keeper_status).toBe("active");
     expect(p.metadata_source).toBe("manual");
+  });
+});
+
+/**
+ * Security review 2026-09-30 (WP-7 M-1 / M-2): the PROOF path's proof is a public, replayable
+ * creation tx, so what it may write is narrower than the admin path.
+ */
+describe("upsertRegisteredMarketRow (proof path)", () => {
+  it("inserts a new row and replaces the indexer's 'auto' guess", async () => {
+    const a = fakeSupabase({ existing: null });
+    expect(await upsertRegisteredMarketRow(a.client as never, row(), "proof")).toEqual({ ok: true, action: "inserted", keeperActive: true });
+    const b = fakeSupabase({ existing: { id: "1", metadata_source: "auto" } });
+    expect(await upsertRegisteredMarketRow(b.client as never, row({ symbol: "REAL" }), "proof")).toEqual({ ok: true, action: "updated", keeperActive: true });
+    expect(b.captured?.payload.symbol).toBe("REAL");
+  });
+  it("NEVER overwrites a creator-registered ('manual') row", async () => {
+    const f = fakeSupabase({ existing: { id: "1", metadata_source: "manual", dex_pool_address: "POOL1", mainnet_ca: "CA1", keeper_status: "active" } });
+    expect(await upsertRegisteredMarketRow(f.client as never, row({ name: "Official SOL Perp" }), "proof")).toEqual({ ok: true, action: "unchanged", keeperActive: true });
+    expect(f.captured).toBeNull();
+  });
+  it("never re-activates a retired row", async () => {
+    const f = fakeSupabase({ existing: { id: "1", metadata_source: "manual", dex_pool_address: "POOL1", mainnet_ca: "CA1", keeper_status: "retired" } });
+    expect(await upsertRegisteredMarketRow(f.client as never, row(), "proof")).toEqual({ ok: true, action: "unchanged", keeperActive: false });
+    expect(f.captured).toBeNull();
+  });
+  it("refuses to change an existing pool or CA (409), on manual and auto rows", async () => {
+    for (const existing of [
+      { id: "1", metadata_source: "manual", dex_pool_address: "OTHER", mainnet_ca: "CA1" },
+      { id: "1", metadata_source: "manual", dex_pool_address: "POOL1", mainnet_ca: "OTHERCA" },
+      { id: "1", metadata_source: "auto", dex_pool_address: "OTHER", mainnet_ca: null },
+    ]) {
+      const f = fakeSupabase({ existing });
+      const r = await upsertRegisteredMarketRow(f.client as never, row(), "proof");
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.status).toBe(409);
+      expect(f.captured).toBeNull();
+    }
+  });
+  it("NEGATIVE CONTROL: the admin path may still update a manual row / change its pool", async () => {
+    const f = fakeSupabase({ existing: { id: "1", metadata_source: "manual", dex_pool_address: "OTHER", mainnet_ca: "CA1" } });
+    expect(await upsertRegisteredMarketRow(f.client as never, row(), "admin")).toEqual({ ok: true, action: "updated", keeperActive: true });
+    expect(f.captured?.op).toBe("update");
+  });
+  it("a 23505 race re-applies the proof rules; it never blind-updates", async () => {
+    const f = fakeSupabase({ existing: null, insertError: { code: "23505" } });
+    const r = await upsertRegisteredMarketRow(f.client as never, row(), "proof");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.status).toBe(503);
+    expect(f.captured?.op).toBe("insert");
   });
 });

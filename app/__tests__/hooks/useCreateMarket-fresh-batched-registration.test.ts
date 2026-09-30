@@ -30,8 +30,10 @@ describe("useCreateMarket fresh batched registration", () => {
     expect(freshBatchSource).not.toContain("/api/markets/challenge");
     expect(freshBatchSource).not.toContain("wallet.signMessage(");
     expect(freshBatchSource).not.toContain("buildKeeperRegisterProofMessage");
-    // the memo is built from the exact fields the registration POSTs and rides in M1
-    expect(freshBatchSource).toContain("await buildKeeperRegisterMemoIx(walletPk, keeperMemoParams(keeperRequestBase))");
+    // the memo is built from the exact fields the registration POSTs (memo v2: incl. the payload
+    // it later sends, security review 2026-09-30 M-1) and rides in M1
+    expect(freshBatchSource).toContain("await buildKeeperRegisterMemoIx(walletPk, await keeperMemoParams({ ...keeperRequestBase, payload: keeperPayload }))");
+    expect(freshBatchSource).toContain("if (keeperRequestBase && keeperPayload) rememberRegistrationPayload(slabPk.toBase58(), keeperPayload);");
     expect(freshBatchSource).toMatch(/buildM1Instructions\(\{[\s\S]*memo: keeperMemoIx,/);
     // the creation tx signature is kept as the proof
     expect(freshBatchSource).toContain("if (keeperRequestBase) saveProofTx(slabPk.toBase58(), m1Sig);");

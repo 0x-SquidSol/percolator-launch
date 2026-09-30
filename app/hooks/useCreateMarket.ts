@@ -73,7 +73,7 @@ import { toE6 } from "@/lib/format";
 import { buildKeeperRegisterMemoIx, keeperMemoParams } from "@/lib/keeper-register-memo";
 import { buildM1Instructions } from "@/lib/create-market-m1";
 import { WIZARD_STEP_COPY } from "@/lib/wizard-copy";
-import { KEEPER_REGISTER_COPY, loadProofTx, postKeeperRegistration, runKeeperRegistration, saveProofTx, type KeeperRegisterPhase } from "@/lib/keeper-register-client";
+import { KEEPER_REGISTER_COPY, loadProofPayload, loadProofTx, postKeeperRegistration, runKeeperRegistration, saveProofPayload, saveProofTx, type KeeperRegisterPhase } from "@/lib/keeper-register-client";
 import { deriveMarketParams, MIN_LEVERAGE_X, backingSeedPerDomain, leverageFromMarginBps } from "@/lib/market-params";
 // GH#2592: the step-4 predicate and /api/devnet-pre-fund's funding target must be
 // the SAME number. They were two hand-copies, and the route's was understated by
@@ -463,6 +463,15 @@ export interface CreateMarketState {
  * back to the partial shape.
  */
 const launchRegistrationPayloads = new Map<string, MarketRegistrationPayload>();
+
+/** Keep the payload the creation-tx memo binds (in memory and on this device, memo v2). */
+function rememberRegistrationPayload(slab: string, payload: MarketRegistrationPayload): void {
+  launchRegistrationPayloads.set(slab, payload);
+  saveProofPayload(slab, payload);
+}
+function recallRegistrationPayload(slab: string): MarketRegistrationPayload | null {
+  return launchRegistrationPayloads.get(slab) ?? loadProofPayload(slab);
+}
 
 /** Minimal shape retryKeeperRegistration needs to re-run keeper-register for an
  *  already-live slab — a subset of CreateMarketParams, since the market is already
@@ -870,12 +879,17 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
             slabAddress: slabPk.toBase58(),
             mainnetCA: params.mainnetCA ?? null,
             dexPoolAddress: params.dexPoolAddress,
-            dexType: normalizeDexType(params.dexType) ?? params.dexType ?? null,
+            dexType: normalizeDexType(params.dexType) ?? null,
             symbol: params.symbol ?? null,
           }
         : null;
+    // Memo v2 binds the full markets-row payload too (its digest), so build it now; the
+    // registration loop later sends this exact object.
+    const keeperPayload = keeperRequestBase
+      ? buildMarketRegistrationPayload({ slabAddress: slabPk.toBase58(), params, deployer: walletPk.toBase58(), oracleMode, isAdminOracle, isDevnetEnv })
+      : null;
     const keeperMemoIx = keeperRequestBase
-      ? await buildKeeperRegisterMemoIx(walletPk, keeperMemoParams(keeperRequestBase))
+      ? await buildKeeperRegisterMemoIx(walletPk, await keeperMemoParams({ ...keeperRequestBase, payload: keeperPayload }))
       : null;
 
     const [slabRent, portfolioRent, matcherCtxRent, mintRent, tokenAcctRent] = await rentPromise;
@@ -1574,12 +1588,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     // UX WP-7: registration no longer has to run before StakeInitPool (the proof is the creation
     // tx, not the live marketauth), so the batch never waits for it: the hook starts a background
     // loop once the launch lands. The markets-row payload is built now and kept for that loop.
-    if (keeperRequestBase) {
-      launchRegistrationPayloads.set(
-        slabPk.toBase58(),
-        buildMarketRegistrationPayload({ slabAddress: slabPk.toBase58(), params, deployer: walletPk.toBase58(), oracleMode, isAdminOracle, isDevnetEnv }),
-      );
-    }
+    if (keeperRequestBase && keeperPayload) rememberRegistrationPayload(slabPk.toBase58(), keeperPayload);
 
     // M3b carries the insurance seed, which is NOT optional: it is the layer
     // that absorbs losses before the LP does. This used to swallow every
@@ -1837,9 +1846,9 @@ export function useCreateMarket() {
       slabAddress: slab,
       mainnetCA: params.mainnetCA ?? null,
       dexPoolAddress: params.dexPoolAddress,
-      dexType: normalizeDexType(params.dexType) ?? params.dexType ?? null,
+      dexType: normalizeDexType(params.dexType) ?? null,
       symbol: params.symbol ?? null,
-      payload: launchRegistrationPayloads.get(slab) ?? null,
+      payload: recallRegistrationPayload(slab),
       proofTx,
     };
     setState((s) => ({ ...s, keeperPhase: "connecting", keeperMessage: KEEPER_REGISTER_COPY.connecting }));
@@ -1934,21 +1943,25 @@ export function useCreateMarket() {
       const isKeeperOracle = oracleMode === "keeper";
       // UX WP-7: the keeper-registration memo for a sequential InitMarket (same binding as the
       // batch: lib/keeper-register-memo.ts). Empty when the market is not keeper-priced.
-      const seqKeeperMemo = async (creator: PublicKey, slab: PublicKey): Promise<TransactionInstruction[]> =>
-        isKeeperOracle && params.dexPoolAddress
-          ? [
-              await buildKeeperRegisterMemoIx(
-                creator,
-                keeperMemoParams({
-                  slabAddress: slab.toBase58(),
-                  mainnetCA: params.mainnetCA ?? null,
-                  dexPoolAddress: params.dexPoolAddress,
-                  dexType: normalizeDexType(params.dexType) ?? params.dexType ?? null,
-                  symbol: params.symbol ?? null,
-                }),
-              ),
-            ]
-          : [];
+      // Memo v2 also binds the markets-row payload, built here and remembered for the loop.
+      const seqKeeperMemo = async (creator: PublicKey, slab: PublicKey): Promise<TransactionInstruction[]> => {
+        if (!isKeeperOracle || !params.dexPoolAddress) return [];
+        const payload = buildMarketRegistrationPayload({ slabAddress: slab.toBase58(), params, deployer: creator.toBase58(), oracleMode, isAdminOracle, isDevnetEnv });
+        rememberRegistrationPayload(slab.toBase58(), payload);
+        return [
+          await buildKeeperRegisterMemoIx(
+            creator,
+            await keeperMemoParams({
+              slabAddress: slab.toBase58(),
+              mainnetCA: params.mainnetCA ?? null,
+              dexPoolAddress: params.dexPoolAddress,
+              dexType: normalizeDexType(params.dexType) ?? null,
+              symbol: params.symbol ?? null,
+              payload,
+            }),
+          ),
+        ];
+      };
 
       // PERC-470: Resolve DEX pool vault addresses for hyperp mode
       // If vaults weren't provided, fetch the pool account on-chain
@@ -3547,8 +3560,10 @@ export function useCreateMarket() {
         // signature; the proof is the InitMarket tx), so nothing waits for it here.
         const keeperDelegated = false;
         const keeperMessage: string | null = isKeeperOracle && params.dexPoolAddress ? KEEPER_REGISTER_COPY.connecting : null;
-        if (isKeeperOracle && params.dexPoolAddress) {
-          launchRegistrationPayloads.set(
+        // The payload the InitMarket memo bound (seqKeeperMemo) is already remembered; a resumed
+        // launch whose InitMarket ran on another page load rebuilds the identical object.
+        if (isKeeperOracle && params.dexPoolAddress && !recallRegistrationPayload(slabPk.toBase58())) {
+          rememberRegistrationPayload(
             slabPk.toBase58(),
             buildMarketRegistrationPayload({ slabAddress: slabPk.toBase58(), params, deployer: wallet.publicKey.toBase58(), oracleMode, isAdminOracle, isDevnetEnv }),
           );
@@ -3834,8 +3849,8 @@ export function useCreateMarket() {
       setState((s) => ({ ...s, keeperRegistering: true }));
       const r = await postKeeperRegistration({
         ...params,
-        dexType: normalizeDexType(params.dexType ?? undefined) ?? params.dexType ?? null,
-        payload: params.payload ?? launchRegistrationPayloads.get(params.slabAddress) ?? null,
+        dexType: normalizeDexType(params.dexType ?? undefined) ?? null,
+        payload: params.payload ?? recallRegistrationPayload(params.slabAddress),
         proofTx,
       });
       setState((s) => ({

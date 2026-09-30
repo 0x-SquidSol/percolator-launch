@@ -78,3 +78,23 @@ describe("AC2: 503, 503, 200 -> connected, no user action", () => {
     expect(attempt).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("memo v2: the bound payload survives a reload (security review 2026-09-30 M-1)", () => {
+  it("saveProofPayload / loadProofPayload round-trip; garbage reads as none", async () => {
+    const { saveProofPayload, loadProofPayload } = await import("@/lib/keeper-register-client");
+    const store = new Map<string, string>();
+    vi.stubGlobal("window", { localStorage: { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) } });
+    try {
+      const payload = { name: "Test Token", max_leverage: 6.666666666666667, trading_fee_bps: 30, initial_price_e6: "1000000" };
+      saveProofPayload("SLAB", payload);
+      expect(loadProofPayload("SLAB")).toEqual(payload);
+      expect(loadProofPayload("OTHER")).toBeNull();
+      store.set("perc.keeperPayload.BAD", "{not json");
+      expect(loadProofPayload("BAD")).toBeNull();
+      store.set("perc.keeperPayload.ARR", "[1,2]");
+      expect(loadProofPayload("ARR")).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

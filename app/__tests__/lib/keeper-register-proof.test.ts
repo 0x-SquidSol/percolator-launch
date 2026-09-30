@@ -94,7 +94,7 @@ describe("keeper-register proof binds the registration parameters (GH#2505, GH#2
     // adding to it.
     // The memo carries a hash; the slab is bound through the canonical params it hashes.
     expect(canonicalizeKeeperRegisterParams(base)).toContain(base.slabAddress);
-    expect(await bytes(base)).toMatch(/^percolator:keeper-register:v1:/);
+    expect(await bytes(base)).toMatch(/^percolator:keeper-register:v2:/);
     expect(await bytes({ ...base, slabAddress: "OtherSlab11111111111111111111111111111111" })).not.toBe(await bytes(base));
   });
 });
