@@ -307,9 +307,14 @@ export function useDevnetFaucet(): DevnetFaucetState {
     lastOpFailedRef.current = false;
     try {
       const resp = await fetch("/api/faucet", {
+        // `type` is REQUIRED by /api/faucet (route.ts rejects a missing type with
+        // "Missing required field: type. Must be \"sol\" or \"usdc\"" and uses it
+        // to pick the mint and the per-type rate-gate key). This USDC caller
+        // omitted it, so every airdrop 400'd; SOL was unaffected because it goes
+        // through the RPC requestAirdrop path, not this endpoint. (#2702)
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ wallet: publicKey.toBase58() }),
+        body: JSON.stringify({ wallet: publicKey.toBase58(), type: "usdc" }),
       });
       const data = await resp.json();
       if (resp.status === 429) {

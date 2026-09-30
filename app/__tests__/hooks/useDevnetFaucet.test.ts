@@ -3,6 +3,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import fs from "fs";
+import path from "path";
 
 // Mock environment
 const env = process.env;
@@ -40,4 +42,24 @@ describe("useDevnetFaucet", () => {
     },
     30000
   ); // Increased timeout for dynamic import
+
+  it("airdropUsdc sends the required `type: \"usdc\"` in the /api/faucet body (#2702)", () => {
+    // Guards the client/API desync behind #2702: /api/faucet REQUIRES `type`
+    // ("sol" | "usdc") and 400s without it; this hook's ONLY /api/faucet caller
+    // is the USDC airdrop, so omitting type made every USDC claim fail (SOL is
+    // unaffected — it uses the RPC requestAirdrop path, not this endpoint). A
+    // behavioural render isn't practical (the hook needs a live wallet +
+    // connection), so this binds the request shape to source.
+    const src = fs.readFileSync(
+      path.resolve(__dirname, "../../hooks/useDevnetFaucet.ts"),
+      "utf8",
+    );
+    const m = src.match(
+      /fetch\(\s*["']\/api\/faucet["'][\s\S]{0,800}?body:\s*JSON\.stringify\(\s*\{([^}]*)\}/,
+    );
+    expect(m, "no /api/faucet POST with a JSON.stringify body found").toBeTruthy();
+    const body = m![1];
+    expect(body).toMatch(/wallet\s*:/);
+    expect(body).toMatch(/type\s*:\s*["']usdc["']/);
+  });
 });
