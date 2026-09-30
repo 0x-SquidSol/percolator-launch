@@ -2,9 +2,9 @@
 /**
  * Rust parity: every vector in fixtures/limits/rust-parity-vectors.json was
  * emitted by the REAL Rust function (scripts/limits-parity/main.rs):
- *   - P1 `risk_limits_v17` extracted verbatim from feat/p1-safety-release@71da9917 (committed);
+ *   - P1 `risk_limits_v17` extracted verbatim from feat/p1-safety-release@99165722 (F-7: no taker-close exemption in lp_fill_gate);
  *   - P2 `percolator_match::v2` from feat/p2-matcher-v2@4a0f696 (crate path dep);
- *   - P3 `vault_lp_v18.rs` from feat/p3-vault-owned-lp@8dffb534 (committed).
+ *   - P3 `vault_lp_v18.rs` from feat/p3-vault-owned-lp@424fe7e4 (byte-identical to 0be66041/8dffb534).
  * The TS ports must agree on every one.
  */
 import { describe, it, expect } from "vitest";

@@ -19,6 +19,11 @@
  * P3 numbers are read from `feat/p3-vault-owned-lp@0be66041`, which is REBASED
  * onto P1 (tags 94..102, errors 72..85 appended after P1's 71; ordinals computed
  * by parsing the enum). P3 is still in review, so they stay keyed BY NAME.
+ *
+ * Round 4: every P1/P3 number here is re-verified at the FINAL combined head
+ * `feat/p3-vault-owned-lp@ee29b5ac` (P1 `3acb34ae`, engine `35ddd692`) through the REAL
+ * crate — `app/scripts/limits-parity/p3-final` (errors by name, offset_of!, the program's
+ * own readers) and the layout / parity emitters, all byte-identical to the fixtures.
  */
 
 // ── Shared layout ────────────────────────────────────────────────────────────
@@ -29,6 +34,7 @@ export const HEADER_KIND_OFF = 10;
 export const WRAPPER_MAGIC = 0x5045_5243_5631_3600n;
 export const WRAPPER_VERSION_V18 = 18;
 export const KIND_MARKET_ACCOUNT = 1;
+export const KIND_PORTFOLIO = 2;
 export const MARKET_GROUP_OFF = 592;
 export const MARKET_GROUP_LEN = 758;
 /** `Market { wrapper: [u8; 1024], engine: EngineAssetSlotV16Account (1301) }`. */
@@ -240,7 +246,8 @@ export const VS = {
 export const VAULT_LP_STATE_ACCOUNT_LEN = HEADER_LEN + 256;
 export const VAULT_LP_MIN_JUNIOR_FLOOR_BPS = 1_000;
 
-/** P3 tags (feat/p3-vault-owned-lp@0be66041). Not sent by this app. */
+/** P3 tags (FINAL head ee29b5ac; re-verified against the real `ix::Instruction::decode`,
+ *  fixture `rust-p3-final.json`). Sent by `lib/limits/p3-ix.ts`. */
 export const P3_TAG = {
   InitVaultLp: 94,
   VaultLpSetMatcher: 95,
@@ -270,3 +277,43 @@ export const P3_ERR = {
   VaultLpHarvestPending: 84,
   VaultLpValuationStale: 85,
 } as const;
+
+// ── P3 end-to-end (round 4; FINAL feat/p3-vault-owned-lp@ee29b5ac + engine 35ddd692) ────────
+/** `LpVaultRegistryV16._reserved[0]` (struct 144) = 1 when a vault LP is bound => absolute 160.
+ *  Every bound-vault Earn handler then REQUIRES the vault-LP tail accounts (fail closed). */
+export const REG_VAULT_LP_BOUND_FLAG = HEADER_LEN + 144;
+/** Tail indices on a BOUND vault (handler `load_bound_vault_lp_tail(.., idx, need_lp)`):
+ *  75 DepositToLpVault [11] vault_lp_state(w) + [12] lp; 77 ExecuteRedemption [13] + [14];
+ *  78 LpVaultCrankFees [6] vault_lp_state(w) only; 76 RequestRedeem has none. */
+export const BOUND_TAIL_INDEX = { 75: 11, 77: 13, 78: 6 } as const;
+export const TAG_CLOSE_PORTFOLIO = 8;
+export const TAG_CLOSE_RESOLVED = 30;
+export const TAG_CLAIM_RESOLVED_PAYOUT_TOPUP = 46;
+export const TAG_DEPOSIT_TO_LP_VAULT = 75;
+export const TAG_REQUEST_REDEEM_LP_SHARES = 76;
+export const TAG_EXECUTE_REDEMPTION = 77;
+export const TAG_LP_VAULT_CRANK_FEES = 78;
+/** NftRegistry PDA `["nft_registry", market_group]`: the unsigned-caller proof at account [7]
+ *  of tags 30/46 that a portfolio is NOT NFT-escrowed (GH#496). */
+export const NFT_REGISTRY_SEED = "nft_registry";
+/** Engine header (`MarketGroupV16HeaderAccount`, relative to MARKET_GROUP_OFF like every H_*),
+ *  rustc offset_of! on engine 35ddd692 (fixture rust-p3-final.json). */
+export const H_C_TOT = 317; // u128: total trader capital; Resolved Earn redemption needs 0
+export const H_MATERIALIZED_PORTFOLIO_COUNT = 517; // u64: Resolved Earn redemption needs 0
+export const H_RESOLVED_SLOT = 627; // u64
+export const MARKET_MODE_LIVE = 0;
+export const MARKET_MODE_RESOLVED = 1;
+/** WrapperConfigV16.force_close_delay_slots (relative to HEADER_LEN like WCFG_*): until
+ *  resolved_slot + delay, tags 30 / 101-close are owner-only; after it, permissionless. */
+export const WCFG_FORCE_CLOSE_DELAY_SLOTS = 144;
+/** Portfolio fields for the resolved-exit planner (absolute; engine `PortfolioAccountV16Account`). */
+export const PF_RESERVED_PNL = HEADER_LEN + 164; // u128
+export const PF_CANCEL_DEPOSIT_ESCROW = HEADER_LEN + 308; // u128
+export const PF_REBALANCE_LOCK = HEADER_LEN + 9167; // u8
+export const PF_LIQUIDATION_LOCK = HEADER_LEN + 9168; // u8
+export const PF_RESOLVED_PAYOUT_RECEIPT = HEADER_LEN + 9353; // ResolvedPayoutReceiptV16Account
+export const RECEIPT_PRESENT = 64; // u8 bool
+export const RECEIPT_FINALIZED = 65; // u8 bool
+/** LpVaultRegistryV16.domain u16 (struct 132) => absolute 148. */
+export const REG_DOMAIN = HEADER_LEN + 132;
+export const VAULT_LP_MAX_JUNIOR_FLOOR_BPS = 10_000;

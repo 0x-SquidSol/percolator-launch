@@ -85,7 +85,9 @@ import { isOracleStaleBlocking } from "@/lib/oracle-stale-gate";
 import { invalidatePortfolio } from "@/lib/portfolio-invalidation";
 import { FEE_LEGS, legPercent, splitFeeAtoms } from "@/lib/fee-breakdown";
 import { useMarketLimits } from "@/hooks/useMarketLimits";
-import { deriveTicketLimits, sizeQToInput } from "@/lib/limits/ticket";
+import { closeLimitNotice, deriveTicketLimits, sizeQToInput } from "@/lib/limits/ticket";
+import { fmtQ } from "@/lib/limits/format";
+import { vaultLpAwaitingProtocol } from "@/lib/limits/p3-wizard";
 import { takeFillResult } from "@/lib/limits/fill-check";
 import { defaultFeeCapMarginBps } from "@/lib/limits/fee-channel";
 import type { FillResult } from "@/lib/limits/fill-result";
@@ -807,6 +809,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     feeMarginBps,
   });
   const limitsBlocking = ticketLimits.issues.some((x) => x.severity === "error") || adlReduceOnly;
+  // P1 99165722 (F-7): a close that GROWS a halted / capped LP is refused or clipped too.
+  const limitsCloseNotice = closeLimitNotice(existingPositionSize, ticketLimits.sideLimits);
   // P1: clamp the size input to the live headroom and SAY so (never silently).
   const limitsClampTo = ticketLimits.clampToQ;
   useEffect(() => {
@@ -1074,6 +1078,16 @@ setEngineLockError(null);
             {COPY.adlCloseRoute}
           </LimitsNotice>
         )}
+        {!adlReduceOnly && limitsCloseNotice?.kind === "halted" && (
+          <LimitsNotice tone="warning" title="Close refused while the LP is at its floor" testId="limits-close-halt-notice">
+            {COPY.closeHalted}
+          </LimitsNotice>
+        )}
+        {!adlReduceOnly && limitsCloseNotice?.kind === "capped" && (
+          <LimitsNotice tone="warning" title="Close limited by the LP's cap" testId="limits-close-cap-notice">
+            {COPY.closeCapped(fmtQ(limitsCloseNotice.maxQ), symbol)}
+          </LimitsNotice>
+        )}
         <OrderTicketClosePanel
           slabAddress={slabAddress}
           positionSize={existingPositionSize}
@@ -1257,6 +1271,12 @@ setEngineLockError(null);
       {adlReduceOnly && (
         <LimitsNotice tone="warning" title={COPY.adlReduceOnlyTitle} testId="limits-adl-reduce-only">
           {COPY.adlReduceOnly}
+        </LimitsNotice>
+      )}
+      {/* P3: a bound vault LP with no protocol-approved matcher yet takes no opening fills. */}
+      {vaultLpAwaitingProtocol(marketLimits.vaultLp) && (
+        <LimitsNotice tone="warning" title="Trading not open yet" testId="limits-vault-lp-awaiting-protocol">
+          {COPY.p3Wizard.awaitingProtocol}
         </LimitsNotice>
       )}
       <OrderTicketLimits

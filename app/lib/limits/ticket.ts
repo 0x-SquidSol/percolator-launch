@@ -202,3 +202,18 @@ export function sizeQToInput(q: bigint, unit: "token" | "usd", priceE6: bigint):
   const cents = usdAtoms / 10_000n;
   return `${cents / 100n}.${(cents % 100n).toString().padStart(2, "0")}`;
 }
+
+/**
+ * P1 99165722 (F-7): the LP's halt / cap applies to a CLOSE that grows the LP too. Closing a
+ * long sells ("short" side), closing a short buys ("long"). Returns the notice the Close tab
+ * must show, or null when the whole position can close.
+ */
+export type CloseLimitNotice = { kind: "halted" } | { kind: "capped"; maxQ: bigint } | null;
+export function closeLimitNotice(positionQ: bigint, sideLimits: Record<Side, SideLimit> | null): CloseLimitNotice {
+  if (!sideLimits || positionQ === 0n) return null;
+  const lim = sideLimits[positionQ > 0n ? "short" : "long"];
+  const size = positionQ < 0n ? -positionQ : positionQ;
+  if (lim.halted || (lim.reason === "lp-halt" && lim.maxQ === 0n)) return { kind: "halted" };
+  if ((lim.reason === "lp-halt" || lim.reason === "lp-exposure") && lim.maxQ < size) return { kind: "capped", maxQ: lim.maxQ };
+  return null;
+}

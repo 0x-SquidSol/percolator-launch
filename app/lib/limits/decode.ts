@@ -357,7 +357,7 @@ export function decodeVaultLpState(d: Uint8Array): VaultLpStateView | null {
   if (d[C.HEADER_KIND_OFF] !== C.KIND_VAULT_LP_STATE) return null;
   if (d[C.VS.version] !== C.VAULT_LP_STATE_VERSION) return null;
   const floor = u16(d, C.VS.juniorFloorBps);
-  if (floor < C.VAULT_LP_MIN_JUNIOR_FLOOR_BPS || floor > 10_000) return null;
+  if (floor < C.VAULT_LP_MIN_JUNIOR_FLOOR_BPS || floor > C.VAULT_LP_MAX_JUNIOR_FLOOR_BPS) return null;
   return {
     seniorClaimAtoms: u128(d, C.VS.seniorClaimAtoms),
     juniorDepositedAtoms: u128(d, C.VS.juniorDepositedAtoms),
@@ -380,4 +380,86 @@ export function decodeLpVaultRegistryShares(d: Uint8Array): bigint | null {
   if (d.length < C.LP_VAULT_REGISTRY_ACCOUNT_LEN) return null;
   if (d[C.HEADER_KIND_OFF] !== C.KIND_LP_VAULT_REGISTRY) return null;
   return u128(d, C.REG_TOTAL_LP_SHARES_OUTSTANDING);
+}
+
+/**
+ * `registry_vault_lp_bound` (P3 424fe7e4): `_reserved[0]` 0 => unbound, 1 => bound, anything
+ * else => the program refuses InvalidAccountData on every Earn op ("invalid", fail closed).
+ */
+export function decodeLpVaultRegistryBound(d: Uint8Array): boolean | "invalid" | null {
+  if (d.length < C.LP_VAULT_REGISTRY_ACCOUNT_LEN) return null;
+  if (d[C.HEADER_KIND_OFF] !== C.KIND_LP_VAULT_REGISTRY) return null;
+  const f = d[C.REG_VAULT_LP_BOUND_FLAG];
+  return f === 0 ? false : f === 1 ? true : "invalid";
+}
+
+/** The registry's own domain (its backing pot; the sibling is `domain ^ 1`). */
+export function decodeLpVaultRegistryDomain(d: Uint8Array): number | null {
+  if (d.length < C.LP_VAULT_REGISTRY_ACCOUNT_LEN) return null;
+  if (d[C.HEADER_KIND_OFF] !== C.KIND_LP_VAULT_REGISTRY) return null;
+  return u16(d, C.REG_DOMAIN);
+}
+
+// ── Resolved-mode exit (F-4 / P3-H1) ──────────────────────────────────────────
+
+export interface ResolvedMarketView {
+  mode: number;
+  currentSlot: bigint;
+  resolvedSlot: bigint;
+  forceCloseDelaySlots: bigint;
+  cTot: bigint;
+  materializedPortfolioCount: bigint;
+  marketauth: Uint8Array;
+}
+
+export function decodeResolvedMarket(d: Uint8Array): ResolvedMarketView | null {
+  const g = C.MARKET_GROUP_OFF;
+  if (d.length < g + C.MARKET_GROUP_LEN) return null;
+  if (!isV18MarketHeader(d)) return null;
+  return {
+    mode: d[g + C.H_MODE],
+    currentSlot: u64(d, g + C.H_CURRENT_SLOT),
+    resolvedSlot: u64(d, g + C.H_RESOLVED_SLOT),
+    forceCloseDelaySlots: u64(d, C.HEADER_LEN + C.WCFG_FORCE_CLOSE_DELAY_SLOTS),
+    cTot: u128(d, g + C.H_C_TOT),
+    materializedPortfolioCount: u64(d, g + C.H_MATERIALIZED_PORTFOLIO_COUNT),
+    marketauth: d.slice(C.HEADER_LEN, C.HEADER_LEN + 32),
+  };
+}
+
+export interface ResolvedPortfolioView {
+  owner: Uint8Array;
+  capital: bigint;
+  pnl: bigint;
+  reservedPnl: bigint;
+  feeCredits: bigint;
+  cancelDepositEscrow: bigint;
+  activeBitmap: bigint;
+  stale: boolean;
+  bStale: boolean;
+  rebalanceLock: boolean;
+  liquidationLock: boolean;
+  receiptPresent: boolean;
+  receiptFinalized: boolean;
+}
+
+export function decodeResolvedPortfolio(d: Uint8Array): ResolvedPortfolioView | null {
+  const r = C.PF_RESOLVED_PAYOUT_RECEIPT;
+  if (d.length < r + C.RECEIPT_FINALIZED + 1) return null;
+  if (d[C.HEADER_KIND_OFF] !== C.KIND_PORTFOLIO) return null;
+  return {
+    owner: d.slice(C.PF_OWNER, C.PF_OWNER + 32),
+    capital: u128(d, C.PF_CAPITAL),
+    pnl: i128(d, C.PF_PNL),
+    reservedPnl: u128(d, C.PF_RESERVED_PNL),
+    feeCredits: i128(d, C.PF_FEE_CREDITS),
+    cancelDepositEscrow: u128(d, C.PF_CANCEL_DEPOSIT_ESCROW),
+    activeBitmap: u64(d, C.PF_ACTIVE_BITMAP),
+    stale: d[C.PF_STALE_STATE] !== 0,
+    bStale: d[C.PF_B_STALE_STATE] !== 0,
+    rebalanceLock: d[C.PF_REBALANCE_LOCK] !== 0,
+    liquidationLock: d[C.PF_LIQUIDATION_LOCK] !== 0,
+    receiptPresent: d[r + C.RECEIPT_PRESENT] !== 0,
+    receiptFinalized: d[r + C.RECEIPT_FINALIZED] !== 0,
+  };
 }

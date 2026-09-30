@@ -1,6 +1,6 @@
 /**
  * P1 wrapper safety release: client ports of `risk_limits_v17` (percolator-prog
- * `feat/p1-safety-release@e74809b1`, `src/v16_program.rs` `mod risk_limits_v17`) plus the
+ * `feat/p1-safety-release@99165722`, `src/v16_program.rs` `mod risk_limits_v17`) plus the
  * processor's input gathering (`lp_floor_and_cap_q_view`,
  * `lp_trade_headroom_before_matcher`, `ensure_protocol_side_oi_cap_view`).
  *
@@ -275,12 +275,10 @@ export function maxTradeSizePerSide(i: SizeLimitInputs): Record<Side, SideLimit>
     const cands: { q: bigint; r: SizeLimitReason }[] = [];
     let halted = false;
     if (risk && i.lp) {
-      const h = lpTradeHeadroomQ(i.lp.posQ, side, risk.capQ, risk.floorBreached);
-      // P1 e74809b1: a request that is reduce-only for the TAKER skips the LP halt and
-      // headroom clip (up to |taker position|; a larger size would flip, so it is judged
-      // normally). Allowed sizes = [0, |pos|] ∪ [0, h] => max(|pos|, h).
-      const closeRoom = sameOwnerRoomQ(i.takerPosQ, side);
-      const room = closeRoom > h ? closeRoom : h;
+      // P1 99165722 (F-7): the LP's halt / cap applies to EVERY fill that grows the LP,
+      // including a taker's close; only the direction that REDUCES the LP is free. So the
+      // room is the LP headroom alone (the e74809b1 taker-close exemption is gone).
+      const room = lpTradeHeadroomQ(i.lp.posQ, side, risk.capQ, risk.floorBreached);
       if (risk.floorBreached) {
         halted = room === 0n;
         cands.push({ q: room, r: "lp-halt" });
@@ -329,21 +327,22 @@ export function positionChangeReduceOnly(beforeQ: bigint, afterQ: bigint): boole
 export type LpGate = "allow" | "floor-halt" | "cap-exceeded";
 
 /**
- * `lp_fill_gate` (P1 e74809b1), the post-fill LP rule on every route:
- * 1. reduce-only for the counterparty (the taker) => always allowed — exits are never
- *    trapped by the halt or the cap;
- * 2. a fill that does not grow the LP's magnitude => allowed;
- * 3. else a floored LP halts; an LP past its cap is refused.
+ * `lp_fill_gate` (P1 99165722, F-7 HIGH), the post-fill LP rule on every route:
+ * 1. a fill that does not grow the LP's magnitude => allowed (so every close that REDUCES the
+ *    LP always passes);
+ * 2. else a floored LP halts; an LP past its cap is refused.
+ * The counterparty's own direction is NOT an exemption any more: e74809b1 exempted taker
+ * closes, which let two non-LP wallets open bilaterally and then "close" one side INTO a
+ * capped or halted LP (F-7). The counterparty positions stay in the signature, as in Rust.
  */
 export function lpFillGate(
-  counterpartyBeforeQ: bigint,
-  counterpartyAfterQ: bigint,
+  _counterpartyBeforeQ: bigint,
+  _counterpartyAfterQ: bigint,
   lpBeforeQ: bigint,
   lpAfterQ: bigint,
   capQ: bigint,
   floorBreached: boolean,
 ): LpGate {
-  if (positionChangeReduceOnly(counterpartyBeforeQ, counterpartyAfterQ)) return "allow";
   if (!lpRiskIncreasing(lpBeforeQ, lpAfterQ)) return "allow";
   if (floorBreached) return "floor-halt";
   if (abs(lpAfterQ) > capQ) return "cap-exceeded";

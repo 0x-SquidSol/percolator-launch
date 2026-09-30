@@ -63,7 +63,8 @@ describe("useCreateMarket fresh batched registration", () => {
     // was still deciding whether the launch had failed. It is now a thunk
     // (`startKeeperRegister`) INVOKED after that check, so assert on the
     // invocation, which is the moment the request actually leaves.
-    const m3a = freshBatchSource.indexOf("const m3aSig = await broadcastTailTx(2)");
+    // Tail indices are by descriptor since round 4 (M3a is skipped and M4p inserted under P3).
+    const m3a = freshBatchSource.indexOf("const m3aSig = await broadcastTailTx(tailIdx(m3aDescriptor))");
     const register = freshBatchSource.indexOf("await startKeeperRegister()");
     expect(m3a).toBeGreaterThanOrEqual(0);
     expect(register).toBeGreaterThan(m3a);
@@ -89,8 +90,8 @@ describe("useCreateMarket fresh batched registration", () => {
     // but this upper bound is unchanged and is the reason it could not move any
     // later. Asserting on the INVOCATION, not the thunk's declaration.
     const keeper = freshBatchSource.indexOf("await startKeeperRegister()");
-    const m4a = freshBatchSource.indexOf("const m4aSig = await broadcastTailTx(4)");
-    const m4b = freshBatchSource.indexOf("const m4bSig = await broadcastTailTx(5)");
+    const m4a = freshBatchSource.indexOf("const m4aSig = await broadcastTailTx(tailIdx(m4aDescriptor))");
+    const m4b = freshBatchSource.indexOf("const m4bSig = await broadcastTailTx(tailIdx(m4bDescriptor))");
     expect(keeper).toBeGreaterThanOrEqual(0);
     expect(m4a).toBeGreaterThan(keeper);
     // M4a (CreateLpVault) does not rotate marketauth; M4b (StakeInitPool) does.
@@ -98,6 +99,11 @@ describe("useCreateMarket fresh batched registration", () => {
     // itself marketauth-gated, M4b for the reason above — and M4b must follow
     // M4a (CreateLpVault must land before the marketauth it depends on rotates).
     expect(m4b).toBeGreaterThan(m4a);
+    // P3 (round 4): M4p (InitVaultLp path A + junior deposit) needs the creator as marketauth
+    // and the vault from M4a, so it sits strictly between them.
+    const m4p = freshBatchSource.indexOf("const m4pSig = await broadcastTailTx(tailIdx(m4pDescriptor))");
+    expect(m4p).toBeGreaterThan(m4a);
+    expect(m4b).toBeGreaterThan(m4p);
   });
 
   it("keeps registration to a single call site in the batched path", () => {
@@ -130,5 +136,28 @@ describe("keeper-market oracle wiring", () => {
     expect(hookSource).toMatch(
       /oracle_authority: \(isAdminOracle \|\| oracleMode === "keeper"\)/,
     );
+  });
+});
+
+describe("P3 wizard wiring (round 4, sequential path)", () => {
+  it("binds the vault-owned LP in step 5 BEFORE StakeInitPool rotates marketauth", () => {
+    const bind = hookSource.indexOf("P3: bind the vault-owned LP + fund the junior tranche BEFORE StakeInitPool");
+    const stake = hookSource.indexOf("const sigStake = await sendTx(");
+    expect(bind).toBeGreaterThan(0);
+    expect(stake).toBeGreaterThan(bind);
+  });
+  it("skips the creator-LP deposit under P3 (the junior replaces it) in BOTH paths", () => {
+    expect(hookSource).toContain("if (!params.p3 && alreadyDepositedCapital < params.lpCollateral)");
+    expect(hookSource).toContain("const includeM3a = !params.p3;");
+  });
+  it("validates the junior requirement before anything is broadcast", () => {
+    const validate = hookSource.indexOf("const issue = validateP3Wizard({");
+    const firstBatched = hookSource.indexOf("attemptFreshBatchedLaunch(");
+    expect(validate).toBeGreaterThan(0);
+    // the create() entry check precedes the create() body that dispatches the batched launch
+    const createEntry = hookSource.indexOf("async (params: CreateMarketParams, retryFromStep?: number) => {");
+    expect(validate).toBeGreaterThan(createEntry);
+    expect(hookSource.indexOf("attemptFreshBatchedLaunch(", createEntry)).toBeGreaterThan(validate);
+    expect(firstBatched).toBeGreaterThan(0);
   });
 });

@@ -1,5 +1,8 @@
 "use client";
 
+import { DEFAULT_JUNIOR_FLOOR_BPS, validateP3Wizard, wizardP3Params } from "@/lib/limits/p3-wizard";
+import { COPY as LIMITS_COPY } from "@/lib/limits/copy";
+import { p3WizardEnabled } from "@/lib/limits/flags";
 import { FC, useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { PublicKey } from "@solana/web3.js";
@@ -52,6 +55,8 @@ interface WizardState {
   tradingFeeBps: number;
   initialMarginBps: number;
   lpCollateral: string;
+  /** P3 wizard: junior floor, bps of the senior claim (10%..100%). */
+  juniorFloorBps?: number;
   insuranceAmount: string;
   adminPrice: string | null;
   // #2588: set only by the user turning the dial. Detection that lands on step 2
@@ -587,9 +592,22 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
     !devnetFaucetCeilingExceeded &&
     (mockBypass || hasSufficientSol);
 
-  const launchDisabled = !allValid || !oracleSettled || !publicKey;
+  // P3 wizard: the junior tranche requirement (floor range, junior >= floor of the Earn seed).
+  const p3Issue = useMemo(() => {
+    if (!p3WizardEnabled()) return null;
+    // Same decimals handleLaunch parses the Liquidity amount with.
+    const j = parseHumanAmount(wizard.lpCollateral || "0", wizard.tokenMeta?.decimals ?? 6);
+    return validateP3Wizard({
+      juniorFloorBps: wizard.juniorFloorBps ?? DEFAULT_JUNIOR_FLOOR_BPS,
+      juniorAtoms: j,
+      seedNavAtoms: 2n * backingSeedPerDomain(j),
+    });
+  }, [wizard.lpCollateral, wizard.juniorFloorBps, wizard.tokenMeta?.decimals]);
+  const launchDisabled = !allValid || !oracleSettled || !publicKey || p3Issue !== null;
   const launchDisabledReason: string | undefined = !publicKey
     ? "Connect wallet"
+    : p3Issue
+      ? LIMITS_COPY.p3Wizard.issue[p3Issue]
     : !oracleSettled
       ? "Resolving price feed"
     : !registrable
@@ -831,6 +849,12 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
       // with InvalidSlabLen (and over-charges rent in the process). v17 has no slab tiers —
       // maxAccounts is deliberately omitted here (create() defaults it).
       slabDataSize: DEFAULT_SLAB_SIZE,
+      // P3: vault-owned LP + the creator's junior tranche (= the Liquidity amount).
+      p3: wizardP3Params(
+        p3WizardEnabled(),
+        parseHumanAmount(wizard.lpCollateral || "0", decimals),
+        wizard.juniorFloorBps ?? DEFAULT_JUNIOR_FLOOR_BPS,
+      ),
       symbol: marketSymbol,
       name: marketName,
       decimals,
@@ -897,6 +921,12 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
       initialMarginBps: wizard.initialMarginBps,
       // BUG 1 fix: same rationale as handleLaunch above — always the real v17 slab size.
       slabDataSize: DEFAULT_SLAB_SIZE,
+      // P3: vault-owned LP + the creator's junior tranche (= the Liquidity amount).
+      p3: wizardP3Params(
+        p3WizardEnabled(),
+        parseHumanAmount(wizard.lpCollateral || "0", decimals),
+        wizard.juniorFloorBps ?? DEFAULT_JUNIOR_FLOOR_BPS,
+      ),
       symbol: retryMarketSymbol,
       name: retryMarketName,
       decimals,
@@ -1185,6 +1215,8 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
             onMarginBpsChange={setInitialMarginBps}
             onLpCollateralChange={setLpCollateral}
             onInsuranceChange={setInsuranceAmount}
+            juniorFloorBps={wizard.juniorFloorBps ?? DEFAULT_JUNIOR_FLOOR_BPS}
+            onJuniorFloorChange={(bps) => setWizard((prev) => ({ ...prev, juniorFloorBps: bps }))}
             onLaunch={handleLaunch}
             launchDisabled={launchDisabled}
             launchDisabledReason={launchDisabledReason}

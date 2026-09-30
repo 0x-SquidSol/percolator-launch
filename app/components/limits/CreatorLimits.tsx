@@ -10,13 +10,18 @@
  *     withdrawable now, creator fees earned, live caps.
  * Flag-gated (P3 for tranche rows, P1 for caps). Pure math in lib/limits.
  */
-import { type FC } from "react";
+import { type FC, useState } from "react";
+import { PublicKey } from "@solana/web3.js";
+import { useWalletCompat } from "@/hooks/useWalletCompat";
+import { useJuniorTranche } from "@/hooks/useJuniorTranche";
+import { parseHumanAmount } from "@/lib/parseAmount";
 import { useMarketLimits, type MarketLimits } from "@/hooks/useMarketLimits";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { useInsuranceLP } from "@/hooks/useInsuranceLP";
-import { limitsFlags } from "@/lib/limits/flags";
+import { limitsFlags, p3WizardEnabled } from "@/lib/limits/flags";
+import { DEFAULT_JUNIOR_FLOOR_BPS, juniorFloorAtoms, maxWizardFloorBps, validateP3Wizard, vaultLpAwaitingProtocol } from "@/lib/limits/p3-wizard";
+import { backingSeedPerDomain } from "@/lib/market-params";
 import { COPY } from "@/lib/limits/copy";
-import { VAULT_LP_MIN_JUNIOR_FLOOR_BPS } from "@/lib/limits/constants";
 import { defaultLpExposureKBps, lpEquityInitRaw, lpExposureCapQ, maxTradeSizePerSide, nonnegEquity, effectiveLpExposureKBps } from "@/lib/limits/risk-limits";
 import { juniorWithdrawableAtoms, projectCreatorCaps } from "@/lib/limits/vault-tranche";
 import { earnViewFromLimits } from "@/lib/limits/earn";
@@ -29,17 +34,48 @@ export const WizardTranchePanel: FC<{
   initialMarginBps: number;
   decimals: number;
   collateralSymbol: string;
-}> = ({ juniorUnits, initialMarginBps, decimals, collateralSymbol }) => {
-  if (!limitsFlags().p3) return null;
+  /** P3 wizard: junior floor (bps of the senior claim) and its setter. */
+  floorBps?: number;
+  onFloorChange?: (bps: number) => void;
+}> = ({ juniorUnits, initialMarginBps, decimals, collateralSymbol, floorBps, onFloorChange }) => {
+  if (!p3WizardEnabled()) return null;
   const j = BigInt(Math.max(0, Math.floor(juniorUnits * 10 ** decimals)));
   const k = defaultLpExposureKBps(BigInt(initialMarginBps));
-  const floorBps = VAULT_LP_MIN_JUNIOR_FLOOR_BPS;
-  const caps = projectCreatorCaps(j, k, floorBps);
+  const floor = floorBps ?? DEFAULT_JUNIOR_FLOOR_BPS;
+  // The vault LP is bound right after the Earn seed (both domains = 2 x backingSeedPerDomain),
+  // so the senior claim at InitVaultLp is that seed's NAV.
+  const seedNav = 2n * backingSeedPerDomain(j);
+  const maxFloor = maxWizardFloorBps(j, seedNav);
+  const issue = validateP3Wizard({ juniorFloorBps: floor, juniorAtoms: j, seedNavAtoms: seedNav });
+  const caps = projectCreatorCaps(j, k, floor);
   const fmt = (a: bigint) => `${formatTokenAmount(a, decimals)} ${collateralSymbol}`;
   return (
-    <div data-testid="limits-wizard-tranche" className="mt-4 border border-[var(--border)] bg-[var(--bg-elevated)] p-3 space-y-0.5">
-      <p className="mb-1 text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--text-muted)]">Your junior tranche</p>
-      <LimitsRow label="Junior (first-loss)" value={fmt(j)} />
+    <div data-testid="limits-wizard-tranche" data-floor-bps={String(floor)} className="mt-4 border border-[var(--border)] bg-[var(--bg-elevated)] p-3 space-y-0.5">
+      <p className="mb-1 text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--text-muted)]">{COPY.p3Wizard.title}</p>
+      <p className="pb-1 text-[9px] leading-relaxed text-[var(--text-secondary)]">{COPY.p3Wizard.explain}</p>
+      <LimitsRow label={COPY.p3Wizard.amountLabel} value={fmt(j)} testId="limits-wizard-junior-amount" />
+      <div className="flex items-center justify-between py-0.5 text-[10px]">
+        <span className="text-[var(--text-secondary)] uppercase tracking-[0.08em]">{COPY.p3Wizard.floorLabel}</span>
+        <span className="flex gap-1" role="radiogroup" aria-label={COPY.p3Wizard.floorLabel}>
+          {WIZARD_FLOOR_CHOICES_BPS.map((b) => (
+            <button
+              key={b}
+              type="button"
+              role="radio"
+              aria-checked={b === floor}
+              data-testid="limits-wizard-junior-floor"
+              data-value={String(b)}
+              disabled={!onFloorChange || b > maxFloor}
+              onClick={() => onFloorChange?.(b)}
+              className={`border px-1.5 py-0.5 font-mono text-[9px] tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                b === floor ? "border-[var(--accent)]/60 text-[var(--accent)]" : "border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text)]"
+              }`}
+            >
+              {b / 100}%
+            </button>
+          ))}
+        </span>
+      </div>
       <LimitsRow
         label="Max LP exposure"
         tooltip="The protocol caps the LP's open exposure at your junior capital times the market's max leverage."
@@ -47,14 +83,85 @@ export const WizardTranchePanel: FC<{
       />
       <LimitsRow
         label="Max Earn deposits"
-        tooltip={`Earn deposits are capped so your junior stays at least ${floorBps / 100}% of them.`}
+        tooltip={`Earn deposits are capped so your junior stays at least ${floor / 100}% of them.`}
         value={fmt(caps.maxSeniorAtoms)}
       />
-      <p className="pt-1 text-[9px] leading-relaxed text-[var(--text-secondary)]">{COPY.wizardRequirement(`${floorBps / 100}%`)}</p>
-      <p className="text-[9px] text-[var(--text-dim)]">{COPY.wizardAfterLaunch}</p>
+      <p className="pt-1 text-[9px] text-[var(--text-dim)]">{COPY.p3Wizard.minHint(fmt(juniorFloorAtoms(seedNav, floor)).replace(` ${collateralSymbol}`, ""), collateralSymbol)}</p>
+      {issue && (
+        <p data-testid="limits-wizard-junior-issue" data-issue={issue} className="text-[9px] text-[var(--short)]">
+          {COPY.p3Wizard.issue[issue]}
+        </p>
+      )}
+      <p data-testid="limits-wizard-awaiting-protocol" className="text-[9px] leading-relaxed text-[var(--warning)]">
+        {COPY.p3Wizard.awaitingProtocol}
+      </p>
     </div>
   );
 };
+
+/**
+ * Junior tranche top-up (96) / withdraw (97) for the junior owner. Withdraw is capped at the
+ * program's "withdrawable now" (LP flat, above the floor, backing covers the seniors).
+ */
+export const JuniorTrancheActionsView: FC<{
+  withdrawableAtoms: bigint | null;
+  decimals: number;
+  collateralSymbol: string;
+  busy: boolean;
+  error: string | null;
+  onDeposit: (atoms: bigint) => void;
+  onWithdraw: (atoms: bigint) => void;
+}> = ({ withdrawableAtoms, decimals, collateralSymbol, busy, error, onDeposit, onWithdraw }) => {
+  const [raw, setRaw] = useState("");
+  let atoms = 0n;
+  try {
+    atoms = raw.trim() ? parseHumanAmount(raw, decimals) : 0n;
+  } catch {
+    atoms = 0n;
+  }
+  const canWithdraw = atoms > 0n && withdrawableAtoms !== null && atoms <= withdrawableAtoms;
+  return (
+    <div data-testid="limits-junior-actions" className="mb-3 border border-[var(--border)] bg-[var(--panel-bg)] p-3">
+      <p className="mb-1 text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--text-muted)]">Junior tranche</p>
+      <input
+        data-testid="limits-junior-amount-input"
+        inputMode="decimal"
+        value={raw}
+        onChange={(e) => setRaw(e.target.value)}
+        placeholder={`Amount (${collateralSymbol})`}
+        className="w-full border border-[var(--border)] bg-[var(--bg-elevated)] px-2 py-1 font-mono text-[11px] text-[var(--text)]"
+      />
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          data-testid="limits-junior-deposit"
+          disabled={busy || atoms <= 0n}
+          onClick={() => onDeposit(atoms)}
+          className="border border-[var(--accent)]/50 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Top up
+        </button>
+        <button
+          type="button"
+          data-testid="limits-junior-withdraw"
+          disabled={busy || !canWithdraw}
+          onClick={() => onWithdraw(atoms)}
+          className="border border-[var(--border)] py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-[var(--text-secondary)] disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Withdraw
+        </button>
+      </div>
+      {error && (
+        <p data-testid="limits-junior-error" className="mt-2 text-[9px] text-[var(--short)]">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+};
+
+/** Floors the wizard offers (the program accepts 1000..=10000). */
+export const WIZARD_FLOOR_CHOICES_BPS = [1_000, 2_000, 3_000, 5_000] as const;
 
 /** Mounts the data hooks only when a limits flag is on (flag-off = zero extra RPC). */
 export const CreatorTranchePanel: FC<{ slab: string; decimals: number; collateralSymbol: string }> = (p) => {
@@ -67,15 +174,44 @@ const CreatorTranchePanelLive: FC<{ slab: string; decimals: number; collateralSy
   const limits = useMarketLimits(slab);
   const { state: lpState } = useInsuranceLP();
   const { assetProfile } = useSlabState();
+  const wallet = useWalletCompat();
+  const junior = useJuniorTranche(slab);
+  const vs = limits.flags.p3 ? limits.vaultState : null;
+  const isJuniorOwner = !!vs && !!wallet.publicKey && new PublicKey(vs.juniorOwner).equals(wallet.publicKey);
+  const view = earnViewFromLimits(limits, lpState.vaultTotalAtoms, 0n);
+  const withdrawable =
+    view && vs && view.vaultValue !== null && limits.lp?.posQ === 0n
+      ? juniorWithdrawableAtoms(view.vaultValue, view.seniorClaimEff, view.backingCover, vs.juniorFloorBps)
+      : vs
+        ? 0n
+        : null;
   return (
-    <CreatorTranchePanelView
+    <>
+      {vaultLpAwaitingProtocol(limits.vaultLp) && (
+        <LimitsNotice tone="warning" title="Awaiting protocol approval" testId="limits-creator-awaiting-protocol">
+          {COPY.p3Wizard.awaitingProtocol}
+        </LimitsNotice>
+      )}
+      {isJuniorOwner && (
+        <JuniorTrancheActionsView
+          withdrawableAtoms={withdrawable}
+          decimals={decimals}
+          collateralSymbol={collateralSymbol}
+          busy={junior.busy}
+          error={junior.error}
+          onDeposit={(a) => void junior.deposit(a).catch(() => undefined)}
+          onWithdraw={(a) => void junior.withdraw(a).catch(() => undefined)}
+        />
+      )}
+      <CreatorTranchePanelView
       limits={limits}
       slab={slab}
       backingNavAtoms={lpState.vaultTotalAtoms}
       creatorFeesAtoms={assetProfile?.creatorFeeClaimableAtoms ?? null}
       decimals={decimals}
       collateralSymbol={collateralSymbol}
-    />
+      />
+    </>
   );
 };
 

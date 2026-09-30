@@ -22,7 +22,12 @@ export const COPY = {
   zeroFill: "The LP had no room for this trade when it landed. Your position did not change and no trading fee was charged.",
   partialFill: (filled: string, requested: string, sym: string) => `Partially filled: ${filled} of ${requested} ${sym}.`,
   halted: (side: string) =>
-    `Opening ${side} is paused: the market's liquidity provider is at its capital floor. Reducing and closing positions still work.`,
+    `Opening ${side} is paused: the market's liquidity provider is at its capital floor. Trades that reduce the LP's exposure still fill.`,
+  // P1 99165722 (F-7): a close that would GROW a halted / capped LP is refused (69) or clipped.
+  closeHalted:
+    "The market's LP is at its capital floor and your close would add to its exposure, so the program refuses it until the LP is re-funded or the book rebalances. Closes that reduce the LP's exposure still work.",
+  closeCapped: (max: string, sym: string) =>
+    `The LP can only take ${max} ${sym} of this close before it reaches its exposure cap; a larger close fills partially or is refused. Close in parts, or wait for the book to rebalance.`,
   sameOwner:
     "This wallet owns this market's liquidity or created the market, so it can only close positions here, not open or add to them. Use a different wallet to trade.",
   limitsUnavailable: "Limits unavailable. Showing no cap.",
@@ -75,6 +80,46 @@ export const COPY = {
   adlReduceOnly:
     "A bankrupt position was spread across this side of the market, so new positions are paused until one side has closed out. Closing works: your close is sent as a unilateral exit you sign yourself. The market reopens on its own once positions close; no admin step is needed.",
   closePartial: (filled: string, requested: string) => `Partially closed: ${filled} of ${requested}. The rest of your position is still open.`,
+  resolvedExit: {
+    title: "This market has resolved",
+    ready: "Every position on this market is closed, so Earn redemptions pay out now. Use Withdraw below.",
+    sweep: (n: number) =>
+      `Earn pays out once every position on the market is closed. ${n} step${n === 1 ? "" : "s"} can be run now by anyone; you pay the network fees and any payout account rent (about 0.002 SOL each), and every payout goes to its owner.`,
+    ownerWindow: (slot: string) =>
+      `Traders have until slot ${slot} to close their own positions. After that anyone can finish the market. Empty positions can be cleaned up now.`,
+    escrowed: (n: number) => `${n} position${n === 1 ? " is" : "s are"} wrapped as an NFT and can only be closed by the holder.`,
+    locked: (n: number) => `${n} position${n === 1 ? " is" : "s are"} mid-liquidation or mid-rebalance and cannot be closed yet.`,
+    button: "Finish the market",
+    running: "Finishing…",
+    result: (sent: number, refused: number) =>
+      `Sent ${sent} transaction${sent === 1 ? "" : "s"}.${refused > 0 ? ` ${refused} step${refused === 1 ? " was" : "s were"} refused by the program and left as is.` : ""}`,
+  } as const,
+  p3Wizard: {
+    title: "Vault-owned LP (junior tranche)",
+    explain:
+      "Your market's liquidity is provided by an LP the Earn vault owns. You fund its first-loss (junior) tranche: trader wins against the LP come out of your tranche before Earn depositors lose anything, and trading PnL against it is yours.",
+    floorLabel: "Junior floor",
+    floorTooltip:
+      "The share of Earn deposits your tranche must cover. You cannot withdraw below it while Earn depositors are in the vault. 10% to 100%.",
+    amountLabel: "Junior deposit",
+    minHint: (min: string, sym: string) => `At least ${min} ${sym} (the floor of the Earn seed).`,
+    marketauthRotated:
+      "The market's admin authority has already moved to its staking pool, so the vault-owned LP can no longer be bound on this market (binding needs the market admin's signature). The market keeps its classic LP.",
+    awaitingProtocol:
+      "Trading on this market opens once the protocol approves the vault LP's matcher. That step needs the protocol's authority, so the wizard cannot run it.",
+    issue: {
+      "floor-out-of-range": "The junior floor must be between 10% and 100%.",
+      "junior-zero": "Enter a junior tranche deposit greater than zero.",
+      "junior-below-floor": "The junior deposit must at least cover the junior floor of the Earn seed.",
+      "junior-above-liquidity": "The junior deposit cannot exceed the market's liquidity amount.",
+    },
+  } as const,
+  earnPlanBlocked: {
+    "registry-invalid": "This Earn vault's on-chain registry has an invalid vault-LP flag, so the program refuses every Earn action. Contact the market operator.",
+    "vault-lp-unreadable": "This Earn vault is backed by a vault-owned LP whose state could not be read. Retry in a moment.",
+    "harvest-locked-after-resolve":
+      "This market resolved with LP fees still unharvested. The program harvests them only while a market is live, and a vault-owned-LP redemption waits for that harvest, so the program refuses it. Your claim is unchanged.",
+  } as const,
 } as const;
 
 /** Matcher v2 error copy (Custom 8002..8005, matcher program only). */

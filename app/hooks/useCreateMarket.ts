@@ -52,6 +52,7 @@ import {
   deriveMatcherDelegate,
   deriveNftRegistry,
   deriveLpVaultRegistry,
+  deriveLpBackingLedger,
   deriveInsuranceLpMint,
   deriveStakePool,
   deriveStakeVaultAuth,
@@ -115,6 +116,15 @@ import {
   type CreateStepKind,
 } from "@/lib/create-market-v18";
 import { buildInitMatcherCtxArgs } from "@/lib/matcher-params";
+import { buildP3BindIxs, p3BindProgress, validateP3Wizard } from "@/lib/limits/p3-wizard";
+import { COPY as LIMITS_COPY } from "@/lib/limits/copy";
+import { buildDepositJuniorTrancheIx, deriveVaultLpState } from "@/lib/limits/p3-ix";
+import { decodeVaultLpState } from "@/lib/limits/decode";
+
+const P3_WIZARD_ISSUE_COPY = LIMITS_COPY.p3Wizard.issue;
+
+/** CU for M4p: createAccount + InitVaultLp (portfolio materialise + state PDA create) + junior deposit. */
+const P3_BIND_COMPUTE_UNITS = 600_000;
 import { buildConfigureBackingFeeCapIx, matcherTag5Enabled } from "@/lib/limits/matcher-configure";
 import {
   inspectV17MatcherContext,
@@ -303,6 +313,18 @@ export interface CreateMarketParams {
     creatorShareBps: number;
     lpShareBps: number;
     insuranceShareBps: number;
+  };
+  /**
+   * P3 (vault-owned LP): bind the market's Earn vault to a vault-owned LP with the creator's
+   * junior (first-loss) tranche, right after CreateLpVault and BEFORE StakeInitPool rotates
+   * marketauth (InitVaultLp path A needs the creator as marketauth). See lib/limits/p3-wizard.ts.
+   */
+  p3?: {
+    juniorFloorBps: number;
+    /** The creator's first-loss capital. It REPLACES the creator-LP deposit (M3a / sequential
+     *  step 3 skip it under P3): under the exclusive-LP rule a creator-owned LP can take no
+     *  risk-increasing fill once the vault LP is bound, so funding it would only park capital. */
+    juniorAtoms: bigint;
   };
   initialMarginBps: number;
   /** Number of trader slots (256, 1024, 4096). Defaults to 4096 if omitted.
@@ -879,6 +901,8 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
 
     const lpPortfolioKp = Keypair.generate();
     const matcherCtxKp = Keypair.generate();
+    // P3: the vault-owned LP portfolio (owner := the LP-vault registry PDA at InitVaultLp).
+    const vaultLpPortfolioKp = params.p3 ? Keypair.generate() : null;
     const stakeLpMintKp = Keypair.generate();
     const stakeVaultKp = Keypair.generate();
 
@@ -1353,6 +1377,36 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       computeUnits: EARN_VAULT_SEED_COMPUTE_UNITS,
       signers: [],
     };
+    // M4p (P3): createAccount(vault LP portfolio) + InitVaultLp (94, path A) + DepositJuniorTranche
+    // (96). Between M4a (the vault must exist) and M4b (StakeInitPool rotates marketauth, and
+    // path A needs the creator as marketauth).
+    const m4pDescriptor: TailTxDescriptor | null =
+      params.p3 && vaultLpPortfolioKp
+        ? {
+            label: "Binding the vault-owned LP",
+            instructions: buildP3BindIxs({
+              market: {
+                programId,
+                market: slabPk,
+                registry: lpVaultRegistry,
+                vaultLpState: deriveVaultLpState(programId, slabPk),
+                lpPortfolio: vaultLpPortfolioKp.publicKey,
+                ledger: deriveLpBackingLedger(programId, slabPk, 0)[0],
+                siblingLedger: deriveLpBackingLedger(programId, slabPk, 1)[0],
+              },
+              creator: walletPk,
+              vaultLpPortfolio: vaultLpPortfolioKp.publicKey,
+              portfolioLen: V17_PORTFOLIO_ACCOUNT_LEN,
+              portfolioRentLamports: portfolioRent,
+              juniorFloorBps: params.p3.juniorFloorBps,
+              juniorAtoms: params.p3.juniorAtoms,
+              creatorAta: userAta,
+              vaultToken: vaultAta,
+            }),
+            computeUnits: P3_BIND_COMPUTE_UNITS,
+            signers: [vaultLpPortfolioKp],
+          }
+        : null;
     const m4bDescriptor: TailTxDescriptor = {
       label: "Opening the staking pool",
       // Order is load-bearing (see orderStakeTailInstructions): UpdateFeeSplit (if any)
@@ -1373,16 +1427,40 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     // `buildBatchTx` calls; the descriptors are what let `recoverTailFrom` (below)
     // rebuild only the not-yet-landed ones against a fresh blockhash if the tail's
     // serial confirm-then-broadcast pipeline outruns this blockhash's validity.
-    const tailDescriptors: TailTxDescriptor[] = [m1Descriptor, m2Descriptor, m3aDescriptor, m3bDescriptor, m4aDescriptor, m4bDescriptor];
+    // P3: the creator-LP deposit (M3a) is replaced by the junior tranche (M4p).
+    const includeM3a = !params.p3;
+    const tailDescriptors: TailTxDescriptor[] = [
+      m1Descriptor,
+      m2Descriptor,
+      ...(includeM3a ? [m3aDescriptor] : []),
+      m3bDescriptor,
+      m4aDescriptor,
+      ...(m4pDescriptor ? [m4pDescriptor] : []),
+      m4bDescriptor,
+    ];
+    // Tail indices by descriptor (M4p is optional, so M4b's index moves).
+    const tailIdx = (d: TailTxDescriptor): number => {
+      const i = tailDescriptors.indexOf(d);
+      if (i < 0) throw new Error(`tail descriptor "${d.label}" is not in the tail`);
+      return i;
+    };
     const buildTailTx = (d: TailTxDescriptor, hash: string): Transaction =>
       buildBatchTx({ instructions: d.instructions, computeUnits: d.computeUnits, priorityFeeMicroLamports: priorityFee, blockhash: hash, feePayer: walletPk });
-    const [m1, m2, m3a, m3b, m4a, m4b] = tailDescriptors.map((d) => buildTailTx(d, blockhash));
+    const builtTail = tailDescriptors.map((d) => buildTailTx(d, blockhash));
+    const tailTx = (d: TailTxDescriptor): Transaction => {
+      const tx = builtTail[tailIdx(d)];
+      if (!tx) throw new Error(`tail tx "${d.label}" was not built`);
+      return tx;
+    };
+    const [m1, m2, m3b, m4a, m4b] = [m1Descriptor, m2Descriptor, m3bDescriptor, m4aDescriptor, m4bDescriptor].map(tailTx);
+    const m3a = includeM3a ? tailTx(m3aDescriptor) : null;
+    const m4p = m4pDescriptor ? tailTx(m4pDescriptor) : null;
 
     // cosignTx is deserialized exactly as the server built it — its own
     // blockhash, no heap-frame/CU ixs added — never run through buildBatchTx.
     // It is NOT a TailTxDescriptor and is never rebuilt on expiry (see the
     // TailTxDescriptor comment above).
-    const orderedTxs: Transaction[] = [m1, ...(cosignTx ? [cosignTx] : []), m2, m3a, m3b, m4a, m4b];
+    const orderedTxs: Transaction[] = [m1, ...(cosignTx ? [cosignTx] : []), m2, ...(m3a ? [m3a] : []), m3b, m4a, ...(m4p ? [m4p] : []), m4b];
     // Human-readable label per batched tx, in the SAME order — the progress UI
     // shows what is being CREATED ("Creating the market", "Funding liquidity"),
     // never internal transaction indices. A launching user cares about market
@@ -1391,9 +1469,10 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       m1Descriptor.label,
       ...(cosignTx ? ["Connecting the price feed"] : []),
       m2Descriptor.label,
-      m3aDescriptor.label,
+      ...(includeM3a ? [m3aDescriptor.label] : []),
       m3bDescriptor.label,
       m4aDescriptor.label,
+      ...(m4pDescriptor ? [m4pDescriptor.label] : []),
       m4bDescriptor.label,
     ];
 
@@ -1417,15 +1496,17 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     const signedM1 = signedTxs[idx++];
     const signedCosign = cosignTx ? signedTxs[idx++] : null;
     const signedM2 = signedTxs[idx++];
-    const signedM3a = signedTxs[idx++];
+    const signedM3a = m3a ? signedTxs[idx++] : null;
     const signedM3b = signedTxs[idx++];
     const signedM4a = signedTxs[idx++];
+    const signedM4p = m4p ? signedTxs[idx++] : null;
     const signedM4b = signedTxs[idx++];
-    if (!signedM1 || !signedM2 || !signedM3a || !signedM3b || !signedM4a || !signedM4b) {
+    if (!signedM1 || !signedM2 || (m3a && !signedM3a) || !signedM3b || !signedM4a || !signedM4b || (m4p && !signedM4p)) {
       throw new Error("Wallet did not return a signature for every transaction in the batch.");
     }
     signedM1.partialSign(slabKp);
     signedM2.partialSign(lpPortfolioKp, matcherCtxKp);
+    if (signedM4p && vaultLpPortfolioKp) signedM4p.partialSign(vaultLpPortfolioKp);
     signedM4b.partialSign(stakeLpMintKp, stakeVaultKp);
 
     // ---- Mutable tail state for blockhash-expiry recovery -----------------
@@ -1434,7 +1515,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     // below (defined after `landed`/`landingTotal`/`orderedLabels` exist, just
     // before the pipelined broadcast starts) overwrites entries in place if a
     // not-yet-landed one has to be rebuilt against a fresh blockhash.
-    const signedTail: Transaction[] = [signedM1, signedM2, signedM3a, signedM3b, signedM4a, signedM4b];
+    const signedTail: Transaction[] = [signedM1, signedM2, ...(signedM3a ? [signedM3a] : []), signedM3b, signedM4a, ...(signedM4p ? [signedM4p] : []), signedM4b];
     let blockhashRecoveries = 0;
 
     // ---- Persist recovery state BEFORE the first broadcast ---------------
@@ -1584,7 +1665,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       }
     };
 
-    const m1Sig = await broadcastTailTx(0);
+    const m1Sig = await broadcastTailTx(tailIdx(m1Descriptor));
     setState((s) => ({ ...s, slabAddress: slabPk.toBase58() }));
     advanceLanding(m1Sig);
     // With a keeper hand-off still to land, a resume must run step 1 (which
@@ -1631,15 +1712,17 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
 
     failingKind = "lp-init";
     failingLabel = m2Descriptor.label;
-    const m2Sig = await broadcastTailTx(1);
+    const m2Sig = await broadcastTailTx(tailIdx(m2Descriptor));
     advanceLanding(m2Sig);
     resumeStep = 3;
     updateInFlightStep(slabPk.toBase58(), 3);
 
-    failingKind = "funding";
-    failingLabel = m3aDescriptor.label;
-    const m3aSig = await broadcastTailTx(2);
-    advanceLanding(m3aSig);
+    if (includeM3a) {
+      failingKind = "funding";
+      failingLabel = m3aDescriptor.label;
+      const m3aSig = await broadcastTailTx(tailIdx(m3aDescriptor));
+      advanceLanding(m3aSig);
+    }
 
     // The market now holds collateral and both backing domains are seeded, so
     // it is safe to publish. Fired without awaiting — a slow DB write must not
@@ -1717,7 +1800,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     failingKind = "insurance";
     failingLabel = m3bDescriptor.label;
     try {
-      const m3bSig = await broadcastTailTx(3);
+      const m3bSig = await broadcastTailTx(tailIdx(m3bDescriptor));
       advanceLanding(m3bSig);
     } catch (err) {
       m3bError = err;
@@ -1760,10 +1843,19 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     // and never drags in the much larger/riskier M4b bundle.
     failingKind = "earn-vault";
     failingLabel = m4aDescriptor.label;
-    const m4aSig = await broadcastTailTx(4);
+    const m4aSig = await broadcastTailTx(tailIdx(m4aDescriptor));
     advanceLanding(m4aSig);
     resumeStep = 5;
     updateInFlightStep(slabPk.toBase58(), 5);
+
+    // M4p (P3): bind the vault-owned LP + the creator's junior tranche. Resume stays at step 5,
+    // whose sequential path re-checks the binding on-chain (ensureP3Bound) before the stake tail.
+    if (m4pDescriptor) {
+      failingKind = "vault-lp";
+      failingLabel = m4pDescriptor.label;
+      const m4pSig = await broadcastTailTx(tailIdx(m4pDescriptor));
+      advanceLanding(m4pSig);
+    }
 
     // M4b: mint/vault creation + [UpdateFeeSplit] + StakeInitPool + BindInsuranceAuthority.
     // MUST run after M4a (CreateLpVault is marketauth-gated; StakeInitPool here
@@ -1772,7 +1864,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     // single M4).
     failingKind = "stake-pool";
     failingLabel = m4bDescriptor.label;
-    const m4bSig = await broadcastTailTx(5);
+    const m4bSig = await broadcastTailTx(tailIdx(m4bDescriptor));
     advanceLanding(m4bSig);
     resumeStep = 6;
     updateInFlightStep(slabPk.toBase58(), 6);
@@ -1937,7 +2029,6 @@ export function useCreateMarket() {
         setState((s) => ({ ...s, error: "Wallet not connected" }));
         return;
       }
-
       // GH#2623: a fresh controller for THIS call. Threaded into every
       // wallet-signing primitive below (attemptFreshBatchedLaunch's
       // recoverTailFrom, and every sequential sendTx call) so
@@ -1957,6 +2048,25 @@ export function useCreateMarket() {
         params.initialPriceE6,
       );
       const backingSeed = backingSeedPerDomain(params.lpCollateral);
+
+      // P3: refuse a junior requirement the program (or the cushion floor) would refuse BEFORE
+      // anything is broadcast — a throw later would leave a half-built market (M4p sits after
+      // M4a) and the batched path would fall back to the sequential one first.
+      if (params.p3) {
+        const issue = validateP3Wizard({
+          juniorFloorBps: params.p3.juniorFloorBps,
+          juniorAtoms: params.p3.juniorAtoms,
+          seedNavAtoms: 2n * backingSeedPerDomain(params.lpCollateral),
+        });
+        if (issue) {
+          setState((s) => ({ ...s, error: P3_WIZARD_ISSUE_COPY[issue] }));
+          return;
+        }
+        if (params.p3.juniorAtoms > params.lpCollateral) {
+          setState((s) => ({ ...s, error: P3_WIZARD_ISSUE_COPY["junior-above-liquidity"] }));
+          return;
+        }
+      }
 
       // Select program based on slab tier — each MAX_ACCOUNTS variant is a separate deployment
       const cfg = getConfig();
@@ -3162,6 +3272,8 @@ export function useCreateMarket() {
           // Covers the two backing-bucket deposits (long+short domains) as well
           // as the LP deposit and insurance. Shared with the pre-fund route via
           // fullMarketRequirement so the two cannot disagree again (GH#2592).
+          // P3: the junior tranche (== lpCollateral) replaces the creator-LP deposit, so the
+          // requirement is unchanged (validated at create() entry: juniorAtoms <= lpCollateral).
           const tx4Required = fullMarketRequirement(params.lpCollateral, params.insuranceAmount);
           let tx4Balance = 0n;
           try {
@@ -3315,7 +3427,8 @@ export function useCreateMarket() {
           // failure can never roll back a deposit that would have succeeded on its own.
           // This stays on the FATAL path (unlike topup/crank below): a failed deposit
           // legitimately blocks the rest of market creation, same as before this fix.
-          if (alreadyDepositedCapital < params.lpCollateral) {
+          // P3: no creator-LP deposit — the junior tranche (step 5, ensureP3Bound) replaces it.
+          if (!params.p3 && alreadyDepositedCapital < params.lpCollateral) {
             const depositIx = buildIx({ programId, keys: depositKeys, data: depositData });
             const depositSig = await sendTx({
               simulateBeforeSign: true,
@@ -3665,6 +3778,60 @@ export function useCreateMarket() {
           // don't try again (a fresh lpMint/vault keypair pair would be
           // orphaned, and InitPool would revert against an already-live pool).
           const existingPool = await connection.getAccountInfo(stakePoolPda);
+
+          // P3: bind the vault-owned LP + fund the junior tranche BEFORE StakeInitPool rotates
+          // marketauth (InitVaultLp path A needs the creator as marketauth). Idempotent: reads
+          // the vault-LP state first, so a resume after the batched M4p (or a partial run)
+          // sends only what is missing.
+          if (params.p3) {
+            const vaultLpStatePk = deriveVaultLpState(programId, slabPk);
+            const stInfo = await connection.getAccountInfo(vaultLpStatePk);
+            const st = stInfo && stInfo.owner.equals(programId) ? decodeVaultLpState(new Uint8Array(stInfo.data)) : null;
+            const progress = p3BindProgress({ exists: !!stInfo, juniorDepositedAtoms: st ? st.juniorDepositedAtoms : null });
+            if (progress !== "done") {
+              if (progress === "bind" && existingPool) {
+                throw new Error(LIMITS_COPY.p3Wizard.marketauthRotated);
+              }
+              const creatorAta = await getAssociatedTokenAddress(params.mint, wallet.publicKey);
+              const vaultTokenAta = await getAssociatedTokenAddress(params.mint, vaultPda, true);
+              const vaultLpKp = progress === "bind" ? Keypair.generate() : null;
+              const lpPortfolioPk = vaultLpKp ? vaultLpKp.publicKey : st ? new PublicKey(st.lpPortfolio) : null;
+              if (!lpPortfolioPk) throw new Error(LIMITS_COPY.earnPlanBlocked["vault-lp-unreadable"]);
+              const p3Market = {
+                programId,
+                market: slabPk,
+                registry: deriveLpVaultRegistry(programId, slabPk)[0],
+                vaultLpState: vaultLpStatePk,
+                lpPortfolio: lpPortfolioPk,
+                ledger: deriveLpBackingLedger(programId, slabPk, 0)[0],
+                siblingLedger: deriveLpBackingLedger(programId, slabPk, 1)[0],
+              };
+              const p3Ixs = vaultLpKp
+                ? buildP3BindIxs({
+                    market: p3Market,
+                    creator: wallet.publicKey,
+                    vaultLpPortfolio: vaultLpKp.publicKey,
+                    portfolioLen: V17_PORTFOLIO_ACCOUNT_LEN,
+                    portfolioRentLamports: await connection.getMinimumBalanceForRentExemption(V17_PORTFOLIO_ACCOUNT_LEN),
+                    juniorFloorBps: params.p3.juniorFloorBps,
+                    juniorAtoms: params.p3.juniorAtoms,
+                    creatorAta,
+                    vaultToken: vaultTokenAta,
+                  })
+                : [buildDepositJuniorTrancheIx(p3Market, wallet.publicKey, creatorAta, vaultTokenAta, params.p3.juniorAtoms)];
+              setState((s) => ({ ...s, stepLabel: "Binding the vault-owned LP..." }));
+              const p3Sig = await sendTx({
+                simulateBeforeSign: true,
+                connection,
+                wallet,
+                abortSignal,
+                instructions: p3Ixs,
+                signers: vaultLpKp ? [vaultLpKp] : [],
+                computeUnits: P3_BIND_COMPUTE_UNITS,
+              });
+              setState((s) => ({ ...s, txSigs: [...s.txSigs, p3Sig], stepLabel: STEP_LABELS[5] }));
+            }
+          }
           if (!existingPool) {
             const [stakeVaultAuth] = deriveStakeVaultAuth(stakePoolPda, stakeProgramId);
             const stakeLpMintKp = Keypair.generate();

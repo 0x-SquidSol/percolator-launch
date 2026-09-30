@@ -6,6 +6,8 @@ import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { SlabProvider, useSlabState } from '@/components/providers/SlabProvider';
 import { useInsuranceLP } from '@/hooks/useInsuranceLP';
+import { useWalletCompat } from '@/hooks/useWalletCompat';
+import { ResolvedExitPanel } from '@/components/limits/ResolvedExitPanel';
 import { useEngineState } from '@/hooks/useEngineState';
 import { useEarnStats, type MarketVaultInfo } from '@/hooks/useEarnStats';
 import { useTokenMeta } from '@/hooks/useTokenMeta';
@@ -119,6 +121,7 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
     withdraw: lpVaultWithdraw,
     refreshState,
   } = useInsuranceLP();
+  const earnWallet = useWalletCompat();
   const { engine, totalOI, vault: engineVault } = useEngineState();
 
   // BUG-5 FIX: resolve actual collateral mint from on-chain slab data.
@@ -370,6 +373,9 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
               loading={loading}
             />
           </ScrollReveal>
+
+          {/* P3 / F-4: after Resolve, finish the market so Earn can pay out (nothing on a live market). */}
+          <ResolvedExitPanel slab={slabAddress} walletConnected={!!earnWallet.publicKey} onDone={refreshState} />
 
           {/* Deposit / Withdraw */}
           <ScrollReveal>

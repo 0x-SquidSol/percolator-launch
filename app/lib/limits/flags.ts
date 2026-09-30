@@ -32,3 +32,15 @@ export function __setLimitsFlagsForTest(f: LimitsFlags | null): void {
 export function limitsFlags(): LimitsFlags {
   return override ?? readLimitsFlags();
 }
+
+/**
+ * The create-market wizard binds new markets the P3 way (vault-owned LP + junior tranche) when
+ * P3 is on. Kill switch NEXT_PUBLIC_LIMITS_P3_WIZARD=0 keeps the legacy creator-LP launch while
+ * the rest of the P3 UI stays on (e.g. while protocol approval of new vault-LP matchers, tags
+ * 99 + 95, is not staffed).
+ */
+export function p3WizardEnabled(): boolean {
+  if (!limitsFlags().p3) return false;
+  const v = process.env.NEXT_PUBLIC_LIMITS_P3_WIZARD?.trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off");
+}

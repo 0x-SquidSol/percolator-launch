@@ -6,6 +6,8 @@ import { useInsuranceLP } from '@/hooks/useInsuranceLP';
 import { useTokenMeta } from '@/hooks/useTokenMeta';
 import { DepositWithdrawPanel } from '@/components/earn/DepositWithdrawPanel';
 import { EarnTrancheCardView } from '@/components/limits/EarnTrancheCard';
+import { ResolvedExitPanel } from '@/components/limits/ResolvedExitPanel';
+import { useWalletCompat } from '@/hooks/useWalletCompat';
 import { useMarketLimits } from '@/hooks/useMarketLimits';
 import { earnGateShares, earnViewFromLimits } from '@/lib/limits/earn';
 import { earnDepositBlock } from '@/lib/limits/vault-tranche';
@@ -65,6 +67,7 @@ export function VaultDepositRail({ slab, vault, onTxSuccess, onPositionResolved 
 function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }: VaultDepositRailProps & { slab: string }) {
   const { state, loading, deposit, withdraw, refreshState } = useInsuranceLP();
   const { config } = useSlabState();
+  const wallet = useWalletCompat();
   const vaultAvailable = state.registryExists && state.mintExists;
 
   // Latch "we've completed at least one load" so the "not initialized" warning
@@ -129,6 +132,9 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
 
   return (
     <div className="space-y-3">
+      {/* P3 / F-4: after Resolve, Earn pays out only once the market is terminal-flat; anyone
+          can run the permissionless sweep. Renders nothing on a live market. */}
+      <ResolvedExitPanel slab={slab} walletConnected={!!wallet.publicKey} onDone={refreshState} />
       {/* P3 (flag-gated): senior/junior tranches, NAV share price, APY from real fees.
           Withdrawal preview = the wallet's whole position. Null unless the vault owns the LP. */}
       <EarnTrancheCardView

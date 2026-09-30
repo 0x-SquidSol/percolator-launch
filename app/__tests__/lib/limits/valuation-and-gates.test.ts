@@ -13,7 +13,8 @@ import {
   vaultLpExposureAllowed,
   vaultLpValueAtoms,
 } from "@/lib/limits/vault-tranche";
-import { maxTradeSizePerSide, sameOwnerRoomQ, type SizeLimitInputs } from "@/lib/limits/risk-limits";
+import { maxTradeSizePerSide,
+  lpFillGate, sameOwnerRoomQ, type SizeLimitInputs } from "@/lib/limits/risk-limits";
 import { deriveTicketLimits } from "@/lib/limits/ticket";
 import {
   clampFeeCapMarginBps,
@@ -152,7 +153,7 @@ describe("P3-H2 vault-LP exposure cap", () => {
   });
 });
 
-describe("P1 e74809b1: taker closes pass the LP halt and cap", () => {
+describe("P1 99165722 (F-7): a taker close may not dump risk into a halted or capped LP", () => {
   const base = (over: Partial<SizeLimitInputs> = {}): SizeLimitInputs => ({
     priceE6: 1_000_000n,
     initialMarginBps: 1_000n,
@@ -164,11 +165,22 @@ describe("P1 e74809b1: taker closes pass the LP halt and cap", () => {
     matcher: null,
     ...over,
   });
-  it("floored LP short: a taker SHORT closing its long... and a taker LONG closing its short both pass", () => {
-    // taker long 50 closes by SELLING: LP buys (reduces) — allowed anyway
-    // taker short 50 closes by BUYING: LP sells (grows) — refused before e74809b1, allowed now up to 50
+  it("floored LP short: a taker SHORT closing by BUYING grows the LP (it sells) => refused, halted", () => {
+    // e74809b1 allowed this up to |taker| = 50; F-7 (independent test lane) showed it lets two
+    // non-LP wallets open bilaterally and then dump one side into the halted LP.
     const m = maxTradeSizePerSide(base({ takerPosQ: -50_000_000n, oiEffLongQ: 300_000_000n, oiEffShortQ: 300_000_000n }));
-    expect(m.long).toEqual({ maxQ: 50_000_000n, reason: "lp-halt", halted: false });
+    expect(m.long).toEqual({ maxQ: 0n, reason: "lp-halt", halted: true });
+  });
+  it("floored LP short: a taker LONG closing by SELLING reduces the LP (it buys) => passes up to |LP|", () => {
+    const m = maxTradeSizePerSide(base({ takerPosQ: 50_000_000n, oiEffLongQ: 300_000_000n, oiEffShortQ: 300_000_000n }));
+    expect(m.short.halted).toBe(false);
+    expect(m.short.maxQ).toBe(300_000_000n);
+  });
+  it("lpFillGate ignores the counterparty direction (Rust signature kept, both args unused)", () => {
+    // counterparty fully closes (reduce-only), LP grows past its cap / while floored
+    expect(lpFillGate(50n, 0n, -300n, -350n, 1_000n, true)).toBe("floor-halt");
+    expect(lpFillGate(50n, 0n, -300n, -350n, 320n, false)).toBe("cap-exceeded");
+    expect(lpFillGate(50n, 0n, -300n, -250n, 0n, true)).toBe("allow");
   });
   it("a flat taker still cannot open into the halted side", () => {
     const m = maxTradeSizePerSide(base());

@@ -75,6 +75,7 @@ export type CreateStepKind =
   | "funding"
   | "insurance"
   | "earn-vault"
+  | "vault-lp"
   | "stake-pool";
 
 /** Step kind for a sequential step number (0-5). */

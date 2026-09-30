@@ -4,6 +4,7 @@
  * and Percolator program-specific error codes.
  */
 
+import { P3_ERR } from "@/lib/limits/constants";
 import { decodeError } from "@percolatorct/sdk";
 import type { CreateStepKind } from "@/lib/create-market-v18";
 
@@ -53,6 +54,13 @@ const STEP_ERROR_OVERRIDES: Partial<Record<CreateStepKind, Record<number, string
     // LpVaultBackingBucketNotEmpty. Only reachable on a market whose backing was
     // seeded by the pre-fix launcher (direct top-up): retrying can never succeed.
     63: EARN_VAULT_BUCKET_NOT_EMPTY_MESSAGE,
+  },
+  // P3 InitVaultLp (94) + DepositJuniorTranche (96): codes from the one constants module.
+  "vault-lp": {
+    [P3_ERR.VaultLpAlreadyBound]:
+      "This market's Earn vault is already bound to a vault-owned LP (an earlier attempt completed this step). Retry continues from the next step.",
+    8:
+      "Only the market's admin can bind the vault-owned LP, and admin authority has already moved to the staking pool, so this market can no longer be bound. It keeps its classic LP.",
   },
   "stake-pool": {
     8:

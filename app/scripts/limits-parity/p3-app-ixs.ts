@@ -1,0 +1,171 @@
+/**
+ * Emits APP-BUILT P3 instructions as JSON for the LiteSVM scenario
+ * `limits_app_p3_end_to_end` (patch: scripts/limits-parity/p3-sim/). The instructions come
+ * from the SAME lib code the hooks send:
+ *   bind      -> lib/limits/p3-wizard.ts buildP3BindIxs            (wizard M4p / step 5)
+ *   deposit   -> lib/limits/earn-ixs.ts earnTxPlan + buildEarnDepositIxs  (useInsuranceLP.deposit)
+ *   execute   -> lib/limits/earn-ixs.ts earnTxPlan + buildEarnExecuteIxs  (useInsuranceLP.withdraw)
+ *   exit      -> lib/limits/resolved-exit-ixs.ts exitStepIxs      (useResolvedExit)
+ *   plan      -> lib/limits/resolved-exit.ts planResolvedExit on RAW account bytes (base64),
+ *                decoded by lib/limits/decode.ts exactly as the hook does
+ * argv: <cmd> <json>. Keys are base58; bigints are decimal strings.
+ */
+import { PublicKey, type TransactionInstruction } from "@solana/web3.js";
+import { deriveLpBackingLedger } from "@percolatorct/sdk";
+import { buildP3BindIxs } from "../../lib/limits/p3-wizard";
+import { buildEarnDepositIxs, buildEarnExecuteIxs, earnTxPlan } from "../../lib/limits/earn-ixs";
+import { TAG_DEPOSIT_TO_LP_VAULT, TAG_EXECUTE_REDEMPTION, KIND_PORTFOLIO } from "../../lib/limits/constants";
+import { buildDepositJuniorTrancheIx, buildWithdrawJuniorTrancheIx, deriveLpVaultRegistryPda, deriveVaultLpState } from "../../lib/limits/p3-ix";
+import { exitStepIxs, type ExitPortfolioRef } from "../../lib/limits/resolved-exit-ixs";
+import { planResolvedExit, type ExitStep, type ExitPortfolio } from "../../lib/limits/resolved-exit";
+import {
+  decodeLpVaultRegistryBound,
+  decodeLpVaultRegistryShares,
+  decodeMarketEngineView,
+  decodeResolvedMarket,
+  decodeResolvedPortfolio,
+  decodeVaultLpState,
+} from "../../lib/limits/decode";
+import { harvestableFeeAtoms } from "../../lib/limits/vault-tranche";
+
+interface J { [k: string]: unknown }
+const [cmd, raw] = process.argv.slice(2);
+const a = JSON.parse(raw ?? "{}") as J;
+const pk = (k: string): PublicKey => new PublicKey(String(a[k]));
+const big = (k: string): bigint => BigInt(String(a[k]));
+const b64 = (s: unknown): Uint8Array => new Uint8Array(Buffer.from(String(s), "base64"));
+
+function out(ixs: TransactionInstruction[], extra: J = {}): void {
+  process.stdout.write(
+    JSON.stringify({
+      ...extra,
+      ixs: ixs.map((ix) => ({
+        programId: ix.programId.toBase58(),
+        keys: ix.keys.map((k) => ({ pubkey: k.pubkey.toBase58(), isSigner: k.isSigner, isWritable: k.isWritable })),
+        dataHex: Buffer.from(ix.data).toString("hex"),
+      })),
+    }),
+  );
+}
+
+/** The P3 Earn context from raw account bytes (what readEarnP3Context decodes after its RPC). */
+function earnCtx(programId: PublicKey, market: PublicKey) {
+  const md = b64(a.marketB64);
+  const rd = b64(a.registryB64);
+  const sd = a.vaultLpStateB64 ? b64(a.vaultLpStateB64) : null;
+  const view = decodeMarketEngineView(md);
+  const st = sd ? decodeVaultLpState(sd) : null;
+  return {
+    bound: decodeLpVaultRegistryBound(rd),
+    vaultLpState: deriveVaultLpState(programId, market),
+    lpPortfolio: st ? new PublicKey(st.lpPortfolio) : null,
+    harvestable: view ? harvestableFeeAtoms(view) : null,
+    registryShares: decodeLpVaultRegistryShares(rd),
+    mode: view ? view.mode : 0,
+  };
+}
+
+const programId = pk("programId");
+const market = pk("market");
+const domain = Number(a.domain ?? 0);
+const ledger = deriveLpBackingLedger(programId, market, domain)[0];
+const siblingLedger = deriveLpBackingLedger(programId, market, domain ^ 1)[0];
+const registry = deriveLpVaultRegistryPda(programId, market);
+
+if (cmd === "bind") {
+  out(
+    buildP3BindIxs({
+      market: { programId, market, registry, vaultLpState: deriveVaultLpState(programId, market), lpPortfolio: pk("vaultLpPortfolio"), ledger, siblingLedger },
+      creator: pk("creator"),
+      vaultLpPortfolio: pk("vaultLpPortfolio"),
+      portfolioLen: Number(a.portfolioLen),
+      portfolioRentLamports: Number(a.rent),
+      juniorFloorBps: Number(a.floorBps),
+      juniorAtoms: big("juniorAtoms"),
+      creatorAta: pk("creatorAta"),
+      vaultToken: pk("vaultToken"),
+    }),
+  );
+} else if (cmd === "deposit" || cmd === "execute") {
+  const ctx = earnCtx(programId, market);
+  const plan = earnTxPlan(cmd === "deposit" ? TAG_DEPOSIT_TO_LP_VAULT : TAG_EXECUTE_REDEMPTION, ctx);
+  if (!plan.ok) {
+    out([], { blocked: plan.reason });
+  } else if (cmd === "deposit") {
+    out(
+      buildEarnDepositIxs({
+        programId, depositor: pk("user"), market, registry, lpMint: pk("lpMint"), depositorLpAta: pk("lpAta"),
+        sourceToken: pk("source"), vaultToken: pk("vaultToken"), ledger, siblingLedger, domain, amount: big("amount"), plan,
+      }),
+      { prependHarvest: plan.prependHarvest, tail: !!plan.tail },
+    );
+  } else {
+    out(
+      buildEarnExecuteIxs({
+        programId, redeemer: pk("user"), market, registry, redemption: pk("redemption"), lpMint: pk("lpMint"), escrow: pk("escrow"),
+        vaultToken: pk("vaultToken"), vaultAuthority: pk("vaultAuthority"), ledger, redeemerDest: pk("dest"), siblingLedger, domain, plan,
+      }),
+      { prependHarvest: plan.prependHarvest, tail: !!plan.tail },
+    );
+  }
+} else if (cmd === "junior-withdraw" || cmd === "junior-deposit") {
+  // useJuniorTranche: 97 / 96 against the vault LP named by the on-chain vault-LP state.
+  const st = decodeVaultLpState(b64(a.vaultLpStateB64));
+  if (!st) throw new Error("vault LP state not decodable");
+  const vm = { programId, market, registry, vaultLpState: deriveVaultLpState(programId, market), lpPortfolio: new PublicKey(st.lpPortfolio), ledger, siblingLedger };
+  out([
+    cmd === "junior-withdraw"
+      ? buildWithdrawJuniorTrancheIx(vm, pk("owner"), pk("dest"), pk("vaultToken"), pk("vaultAuthority"), big("amount"))
+      : buildDepositJuniorTrancheIx(vm, pk("owner"), pk("source"), pk("vaultToken"), big("amount")),
+  ]);
+} else if (cmd === "plan" || cmd === "exit") {
+  // Decode every account exactly as useResolvedExit does, plan, and (exit) build the first step.
+  const md = b64(a.marketB64);
+  const rd = b64(a.registryB64);
+  const sd = a.vaultLpStateB64 ? b64(a.vaultLpStateB64) : null;
+  const m = decodeResolvedMarket(md);
+  if (!m) throw new Error("market not decodable");
+  const bound = decodeLpVaultRegistryBound(rd) === true;
+  const st = bound && sd ? decodeVaultLpState(sd) : null;
+  const vaultLpKey = st ? new PublicKey(st.lpPortfolio).toBase58() : null;
+  const portfolios: ExitPortfolio[] = [];
+  const refs = new Map<string, ExitPortfolioRef>();
+  for (const p of (a.portfolios as J[]) ?? []) {
+    const d = b64(p.dataB64);
+    if (d[10] !== KIND_PORTFOLIO) continue;
+    const view = decodeResolvedPortfolio(d);
+    if (!view) continue;
+    const key = String(p.key);
+    const owner = new PublicKey(view.owner);
+    refs.set(key, { owner, portfolioId: BigInt(String(p.portfolioId)), matcherSequence: BigInt(String(p.matcherSequence)), positionEpoch: BigInt(String(p.positionEpoch)) });
+    const isVaultLp = key === vaultLpKey;
+    portfolios.push({ key, view, isVaultLp, escrowed: !isVaultLp && !PublicKey.isOnCurve(owner.toBytes()) && !owner.equals(registry) });
+  }
+  const engine = decodeMarketEngineView(md);
+  const plan = planResolvedExit({ market: m, nowSlot: big("nowSlot"), portfolios, boundVault: bound, harvestableAtoms: engine ? harvestableFeeAtoms(engine) : null });
+  const steps: ExitStep[] = plan.phase === "sweep" || plan.phase === "owner-window" ? plan.steps : [];
+  const blockers = plan.phase === "not-resolved" ? [] : plan.blockers.map((b) => b.kind);
+  const summary: J = { phase: plan.phase, steps: steps.map((s) => ({ kind: s.kind, portfolio: "portfolio" in s ? s.portfolio : "" })), blockers };
+  if (cmd === "plan" || steps.length === 0) {
+    out([], summary);
+  } else {
+    const vaultAuthority = pk("vaultAuthority");
+    const ctx = {
+      payer: pk("payer"),
+      collateralMint: pk("mint"),
+      vaultToken: pk("vaultToken"),
+      vaultAuthority,
+      programId,
+      market,
+      portfolios: refs,
+      vault: st
+        ? { programId, market, registry, vaultLpState: deriveVaultLpState(programId, market), lpPortfolio: new PublicKey(st.lpPortfolio), ledger, siblingLedger, juniorOwner: new PublicKey(st.juniorOwner) }
+        : null,
+    };
+    const first = steps[0];
+    if (!first) throw new Error("no step");
+    out(exitStepIxs(first, ctx), summary);
+  }
+} else {
+  throw new Error(`unknown cmd ${cmd}`);
+}

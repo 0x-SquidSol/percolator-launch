@@ -74,6 +74,9 @@ export interface StepControlRoomProps {
   onMarginBpsChange: (bps: number) => void;
   onLpCollateralChange: (v: string) => void;
   onInsuranceChange: (v: string) => void;
+  /** P3 wizard: junior floor bps + setter (the panel renders only when the P3 wizard is on). */
+  juniorFloorBps?: number;
+  onJuniorFloorChange?: (bps: number) => void;
 
   onLaunch: () => void;
   launchDisabled?: boolean;
@@ -117,6 +120,8 @@ export const StepControlRoom: FC<StepControlRoomProps> = ({
   onMarginBpsChange,
   onLpCollateralChange,
   onInsuranceChange,
+  juniorFloorBps,
+  onJuniorFloorChange,
   onLaunch,
   launchDisabled,
   launchDisabledReason,
@@ -191,7 +196,14 @@ export const StepControlRoom: FC<StepControlRoomProps> = ({
           that margin.
         </p>
         {/* P3 (flag-gated): the liquidity above is the creator's junior, first-loss tranche. */}
-        <WizardTranchePanel juniorUnits={lp} initialMarginBps={initialMarginBps} decimals={6} collateralSymbol={collateralSymbol} />
+        <WizardTranchePanel
+          juniorUnits={lp}
+          initialMarginBps={initialMarginBps}
+          decimals={6}
+          collateralSymbol={collateralSymbol}
+          floorBps={juniorFloorBps}
+          onFloorChange={onJuniorFloorChange}
+        />
       </div>
 
       {/* ── pre-flight (auto-resolved, nothing to decide) ───────────────── */}

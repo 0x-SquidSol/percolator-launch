@@ -15,11 +15,8 @@ import {
   deriveLpRedemption,
   deriveLpEscrow,
   encodeCreateLpVaultV17,
-  encodeDepositToLpVault,
   encodeRequestRedeemLpShares,
-  encodeExecuteRedemption,
   ACCOUNTS_CREATE_LP_VAULT,
-  ACCOUNTS_LP_VAULT_DEPOSIT,
   buildAccountMetas,
   buildIx,
   WELL_KNOWN,
@@ -36,6 +33,10 @@ import { useParams } from 'next/navigation';
 import { pythCrankAccount } from "@/lib/limits/oracle-tail";
 import { limitsFlags } from "@/lib/limits/flags";
 import { earnVaultLpRepairOption } from "@/lib/limits/vault-lp-repair";
+import { buildEarnDepositIxs, buildEarnExecuteIxs, earnTxPlan, type EarnTxPlan } from "@/lib/limits/earn-ixs";
+import { readEarnP3Context } from "@/lib/limits/earn-p3-read";
+import { TAG_DEPOSIT_TO_LP_VAULT, TAG_EXECUTE_REDEMPTION } from "@/lib/limits/constants";
+import { COPY as LIMITS_COPY } from "@/lib/limits/copy";
 import { sanitizeOnChainValue } from '@/lib/health';
 import { pollWhenVisible } from '@/lib/pollWhenVisible';
 import {
@@ -118,6 +119,11 @@ export interface InsuranceLPState {
   cooldownRemainingSlots: bigint;
   /** True when there is no pending redemption, or its cooldown has fully elapsed (ready for ExecuteRedemption). */
   cooldownElapsed: boolean;
+}
+
+/** P3: refuse (with the reason) before signing when the program would refuse the Earn op. */
+function assertEarnPlan(plan: EarnTxPlan): asserts plan is Extract<EarnTxPlan, { ok: true }> {
+  if (!plan.ok) throw new Error(LIMITS_COPY.earnPlanBlocked[plan.reason]);
 }
 
 export function useInsuranceLP() {
@@ -660,23 +666,25 @@ export function useInsuranceLP() {
         ));
       }
 
-      const keys = buildAccountMetas(ACCOUNTS_LP_VAULT_DEPOSIT, [
-        wallet.publicKey,
-        marketPk,
-        registryPda,
-        lpMintPda,
-        depositorLpAta,
-        sourceTokenAta,
-        vaultTokenAta,
-        ledgerPda,
-        WELL_KNOWN.tokenProgram,
-        WELL_KNOWN.systemProgram,
-        siblingLedgerPda,
-      ]);
-      ixs.push(buildIx({
+      // P3 (vault-owned LP): a BOUND vault requires [11] vault_lp_state + [12] vault LP, and a
+      // genesis deposit with harvestable LP fees needs tag 78 first (P3-L1). Assembly is shared
+      // with the LiteSVM bridge (lib/limits/earn-ixs.ts), so the sim runs this exact code.
+      const p3 = earnTxPlan(TAG_DEPOSIT_TO_LP_VAULT, await readEarnP3Context(connection, progPk, marketPk));
+      assertEarnPlan(p3);
+      ixs.push(...buildEarnDepositIxs({
         programId: progPk,
-        keys,
-        data: encodeDepositToLpVault({ amount: amount.toString(), domain }),
+        depositor: wallet.publicKey,
+        market: marketPk,
+        registry: registryPda,
+        lpMint: lpMintPda,
+        depositorLpAta,
+        sourceToken: sourceTokenAta,
+        vaultToken: vaultTokenAta,
+        ledger: ledgerPda,
+        siblingLedger: siblingLedgerPda,
+        domain,
+        amount,
+        plan: p3,
       }));
       const sig = await sendTx({ connection, wallet, instructions: ixs, selfHeal: { programId: progPk, market: marketPk }, vaultLpRepair: earnRepairFor(progPk, marketPk) });
       await refreshState();
@@ -780,34 +788,29 @@ export function useInsuranceLP() {
         const vaultTokenAta = await getAssociatedTokenAddress(collateralMint, vaultPda, true);
         const redeemerAta = await getAssociatedTokenAddress(collateralMint, wallet.publicKey);
 
-        const executeKeys = [
-          { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
-          { pubkey: marketPk, isSigner: false, isWritable: true },
-          { pubkey: registryPda, isSigner: false, isWritable: true },
-          { pubkey: redemptionPda, isSigner: false, isWritable: true },
-          { pubkey: lpMintPda, isSigner: false, isWritable: true },
-          { pubkey: escrowPda, isSigner: false, isWritable: true },
-          { pubkey: vaultTokenAta, isSigner: false, isWritable: true },
-          { pubkey: vaultPda, isSigner: false, isWritable: false },
-          { pubkey: ledgerPda, isSigner: false, isWritable: true },
-          { pubkey: redeemerAta, isSigner: false, isWritable: true },
-          { pubkey: WELL_KNOWN.tokenProgram, isSigner: false, isWritable: false },
-          { pubkey: siblingLedgerPda, isSigner: false, isWritable: true },
-          // [12] redeemerRentDest (w) — REQUIRED since percolator-prog #461 (GH#412,
-          // live in v18.2 `6377376a`): the consumed redemption PDA's rent is returned
-          // to the RECORDED redeemer, and handle_execute_redemption reads
-          // `account(accounts, 12)?` and rejects any key != redemption.redeemer.
-          // Without it every claim failed NotEnoughAccountKeys before touching state
-          // (live user report 2026-09-29, ANSEM). The UI only claims its own
-          // redemption, so the redeemer is the connected wallet.
-          { pubkey: wallet.publicKey, isSigner: false, isWritable: true },
-        ];
-        const executeIx = buildIx({
+        // P3 (vault-owned LP): a BOUND vault requires [13] vault_lp_state + [14] vault LP, and
+        // refuses 84 while LP fees are harvestable - bundle tag 78 in front (P3-K1).
+        // [12] redeemerRentDest (#461 / GH#412, live in v18.2): the consumed redemption PDA's
+        // rent is returned to the RECORDED redeemer - the UI only claims its own redemption.
+        const p3 = earnTxPlan(TAG_EXECUTE_REDEMPTION, await readEarnP3Context(connection, progPk, marketPk));
+        assertEarnPlan(p3);
+        const executeIxs = buildEarnExecuteIxs({
           programId: progPk,
-          keys: executeKeys,
-          data: encodeExecuteRedemption({ domain }),
+          redeemer: wallet.publicKey,
+          market: marketPk,
+          registry: registryPda,
+          redemption: redemptionPda,
+          lpMint: lpMintPda,
+          escrow: escrowPda,
+          vaultToken: vaultTokenAta,
+          vaultAuthority: vaultPda,
+          ledger: ledgerPda,
+          redeemerDest: redeemerAta,
+          siblingLedger: siblingLedgerPda,
+          domain,
+          plan: p3,
         });
-        signature = await sendTx({ connection, wallet, instructions: [executeIx], selfHeal: { programId: progPk, market: marketPk }, vaultLpRepair: earnRepairFor(progPk, marketPk) });
+        signature = await sendTx({ connection, wallet, instructions: executeIxs, selfHeal: { programId: progPk, market: marketPk }, vaultLpRepair: earnRepairFor(progPk, marketPk) });
         step = 'executed';
       }
       await refreshState();
