@@ -1,5 +1,6 @@
 "use client";
 
+import { baseSymbol } from "@/lib/symbol-utils";
 import { useEffect, useState, useMemo, useRef, useCallback, useSyncExternalStore, Suspense, type FC } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -973,18 +974,19 @@ function MarketsPageInner() {
             </div>
           ) : (
             <>
-              <div className="relative rounded-sm border border-[var(--border)] hud-corners after:pointer-events-none after:absolute after:right-0 after:top-0 after:bottom-0 after:w-6 after:z-20 after:bg-gradient-to-l after:from-[var(--bg-surface)] after:to-transparent sm:after:hidden">
-              <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: "touch" }}>
+              <div className="relative rounded-sm border border-[var(--border)] hud-corners after:pointer-events-none after:absolute after:right-0 after:top-0 after:bottom-0 after:w-6 after:z-20 after:bg-gradient-to-l after:from-[var(--bg-surface)] after:to-transparent max-md:after:hidden md:after:hidden">
+              {/* UX WP-10 (MB-1, §4.8): below md the table becomes card rows; no inner horizontal scroll. */}
+              <div className="md:overflow-x-auto" style={{ WebkitOverflowScrolling: "touch" }}>
                 {/* Header row: xs=4 cols (name|price|lev|health), sm+=7 cols */}
                 {/* GH#1775: sticky inside overflow-x-auto is broken by CSS spec (overflow clips stacking context).
                     Removed sticky top-0 z-10 — header scrolls with content on mobile.
                     Desktop (sm+) is unaffected since the table fits in viewport width. */}
-                <div className="grid w-full min-w-[500px] sm:min-w-[700px] grid-cols-[minmax(120px,2.5fr)_minmax(80px,1.2fr)_minmax(50px,0.6fr)_minmax(75px,0.8fr)] sm:grid-cols-[minmax(160px,3fr)_minmax(90px,1.2fr)_minmax(90px,1fr)_minmax(90px,1fr)_minmax(90px,1fr)_minmax(65px,0.8fr)_minmax(80px,0.9fr)] gap-2 sm:gap-4 border-b border-[var(--border)] bg-[var(--bg-surface)] px-3 sm:px-5 py-2.5 text-[9px] sm:text-[10px] font-semibold uppercase tracking-[0.15em] text-[var(--text)]">
+                <div className="hidden md:grid w-full md:min-w-[700px] md:grid-cols-[minmax(160px,3fr)_minmax(90px,1.2fr)_minmax(90px,1fr)_minmax(90px,1fr)_minmax(90px,1fr)_minmax(65px,0.8fr)_minmax(80px,0.9fr)] gap-2 sm:gap-4 border-b border-[var(--border)] bg-[var(--bg-surface)] px-3 sm:px-5 py-2.5 text-[9px] sm:text-[10px] font-semibold uppercase tracking-[0.15em] text-[var(--text)]">
                   <div>token</div>
                   <div className="text-right">price</div>
                   <div className="hidden sm:block text-right">OI</div>
                   <div className="hidden sm:block text-right">vol</div>
-                  <div className="hidden sm:block text-right">market lp</div>
+                  <div className="hidden sm:block text-right">liquidity</div>
                   <div className="text-right"><span className="sm:hidden">lev</span><span className="hidden sm:inline">max lev</span></div>
                   <div className="text-right">health</div>
                 </div>
@@ -1152,13 +1154,30 @@ function MarketsPageInner() {
                       // like a handful of rows. contain-intrinsic-size reserves each
                       // off-screen row's box (auto width kept, ~52px tall) so the
                       // scrollbar doesn't jump. Ignored gracefully where unsupported.
-                      style={{ contentVisibility: "auto", containIntrinsicSize: "auto 52px" }}
+                      style={{ contentVisibility: "auto", containIntrinsicSize: "auto 56px" }}
                       className={[
-                        "grid w-full min-w-[500px] sm:min-w-[700px] grid-cols-[minmax(120px,2.5fr)_minmax(80px,1.2fr)_minmax(50px,0.6fr)_minmax(75px,0.8fr)] sm:grid-cols-[minmax(160px,3fr)_minmax(90px,1.2fr)_minmax(90px,1fr)_minmax(90px,1fr)_minmax(90px,1fr)_minmax(65px,0.8fr)_minmax(80px,0.9fr)] gap-2 sm:gap-4 items-center px-3 sm:px-5 py-3 transition-all duration-200 hover:bg-[var(--accent)]/[0.06] border-l-2 border-l-transparent hover:border-l-[var(--accent)]/40",
+                        "flex flex-col md:grid w-full md:min-w-[700px] md:grid-cols-[minmax(160px,3fr)_minmax(90px,1.2fr)_minmax(90px,1fr)_minmax(90px,1fr)_minmax(90px,1fr)_minmax(65px,0.8fr)_minmax(80px,0.9fr)] gap-2 sm:gap-4 md:items-center px-3 sm:px-5 py-3 transition-all duration-200 hover:bg-[var(--accent)]/[0.06] border-l-2 border-l-transparent hover:border-l-[var(--accent)]/40",
                         i > 0 ? "border-t border-[var(--border)]" : "",
                         i % 2 === 1 ? "bg-[var(--bg-elevated)]/[0.05]" : "",
                       ].join(" ")}
                     >
+                      {/* Mobile card row: [logo] SYM/USD  $price, then OI · Vol · up to N×. */}
+                      <div data-testid="market-card" className="md:hidden flex min-h-[44px] w-full items-center gap-3">
+                        <MarketLogo logoUrl={m.supabase?.logo_url} mintAddress={logoMintAddress} mainnetCa={m.supabase?.mainnet_ca ?? null} symbol={displaySymbol ?? undefined} size="sm" />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-baseline justify-between gap-2">
+                            <span className="truncate text-sm font-semibold text-[var(--text)]">{displaySymbol ? `${baseSymbol(displaySymbol)}/USD` : shortenAddress(m.slabAddress)}</span>
+                            <span className="shrink-0 text-sm tabular-nums text-[var(--text)]" style={{ fontFamily: "var(--font-jetbrains-mono)" }}>
+                              <LiveRowPrice slab={m.slabAddress} fallback={lastPrice} />
+                            </span>
+                          </div>
+                          <div className="truncate text-[11px] text-[var(--text-secondary)]" style={{ fontFamily: "var(--font-mono)" }}>
+                            OI {oiDisplay} · Vol {volumeDisplay ?? "\u2014"} · up to {m.maxLeverage}×
+                          </div>
+                        </div>
+                        <span aria-hidden="true" className="shrink-0 text-[var(--text-secondary)]">›</span>
+                      </div>
+                      <div className="hidden md:contents">
                       <div>
                         <div className="flex min-w-0 items-center gap-2">
                           <MarketLogo
@@ -1175,7 +1194,7 @@ function MarketsPageInner() {
                               Without these the row collides with the price
                               column instead of truncating. */}
                           <span className="min-w-0 truncate font-semibold text-[var(--text)] text-sm">
-                            {displaySymbol ? `${displaySymbol}/USD` : shortenAddress(m.slabAddress)}
+                            {displaySymbol ? `${baseSymbol(displaySymbol)}/USD` : shortenAddress(m.slabAddress)}
                           </span>
                           {m.isAdminOracle && (
                             <span className="border border-[var(--text-dim)]/30 bg-[var(--text-dim)]/[0.08] px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-wider text-[var(--text-secondary)]">manual</span>
@@ -1211,6 +1230,7 @@ function MarketsPageInner() {
                       <div className="hidden sm:block text-right text-sm text-[var(--text)] truncate tabular-nums" style={{ fontFamily: "var(--font-jetbrains-mono)", fontVariantNumeric: "tabular-nums" }}>{marketLpDisplay}</div>
                       <div className="text-right text-sm text-[var(--text-secondary)] tabular-nums" style={{ fontVariantNumeric: "tabular-nums" }}>{m.maxLeverage}x</div>
                       <div className="text-right"><HealthBadge level={effectiveHealth.level} /></div>
+                      </div>
                     </Link>
                   );
                 })}
@@ -1223,7 +1243,7 @@ function MarketsPageInner() {
                   {[1, 2].map((i) => (
                     <div
                       key={i}
-                      className="grid w-full min-w-[500px] sm:min-w-[700px] grid-cols-[minmax(120px,2.5fr)_minmax(80px,1.2fr)_minmax(50px,0.6fr)_minmax(75px,0.8fr)] sm:grid-cols-[minmax(160px,3fr)_minmax(90px,1.2fr)_minmax(90px,1fr)_minmax(90px,1fr)_minmax(90px,1fr)_minmax(65px,0.8fr)_minmax(80px,0.9fr)] gap-2 sm:gap-4 items-center px-3 sm:px-5 py-3"
+                      className="hidden md:grid w-full md:min-w-[700px] md:grid-cols-[minmax(160px,3fr)_minmax(90px,1.2fr)_minmax(90px,1fr)_minmax(90px,1fr)_minmax(90px,1fr)_minmax(65px,0.8fr)_minmax(80px,0.9fr)] gap-2 sm:gap-4 items-center px-3 sm:px-5 py-3"
                     >
                       <div className="flex items-center gap-2">
                         <ShimmerSkeleton className="h-8 w-8 rounded-full shrink-0" />

@@ -419,20 +419,10 @@ function TradePageInner({ slab }: { slab: string }) {
               <>
                 <p className="text-sm font-semibold text-[var(--text)]">Market not found on devnet</p>
                 <p className="mt-2 text-[11px] text-[var(--text-secondary)] leading-relaxed">
-                  This slab account doesn&apos;t exist on the current devnet. The market may have been closed, or you may be looking at a mainnet market address.
+                  This market doesn&apos;t exist on devnet. It may have been closed, or the link may be for a different network.
                 </p>
                 <div className="mt-4 flex flex-col gap-2">
-                  <button
-                    onClick={() => {
-                      if (typeof window !== "undefined") {
-                        localStorage.setItem("percolator-network", "mainnet");
-                        window.location.reload();
-                      }
-                    }}
-                    className="w-full border border-[var(--border)] px-4 py-2 text-[11px] text-[var(--text-secondary)] hover:border-[var(--accent)]/40 hover:text-[var(--text)] transition-colors duration-150"
-                  >
-                    Switch to Mainnet
-                  </button>
+                  {/* UX WP-10 (CN-1): the playground is devnet only, so it offers no mainnet switch. */}
                   <a
                     href="/markets"
                     className="w-full border border-[var(--border)] px-4 py-2 text-[11px] text-[var(--text-secondary)] hover:border-[var(--accent)]/40 hover:text-[var(--text)] transition-colors duration-150"
@@ -506,7 +496,7 @@ function TradePageInner({ slab }: { slab: string }) {
       {hasNoPriceData && (
         <div className="border-b border-[var(--warning)]/30 bg-[var(--warning)]/5 px-4 py-2.5 text-center">
           <p className="text-[11px] font-medium text-[var(--warning)]">
-            ⚠ No oracle price available for this market — prices may be stale or unavailable
+            Prices for this market aren&apos;t available right now. They update automatically.
           </p>
         </div>
       )}
@@ -514,7 +504,12 @@ function TradePageInner({ slab }: { slab: string }) {
       {/* Utility row — market address + admin status. (Share, the tokens/usd
           toggle, and the Analytics link were removed; analytics now lives in
           the bottom AnalyticsDock.) */}
-      <div className="flex items-center gap-3 border-b border-[var(--border)]/30 px-3 py-1.5 overflow-x-auto whitespace-nowrap scrollbar-none">
+      {/* UX WP-10 (GL-1, §4.3): the market address and admin status left the page chrome; they sit
+          in a collapsed "Market details" disclosure (the "ADMIN ACTIVE" chip is no longer shown by
+          default above every market). */}
+      <details data-testid="market-details" className="border-b border-[var(--border)]/30 px-3 py-1 text-[10px] text-[var(--text-secondary)]">
+        <summary className="cursor-pointer select-none py-0.5">Market details</summary>
+      <div className="flex items-center gap-3 py-1 overflow-x-auto whitespace-nowrap scrollbar-none">
         <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]" style={{ fontFamily: "var(--font-mono)" }}>
           {shortAddress}
           <CopyButton text={slab} />
@@ -537,6 +532,7 @@ function TradePageInner({ slab }: { slab: string }) {
           </Tooltip>
         )}
       </div>
+      </details>
 
       {/* MarketBar — always mounted, already responsive/scrollable on mobile */}
       <MarketInfoBar slabAddress={slab} symbol={symbol} logoUrl={logoUrl} mintAddress={mintAddress} mainnetCa={chartMintAddress} />

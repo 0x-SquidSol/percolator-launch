@@ -249,9 +249,22 @@ export function useDevnetFaucet(): DevnetFaucetState {
     setError(null);
     lastOpFailedRef.current = false;
     try {
-      // PERC-808: Try Helius devnet faucet first (more reliable, higher limits)
+      // UX WP-10 (FA-1): the server faucet first — it sends from the playground's server wallet
+      // when that is configured (the public airdrop below is usually rate-limited).
       let sig: string | null = null;
-      if (HELIUS_DEVNET_RPC) {
+      try {
+        const resp = await fetch("/api/faucet", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ wallet: publicKey.toBase58(), type: "sol" }),
+        });
+        const data = (await resp.json().catch(() => ({}))) as { signature?: string };
+        if (resp.ok && data.signature) sig = data.signature;
+      } catch {
+        sig = null;
+      }
+      // PERC-808: Try Helius devnet faucet next (more reliable, higher limits)
+      if (!sig && HELIUS_DEVNET_RPC) {
         try {
           const heliusConn = new Connection(HELIUS_DEVNET_RPC, "confirmed");
           sig = await heliusConn.requestAirdrop(publicKey, 2 * LAMPORTS_PER_SOL);

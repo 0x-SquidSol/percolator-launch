@@ -54,30 +54,30 @@ export interface FeeLeg {
 export const FEE_LEGS: readonly FeeLeg[] = [
   {
     id: "lp",
-    label: "Liquidity providers",
+    label: "Earn deposits",
     bps: FEE_SPLIT.DEFAULT_LP_SHARE_BPS,
-    note: "Paid to the market's LP vault — this is the yield behind Earn.",
+    note: "Paid into the market's Earn vault: this is the yield behind Earn.",
     fixed: true,
   },
   {
     id: "protocol",
     label: "Protocol",
     bps: FEE_SPLIT.PROTOCOL_FEE_BPS,
-    note: "Taken before anything else. Compile-time in the program: not stored on-chain and not settable by anyone.",
+    note: "Taken before anything else, and fixed: nobody can change it.",
     fixed: true,
   },
   {
     id: "creator",
     label: "Market creator",
     bps: FEE_SPLIT.DEFAULT_CREATOR_SHARE_BPS,
-    note: "Accrues to the market's creator and is claimed with its own instruction.",
+    note: "Goes to the market's creator, who claims it from My Markets.",
     fixed: true,
   },
   {
     id: "insurance",
     label: "Insurance fund",
     bps: FEE_SPLIT.DEFAULT_INSURANCE_SHARE_BPS,
-    note: "Backs losses a liquidation cannot cover. Stakers provide this fund's first-loss capital and receive this share: the keeper moves it into the stake pool.",
+    note: "Backs losses a liquidation cannot cover. Stakers provide this fund and receive this share, moved into the stake pool automatically.",
     fixed: true,
   },
 ];

@@ -21,6 +21,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { getSolFaucetSigner, sendServerSol } from "@/lib/server-sol-faucet";
 import { getClientIp } from "@/lib/get-client-ip";
 import { checkFundRateLimit } from "@/lib/fund-ip-rate-limit";
 import {
@@ -68,6 +69,8 @@ const NETWORK =
 
 const USDC_MINT_AMOUNT = 10_000_000_000; // 10,000 USDC (6 decimals)
 const SOL_AIRDROP_AMOUNT = 2 * LAMPORTS_PER_SOL; // 2 SOL
+/** From the server wallet (WP-10 FA-1): enough for many devnet txs, small enough not to drain it. */
+const SERVER_SOL_LAMPORTS = 0.1 * LAMPORTS_PER_SOL;
 const RATE_LIMIT_HOURS = 24;
 
 // Public devnet RPCs for requestAirdrop (private RPC may reject airdrop requests).
@@ -243,7 +246,19 @@ export async function POST(req: NextRequest) {
       let lastTransientMsg: string | null = null;
       let fatalErr: unknown = null;
 
-      for (const rpcUrl of DEVNET_RPC_POOL) {
+      // UX WP-10 (FA-1): the server wallet first (env check only); the public airdrop is the
+      // fallback, as before.
+      const solSigner = getSolFaucetSigner();
+      if (solSigner) {
+        try {
+          sig = await sendServerSol({ connection: getServerConnection("confirmed"), signer: solSigner, to: walletPk, lamports: SERVER_SOL_LAMPORTS });
+        } catch (solErr) {
+          console.error("[faucet] server SOL send failed:", solErr instanceof Error ? solErr.message : String(solErr));
+          sig = null;
+        }
+      }
+
+      for (const rpcUrl of sig ? [] : DEVNET_RPC_POOL) {
         const pubConn = new Connection(rpcUrl, "confirmed");
         try {
           sig = await pubConn.requestAirdrop(walletPk, SOL_AIRDROP_AMOUNT);
@@ -556,10 +571,8 @@ export async function POST(req: NextRequest) {
     Sentry.captureException(error, {
       tags: { endpoint: "/api/faucet", method: "POST" },
     });
-    const errorMsg =
-      error instanceof Error
-        ? error.message || error.toString() || "Internal server error"
-        : String(error) || "Internal server error";
-    return NextResponse.json({ error: errorMsg }, { status: 500 });
+    // UX WP-10 AC3: raw internal text (which can name env vars) stays in the server log.
+    console.error("[faucet] failed:", error instanceof Error ? error.message || String(error) : String(error));
+    return NextResponse.json({ error: "Something went wrong and nothing was sent. Try again in a moment." }, { status: 500 });
   }
 }
