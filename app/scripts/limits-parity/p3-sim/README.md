@@ -1,5 +1,25 @@
 # P3 sim: the vault-owned-LP journey executing APP-BUILT instructions
 
+## ede691b6 (Earn exit/entry at the worse of effective vs pending target, 2026-09-30): current run
+
+New in `p3_senior_draw.limits-app.patch`: `limits_app_worse_of_77_payout_matches_preview`. The
+app's Earn preview (bridge `earn-price` = `lib/limits/earn.ts earnPanelPricing` ->
+`lib/limits/earn-pricing.ts earnSeniorPricing`, the one port of `vault_lp_equity_lag_bounds_ro` +
+the 77 Live rule), from RAW bytes and the NAV the page passes (registry shares + fee distributions):
+- control (no move): preview 4,999,000 == the app 77's payout 4,999,000 == the plain number;
+- 3x target pushed, effective price lagging at 20 bps/slot (1.002 vs 3.0): the lag bounds are
+  evaluated from real bytes (worse 14,193 < better 297,200); the crank re-stamps the bound vault
+  LP's short (1.4 -> 0.14) so the move stays inside the junior, and the preview 5,000,000 equals the
+  payout exactly. The binding branches (C_price below C; the LP at max(worse, 0) when nav < C) are
+  pinned against rustc vectors / hand cases in `__tests__/lib/limits/earn-pricing.test.ts`.
+
+Also on ede691b6: one catch-up crank now costs **20,846 CU** (17,010 on 4b1a5d30), so the app's
+`CATCH_UP_CRANK_CU` is 25,000 (engine-stale threshold dt x 32); since 221cf006 a senior larger than
+one pot redeems across both pots, so in `limits_app_redeem_repair_25_pot_mismatch_and_88` scen 1 the
+plain app 77 lands (7,528,308 = fair) with no repair (4b1a5d30: 88 -> other-pot, same payout).
+Results: `p3_senior_draw` limits_app 4/4 and `p3_vault_lp` limits_ 8/8 on `~/wt-p3-wrapper/out/p3-ede691b6.so`
+(sha256 707383375fc6054c...); limits_app 4/4 on `p3-batched-4b1a5d30.so`.
+
 ## 39b138c8 (P3 FINAL: d119eebd senior draw + D-P3-30 recall cap, 2026-09-30): current run
 
 Patches: `p3_vault_lp.limits-app.patch` (as below) and **`p3_senior_draw.limits-app.patch`** (new),

@@ -105,6 +105,11 @@ fn main() {
         o("bucket.fresh_unliened_backing_num", offset_of!(percolator::BackingBucketV16Account, fresh_unliened_backing_num)),
         o("boundScaleLog10", (percolator::BOUND_SCALE as f64).log10() as usize),
         // portfolio, RELATIVE to HEADER_LEN (the app's PF_* = HEADER_LEN + field)
+        // UX WP-6: InitPortfolio assigns portfolio_id = allocate_portfolio_id(asset 0's
+        // AssetOracleProfileV16.next_portfolio_id) (handle_init_portfolio reads profile0, NOT
+        // WrapperConfigV16); the profile sits at the start of the asset wrapper.
+        o("op.next_portfolio_id", offset_of!(state::AssetOracleProfileV16, next_portfolio_id)),
+        o("op.len", c::ASSET_ORACLE_PROFILE_LEN),
         o("pf.owner", offset_of!(PortfolioAccountV16Account, owner)),
         o("pf.capital", offset_of!(PortfolioAccountV16Account, capital)),
         o("pf.pnl", offset_of!(PortfolioAccountV16Account, pnl)),
@@ -149,6 +154,23 @@ fn main() {
         o("canonicalMatcherIsDevnet4seJ", (c::CANONICAL_VAULT_LP_MATCHER_PROGRAM.to_string() == "4seJWjv3R5qfXY8R5ntuPHWsoqcVvaxvfFSnU2AnGMhT") as usize),
     ];
     out.push(format!("\"layout\":{{{}}}", layout.join(",")));
+
+    // Earn worse-of pricing (ede691b6; vault_lp_v18.rs unchanged since 4b1a5d30): the two pure
+    // rules 77 / 75 price through. The app's lib/limits/earn-pricing.ts is pinned to these.
+    {
+        use percolator_prog::vault_lp_v18 as v;
+        let mut pc = Vec::new();
+        for &(cc, def, sur) in &[(1_000u128, 0u128, 0u128), (1_000, 50, 0), (1_000, 50, 80), (1_000, 150, 80), (1_000, 2_000, 5), (0, 10, 0), (7_000_000, 166_070, 0), (7_000_000, 166_070, 100_000), (u64::MAX as u128, 1, 0)] {
+            pc.push(format!("[\"{cc}\",\"{def}\",\"{sur}\",\"{}\"]", v::vault_lp_senior_pricing_claim(cc, def, sur)));
+        }
+        out.push(format!("\"pricingClaimVectors\":[{}]", pc.join(",")));
+        let mut rc = Vec::new();
+        for &(cc, drawn, outst, above) in &[(1_000u128, 100u128, 100u128, 0u128), (1_000, 100, 100, 40), (1_000, 100, 100, 400), (1_000, 300, 100, 99), (0, 50, 50, 50), (9_000_000, 635_213, 635_213, 1_000_000)] {
+            let (l, to) = v::vault_lp_recover(v::DrawLedger { senior_claim: cc, drawn, outstanding: outst, pending: 0 }, above);
+            rc.push(format!("[\"{cc}\",\"{drawn}\",\"{outst}\",\"{above}\",\"{to}\",\"{}\"]", l.senior_claim));
+        }
+        out.push(format!("\"recoverVectors\":[{}]", rc.join(",")));
+    }
 
     // The app's per-asset offsets (lines `@asset_vault_lp_off_i N` from gen-vectors.ts): plant a
     // record there in a zeroed, correctly-sized market buffer and read it back with the

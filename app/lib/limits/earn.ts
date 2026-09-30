@@ -6,14 +6,15 @@
  */
 import type { MarketLimits } from "@/hooks/useMarketLimits";
 import { earnTrancheView, harvestableFeeAtoms, vaultLpValueAtoms, type EarnDepositBlock, type EarnTrancheView, type VaultLpValue } from "./vault-tranche";
-import { maxNowAtoms, worseOfLpValue, type EarnSide } from "./earn-withdraw";
+import { maxNowAtoms } from "./earn-withdraw";
+import { earnSeniorPricing, type LagBoundsLp, type LagBoundsMarket } from "./earn-pricing";
 
 export function earnViewFromLimits(
   limits: MarketLimits,
   backingNavAtoms: bigint,
   withdrawShares: bigint,
-  /** UX WP-4: price the LP at the worse of effective / target for this side (catch-up). */
-  side?: EarnSide,
+  /** Kept for call-site compatibility; pricing sides live in earnPanelPricing (earn-pricing.ts). */
+  _side?: undefined,
   /** UX WP-5: the LP value from a simulated crank when the certificate is stale (never guessed). */
   simulatedLpValue?: VaultLpValue | null,
 ): EarnTrancheView | null {
@@ -24,8 +25,7 @@ export function earnViewFromLimits(
   const shares = limits.registryShares;
   if (!vs || !e || shares === null) return null;
   const direct: VaultLpValue = limits.lp ? vaultLpValueAtoms(limits.lp, e) : { kind: "stale" };
-  const raw = direct.kind === "stale" && simulatedLpValue ? simulatedLpValue : direct;
-  const lpValue = side && limits.lp ? worseOfLpValue(raw, limits.lp.posQ, e.effectivePriceE6, e.targetPriceE6 ?? 0n, side) : raw;
+  const lpValue = direct.kind === "stale" && simulatedLpValue ? simulatedLpValue : direct;
   return earnTrancheView({
     seniorClaimAtoms: vs.seniorClaimAtoms,
     juniorFloorBps: vs.juniorFloorBps,
@@ -41,27 +41,66 @@ export function earnViewFromLimits(
 /** The share count the Earn gate uses: the registry's, exactly as the program. */
 export const earnGateShares = (limits: MarketLimits): bigint | null => limits.registryShares;
 
+/** The post-crank state a simulation returned (stale certificate): priced instead of the live one. */
+export interface SimulatedEarnState {
+  value: VaultLpValue;
+  lp?: LagBoundsLp | null;
+  market?: LagBoundsMarket | null;
+}
+
+/** The engine view as the lag-bounds market (single-asset P3: asset 0 carries eff / target). */
+export function lagBoundsMarketFromEngine(e: {
+  oracleEpoch: bigint;
+  fundingEpoch: bigint;
+  riskEpoch: bigint;
+  assetSetEpoch: bigint;
+  effectivePriceE6: bigint;
+  targetPriceE6?: bigint;
+}): LagBoundsMarket {
+  return {
+    oracleEpoch: e.oracleEpoch,
+    fundingEpoch: e.fundingEpoch,
+    riskEpoch: e.riskEpoch,
+    assetSetEpoch: e.assetSetEpoch,
+    priceOf: (a) => (a === 0 ? { eff: e.effectivePriceE6, tgt: e.targetPriceE6 ?? e.effectivePriceE6 } : null),
+  };
+}
+
 /**
- * UX WP-4: the Earn panel's pricing, exactly as the program prices it: registry shares, the senior
- * value at the WORSE of the effective / target price for each side (next wrapper, catch-up rule),
- * and what the vault can pay out now (88 before it happens). null = not a bound P3 vault.
+ * UX WP-4: the Earn panel's pricing, exactly as the program prices 75 / 77 (earnSeniorPricing,
+ * the one port of the wrapper's worse-of rule): registry shares, the claim deposits are minted
+ * against, the senior value redemptions are paid at, and what the vault can pay out now.
+ * null = not a bound P3 vault.
  */
 export function earnPanelPricing(
   limits: MarketLimits,
   backingNavAtoms: bigint,
-  simulatedLpValue?: VaultLpValue | null,
+  simulated?: SimulatedEarnState | VaultLpValue | null,
 ): { totalShares: bigint; depositSeniorValue: bigint | null; withdrawSeniorValue: bigint | null; maxNowAtoms: bigint | null } | null {
-  if (!limits.flags.p3 || !limits.vaultLp?.bound || limits.registryShares === null) return null;
-  const dep = earnViewFromLimits(limits, backingNavAtoms, 0n, "deposit", simulatedLpValue);
-  const wd = earnViewFromLimits(limits, backingNavAtoms, 0n, "withdraw", simulatedLpValue);
-  if (!dep || !wd) return null;
-  const lpAtoms = wd.vaultValue !== null ? wd.vaultValue - wd.backingCover : null;
-  const drawPending = (limits.vaultState?.seniorDrawOutstandingAtoms ?? 0n) > 0n;
+  if (!limits.flags.p3 || !limits.vaultLp?.bound || limits.registryShares === null || !limits.engine || !limits.vaultState) return null;
+  const sim: SimulatedEarnState | null = simulated ? ("kind" in simulated ? { value: simulated } : simulated) : null;
+  const view = earnViewFromLimits(limits, backingNavAtoms, 0n, undefined, sim?.value ?? null);
+  if (!view) return null;
+  const e = limits.engine;
+  const directStale = !limits.lp || vaultLpValueAtoms(limits.lp, e).kind === "stale";
+  const lp: LagBoundsLp | null = directStale ? sim?.lp ?? null : limits.lp ? { ...limits.lp, legs: limits.lp.legs ?? [] } : null;
+  const market: LagBoundsMarket | null = directStale ? sim?.market ?? null : lagBoundsMarketFromEngine(e);
+  const pr = earnSeniorPricing({
+    resolved: e.mode === 1,
+    cEff: view.seniorClaimEff,
+    nav: view.backingCover,
+    outstanding: limits.vaultState.seniorDrawOutstandingAtoms ?? 0n,
+    lp,
+    market,
+    resolvedSenior: view.senior,
+  });
+  const lpAtoms = view.vaultValue !== null ? view.vaultValue - view.backingCover : null;
+  const drawPending = (limits.vaultState.seniorDrawOutstandingAtoms ?? 0n) > 0n;
   return {
     totalShares: limits.registryShares,
-    depositSeniorValue: dep.senior,
-    withdrawSeniorValue: wd.senior,
-    maxNowAtoms: maxNowAtoms(wd, lpAtoms, drawPending),
+    depositSeniorValue: pr.depositClaim,
+    withdrawSeniorValue: pr.withdrawSeniorValue,
+    maxNowAtoms: maxNowAtoms(view, lpAtoms, drawPending),
   };
 }
 

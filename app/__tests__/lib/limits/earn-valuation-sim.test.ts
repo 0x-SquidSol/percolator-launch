@@ -73,7 +73,11 @@ describe("simulateVaultLpValue", () => {
       return { err: null, accounts: [portfolio({ certEquity: 987_654_321n, epochs }), m] };
     });
     const r = await simulateVaultLpValue(p, { simulate, now: () => 1_000 });
-    expect(r).toEqual({ value: { kind: "certified", atoms: 987_654_321n }, at: 1_000 });
+    expect(r).toMatchObject({ value: { kind: "certified", atoms: 987_654_321n }, at: 1_000 });
+    // the post-crank state is kept for the worse-of pricing (earn-pricing.ts prices THIS state)
+    expect(r!.lp?.cert.certifiedEquity).toBe(987_654_321n);
+    expect(r!.market?.oracleEpoch).toBe(epochs.oracle);
+    expect(r!.market?.priceOf(0)).toEqual({ eff: e.effectivePriceE6, tgt: e.targetPriceE6 });
     // cached for one crank cycle, then re-simulated
     await simulateVaultLpValue(p, { simulate, now: () => 1_000 + VALUATION_CACHE_MS - 1 });
     expect(simulate).toHaveBeenCalledTimes(1);

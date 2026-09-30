@@ -34,7 +34,12 @@ import {
   decodeTerminalBacking,
   decodeVaultLpState,
   decodePortfolioRisk,
+  decodePortfolioLegs,
+  decodeAssetVaultLp,
 } from "../../lib/limits/decode";
+import { earnPanelPricing, earnViewFromLimits, lagBoundsMarketFromEngine } from "../../lib/limits/earn";
+import { vaultLpEquityLagBounds } from "../../lib/limits/earn-pricing";
+import { previewDepositShares, previewWithdrawAtoms } from "../../lib/limits/earn-withdraw";
 import { earnAbsorbed, harvestableFeeAtoms, vaultLpValueAtoms } from "../../lib/limits/vault-tranche";
 import { find77, recallCandidates, redeemRepairVariants } from "../../lib/limits/senior-draw-repair";
 import { parseP3DrawLogs, summarizeDrawEvents } from "../../lib/limits/p3-draw-logs";
@@ -211,6 +216,43 @@ if (cmd === "init-market") {
       candidates: cands.map(String),
       plain: exec.map(enc1),
       variants: redeemRepairVariants(exec, at, pk("user"), cands).map((v) => ({ kind: v.kind, amount: v.amount?.toString() ?? null, ixs: v.ixs.map(enc1) })),
+    }),
+  );
+} else if (cmd === "earn-price") {
+  // Earn worse-of pricing (ede691b6): the panel's preview from RAW bytes, through the SAME code the
+  // Earn page runs (lib/limits/earn.ts earnPanelPricing -> earn-pricing.ts earnSeniorPricing).
+  // backing = the pots' NAV the app is given (the page passes useInsuranceLP's vaultTotalAtoms).
+  const md = b64(a.marketB64);
+  const rd = b64(a.registryB64);
+  const eng = decodeMarketEngineView(md);
+  const vs = decodeVaultLpState(b64(a.vaultLpStateB64));
+  const lpBytes = b64(a.lpB64);
+  const risk = decodePortfolioRisk(lpBytes);
+  const shares = decodeLpVaultRegistryShares(rd);
+  const avl = decodeAssetVaultLp(md, 0);
+  if (!eng || !vs || !risk || shares === null || !avl) throw new Error("earn-price: undecodable input");
+  const limits = {
+    state: "ready", flags: { p1: true, p2: true, p2FeeCharged: false, p3: true }, engine: eng, riskLimits: null, bandBps: null,
+    vaultLp: avl, lp: { ...risk, address: new PublicKey(avl.vaultLpPortfolio), posQ: 0n, legs: decodePortfolioLegs(lpBytes) },
+    matcher: null, vaultState: vs, registryShares: shares, assetAdmin: null,
+  } as unknown as Parameters<typeof earnPanelPricing>[0];
+  const backing = big("backing");
+  const pr = earnPanelPricing(limits, backing);
+  const view = earnViewFromLimits(limits, backing, 0n);
+  const bounds = vaultLpEquityLagBounds({ ...risk, legs: decodePortfolioLegs(lpBytes) }, lagBoundsMarketFromEngine(eng));
+  const redeem = a.shares ? big("shares") : 0n;
+  const amount = a.amount ? big("amount") : 0n;
+  process.stdout.write(
+    JSON.stringify({
+      eff: eng.effectivePriceE6.toString(), tgt: eng.targetPriceE6.toString(),
+      legs: decodePortfolioLegs(lpBytes).map((l) => ({ slot: l.slot, asset: l.assetIndex, side: l.side, basis: l.basisPosQ.toString() })),
+      worse: bounds === "stale" ? "stale" : bounds.worse.toString(), better: bounds === "stale" ? "stale" : bounds.better.toString(),
+      cEff: view?.seniorClaimEff.toString() ?? null, nav: view?.backingCover.toString() ?? null, totalShares: shares.toString(),
+      withdrawSeniorValue: pr?.withdrawSeniorValue?.toString() ?? null, depositClaim: pr?.depositSeniorValue?.toString() ?? null,
+      withdrawAtoms: pr && redeem > 0n ? previewWithdrawAtoms(redeem, pr.totalShares, pr.withdrawSeniorValue)?.toString() ?? null : null,
+      depositShares: pr && amount > 0n ? previewDepositShares(amount, pr.totalShares, pr.depositSeniorValue)?.toString() ?? null : null,
+      // CONTROL: the same numbers WITHOUT the worse-of rule (pre-ede691b6 pricing)
+      plainWithdrawAtoms: view?.senior != null && redeem > 0n ? previewWithdrawAtoms(redeem, shares, view.senior)?.toString() ?? null : null,
     }),
   );
 } else if (cmd === "catch-up") {

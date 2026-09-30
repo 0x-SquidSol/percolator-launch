@@ -236,6 +236,28 @@ export function decodePortfolioRisk(d: Uint8Array): PortfolioRiskView | null {
   };
 }
 
+export interface PortfolioLegView {
+  slot: number;
+  assetIndex: number;
+  /** 0 Long, 1 Short (engine encode_side). */
+  side: number;
+  /** Raw `basis_pos_q` (i128), NOT the ADL-scaled position. */
+  basisPosQ: bigint;
+}
+
+/** Every ACTIVE leg (slot order), as the wrapper iterates `lp.legs` (UX WP-4 worse-of bounds). */
+export function decodePortfolioLegs(d: Uint8Array): PortfolioLegView[] {
+  if (d.length < C.PF_LEGS + C.PF_MAX_LEGS * C.PF_LEG_LEN) return [];
+  const v = dv(d);
+  const out: PortfolioLegView[] = [];
+  for (let s = 0; s < C.PF_MAX_LEGS; s++) {
+    const l = C.PF_LEGS + s * C.PF_LEG_LEN;
+    if (d[l + C.LEG_ACTIVE] !== 1) continue;
+    out.push({ slot: s, assetIndex: v.getUint32(l + C.LEG_ASSET_INDEX, true), side: d[l + C.LEG_SIDE], basisPosQ: i128(d, l + C.LEG_BASIS_POS_Q) });
+  }
+  return out;
+}
+
 /**
  * Port of wrapper `signed_position_for_asset_view`: the first active leg for
  * `(assetIndex, marketId)`, `+|basis|` Long / `-|basis|` Short. BASIS, not

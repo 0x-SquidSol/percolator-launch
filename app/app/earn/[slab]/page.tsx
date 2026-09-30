@@ -135,7 +135,7 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
   // UX WP-5 (§3.7): a stale LP certificate is valued by a simulated crank, never "Needs refresh".
   const lpValuation = useVaultLpValuation(slabAddress, earnLimits);
   const earnTrancheView = earnViewFromLimits(earnLimits, lpVaultState.vaultTotalAtoms, lpVaultState.userLpBalance, undefined, lpValuation.value);
-  const earnPricing = earnPanelPricing(earnLimits, lpVaultState.vaultTotalAtoms, lpValuation.value);
+  const earnPricing = earnPanelPricing(earnLimits, lpVaultState.vaultTotalAtoms, lpValuation.sim ?? lpValuation.value);
   const { engine, totalOI, vault: engineVault } = useEngineState();
 
   // BUG-5 FIX: resolve actual collateral mint from on-chain slab data.

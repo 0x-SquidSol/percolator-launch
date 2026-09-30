@@ -26,6 +26,8 @@ import {
   decodeMarketEngineView,
   decodeMatcherCtx,
   decodePortfolioRisk,
+  decodePortfolioLegs,
+  type PortfolioLegView,
   decodeVaultLpState,
   decodeLpVaultRegistryShares,
   signedPositionForAsset,
@@ -47,6 +49,8 @@ export type LimitsState = "off" | "loading" | "ready" | "error";
 export interface LpView extends PortfolioRiskView {
   address: PublicKey;
   posQ: bigint;
+  /** Active legs (raw basis), for the Earn worse-of pricing bounds (lib/limits/earn-pricing.ts). */
+  legs?: PortfolioLegView[];
 }
 
 export interface MarketLimits {
@@ -148,7 +152,7 @@ export function useMarketLimits(slabAddress: string | null | undefined, assetInd
         if (lpAccts && lpInfo) {
           const d = new Uint8Array(lpInfo.data);
           const r = decodePortfolioRisk(d);
-          if (r) lp = { ...r, address: lpAccts.lpPortfolio, posQ: marketId === null ? 0n : signedPositionForAsset(d, assetIndex, marketId) };
+          if (r) lp = { ...r, address: lpAccts.lpPortfolio, posQ: marketId === null ? 0n : signedPositionForAsset(d, assetIndex, marketId), legs: decodePortfolioLegs(d) };
         }
         const matcher = ctxInfo ? decodeMatcherCtx(new Uint8Array(ctxInfo.data)) : null;
         const vaultState = vaultInfo ? decodeVaultLpState(new Uint8Array(vaultInfo.data)) : null;

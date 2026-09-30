@@ -13,9 +13,8 @@ import {
   previewWithdrawAtoms,
   sharesForUsdc,
   withdrawFlow,
-  worseOfLpValue,
 } from "@/lib/limits/earn-withdraw";
-import { earnPanelPricing, earnViewFromLimits } from "@/lib/limits/earn";
+import { earnPanelPricing } from "@/lib/limits/earn";
 import { decodeMarketEngineView } from "@/lib/limits/decode";
 import { A_EFFECTIVE_PRICE, A_RAW_ORACLE_TARGET_PRICE } from "@/lib/limits/constants";
 import { marketLimits } from "./fixtures";
@@ -36,38 +35,26 @@ describe("the flow: two steps unless the vault's cooldown is 0", () => {
   });
 });
 
-describe("worse-of pricing during a catch-up (next wrapper rule)", () => {
-  const v = { kind: "certified" as const, atoms: 1_000_000_000n };
-  it("an LP LONG 400 with the target $0.10 above effective: deposit pays the higher value, withdraw gets the lower", () => {
-    // at target the LP is worth 400 × 0.10 = +40 USDC
-    expect(worseOfLpValue(v, 400_000_000n, 1_000_000n, 1_100_000n, "deposit")).toEqual({ kind: "certified", atoms: 1_040_000_000n });
-    expect(worseOfLpValue(v, 400_000_000n, 1_000_000n, 1_100_000n, "withdraw")).toEqual({ kind: "certified", atoms: 1_000_000_000n });
-  });
-  it("an LP SHORT 400: the same move is a loss at target, so the withdrawal is priced there", () => {
-    expect(worseOfLpValue(v, -400_000_000n, 1_000_000n, 1_100_000n, "withdraw")).toEqual({ kind: "certified", atoms: 960_000_000n });
-    expect(worseOfLpValue(v, -400_000_000n, 1_000_000n, 1_100_000n, "deposit")).toEqual({ kind: "certified", atoms: 1_000_000_000n });
-  });
-  it("no catch-up (target = effective, or unread) and a stale value pass through; never negative", () => {
-    expect(worseOfLpValue(v, -400_000_000n, 1_000_000n, 1_000_000n, "withdraw")).toBe(v);
-    expect(worseOfLpValue(v, -400_000_000n, 1_000_000n, 0n, "withdraw")).toBe(v);
-    expect(worseOfLpValue({ kind: "stale" }, -400_000_000n, 1_000_000n, 2_000_000n, "withdraw")).toEqual({ kind: "stale" });
-    expect(worseOfLpValue({ kind: "flat", atoms: 10n }, -400_000_000n, 1_000_000n, 9_000_000n, "withdraw")).toEqual({ kind: "flat", atoms: 0n });
-  });
-
-  it("the Earn view: withdraw-side senior < deposit-side senior while the price catches up", () => {
-    // the base fixture is an impaired-free vault whose LP is SHORT 400 at $1 (certified 120 USDC)
-    const L = marketLimits({ engine: { ...marketLimits().engine!, targetPriceE6: 1_100_000n } as never });
-    const L0 = marketLimits({ engine: { ...marketLimits().engine!, targetPriceE6: 1_000_000n } as never });
-    const backing = 900_000_000n; // the pots don't cover the 1,000 senior alone: the LP value matters
-    const dep = earnViewFromLimits(L, backing, 0n, "deposit")!;
-    const wd = earnViewFromLimits(L, backing, 0n, "withdraw")!;
-    const flat = earnViewFromLimits(L0, backing, 0n, "withdraw")!;
-    expect(wd.vaultValue! < dep.vaultValue!).toBe(true);
-    expect(dep.vaultValue).toBe(flat.vaultValue); // a short LP is worth less at target: deposit keeps effective
-    expect(flat.vaultValue! - wd.vaultValue!).toBe(40_000_000n);
+describe("the panel's pricing = the wrapper's worse-of rule (earn-pricing.ts, ede691b6)", () => {
+  const short400 = () => ({ ...marketLimits().lp!, legs: [{ slot: 0, assetIndex: 0, side: 1, basisPosQ: -400_000_000n }] });
+  it("a SHORT vault LP facing a pending +$0.10: the exit is priced at target, the entry is unchanged (no draw)", () => {
+    const base = marketLimits();
+    // certified equity 120; at target the short loses 40 => worse 80 (>= 0): the junior absorbs it
+    const L = marketLimits({ lp: short400(), engine: { ...base.engine!, targetPriceE6: 1_100_000n } as never });
+    const L0 = marketLimits({ lp: short400(), engine: { ...base.engine!, targetPriceE6: 1_000_000n } as never });
+    const backing = 800_000_000n; // + 2 harvestable = nav 802 < C_eff 1,002: the LP is valued
     const pr = earnPanelPricing(L, backing)!;
-    expect(pr.withdrawSeniorValue).toBe(wd.senior);
-    expect(pr.depositSeniorValue).toBe(dep.senior);
+    const p0 = earnPanelPricing(L0, backing)!;
+    expect(pr.depositSeniorValue).toBe(p0.depositSeniorValue); // 75 unchanged without a draw outstanding
+    // nav < C: the LP counts at min(value, max(worse, 0)) = 80 instead of 120
+    expect(p0.withdrawSeniorValue! - pr.withdrawSeniorValue!).toBe(40_000_000n);
+  });
+  it("a move past the junior (worse < 0) comes off the claim itself", () => {
+    const base = marketLimits();
+    const lpx = { ...short400(), cert: { ...base.lp!.cert, certifiedEquity: 20_000_000n } };
+    const L = marketLimits({ lp: lpx, engine: { ...base.engine!, targetPriceE6: 1_100_000n } as never });
+    const pr = earnPanelPricing(L, 1_000_000_000n)!; // + 2 harvestable: pots cover C_eff exactly (no junior surplus)
+    expect(pr.withdrawSeniorValue).toBe(1_002_000_000n - 20_000_000n);
   });
 });
 

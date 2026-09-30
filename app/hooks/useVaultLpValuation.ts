@@ -13,12 +13,14 @@ import type { MarketLimits } from "@/hooks/useMarketLimits";
 import { useConnectionCompat, useWalletCompat } from "@/hooks/useWalletCompat";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { vaultLpValueAtoms, type VaultLpValue } from "@/lib/limits/vault-tranche";
-import { connectionValuationDeps, simulateVaultLpValue, VALUATION_CACHE_MS } from "@/lib/limits/earn-valuation-sim";
+import { connectionValuationDeps, simulateVaultLpValue, VALUATION_CACHE_MS, type SimulatedValue } from "@/lib/limits/earn-valuation-sim";
 import { crankOracleTail } from "@/lib/limits/vault-lp-repair";
 import { pythCrankAccount } from "@/lib/limits/oracle-tail";
 
 export interface VaultLpValuation {
   value: VaultLpValue | null;
+  /** The simulated post-crank state (stale certificate only), for the Earn worse-of pricing. */
+  sim: SimulatedValue | null;
   /** A simulation is running; `value` is the last known one. */
   updating: boolean;
   /** Set when the value shown is from an earlier simulation (ms epoch). */
@@ -29,7 +31,7 @@ export function useVaultLpValuation(slab: string, limits: MarketLimits): VaultLp
   const { connection } = useConnectionCompat();
   const { publicKey } = useWalletCompat();
   const slabState = useSlabState();
-  const [sim, setSim] = useState<{ value: VaultLpValue; at: number } | null>(null);
+  const [sim, setSim] = useState<SimulatedValue | null>(null);
   const [updating, setUpdating] = useState(false);
   const [failed, setFailed] = useState(false);
   const inflight = useRef(false);
@@ -73,7 +75,7 @@ export function useVaultLpValuation(slab: string, limits: MarketLimits): VaultLp
     };
   }, [stale, programId, payerKey, vaultLpKey, slab, connection, slabState.config, slabState.wrapperConfigV17?.oracleMode]);
 
-  if (!bound) return { value: null, updating: false, asOf: null };
-  if (!stale) return { value: direct, updating: false, asOf: null };
-  return { value: sim?.value ?? null, updating, asOf: failed && sim ? sim.at : null };
+  if (!bound) return { value: null, sim: null, updating: false, asOf: null };
+  if (!stale) return { value: direct, sim: null, updating: false, asOf: null };
+  return { value: sim?.value ?? null, sim, updating, asOf: failed && sim ? sim.at : null };
 }

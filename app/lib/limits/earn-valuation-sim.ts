@@ -12,7 +12,8 @@ import {
   type Connection,
   type TransactionInstruction,
 } from "@solana/web3.js";
-import { decodeMarketEngineView, decodePortfolioRisk } from "./decode";
+import { decodeMarketEngineView, decodePortfolioLegs, decodePortfolioRisk } from "./decode";
+import type { LagBoundsLp, LagBoundsMarket } from "./earn-pricing";
 import { vaultLpValueAtoms, type VaultLpValue } from "./vault-tranche";
 import { buildVaultLpCrankIx } from "./vault-lp-repair";
 
@@ -47,6 +48,29 @@ export interface SimulatedValue {
   value: VaultLpValue;
   /** ms epoch of the simulation. */
   at: number;
+  /** The post-crank vault LP and market (the worse-of bounds price THIS state, like the tx will). */
+  lp?: LagBoundsLp;
+  market?: LagBoundsMarket;
+}
+
+/** The post-crank images as the lag-bounds inputs (earn-pricing.ts). */
+export function boundsInputsFromAccounts(portfolio: Uint8Array, market: Uint8Array): { lp: LagBoundsLp; market: LagBoundsMarket } | null {
+  const risk = decodePortfolioRisk(portfolio);
+  const e = decodeMarketEngineView(market, 0);
+  if (!risk || !e) return null;
+  return {
+    lp: { ...risk, legs: decodePortfolioLegs(portfolio) },
+    market: {
+      oracleEpoch: e.oracleEpoch,
+      fundingEpoch: e.fundingEpoch,
+      riskEpoch: e.riskEpoch,
+      assetSetEpoch: e.assetSetEpoch,
+      priceOf: (a) => {
+        const x = a === 0 ? e : decodeMarketEngineView(market, a);
+        return x ? { eff: x.effectivePriceE6, tgt: x.targetPriceE6 } : null;
+      },
+    },
+  };
 }
 
 const cache = new Map<string, SimulatedValue>();
@@ -69,9 +93,12 @@ export async function simulateVaultLpValue(p: ValuationSimParams, deps: Valuatio
     const crank = buildVaultLpCrankIx(p.programId, p.payer, p.market, p.vaultLp, p.oracleTail ?? [], p.assetIndex ?? 0);
     const r = await deps.simulate([crank], [p.vaultLp, p.market]);
     if (r.err) return null;
-    const v = lpValueFromAccounts(r.accounts[0] ?? null, r.accounts[1] ?? null, p.assetIndex ?? 0);
+    const pf = r.accounts[0] ?? null;
+    const mk = r.accounts[1] ?? null;
+    const v = lpValueFromAccounts(pf, mk, p.assetIndex ?? 0);
     if (!v || v.kind === "stale") return null;
-    const out = { value: v, at: now() };
+    const b = pf && mk ? boundsInputsFromAccounts(pf, mk) : null;
+    const out: SimulatedValue = { value: v, at: now(), ...(b ?? {}) };
     cache.set(key, out);
     return out;
   } catch {

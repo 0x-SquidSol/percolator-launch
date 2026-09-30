@@ -312,11 +312,11 @@ export interface SelfHealParams {
 }
 
 /**
- * Measured on the relaunch wrapper .so p3-batched-4b1a5d30: 17,010 CU (LiteSVM, scripts/limits-parity/p3-sim
- * `limits_app_catch_up_cranks_then_trade`): one catch-up crank of the vault LP. The planner
- * budgets this per crank; recorded in the plan §15.
+ * One catch-up crank of the vault LP, measured in LiteSVM (scripts/limits-parity/p3-sim
+ * `limits_app_catch_up_cranks_then_trade`): 17,010 CU on p3-batched-4b1a5d30, 20,846 CU on
+ * ede691b6 (the worse-of build). Budgeted with ~20% headroom over the newer figure.
  */
-export const CATCH_UP_CRANK_CU = 20_000;
+export const CATCH_UP_CRANK_CU = 25_000;
 /** Total CU the repairs + the user's own instructions may reach (SH-2 cap). */
 export const CATCH_UP_TOTAL_CU = 1_200_000;
 

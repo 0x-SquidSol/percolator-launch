@@ -6,15 +6,13 @@
  *   the payout (77, pre-simulated, repairs bundled by sendTx) opens by itself; after a reload the
  *   card says "Finish withdrawal". Only a vault whose cooldown is 0 withdraws in one tx [76, 77].
  *
- * Pricing (coordinator 2026-09-30, next wrapper): during a price catch-up Earn deposits and
- * withdrawals are priced at the WORSE of the effective and the target price for the user, so
- * every preview here uses the same worse-of rule (`worseOfLpValue`).
+ * Pricing: during a price catch-up the wrapper (ede691b6) prices Earn exits / entries at the
+ * worse of the effective and the pending target price; the ONE port of that rule is
+ * lib/limits/earn-pricing.ts `earnSeniorPricing`, and every preview here consumes its output.
  * Pure; unit-tested in __tests__/lib/limits/earn-withdraw.test.ts.
  */
-import type { VaultLpValue, EarnTrancheView } from "./vault-tranche";
+import type { EarnTrancheView } from "./vault-tranche";
 import { recallLimit, seniorAtomsForRedemption, seniorSharesForDeposit } from "./vault-tranche";
-
-export type EarnSide = "deposit" | "withdraw";
 
 /** Devnet slot time used for every cooldown-to-clock conversion. */
 export const SLOT_MS = 400;
@@ -26,30 +24,10 @@ export function withdrawFlow(cooldownSlots: bigint): WithdrawFlow {
   return cooldownSlots <= 0n ? "one-tx" : "two-step";
 }
 
-/**
- * The vault LP's value priced the way the next wrapper prices an Earn op during a catch-up: the
- * certified equity is at the EFFECTIVE price; at the target price the LP's position is worth
- * posQ·(target − effective)/1e6 more (or less). A deposit pays the higher of the two values (fewer
- * shares), a withdrawal receives the lower. No catch-up (target 0 or equal) => unchanged.
- */
-export function worseOfLpValue(
-  v: VaultLpValue,
-  lpPosQ: bigint,
-  effectivePriceE6: bigint,
-  targetPriceE6: bigint,
-  side: EarnSide,
-): VaultLpValue {
-  if (v.kind === "stale" || targetPriceE6 <= 0n || effectivePriceE6 <= 0n || targetPriceE6 === effectivePriceE6 || lpPosQ === 0n) return v;
-  const delta = (lpPosQ * (targetPriceE6 - effectivePriceE6)) / 1_000_000n;
-  const atTarget = v.atoms + delta > 0n ? v.atoms + delta : 0n;
-  const atoms = side === "deposit" ? (atTarget > v.atoms ? atTarget : v.atoms) : atTarget < v.atoms ? atTarget : v.atoms;
-  return { kind: v.kind, atoms };
-}
-
-/** Shares a deposit of `usdcAtoms` mints at the (deposit-side) senior value. */
-export function previewDepositShares(usdcAtoms: bigint, totalShares: bigint, seniorValue: bigint | null): bigint | null {
-  if (seniorValue === null) return null;
-  return seniorSharesForDeposit(usdcAtoms, totalShares, seniorValue);
+/** Shares a deposit of `usdcAtoms` mints against the deposit claim (75: amount * S / C_price). */
+export function previewDepositShares(usdcAtoms: bigint, totalShares: bigint, depositClaim: bigint | null): bigint | null {
+  if (depositClaim === null) return null;
+  return seniorSharesForDeposit(usdcAtoms, totalShares, depositClaim);
 }
 
 /** USDC `shares` redeem for at the (withdraw-side) senior value. */
