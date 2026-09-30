@@ -64,7 +64,7 @@ export const COPY = {
   stepDown: (x: string, side: string, crowd: string, base: string) =>
     `Max leverage is ${x}× for new ${side} positions while the book is crowded (${crowd} of the cap). The other side keeps ${base}×.`,
   wizardRequirement: (floor: string) =>
-    `Your junior tranche is first-loss capital: winning traders are paid from it first. A loss beyond it is taken as a haircut on the winning traders' profit, and Earn depositors stay whole. It can't be withdrawn while the LP holds positions, or below ${floor} of Earn deposits.`,
+    `Your junior tranche is first-loss capital. Losses hit the creator's junior first, then Earn depositors pro rata. Winning trades are always paid in full. It can't be withdrawn while the LP holds positions, or below ${floor} of Earn deposits.`,
   wizardAfterLaunch: "Junior deposit is added after launch.",
   closeRebooked: "Fees were re-booked; press Close again to finish.",
   closeZeroFill:
@@ -106,14 +106,14 @@ export const COPY = {
   } as const,
   /** Creator panel notice when the junior is exhausted (senior-impaired flag set on chain). */
   juniorExhausted:
-    "Your junior tranche is exhausted: a further loss is taken as a haircut on the winning traders' profit (Earn depositors stay whole), and new Earn deposits are paused.",
-  /** Earn risk notice on P3 (vault-owned LP) markets: who bears a loss (user decision 2026-09-30). */
+    "Your junior tranche is exhausted: further losses now hit Earn depositors pro rata. Winning trades are still paid in full. New Earn deposits are paused.",
+  /** Earn risk notice on P3 markets: who bears a loss (user decision 2026-09-30, reversed; final wording from P3 doc §0.8). */
   earnRiskP3:
-    "Earn deposits back each market's vault-owned LP. The market's creator funds a first-loss junior tranche that pays winning traders first; a loss beyond it is taken as a haircut on the winning traders' profit, and Earn deposits stay whole. Smart-contract and oracle risk remain: only deposit what you can afford to lose.",
+    "Earn deposits back each market's vault-owned LP and can lose value. Losses hit the creator's junior first, then Earn depositors pro rata. Winning trades are always paid in full. Only deposit what you can afford to lose.",
   p3Wizard: {
     title: "Vault-owned LP (junior tranche)",
     explain:
-      "Your market's liquidity is provided by an LP the Earn vault owns. You fund its first-loss (junior) tranche: trader wins against the LP come out of your tranche first, and trading PnL against it is yours. A loss beyond your tranche is taken as a haircut on the winning traders' profit; Earn depositors stay whole.",
+      "Your market's liquidity is provided by an LP the Earn vault owns. You fund its first-loss (junior) tranche, and trading PnL against it is yours. Losses hit the creator's junior first, then Earn depositors pro rata. Winning trades are always paid in full.",
     floorLabel: "Junior floor",
     floorTooltip:
       "The share of Earn deposits your tranche must cover. You cannot withdraw below it while Earn depositors are in the vault. 10% to 100%.",

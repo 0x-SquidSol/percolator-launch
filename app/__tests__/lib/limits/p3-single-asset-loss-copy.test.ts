@@ -41,17 +41,20 @@ describe("error 86 VaultLpMultiAssetMarket", () => {
   });
 });
 
-describe("loss copy: a loss beyond the junior is a haircut on the winner's profit; seniors whole", () => {
-  const HAIRCUT = /haircut on the winning traders' profit/;
-  const WHOLE = /Earn depositors stay whole|not on Earn deposits|Earn deposits stay whole/;
+describe("loss copy (user decision, reversed): junior first, then Earn pro rata; winners always paid in full", () => {
+  const JUNIOR_THEN_EARN = /junior first, then Earn depositors pro rata/;
+  const WINNERS_PAID = /Winning trades are (always|still) paid in full/;
   it("every P3 'who bears losses' string says it", () => {
-    for (const s of [COPY.wizardRequirement("20%"), COPY.p3Wizard.explain, COPY.earnRiskP3, COPY.juniorExhausted]) {
-      expect(s).toMatch(HAIRCUT);
-      expect(s).toMatch(WHOLE);
+    for (const s of [COPY.wizardRequirement("20%"), COPY.p3Wizard.explain, COPY.earnRiskP3]) {
+      expect(s).toMatch(JUNIOR_THEN_EARN);
+      expect(s).toMatch(WINNERS_PAID);
     }
+    expect(COPY.juniorExhausted).toMatch(/Earn depositors pro rata/);
+    expect(COPY.juniorExhausted).toMatch(WINNERS_PAID);
   });
-  it("no P3 surface claims Earn depositors pay trader profits or lose after the junior", () => {
-    const WRONG = /paid by Earn depositors|before Earn depositors lose|Earn depositors lose|further trader profits are paid/;
+  it("no P3 surface claims seniors are protected or winners are haircut", () => {
+    const WRONG =
+      /haircut on the winning|winners? (are|get|is) haircut|stay whole|seniors? (are|stay|remain) (whole|protected|safe)|not on Earn deposits|Earn deposits (are|stay) (whole|protected|safe)|never lose|can(no|')t lose|principal is (protected|guaranteed)/i;
     const strings: string[] = [];
     const walk = (v: unknown): void => {
       if (typeof v === "string") strings.push(v);
@@ -67,7 +70,10 @@ describe("loss copy: a loss beyond the junior is a haircut on the winner's profi
     const creator = readFileSync(resolve(process.cwd(), "components/limits/CreatorLimits.tsx"), "utf8");
     expect(creator).toContain("{COPY.juniorExhausted}");
     const card = readFileSync(resolve(process.cwd(), "components/limits/EarnTrancheCard.tsx"), "utf8");
-    expect(card).toMatch(HAIRCUT);
+    expect(card).toMatch(JUNIOR_THEN_EARN);
+    // The real on-chain withdraw value stays on screen (it can be below principal).
+    expect(card).toContain("COPY.withdrawImpaired(");
+    expect(COPY.withdrawImpaired("1.00")).toMatch(/below principal/);
     const earn = readFileSync(resolve(process.cwd(), "components/earn/EarnVaultView.tsx"), "utf8");
     expect(earn).toContain("COPY.earnRiskP3");
   });
