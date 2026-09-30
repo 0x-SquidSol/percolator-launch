@@ -1,8 +1,8 @@
 diff --git a/tests/p3_vault_lp.rs b/tests/p3_vault_lp.rs
-index 06fa2fd7..0057ee1a 100644
+index 06fa2fd7..152be226 100644
 --- a/tests/p3_vault_lp.rs
 +++ b/tests/p3_vault_lp.rs
-@@ -3330,3 +3330,651 @@ fn p3_recall_cap_is_post_maintenance_fee() {
+@@ -3330,3 +3330,735 @@ fn p3_recall_cap_is_post_maintenance_fee() {
      assert!(after_equity >= 0);
      env.assert_conserved("recall post-fee");
  }
@@ -379,6 +379,90 @@ index 06fa2fd7..0057ee1a 100644
 +    env.limits_send(limits_ixs(&v), &[&d.kp.insecure_clone()]).expect("APP resolved redemption after the harvest");
 +    println!("LIMITS-APP P3 resolved harvest: redemption paid {}", env.tok(d.dest));
 +    assert!(env.tok(d.dest) > 10_000_000, "the senior got its share of the harvested fees");
++}
++
++/// UX WP-8 "Finish now" (audit §3.9), on real wrapper + matcher BPF: the APP builds the WHOLE
++/// finish list from ONE snapshot right after resolve (vault LP settle copies, the trader's
++/// CloseResolved copies + top-up claim, the empty-portfolio closes, the harvest, and the Earn
++/// depositor's own 76 last), each tx at the APP's per-step compute budget. The driver re-plans
++/// before each item with the APP's skip rule. Asserts: every broadcast item lands (the
++/// pre-built identities stay valid through the closes), unneeded copies are never sent, the
++/// market ends terminal-flat, the request landed, and the depositor's 77 then pays.
++#[test]
++fn limits_app_p3_finish_now_one_approval() {
++    let mut env = Env::new(Params { fee_bps: 30, ..Params::default() });
++    env.limits_add_ata_program();
++    let lp = env.bind(1_000);
++    let admin = env.admin.insecure_clone();
++    let d = env.new_depositor();
++    env.earn_deposit(&d, 10_000_000, Some(lp.portfolio)).expect("earn");
++    env.junior_deposit_as(&admin, lp.portfolio, 60_000_000).expect("junior");
++    let t = env.new_trader(20_000_000);
++    env.trade(&t, &lp, 50 * POS).expect("open (left open at resolve)");
++    let flat = env.new_trader(20_000_000);
++    env.trade(&flat, &lp, 5 * POS).expect("open");
++    env.svm.expire_blockhash();
++    env.trade(&flat, &lp, -5 * POS).expect("close before resolve");
++    env.resolve();
++
++    let ports = [lp.portfolio, t.portfolio, flat.portfolio];
++    let shares = env.lp_shares(&d);
++    let mut args = env.limits_exit_json(&ports);
++    args["redeemer"] = serde_json::json!(d.kp.pubkey().to_string());
++    args["redeemerLpAta"] = serde_json::json!(d.lp_ata.to_string());
++    args["shares"] = serde_json::json!(shares.to_string());
++    let v = limits_app("finish", args);
++    let items = v["items"].as_array().expect("items").clone();
++    println!("LIMITS-APP finish: phase {} estimate {} items {}", v["phase"], v["estimate"], items.len());
++    assert_eq!(items.last().unwrap()["item"]["step"]["kind"], "earn-request", "the user's request rides last");
++
++    let (mut sent, mut skipped) = (Vec::new(), 0usize);
++    for (i, it) in items.iter().enumerate() {
++        let mut q = env.limits_exit_json(&ports);
++        q["item"] = it["item"].clone();
++        if !limits_app("finish-needed", q)["needed"].as_bool().unwrap() {
++            skipped += 1;
++            continue;
++        }
++        let kind = it["item"]["step"]["kind"].as_str().unwrap().to_string();
++        let measure = std::env::var("LIMITS_FINISH_MEASURE").is_ok();
++        let cu = if measure { 1_400_000 } else { it["cu"].as_u64().unwrap() as u32 };
++        let mut ixs = vec![
++            ComputeBudgetInstruction::request_heap_frame(128 * 1024),
++            ComputeBudgetInstruction::set_compute_unit_limit(cu),
++            ComputeBudgetInstruction::set_compute_unit_price(1_000 + i as u64 + 1),
++        ];
++        ixs.extend(limits_ixs(it));
++        let kp = d.kp.insecure_clone();
++        let extra: Vec<&Keypair> = if kind == "earn-request" { vec![&kp] } else { vec![] };
++        let mut signers = vec![&env.payer];
++        signers.extend(extra);
++        env.svm.expire_blockhash();
++        let before = env.tok(env.vault_token) as u128;
++        let tx = Transaction::new_signed_with_payer(&ixs, Some(&env.payer.pubkey()), &signers, env.svm.latest_blockhash());
++        let r = env.svm.send_transaction(tx);
++        let after = env.tok(env.vault_token) as u128;
++        if after > before { env.paid_in += after - before } else { env.paid_out += before - after }
++        if let Ok(m) = &r { println!("LIMITS-APP finish CU: {kind} consumed {} (app budget {})", m.compute_units_consumed, it["cu"]); }
++        let r = r.map_err(|e| format!("{e:?}"));
++        assert!(r.is_ok(), "item {i} ({kind} copy {}) refused at the app's {cu} CU: {r:?}", it["item"]["copy"]);
++        sent.push(format!("{kind}#{}", it["item"]["copy"]));
++    }
++    println!("LIMITS-APP finish: sent {} {sent:?}, skipped {skipped}", sent.len());
++    assert!(skipped > 0, "some pre-signed copies were unneeded and never sent");
++    assert_eq!(sent.len() + skipped, items.len());
++    let fin = limits_app("plan", env.limits_exit_json(&ports));
++    assert_eq!(fin["phase"], "ready", "one Finish-now run reached terminal-flat: {fin}");
++    assert!(sent.iter().any(|s| s.starts_with("earn-request")), "the request landed in the same run");
++
++    // The payout (the WP-4 second prompt): the app's 77 for the request made above.
++    let v = limits_app("execute", env.limits_earn_json(&d.kp, serde_json::json!({
++        "redemption": d.redemption.to_string(), "dest": d.dest.to_string()})));
++    assert!(v.get("blocked").is_none(), "{v}");
++    env.limits_send(limits_ixs(&v), &[&d.kp.insecure_clone()]).expect("APP 77 after Finish now");
++    println!("LIMITS-APP finish: redemption paid {}", env.tok(d.dest));
++    assert!(env.tok(d.dest) > 0);
++    env.assert_conserved("limits app finish now");
 +}
 +
 +/// E2E B12 (app side): a trader's OWN portfolio on a Resolved market is cleaned up by the APP's

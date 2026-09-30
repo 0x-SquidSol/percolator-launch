@@ -10,12 +10,20 @@
  * Reads only while the market is RESOLVED; on a live market the hook is inert (one market read).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { PublicKey } from '@solana/web3.js';
-import { deriveLpBackingLedger, deriveVaultAuthority } from '@percolatorct/sdk';
+import { PublicKey, type TransactionInstruction } from '@solana/web3.js';
+import {
+  deriveInsuranceLpMint,
+  deriveLpBackingLedger,
+  deriveLpEscrow,
+  deriveLpRedemption,
+  deriveLpVaultRegistry,
+  deriveVaultAuthority,
+} from '@percolatorct/sdk';
 import { getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { useConnectionCompat, useWalletCompat } from '@/hooks/useWalletCompat';
 import { useSlabState } from '@/components/providers/SlabProvider';
-import { sendTx } from '@/lib/tx';
+import { broadcastSignedTx, getFreshBlockhash, getPriorityFee, sendTx, signAllCompat } from '@/lib/tx';
+import { pollWhenVisible } from '@/lib/pollWhenVisible';
 import { computeBudgetPrefix, connectionSelfHealDeps } from '@/lib/self-heal';
 import { readPortfolioIdentity } from '@/lib/v18-wire';
 import { KIND_PORTFOLIO, MARKET_MODE_RESOLVED } from '@/lib/limits/constants';
@@ -29,39 +37,77 @@ import {
   decodeVaultLpState,
 } from '@/lib/limits/decode';
 import { deriveLpVaultRegistryPda, deriveVaultLpState } from '@/lib/limits/p3-ix';
-import { planResolvedExit, type ExitPortfolio, type ResolvedExitPlan } from '@/lib/limits/resolved-exit';
+import { EXIT_TX_CU_CAP, planResolvedExit, type ExitPortfolio, type ResolvedExitPlan } from '@/lib/limits/resolved-exit';
 import { exitStepIxs, type ExitIxContext, type ExitPortfolioRef } from '@/lib/limits/resolved-exit-ixs';
 import { runResolvedExit, type ResolvedExitRun } from '@/lib/limits/resolved-exit-run';
 import { harvestableFeeAtoms } from '@/lib/limits/vault-tranche';
+import { buildRequestRedeemIx } from '@/lib/limits/earn-ixs';
+import {
+  buildFinishList,
+  FINISH_MAX_TXS,
+  finishEstimate,
+  finishItemCu,
+  buildFinishTxs,
+  planPortfolios,
+  runFinish,
+  stepNeeded,
+  type FinishItem,
+  type FinishRun,
+} from '@/lib/limits/resolved-finish';
 
 /** Raw account offset of the portfolio's provenance market group (see hooks/useTrade.ts). */
 const PORTFOLIO_PROVENANCE_MARKET_GROUP_OFF = 16;
 /**
- * One exit step per tx. Measured on the final wrapper: CloseResolved up to 204k CU, 101
- * (SettleVaultLpResolved) up to 285k; the budget must cover both (>= 300k / 400k), and the
- * pre-send SIMULATION must carry it too (a bare simulation gets the 200k per-instruction default,
- * so a 285k step would look refused).
+ * Simulation budget for an exit tx. The SEND budget is per tx, the sum of its steps' measured
+ * costs (lib/limits/resolved-exit.ts EXIT_STEP_CU: 101 up to 285k, CloseResolved up to 204k on the
+ * final wrapper); a bare simulation gets the 200k per-instruction default and would read a 285k
+ * step as refused, so the simulation runs at the tx cap.
  */
-export const EXIT_TX_CU = 600_000;
+export const EXIT_TX_CU = EXIT_TX_CU_CAP;
+
+/** While settled but not yet payable, re-read so the panel flips to Ready when the keeper finishes. */
+export const RESOLVED_POLL_MS = 20_000;
 
 interface Snapshot {
   plan: ResolvedExitPlan;
   ctx: ExitIxContext | null;
+  portfolios: ExitPortfolio[];
+  bound: boolean;
+  nowSlot: bigint;
 }
 
 export interface ResolvedExitState {
   resolved: boolean;
   plan: ResolvedExitPlan | null;
+  /** Chain slot of the last read (for the ETA; never shown). */
+  nowSlot: bigint | null;
+  /** What "Finish now" would do right now (null when there is nothing to finish). */
+  estimate: { steps: number; sol: string } | null;
   running: boolean;
   lastRun: ResolvedExitRun | null;
+  lastFinish: FinishRun | null;
   error: string | null;
+}
+
+/** The Earn request (76) the user's "Finish now and request my withdrawal" appends. */
+export interface FinishEarnRequest {
+  shares: bigint;
 }
 
 export function useResolvedExit(slabAddress: string | null) {
   const { connection } = useConnectionCompat();
   const wallet = useWalletCompat();
   const { programId, config } = useSlabState();
-  const [state, setState] = useState<ResolvedExitState>({ resolved: false, plan: null, running: false, lastRun: null, error: null });
+  const [state, setState] = useState<ResolvedExitState>({
+    resolved: false,
+    plan: null,
+    nowSlot: null,
+    estimate: null,
+    running: false,
+    lastRun: null,
+    lastFinish: null,
+    error: null,
+  });
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -78,7 +124,7 @@ export function useResolvedExit(slabAddress: string | null) {
     if (!mi) return null;
     const md = new Uint8Array(mi.data);
     const m = decodeResolvedMarket(md);
-    if (!m || m.mode !== MARKET_MODE_RESOLVED) return { plan: { phase: 'not-resolved' }, ctx: null };
+    if (!m || m.mode !== MARKET_MODE_RESOLVED) return { plan: { phase: 'not-resolved' }, ctx: null, portfolios: [], bound: false, nowSlot: 0n };
 
     const registry = deriveLpVaultRegistryPda(prog, market);
     const vaultLpState = deriveVaultLpState(prog, market);
@@ -150,14 +196,21 @@ export function useResolvedExit(slabAddress: string | null) {
             }
           : null,
     };
-    return { plan, ctx };
+    return { plan, ctx, portfolios, bound, nowSlot: BigInt(nowSlot) };
   }, [connection, slabAddress, programId, config, wallet.publicKey]);
 
   const refresh = useCallback(async () => {
     try {
       const s = await snapshot();
       if (!alive.current) return;
-      setState((p) => ({ ...p, resolved: !!s && s.plan.phase !== 'not-resolved', plan: s?.plan ?? null, error: null }));
+      setState((p) => ({
+        ...p,
+        resolved: !!s && s.plan.phase !== 'not-resolved',
+        plan: s?.plan ?? null,
+        nowSlot: s ? s.nowSlot : null,
+        estimate: s ? estimateOf(s) : null,
+        error: null,
+      }));
     } catch (e) {
       if (alive.current) setState((p) => ({ ...p, error: e instanceof Error ? e.message : String(e) }));
     }
@@ -166,6 +219,14 @@ export function useResolvedExit(slabAddress: string | null) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Keeper-first (audit §3.9): poll only while settled and not yet payable, so the panel turns
+  // to "withdraw now" on its own. A live market is never polled.
+  const settling = state.resolved && state.plan !== null && state.plan.phase !== 'ready';
+  useEffect(() => {
+    if (!settling) return;
+    return pollWhenVisible(() => void refresh(), RESOLVED_POLL_MS);
+  }, [settling, refresh]);
 
   const run = useCallback(async (): Promise<ResolvedExitRun | null> => {
     if (!wallet.publicKey || !slabAddress) throw new Error('Wallet not connected');
@@ -186,7 +247,7 @@ export function useResolvedExit(slabAddress: string | null) {
           return exitStepIxs(step, ctx);
         },
         simulate: async (ixs) => (await sim.simulate([...computeBudgetPrefix(EXIT_TX_CU), ...ixs])).err ?? null,
-        send: (ixs) => sendTx({ connection, wallet, instructions: ixs, computeUnits: EXIT_TX_CU }),
+        send: (ixs, computeUnits) => sendTx({ connection, wallet, instructions: ixs, computeUnits }),
       });
       if (alive.current) setState((p) => ({ ...p, running: false, lastRun: result, plan: result.final }));
       return result;
@@ -196,5 +257,88 @@ export function useResolvedExit(slabAddress: string | null) {
     }
   }, [connection, wallet, slabAddress, snapshot]);
 
-  return { ...state, refresh, run };
+  /**
+   * "Finish now" in ONE approval (audit §3.9): every step that can finish the market, repeatable
+   * steps pre-signed in copies, optionally the user's own Earn request (76) last. Steps refused in
+   * simulation are dropped (with their portfolio's later steps) BEFORE the wallet opens; copies
+   * that turn out unneeded are never broadcast. What a stale list leaves, the keeper finishes.
+   */
+  const finish = useCallback(
+    async (earn?: FinishEarnRequest): Promise<FinishRun | null> => {
+      if (!wallet.publicKey || !slabAddress || !programId) throw new Error('Wallet not connected');
+      const market = new PublicKey(slabAddress);
+      const payer = wallet.publicKey;
+      const prog = new PublicKey(programId);
+      setState((p) => ({ ...p, running: true, error: null }));
+      try {
+        const s = await snapshot();
+        if (!s || !s.ctx || s.plan.phase === 'not-resolved') throw new Error('market not loaded');
+        const ctx: ExitIxContext = { ...s.ctx, payer };
+        const withEarnRequest = !!earn && earn.shares > 0n;
+        let items = buildFinishList({
+          portfolios: s.portfolios,
+          boundVault: s.bound,
+          withEarnRequest,
+          only: s.plan.phase === 'owner-window' ? planPortfolios(s.plan) : undefined,
+        });
+        // Split BEFORE signing: simulate what can run now; a refused step drops its whole chain.
+        const sim = connectionSelfHealDeps(connection, market, payer);
+        const dropped = new Set<string>();
+        for (const it of items) {
+          if (it.copy !== 0 || it.step.kind === 'earn-request' || !stepNeeded(it, s.plan)) continue;
+          const err = (await sim.simulate([...computeBudgetPrefix(finishItemCu(it)), ...exitStepIxs(it.step, ctx)])).err ?? null;
+          if (err) dropped.add('portfolio' in it.step ? it.step.portfolio : it.step.kind);
+        }
+        items = items.filter((it) => !dropped.has('portfolio' in it.step ? it.step.portfolio : it.step.kind)).slice(0, FINISH_MAX_TXS);
+        let request: TransactionInstruction | null = null;
+        if (withEarnRequest && earn) {
+          const [registry] = deriveLpVaultRegistry(prog, market);
+          const [lpMint] = deriveInsuranceLpMint(prog, market);
+          request = buildRequestRedeemIx({
+            programId: prog,
+            redeemer: payer,
+            registry,
+            lpMint,
+            redeemerLpAta: getAssociatedTokenAddressSync(lpMint, payer),
+            escrow: deriveLpEscrow(prog, market)[0],
+            redemption: deriveLpRedemption(prog, registry, payer)[0],
+            shares: earn.shares,
+          });
+        }
+        if (items.length === 0) throw new Error('nothing to finish');
+        const [blockhash, fee] = await Promise.all([getFreshBlockhash(connection, true), getPriorityFee(connection)]);
+        const txs = buildFinishTxs(items, ctx, request, { blockhash, priorityFeeMicroLamports: fee, feePayer: payer });
+        const signed = await signAllCompat(wallet, txs);
+        const result = await runFinish(
+          items.map((item: FinishItem, i) => ({ item, tx: signed[i]! })),
+          {
+            plan: async () => (await snapshot())?.plan ?? { phase: 'not-resolved' },
+            broadcast: (tx) => broadcastSignedTx(connection, tx),
+          },
+        );
+        if (alive.current) setState((p) => ({ ...p, running: false, lastFinish: result, plan: result.final }));
+        void refresh();
+        return result;
+      } catch (e) {
+        if (alive.current) setState((p) => ({ ...p, running: false, error: e instanceof Error ? e.message : String(e) }));
+        throw e;
+      }
+    },
+    [connection, wallet, slabAddress, programId, snapshot, refresh],
+  );
+
+  return { ...state, refresh, run, finish };
+}
+
+/** The finish estimate for a snapshot (null when nothing can run now). */
+function estimateOf(s: Snapshot): { steps: number; sol: string } | null {
+  if (s.plan.phase !== 'sweep' && s.plan.phase !== 'owner-window') return null;
+  if (s.plan.steps.length === 0) return null;
+  const items = buildFinishList({
+    portfolios: s.portfolios,
+    boundVault: s.bound,
+    withEarnRequest: false,
+    only: s.plan.phase === 'owner-window' ? planPortfolios(s.plan) : undefined,
+  }).slice(0, FINISH_MAX_TXS);
+  return items.length ? finishEstimate(items) : null;
 }

@@ -5,7 +5,7 @@
  * reported (never retried in the same round). A round that sends nothing ends the run.
  */
 import type { TransactionInstruction } from "@solana/web3.js";
-import { batchExitSteps, type ExitBlocker, type ExitStep, type ResolvedExitPlan } from "./resolved-exit";
+import { batchExitSteps, exitStepsCu, type ExitBlocker, type ExitStep, type ResolvedExitPlan } from "./resolved-exit";
 
 export const MAX_EXIT_ROUNDS = 4;
 
@@ -14,7 +14,8 @@ export interface ResolvedExitDeps {
   ixsFor(step: ExitStep): TransactionInstruction[];
   /** null = the simulation passed. */
   simulate(ixs: TransactionInstruction[]): Promise<unknown | null>;
-  send(ixs: TransactionInstruction[]): Promise<string>;
+  /** `computeUnits`: the summed step budgets of this tx (exitStepsCu). */
+  send(ixs: TransactionInstruction[], computeUnits: number): Promise<string>;
 }
 
 export interface ResolvedExitRun {
@@ -37,7 +38,7 @@ export async function runResolvedExit(deps: ResolvedExitDeps, maxRounds = MAX_EX
       const ixs = batch.flatMap((s) => deps.ixsFor(s));
       const err = await deps.simulate(ixs);
       if (err === null) {
-        signatures.push(await deps.send(ixs));
+        signatures.push(await deps.send(ixs, exitStepsCu(batch)));
         sentThisRound += batch.length;
         continue;
       }
@@ -45,7 +46,7 @@ export async function runResolvedExit(deps: ResolvedExitDeps, maxRounds = MAX_EX
         const one = deps.ixsFor(s);
         const e = batch.length === 1 ? err : await deps.simulate(one);
         if (e === null) {
-          signatures.push(await deps.send(one));
+          signatures.push(await deps.send(one, exitStepsCu([s])));
           sentThisRound += 1;
         } else {
           refused.push({ step: s, err: e });

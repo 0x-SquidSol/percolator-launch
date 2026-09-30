@@ -94,19 +94,27 @@ export const COPY = {
   adlExitTrapped:
     "The other side of this market has fully closed, and your position cannot settle until the drained side is reset. Nothing was sent. Try again in a moment, after the next market crank.",
   closePartial: (filled: string, requested: string) => `Partially closed: ${filled} of ${requested}. The rest of your position is still open.`,
+  /** UX WP-8 (audit §3.9): keeper-first, a time not a slot, "Finish now" as a secondary link. */
   resolvedExit: {
-    title: "This market has resolved",
-    ready: "Every position on this market is closed, so Earn redemptions pay out now. Use Withdraw below.",
-    sweep: (n: number) =>
-      `Earn pays out once every position on the market is closed. ${n} step${n === 1 ? "" : "s"} can be run now by anyone; you pay the network fees and any payout account rent (about 0.002 SOL each), and every payout goes to its owner.`,
-    ownerWindow: (slot: string) =>
-      `Traders have until slot ${slot} to close their own positions. After that anyone can finish the market. Empty positions can be cleaned up now.`,
-    escrowed: (n: number) => `${n} position${n === 1 ? " is" : "s are"} wrapped as an NFT and can only be closed by the holder.`,
-    locked: (n: number) => `${n} position${n === 1 ? " is" : "s are"} mid-liquidation or mid-rebalance and cannot be closed yet.`,
-    button: "Finish the market",
+    title: "Market settled",
+    status: "This market has settled. Payouts are being finalised automatically.",
+    eta: (amount: string | null, at: string, rel: string) =>
+      amount ? `Your ${amount} will be ready to withdraw by about ${at} (${rel}).` : `Earn withdrawals open by about ${at} (${rel}).`,
+    ready: "Everything on this market is settled. Earn withdrawals pay out now: use Withdraw below.",
+    finishNow: (n: number, sol: string) =>
+      `Anyone can speed this up. Finish the remaining ${n} step${n === 1 ? "" : "s"} now (about ${sol} SOL in network fees).`,
+    finishLink: "Finish now",
+    finishAndWithdrawLink: "Finish now and request my withdrawal",
+    escrowed: (n: number) =>
+      n === 1
+        ? "1 position is held as an NFT. Its owner needs to close it; nothing you can do speeds that up."
+        : `${n} positions are held as NFTs. Their owners need to close them; nothing you can do speeds that up.`,
+    locked: (n: number) => (n === 1 ? "1 position is mid-liquidation; it will finish on its own." : `${n} positions are mid-liquidation; they'll finish on their own.`),
     running: "Finishing…",
-    result: (sent: number, refused: number) =>
-      `Sent ${sent} transaction${sent === 1 ? "" : "s"}.${refused > 0 ? ` ${refused} step${refused === 1 ? " was" : "s were"} refused by the program and left as is.` : ""}`,
+    result: (sent: number, leftToKeeper: boolean) =>
+      `Sent ${sent} step${sent === 1 ? "" : "s"}.${leftToKeeper ? " The rest will finish automatically." : ""}`,
+    /** The request (76) landed in the same approval: the pending card takes over (WP-4). */
+    requested: "Your withdrawal is requested. You'll be asked to confirm the payout when it's ready.",
   } as const,
   earnAbsorbedLabel: "Earn absorbed",
   earnAbsorbedTooltip: (drawn: string, restored: string) =>

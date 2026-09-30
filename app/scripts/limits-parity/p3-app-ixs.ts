@@ -12,17 +12,21 @@
  *                createAccount(slab) + InitMarket [admin, slab, mint]); p3 => 1 slot, else 14
  *   plan      -> lib/limits/resolved-exit.ts planResolvedExit on RAW account bytes (base64),
  *                decoded by lib/limits/decode.ts exactly as the hook does
+ *   finish    -> lib/limits/resolved-finish.ts buildFinishList + finishItemIxs (useResolvedExit.finish):
+ *                the whole "Finish now" list from ONE snapshot (+ the redeemer's 76 last)
+ *   finish-needed -> resolved-finish.ts stepNeeded on fresh bytes (runFinish's skip rule)
  * argv: <cmd> <json>. Keys are base58; bigints are decimal strings.
  */
 import { PublicKey, SystemProgram, type TransactionInstruction } from "@solana/web3.js";
-import { ACCOUNTS_INIT_MARKET, buildAccountMetas, buildIx, deriveLpBackingLedger, encodeInitMarket } from "@percolatorct/sdk";
+import { ACCOUNTS_INIT_MARKET, buildAccountMetas, buildIx, deriveInsuranceLpMint, deriveLpBackingLedger, deriveLpEscrow, deriveLpRedemption, encodeInitMarket } from "@percolatorct/sdk";
 import { buildV17InitMarketArgs, marketAssetSlotsFor, slabSizeFor } from "../../lib/create-market-args";
 import { deriveMarketParams, MIN_LEVERAGE_X } from "../../lib/market-params";
 import { buildP3BindIxs, canonicalVaultLpMatcher } from "../../lib/limits/p3-wizard";
-import { buildEarnDepositIxs, buildEarnExecuteIxs, earnTxPlan } from "../../lib/limits/earn-ixs";
+import { buildEarnDepositIxs, buildEarnExecuteIxs, buildRequestRedeemIx, earnTxPlan } from "../../lib/limits/earn-ixs";
 import { CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET, TAG_DEPOSIT_TO_LP_VAULT, TAG_EXECUTE_REDEMPTION, KIND_PORTFOLIO } from "../../lib/limits/constants";
 import { buildDepositJuniorTrancheIx, buildWithdrawJuniorTrancheIx, deriveLpVaultRegistryPda, deriveVaultLpState } from "../../lib/limits/p3-ix";
-import { exitStepIxs, type ExitPortfolioRef } from "../../lib/limits/resolved-exit-ixs";
+import { exitStepIxs, type ExitIxContext, type ExitPortfolioRef } from "../../lib/limits/resolved-exit-ixs";
+import { buildFinishList, finishEstimate, finishItemCu, finishItemIxs, FINISH_MAX_TXS, planPortfolios, stepNeeded, type FinishItem } from "../../lib/limits/resolved-finish";
 import { planResolvedExit, type ExitStep, type ExitPortfolio } from "../../lib/limits/resolved-exit";
 import {
   decodeLpVaultRegistryBound,
@@ -106,6 +110,49 @@ const domain = Number(a.domain ?? 0);
 const ledger = deriveLpBackingLedger(programId, market, domain)[0];
 const siblingLedger = deriveLpBackingLedger(programId, market, domain ^ 1)[0];
 const registry = deriveLpVaultRegistryPda(programId, market);
+
+/** Decode every account exactly as useResolvedExit does and plan (shared by plan / exit / finish). */
+function exitSnapshot() {
+  const md = b64(a.marketB64);
+  const rd = b64(a.registryB64);
+  const sd = a.vaultLpStateB64 ? b64(a.vaultLpStateB64) : null;
+  const m = decodeResolvedMarket(md);
+  if (!m) throw new Error("market not decodable");
+  const bound = decodeLpVaultRegistryBound(rd) === true;
+  const st = bound && sd ? decodeVaultLpState(sd) : null;
+  const vaultLpKey = st ? new PublicKey(st.lpPortfolio).toBase58() : null;
+  const portfolios: ExitPortfolio[] = [];
+  const refs = new Map<string, ExitPortfolioRef>();
+  for (const p of (a.portfolios as J[]) ?? []) {
+    const d = b64(p.dataB64);
+    if (d[10] !== KIND_PORTFOLIO) continue;
+    const view = decodeResolvedPortfolio(d);
+    if (!view) continue;
+    const key = String(p.key);
+    const owner = new PublicKey(view.owner);
+    refs.set(key, { owner, portfolioId: BigInt(String(p.portfolioId)), matcherSequence: BigInt(String(p.matcherSequence)), positionEpoch: BigInt(String(p.positionEpoch)) });
+    const isVaultLp = key === vaultLpKey;
+    portfolios.push({ key, view, isVaultLp, escrowed: !isVaultLp && !PublicKey.isOnCurve(owner.toBytes()) && !owner.equals(registry) });
+  }
+  const engine = decodeMarketEngineView(md);
+  const plan = planResolvedExit({
+    market: m, nowSlot: big("nowSlot"), portfolios, boundVault: bound, harvestableAtoms: engine ? harvestableFeeAtoms(engine) : null,
+    terminalResidualAtoms: decodeTerminalBacking(md, domain)?.residual ?? null,
+  });
+  const ctx: ExitIxContext = {
+    payer: pk("payer"),
+    collateralMint: pk("mint"),
+    vaultToken: pk("vaultToken"),
+    vaultAuthority: pk("vaultAuthority"),
+    programId,
+    market,
+    portfolios: refs,
+    vault: st
+      ? { programId, market, registry, vaultLpState: deriveVaultLpState(programId, market), lpPortfolio: new PublicKey(st.lpPortfolio), ledger, siblingLedger, juniorOwner: new PublicKey(st.juniorOwner), domain }
+      : null,
+  };
+  return { plan, portfolios, bound, ctx };
+}
 
 if (cmd === "init-market") {
   // Exactly create()'s M1 shape: the slab sized by slabSizeFor(params), InitMarket args from
@@ -325,56 +372,46 @@ if (cmd === "init-market") {
     process.stdout.write(JSON.stringify({ kind: g.kind, withClose: JSON.parse(JSON.stringify(g.withClose.map(enc1))), withoutClose: g.withoutClose ? g.withoutClose.map(enc1) : null }));
   }
 } else if (cmd === "plan" || cmd === "exit") {
-  // Decode every account exactly as useResolvedExit does, plan, and (exit) build the first step.
-  const md = b64(a.marketB64);
-  const rd = b64(a.registryB64);
-  const sd = a.vaultLpStateB64 ? b64(a.vaultLpStateB64) : null;
-  const m = decodeResolvedMarket(md);
-  if (!m) throw new Error("market not decodable");
-  const bound = decodeLpVaultRegistryBound(rd) === true;
-  const st = bound && sd ? decodeVaultLpState(sd) : null;
-  const vaultLpKey = st ? new PublicKey(st.lpPortfolio).toBase58() : null;
-  const portfolios: ExitPortfolio[] = [];
-  const refs = new Map<string, ExitPortfolioRef>();
-  for (const p of (a.portfolios as J[]) ?? []) {
-    const d = b64(p.dataB64);
-    if (d[10] !== KIND_PORTFOLIO) continue;
-    const view = decodeResolvedPortfolio(d);
-    if (!view) continue;
-    const key = String(p.key);
-    const owner = new PublicKey(view.owner);
-    refs.set(key, { owner, portfolioId: BigInt(String(p.portfolioId)), matcherSequence: BigInt(String(p.matcherSequence)), positionEpoch: BigInt(String(p.positionEpoch)) });
-    const isVaultLp = key === vaultLpKey;
-    portfolios.push({ key, view, isVaultLp, escrowed: !isVaultLp && !PublicKey.isOnCurve(owner.toBytes()) && !owner.equals(registry) });
-  }
-  const engine = decodeMarketEngineView(md);
-  const plan = planResolvedExit({
-    market: m, nowSlot: big("nowSlot"), portfolios, boundVault: bound, harvestableAtoms: engine ? harvestableFeeAtoms(engine) : null,
-    terminalResidualAtoms: decodeTerminalBacking(md, domain)?.residual ?? null,
-  });
-  const steps: ExitStep[] = plan.phase === "sweep" || plan.phase === "owner-window" ? plan.steps : [];
-  const blockers = plan.phase === "not-resolved" ? [] : plan.blockers.map((b) => b.kind);
-  const summary: J = { phase: plan.phase, steps: steps.map((s) => ({ kind: s.kind, portfolio: "portfolio" in s ? s.portfolio : "" })), blockers };
+  const x = exitSnapshot();
+  const steps: ExitStep[] = x.plan.phase === "sweep" || x.plan.phase === "owner-window" ? x.plan.steps : [];
+  const blockers = x.plan.phase === "not-resolved" ? [] : x.plan.blockers.map((b) => b.kind);
+  const summary: J = { phase: x.plan.phase, steps: steps.map((s) => ({ kind: s.kind, portfolio: "portfolio" in s ? s.portfolio : "" })), blockers };
   if (cmd === "plan" || steps.length === 0) {
     out([], summary);
   } else {
-    const vaultAuthority = pk("vaultAuthority");
-    const ctx = {
-      payer: pk("payer"),
-      collateralMint: pk("mint"),
-      vaultToken: pk("vaultToken"),
-      vaultAuthority,
-      programId,
-      market,
-      portfolios: refs,
-      vault: st
-        ? { programId, market, registry, vaultLpState: deriveVaultLpState(programId, market), lpPortfolio: new PublicKey(st.lpPortfolio), ledger, siblingLedger, juniorOwner: new PublicKey(st.juniorOwner), domain }
-        : null,
-    };
     const first = steps[0];
     if (!first) throw new Error("no step");
-    out(exitStepIxs(first, ctx), summary);
+    out(exitStepIxs(first, x.ctx), summary);
   }
+} else if (cmd === "finish") {
+  // UX WP-8 "Finish now": the WHOLE pre-signed list from ONE snapshot (useResolvedExit.finish),
+  // each item's instructions + compute budget; optionally the redeemer's own 76 last.
+  const x = exitSnapshot();
+  const withEarnRequest = a.redeemer !== undefined && a.redeemer !== null;
+  const items = buildFinishList({
+    portfolios: x.portfolios,
+    boundVault: x.bound,
+    withEarnRequest,
+    only: x.plan.phase === "owner-window" ? planPortfolios(x.plan) : undefined,
+  }).slice(0, FINISH_MAX_TXS);
+  let request: TransactionInstruction | null = null;
+  if (withEarnRequest) {
+    const redeemer = pk("redeemer");
+    const lpMint = deriveInsuranceLpMint(programId, market)[0];
+    request = buildRequestRedeemIx({
+      programId, redeemer, registry, lpMint, redeemerLpAta: pk("redeemerLpAta"),
+      escrow: deriveLpEscrow(programId, market)[0], redemption: deriveLpRedemption(programId, registry, redeemer)[0], shares: big("shares"),
+    });
+  }
+  process.stdout.write(JSON.stringify({
+    phase: x.plan.phase,
+    estimate: finishEstimate(items),
+    items: items.map((item) => ({ item, cu: finishItemCu(item), ixs: finishItemIxs(item, x.ctx, request).map(enc1) })),
+  }));
+} else if (cmd === "finish-needed") {
+  // The driver's skip rule (runFinish): re-plan from fresh bytes, is this item still needed?
+  const x = exitSnapshot();
+  process.stdout.write(JSON.stringify({ phase: x.plan.phase, needed: stepNeeded(a.item as unknown as FinishItem, x.plan) }));
 } else {
   throw new Error(`unknown cmd ${cmd}`);
 }

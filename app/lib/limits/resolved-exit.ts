@@ -139,11 +139,46 @@ export function planResolvedExit(input: {
   return { phase: "sweep", steps, blockers };
 }
 
-/** Group steps into transactions: at most `perTx` portfolio steps each (payout ATAs are created
- *  idempotently in front, so a close-resolved costs ~4 accounts). Order is preserved. */
+/**
+ * Per-step compute budget. Builder figures on the final wrapper (3245e861): CloseResolved up to
+ * 204k, 101 SettleVaultLpResolved up to 285k. Measured on real BPF by the app's own "Finish now"
+ * chain (p3_vault_lp limits_app_p3_finish_now_one_approval, LIMITS_FINISH_MEASURE=1): 101 281,529;
+ * CloseResolved 151,044 / 104,931; ClosePortfolio (resolved, empty) 122,469 — NOT small: the
+ * first budget of 60k was refused in the sim; 78 harvest 31,479; 76 34,933. Headroom on each.
+ * (46 top-up claim not reached in that run: budgeted like a CloseResolved payout.)
+ */
+export const EXIT_STEP_CU: Record<ExitStep["kind"], number> = {
+  "settle-vault-lp": 320_000,
+  "close-resolved": 240_000,
+  "claim-topup": 240_000,
+  "close-empty": 180_000,
+  harvest: 120_000,
+};
+/** One tx never asks for more than this (the Solana limit is 1.4M). */
+export const EXIT_TX_CU_CAP = 1_200_000;
+
+export const exitStepsCu = (steps: readonly ExitStep[]): number =>
+  Math.min(EXIT_TX_CU_CAP, steps.reduce((a, s) => a + EXIT_STEP_CU[s.kind], 20_000));
+
+/**
+ * Group steps into transactions: at most `perTx` portfolio steps each AND at most EXIT_TX_CU_CAP of
+ * summed step budgets (three 101s used to share one fixed 600k tx). Order is preserved.
+ */
 export function batchExitSteps(steps: readonly ExitStep[], perTx = 3): ExitStep[][] {
   const out: ExitStep[][] = [];
-  for (let i = 0; i < steps.length; i += perTx) out.push(steps.slice(i, i + perTx));
+  let cur: ExitStep[] = [];
+  let cu = 20_000;
+  for (const s of steps) {
+    const c = EXIT_STEP_CU[s.kind];
+    if (cur.length > 0 && (cur.length >= perTx || cu + c > EXIT_TX_CU_CAP)) {
+      out.push(cur);
+      cur = [];
+      cu = 20_000;
+    }
+    cur.push(s);
+    cu += c;
+  }
+  if (cur.length) out.push(cur);
   return out;
 }
 

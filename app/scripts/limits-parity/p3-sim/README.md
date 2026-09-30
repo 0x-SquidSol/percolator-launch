@@ -106,3 +106,9 @@ cargo build-sbf --features devnet
 LIMITS_APP_DIR=<percolator-launch>/app TSX_BIN=<percolator-launch>/node_modules/.bin/tsx \
   cargo test --release --test p3_vault_lp -- limits_
 ```
+
+### UX WP-8 (2026-09-30): "Finish now" on real BPF
+
+| Test | What it proves |
+|---|---|
+| `limits_app_p3_finish_now_one_approval` | The APP builds the WHOLE "Finish now" list from ONE snapshot right after resolve (bridge `finish`, `lib/limits/resolved-finish.ts`): 17 items = vault-LP 101 copies + top-up, the open trader's CloseResolved copies + 46 claim, the flat trader, the close-empties, the 78 harvest and the Earn depositor's own 76 last, each tx at the APP's per-step compute budget. The driver re-plans before each item with the app's skip rule (bridge `finish-needed`, `stepNeeded`). 8 sent / 9 copies never sent, every sent item lands (the identities the pre-built ClosePortfolio binds stay valid through the closes), the market ends terminal-flat, and the depositor's app 77 then pays 10,085,391; conservation holds. Negative controls: broadcasting every copy (skip rule off) is refused `Custom(21)` at the first unneeded copy; the first ClosePortfolio budget (60k/80k) was refused (it consumes 122,469), which is why `EXIT_STEP_CU["close-empty"]` is 180k. `LIMITS_FINISH_MEASURE=1` prints each step's consumed CU. |

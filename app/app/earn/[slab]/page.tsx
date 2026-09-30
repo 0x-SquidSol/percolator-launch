@@ -8,6 +8,7 @@ import { SlabProvider, useSlabState } from '@/components/providers/SlabProvider'
 import { useInsuranceLP } from '@/hooks/useInsuranceLP';
 import { useWalletCompat } from '@/hooks/useWalletCompat';
 import { ResolvedExitPanel } from '@/components/limits/ResolvedExitPanel';
+import { earnExitProps } from '@/lib/limits/resolved-finish';
 import { EarnTrancheCardView } from '@/components/limits/EarnTrancheCard';
 import { useVaultLpValuation } from '@/hooks/useVaultLpValuation';
 import { useMarketLimits } from '@/hooks/useMarketLimits';
@@ -411,7 +412,7 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
           />
 
           {/* P3 / F-4: after Resolve, finish the market so Earn can pay out (nothing on a live market). */}
-          <ResolvedExitPanel slab={slabAddress} walletConnected={!!earnWallet.publicKey} onDone={refreshState} />
+          <ResolvedExitPanel slab={slabAddress} walletConnected={!!earnWallet.publicKey} onDone={refreshState} {...earnExitProps(lpVaultState, collateralDecimals, collateralSymbol)} />
 
           {/* Deposit / Withdraw */}
           <ScrollReveal>

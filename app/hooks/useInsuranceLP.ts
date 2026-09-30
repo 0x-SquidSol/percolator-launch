@@ -33,7 +33,7 @@ import { useParams } from 'next/navigation';
 import { pythCrankAccount } from "@/lib/limits/oracle-tail";
 import { limitsFlags } from "@/lib/limits/flags";
 import { earnVaultLpRepairOption } from "@/lib/limits/vault-lp-repair";
-import { buildEarnDepositIxs, buildEarnExecuteIxs, earnTxPlan, type EarnTxPlan } from "@/lib/limits/earn-ixs";
+import { buildEarnDepositIxs, buildEarnExecuteIxs, buildRequestRedeemIx, earnTxPlan, type EarnTxPlan } from "@/lib/limits/earn-ixs";
 import { readEarnP3Context } from "@/lib/limits/earn-p3-read";
 import { readTxDrawSummary, type DrawSummary } from "@/lib/limits/p3-draw-logs";
 import { withdrawFlow } from "@/lib/limits/earn-withdraw";
@@ -746,23 +746,12 @@ export function useInsuranceLP() {
       // src/v16_program.rs handle_request_redeem_lp_shares (L12016-12028):
       //   [redeemer(signer,w), registry(w), lpMint, redeemerLpAta(w), escrow(w),
       //    redemption(w), tokenProgram, systemProgram]
-      const buildRequestIx = async () => {
-        const redeemerLpAta = await getAssociatedTokenAddress(lpMintPda, wallet.publicKey!);
-        return buildIx({
-          programId: progPk,
-          keys: [
-            { pubkey: wallet.publicKey!, isSigner: true, isWritable: true },
-            { pubkey: registryPda, isSigner: false, isWritable: true },
-            { pubkey: lpMintPda, isSigner: false, isWritable: false },
-            { pubkey: redeemerLpAta, isSigner: false, isWritable: true },
-            { pubkey: escrowPda, isSigner: false, isWritable: true },
-            { pubkey: redemptionPda, isSigner: false, isWritable: true },
-            { pubkey: WELL_KNOWN.tokenProgram, isSigner: false, isWritable: false },
-            { pubkey: WELL_KNOWN.systemProgram, isSigner: false, isWritable: false },
-          ],
-          data: encodeRequestRedeemLpShares({ shares: lpAmount.toString() }),
+      const buildRequestIx = async () =>
+        buildRequestRedeemIx({
+          programId: progPk, redeemer: wallet.publicKey!, registry: registryPda, lpMint: lpMintPda,
+          redeemerLpAta: await getAssociatedTokenAddress(lpMintPda, wallet.publicKey!), escrow: escrowPda,
+          redemption: redemptionPda, shares: lpAmount,
         });
-      };
       // ExecuteRedemption (tag 77) — collect collateral after cooldown.
       // BUG FIX (devnet flow-test 2026-07-01): this account list was missing the LP
       // escrow PDA and the per-domain backing ledger PDA, and had the remaining

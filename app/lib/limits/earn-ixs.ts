@@ -13,7 +13,7 @@
  * Pure; the hook reads the accounts and executes.
  */
 import type { PublicKey, TransactionInstruction } from "@solana/web3.js";
-import { ACCOUNTS_LP_VAULT_DEPOSIT, buildAccountMetas, buildIx, encodeDepositToLpVault, encodeExecuteRedemption, WELL_KNOWN } from "@percolatorct/sdk";
+import { ACCOUNTS_LP_VAULT_DEPOSIT, buildAccountMetas, buildIx, encodeDepositToLpVault, encodeExecuteRedemption, encodeRequestRedeemLpShares, WELL_KNOWN } from "@percolatorct/sdk";
 import { buildLpVaultCrankFeesIx, withBoundVaultLpTail } from "./p3-ix";
 import { MARKET_MODE_LIVE, TAG_DEPOSIT_TO_LP_VAULT, TAG_EXECUTE_REDEMPTION, TAG_REQUEST_REDEEM_LP_SHARES } from "./constants";
 
@@ -150,4 +150,35 @@ export function buildEarnExecuteIxs(p: {
     ...harvestIx({ programId: p.programId, cranker: p.redeemer, market: p.market, registry: p.registry, ledger: p.ledger, siblingLedger: p.siblingLedger, domain: p.domain }, p.plan),
     buildIx({ programId: p.programId, keys, data: encodeExecuteRedemption({ domain: p.domain }) }),
   ];
+}
+
+/**
+ * RequestRedeemLpShares (tag 76): [redeemer(s,w), registry(w), lpMint, redeemerLpAta(w), escrow(w),
+ * redemption(w), tokenProgram, systemProgram] (percolator-prog handle_request_redeem_lp_shares).
+ * Shared by useInsuranceLP.withdraw and the resolved "Finish now" batch (UX WP-8).
+ */
+export function buildRequestRedeemIx(p: {
+  programId: PublicKey;
+  redeemer: PublicKey;
+  registry: PublicKey;
+  lpMint: PublicKey;
+  redeemerLpAta: PublicKey;
+  escrow: PublicKey;
+  redemption: PublicKey;
+  shares: bigint;
+}): TransactionInstruction {
+  return buildIx({
+    programId: p.programId,
+    keys: [
+      { pubkey: p.redeemer, isSigner: true, isWritable: true },
+      { pubkey: p.registry, isSigner: false, isWritable: true },
+      { pubkey: p.lpMint, isSigner: false, isWritable: false },
+      { pubkey: p.redeemerLpAta, isSigner: false, isWritable: true },
+      { pubkey: p.escrow, isSigner: false, isWritable: true },
+      { pubkey: p.redemption, isSigner: false, isWritable: true },
+      { pubkey: WELL_KNOWN.tokenProgram, isSigner: false, isWritable: false },
+      { pubkey: WELL_KNOWN.systemProgram, isSigner: false, isWritable: false },
+    ],
+    data: encodeRequestRedeemLpShares({ shares: p.shares.toString() }),
+  });
 }

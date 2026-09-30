@@ -1,25 +1,50 @@
 // @vitest-environment node
 /**
- * Final wrapper (3245e861): CloseResolved reaches 204k CU and 101 SettleVaultLpResolved 285k. The
- * app's budgets must be at least 300k / 400k, and the resolved-exit pre-send simulation must carry
- * the budget (a bare simulation gets the 200k per-instruction default and would read a 285k step as
- * refused).
+ * Final wrapper (3245e861): CloseResolved reaches 204k CU and 101 SettleVaultLpResolved 285k.
+ *  - every exit tx asks for the SUM of its steps' budgets (>= 300k per CloseResolved-class step,
+ *    >= 400k... per 101 is covered by 320k + the 20k base; a lone 101 tx gets 340k >= 300k) and
+ *    batches never exceed the 1.2M cap (three 101s used to share one fixed 600k tx);
+ *  - the resolved-exit pre-send simulation carries the cap (a bare simulation gets the 200k default);
+ *  - the own-portfolio cleanup (CloseResolved + ClosePortfolio) keeps 600k.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { CLEANUP_CU } from "@/lib/limits/own-portfolio-cleanup";
+import { EXIT_STEP_CU, EXIT_TX_CU_CAP, batchExitSteps, exitStepsCu, type ExitStep } from "@/lib/limits/resolved-exit";
+import { runResolvedExit } from "@/lib/limits/resolved-exit-run";
+
+const settle = (i: number): ExitStep => ({ kind: "settle-vault-lp", topup: 0, portfolio: `v${i}` });
+const close = (i: number): ExitStep => ({ kind: "close-resolved", portfolio: `t${i}` });
 
 describe("resolved CU budgets", () => {
-  it("the exit step tx and the own-portfolio cleanup cover 101 (285k) and CloseResolved (204k)", async () => {
-    const { EXIT_TX_CU } = await import("@/hooks/useResolvedExit");
-    expect(EXIT_TX_CU).toBeGreaterThanOrEqual(400_000);
+  it("per-step budgets cover the measured costs", () => {
+    expect(EXIT_STEP_CU["settle-vault-lp"]).toBeGreaterThanOrEqual(285_000);
+    expect(EXIT_STEP_CU["close-resolved"]).toBeGreaterThanOrEqual(204_000);
+    expect(exitStepsCu([settle(0)])).toBeGreaterThanOrEqual(300_000);
+    expect(exitStepsCu([close(0)])).toBeGreaterThanOrEqual(204_000);
     expect(CLEANUP_CU).toBeGreaterThanOrEqual(400_000);
   });
-  it("the exit simulation runs under the same budget", () => {
+  it("batches respect the cap: 101s are never packed past 1.2M", () => {
+    const b = batchExitSteps([settle(0), settle(1), settle(2), settle(3), close(0), close(1), close(2), close(3)]);
+    for (const tx of b) expect(exitStepsCu(tx)).toBeLessThanOrEqual(EXIT_TX_CU_CAP);
+    for (const tx of b) expect(tx.reduce((a, s) => a + EXIT_STEP_CU[s.kind], 20_000)).toBeLessThanOrEqual(EXIT_TX_CU_CAP);
+    expect(b.flat()).toHaveLength(8);
+  });
+  it("the runner sends each tx with its steps' summed budget", async () => {
+    const sent: number[] = [];
+    let round = 0;
+    await runResolvedExit({
+      plan: async () => (round++ === 0 ? { phase: "sweep", steps: [settle(0), settle(1), settle(2)], blockers: [] } : { phase: "ready", blockers: [] }),
+      ixsFor: () => [],
+      simulate: async () => null,
+      send: async (_ixs, cu) => { sent.push(cu); return "s"; },
+    });
+    expect(sent).toEqual([3 * 320_000 + 20_000]);
+  });
+  it("the exit simulation runs at the cap", () => {
     const src = readFileSync(resolve(process.cwd(), "hooks/useResolvedExit.ts"), "utf8");
     expect(src).toContain("sim.simulate([...computeBudgetPrefix(EXIT_TX_CU), ...ixs])");
-    const close = readFileSync(resolve(process.cwd(), "hooks/useCloseMarket.ts"), "utf8");
-    expect(close).toMatch(/computeUnits: 600_000/);
+    expect(src).toContain("export const EXIT_TX_CU = EXIT_TX_CU_CAP;");
   });
 });

@@ -17,48 +17,96 @@ afterEach(() => {
   __setLimitsFlagsForTest(null);
 });
 
+const NOW = new Date("2026-09-30T12:00:00Z");
 const view = (p: Partial<Parameters<typeof ResolvedExitPanelView>[0]>) => (
-  <ResolvedExitPanelView plan={null} running={false} lastRun={null} error={null} onRun={() => undefined} canRun {...p} />
+  <ResolvedExitPanelView
+    plan={null}
+    nowSlot={1_000n}
+    estimate={null}
+    running={false}
+    lastFinish={null}
+    error={null}
+    canRun
+    earnAmount={null}
+    canRequest={false}
+    onFinish={() => undefined}
+    now={NOW}
+    locale="en-GB"
+    timeZone="UTC"
+    {...p}
+  />
 );
+const sweep = { phase: "sweep" as const, steps: [{ kind: "close-resolved" as const, portfolio: "T" }], blockers: [] };
+const finishRun = (o: Partial<import("@/lib/limits/resolved-finish").FinishRun> = {}) => ({
+  broadcast: 2, skipped: 1, failed: 0, signatures: ["a", "b"], final: { phase: "ready" as const, blockers: [] }, stale: false, requested: false, ...o,
+});
 
-describe("ResolvedExitPanelView", () => {
+/** UX WP-8 (audit §3.9): keeper-first status, a time not a slot, "Finish now" as a secondary link. */
+describe("ResolvedExitPanelView (WP-8)", () => {
   it("renders nothing on a live market", () => {
     const { container } = render(view({ plan: { phase: "not-resolved" } }));
     expect(container.innerHTML).toBe("");
   });
-  it("sweep: status + an enabled button that runs the plan", () => {
-    const onRun = vi.fn();
-    const { getByTestId } = render(view({ onRun, plan: { phase: "sweep", steps: [{ kind: "close-resolved", portfolio: "T" }], blockers: [] } }));
-    expect(getByTestId("earn-resolved-exit-panel").dataset.phase).toBe("sweep");
-    expect(getByTestId("earn-resolved-exit-status").textContent).toBe(COPY.resolvedExit.sweep(1));
-    const b = getByTestId("earn-resolved-exit") as HTMLButtonElement;
-    expect(b.disabled).toBe(false);
-    fireEvent.click(b);
-    expect(onRun).toHaveBeenCalledTimes(1);
-  });
-  it("owner window: says until which slot; the button only runs the empties", () => {
-    const { getByTestId } = render(view({ plan: { phase: "owner-window", untilSlot: 1_400n, steps: [], blockers: [] } }));
-    expect(getByTestId("earn-resolved-exit-status").textContent).toContain("slot 1400");
-    expect((getByTestId("earn-resolved-exit") as HTMLButtonElement).disabled).toBe(true);
-  });
-  it("ready: no button, no blockers", () => {
-    const { getByTestId, queryByTestId } = render(view({ plan: { phase: "ready", blockers: [] } }));
-    expect(queryByTestId("earn-resolved-exit")).toBeNull();
-    expect(queryByTestId("earn-resolved-exit-blocker")).toBeNull();
-    expect(getByTestId("earn-resolved-exit-status").dataset.phase).toBe("ready");
-  });
-  it("escrowed / locked blockers and the run result", () => {
-    const { getAllByTestId, getByTestId } = render(
-      view({
-        plan: { phase: "sweep", steps: [], blockers: [{ kind: "escrowed", portfolio: "N" }, { kind: "escrowed", portfolio: "M" }, { kind: "locked", portfolio: "L" }] },
-        lastRun: { final: { phase: "sweep", steps: [], blockers: [] }, signatures: ["a", "b"], refused: [{ step: { kind: "close-resolved", portfolio: "X" }, err: "x" }], blockers: [], rounds: 1 },
-      }),
+  it("settled: calm status + the payout time with the user's amount, no slot number anywhere", () => {
+    const { getByTestId, container } = render(
+      view({ plan: { phase: "owner-window", untilSlot: 1_000n + 216_000n, steps: [], blockers: [] }, earnAmount: "1,250.00 USDC" }),
     );
-    expect(getAllByTestId("earn-resolved-exit-blocker").map((b) => b.textContent)).toEqual([COPY.resolvedExit.escrowed(2), COPY.resolvedExit.locked(1)]);
-    expect(getByTestId("earn-resolved-exit-result").textContent).toBe(COPY.resolvedExit.result(2, 1));
+    expect(getByTestId("earn-resolved-exit-status").textContent).toBe(COPY.resolvedExit.status);
+    const eta = getByTestId("earn-resolved-exit-eta");
+    expect(eta.textContent).toMatch(/^Your 1,250.00 USDC will be ready to withdraw by about Thu 1 Oct, 12:10 \(in about 24 hours\)\.$/);
+    expect(container.textContent).not.toMatch(/slot|217000|217,000|216000/i);
+  });
+  it("without an Earn position: the generic line", () => {
+    const { getByTestId } = render(view({ plan: sweep }));
+    expect(getByTestId("earn-resolved-exit-eta").textContent).toBe(COPY.resolvedExit.eta(null, "Wed 30 Sept, 12:10", "in about 10 minutes"));
+  });
+  it("Finish now is a secondary LINK (not a primary button) with the step count and fees; clicking runs finish", () => {
+    const onFinish = vi.fn();
+    const { getByTestId } = render(view({ plan: sweep, estimate: { steps: 3, sol: "0.004" }, onFinish }));
+    expect(getByTestId("earn-resolved-exit-finish-explain").textContent).toBe(
+      "Anyone can speed this up. Finish the remaining 3 steps now (about 0.004 SOL in network fees).",
+    );
+    const b = getByTestId("earn-resolved-exit") as HTMLButtonElement;
+    expect(b.textContent).toBe(COPY.resolvedExit.finishLink);
+    expect(b.className).toContain("underline");
+    expect(b.className).not.toMatch(/bg-\[var\(--accent\)\]/);
+    fireEvent.click(b);
+    expect(onFinish).toHaveBeenCalledWith(false);
+  });
+  it("with a withdrawable Earn position the link includes the request (one approval)", () => {
+    const onFinish = vi.fn();
+    const { getByTestId } = render(view({ plan: sweep, estimate: { steps: 1, sol: "0.001" }, canRequest: true, onFinish }));
+    const b = getByTestId("earn-resolved-exit");
+    expect(b.textContent).toBe(COPY.resolvedExit.finishAndWithdrawLink);
+    fireEvent.click(b);
+    expect(onFinish).toHaveBeenCalledWith(true);
+  });
+  it("no runnable steps -> no Finish now; ready -> 'withdraw now', no ETA, no link", () => {
+    expect(render(view({ plan: { phase: "owner-window", untilSlot: 9_000n, steps: [], blockers: [] } })).queryByTestId("earn-resolved-exit")).toBeNull();
+    cleanup();
+    const { getByTestId, queryByTestId } = render(view({ plan: { phase: "ready", blockers: [] }, estimate: { steps: 2, sol: "0.001" } }));
+    expect(getByTestId("earn-resolved-exit-status").textContent).toBe(COPY.resolvedExit.ready);
+    expect(getByTestId("earn-resolved-exit-panel").dataset.phase).toBe("ready");
+    expect(queryByTestId("earn-resolved-exit-eta")).toBeNull();
+    expect(queryByTestId("earn-resolved-exit")).toBeNull();
+  });
+  it("plain blockers (NFT-held, mid-liquidation)", () => {
+    const { getAllByTestId } = render(
+      view({ plan: { phase: "sweep", steps: [], blockers: [{ kind: "escrowed", portfolio: "N" }, { kind: "escrowed", portfolio: "M" }, { kind: "locked", portfolio: "L" }] } }),
+    );
+    expect(getAllByTestId("earn-resolved-exit-blocker").map((b) => b.textContent)).toEqual([
+      "2 positions are held as NFTs. Their owners need to close them; nothing you can do speeds that up.",
+      "1 position is mid-liquidation; it will finish on its own.",
+    ]);
+  });
+  it("result lines: sent, left to the keeper, and the request landing", () => {
+    const { getByTestId, rerender } = render(view({ plan: sweep, lastFinish: finishRun({ final: sweep }) }));
+    expect(getByTestId("earn-resolved-exit-result").textContent).toBe("Sent 2 steps. The rest will finish automatically.");
+    rerender(view({ plan: { phase: "ready", blockers: [] }, lastFinish: finishRun({ requested: true, broadcast: 5 }) }));
+    expect(getByTestId("earn-resolved-exit-result").textContent).toBe(`Sent 5 steps. ${COPY.resolvedExit.requested}`);
   });
   it("disabled without a wallet", () => {
-    const { getByTestId } = render(view({ canRun: false, plan: { phase: "sweep", steps: [{ kind: "close-empty", portfolio: "E", isVaultLp: false }], blockers: [] } }));
+    const { getByTestId } = render(view({ canRun: false, plan: sweep, estimate: { steps: 1, sol: "0.001" } }));
     expect((getByTestId("earn-resolved-exit") as HTMLButtonElement).disabled).toBe(true);
   });
 });

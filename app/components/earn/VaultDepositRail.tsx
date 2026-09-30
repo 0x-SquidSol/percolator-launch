@@ -8,6 +8,7 @@ import { DepositWithdrawPanel } from '@/components/earn/DepositWithdrawPanel';
 import { EarnTrancheCardView } from '@/components/limits/EarnTrancheCard';
 import { useVaultLpValuation } from '@/hooks/useVaultLpValuation';
 import { ResolvedExitPanel } from '@/components/limits/ResolvedExitPanel';
+import { earnExitProps } from '@/lib/limits/resolved-finish';
 import { useWalletCompat } from '@/hooks/useWalletCompat';
 import { useMarketLimits } from '@/hooks/useMarketLimits';
 import { earnDepositPause, earnGateShares, earnViewFromLimits, earnPanelPricing } from '@/lib/limits/earn';
@@ -138,7 +139,7 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
     <div className="space-y-3">
       {/* P3 / F-4: after Resolve, Earn pays out only once the market is terminal-flat; anyone
           can run the permissionless sweep. Renders nothing on a live market. */}
-      <ResolvedExitPanel slab={slab} walletConnected={!!wallet.publicKey} onDone={refreshState} />
+      <ResolvedExitPanel slab={slab} walletConnected={!!wallet.publicKey} onDone={refreshState} {...earnExitProps(state, collateralDecimals, collateralSymbol)} />
       {/* P3 (flag-gated): senior/junior tranches, NAV share price, APY from real fees.
           Withdrawal preview = the wallet's whole position. Null unless the vault owns the LP. */}
       <EarnTrancheCardView
