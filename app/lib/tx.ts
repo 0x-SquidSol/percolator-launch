@@ -1376,21 +1376,70 @@ export function isWaitableRefusal(e: unknown): e is SimulationRefusal {
  * while waiting ("Waiting for the latest price…"), `onWaiting(false)` when done either way.
  */
 export async function sendTxWaiting(
-  params: SendTxParams & { onWaiting?: (waiting: boolean) => void; waitDelaysMs?: readonly number[] },
+  params: SendTxParams & {
+    onWaiting?: (waiting: boolean) => void;
+    waitDelaysMs?: readonly number[];
+    /**
+     * UX WP-3 (§3.3): keep re-simulating on the last delay after the schedule ends (the
+     * ticket says "We'll keep trying" and offers Stop = `abortSignal`), instead of throwing.
+     */
+    keepWaiting?: boolean;
+    /** Called once when the wait passes `longWaitMs` (default 30 s). */
+    onWaitingLong?: () => void;
+    longWaitMs?: number;
+  },
 ): Promise<string> {
-  const { onWaiting, waitDelaysMs = WAIT_DELAYS_MS, ...rest } = params;
+  const { onWaiting, waitDelaysMs = WAIT_DELAYS_MS, keepWaiting = false, onWaitingLong, longWaitMs = 30_000, ...rest } = params;
+  let waited = 0;
+  let saidLong = false;
   for (let i = 0; ; i++) {
     try {
       const sig = await sendTx(rest);
       if (i > 0) onWaiting?.(false);
       return sig;
     } catch (e) {
-      if (!isWaitableRefusal(e) || i >= waitDelaysMs.length || rest.abortSignal?.aborted) {
+      const exhausted = i >= waitDelaysMs.length && !(keepWaiting && waitDelaysMs.length > 0);
+      if (!isWaitableRefusal(e) || exhausted || rest.abortSignal?.aborted) {
         if (i > 0) onWaiting?.(false);
+        if (rest.abortSignal?.aborted && isWaitableRefusal(e)) throw new WaitStoppedError();
         throw e;
       }
       onWaiting?.(true);
-      await new Promise((r) => setTimeout(r, waitDelaysMs[i]));
+      const delay = waitDelaysMs[Math.min(i, waitDelaysMs.length - 1)];
+      const stopped = await abortableSleep(delay, rest.abortSignal);
+      waited += delay;
+      if (!saidLong && waited >= longWaitMs) {
+        saidLong = true;
+        onWaitingLong?.();
+      }
+      if (stopped) {
+        onWaiting?.(false);
+        throw new WaitStoppedError();
+      }
     }
   }
+}
+
+/** The user pressed Stop while the app was waiting for the market: nothing was sent. */
+export class WaitStoppedError extends Error {
+  constructor() {
+    super("Stopped waiting for the market; nothing was sent.");
+    this.name = "WaitStoppedError";
+  }
+}
+
+/** Resolves true when `signal` aborted during the sleep. */
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve(true);
+    const t = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve(false);
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(t);
+      resolve(true);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }

@@ -35,7 +35,7 @@ describe("OrderTicketLimits", () => {
   it("renders max size per side with raw q, the reason, and the band", () => {
     const L = marketLimits();
     const { getAllByTestId, getByTestId } = render(
-      <OrderTicketLimits limits={L} ticket={ticketFor(L)} direction="long" symbol="SOL" clampedToQ={null} fillResult={null} requestedQ={null} />,
+      <OrderTicketLimits limits={L} ticket={ticketFor(L)} direction="long" symbol="SOL" />,
     );
     const rows = getAllByTestId("limits-max-size");
     expect(rows.map((r) => [r.dataset.side, r.dataset.maxQ, r.dataset.state])).toEqual([
@@ -46,33 +46,25 @@ describe("OrderTicketLimits", () => {
     expect(getByTestId("limits-band").dataset.bandBps).toBe("500");
   });
 
-  it("zero fill => 'Market at capacity — no fill' (never success)", () => {
-    const L = marketLimits();
-    const { getByTestId, queryByText } = render(
-      <OrderTicketLimits limits={L} ticket={ticketFor(L)} direction="long" symbol="SOL" clampedToQ={null} fillResult={{ kind: "zero", filledQ: 0n }} requestedQ={100n} />,
-    );
-    const n = getByTestId("limits-fill-result");
-    expect(n.dataset.kind).toBe("zero");
-    expect(n.textContent).toContain("Market at capacity — no fill");
-    expect(queryByText(/success/i)).toBeNull();
-  });
-
-  it("halted side + same-owner + clamp + step-down notices carry their testids", () => {
+  it("UX WP-3: the Details half stacks NO notices (halt / same-owner / clamp / step-down / fill live in the ticket's one slot)", () => {
     const L = marketLimits({ lp: { ...marketLimits().lp!, capital: 0n }, assetAdmin: OWNER_A });
     const t = ticketFor(L);
-    const { getByTestId } = render(
-      <OrderTicketLimits limits={L} ticket={t} direction="long" symbol="SOL" clampedToQ={50_000_000n} fillResult={null} requestedQ={null} />,
-    );
-    expect(getByTestId("limits-halt-notice").dataset.side).toBe("long");
-    expect(getByTestId("limits-same-owner-notice")).toBeTruthy();
-    expect(getByTestId("limits-clamp-notice").dataset.maxQ).toBe("50000000");
-    expect(getByTestId("limits-stepdown-notice").dataset.maxLeverage).toBe("2");
+    // the derivation still reports every one of them (the ticket state machine consumes them) ...
+    expect(t.halted.long).toBe(true);
+    expect(t.sameOwnerCloseOnly).toBe(true);
+    expect(t.stepDown?.stepped).toBe(true);
+    const { queryByTestId, getAllByTestId } = render(<OrderTicketLimits limits={L} ticket={t} direction="long" symbol="SOL" />);
+    // ... but this panel only renders the per-side rows, reason and band.
+    for (const id of ["limits-halt-notice", "limits-same-owner-notice", "limits-clamp-notice", "limits-stepdown-notice", "limits-fill-result", "status-line"]) {
+      expect(queryByTestId(id), id).toBeNull();
+    }
+    expect(getAllByTestId("limits-max-size")).toHaveLength(2);
   });
 
   it("P2 quote panel: rows, settles-at-mark honesty note", () => {
     const L = marketLimits({ matcher: { ...marketLimits().matcher!, inventoryBase: 0n } });
     const { getByTestId, getAllByTestId } = render(
-      <OrderTicketLimits limits={L} ticket={ticketFor(L)} direction="long" symbol="SOL" clampedToQ={null} fillResult={null} requestedQ={null} />,
+      <OrderTicketLimits limits={L} ticket={ticketFor(L)} direction="long" symbol="SOL" />,
     );
     expect(getByTestId("limits-quote").dataset.kind).toBe("adaptive");
     const rows = getAllByTestId("limits-quote-row").map((r) => r.dataset.row);
@@ -83,7 +75,7 @@ describe("OrderTicketLimits", () => {
   it("renders nothing with all flags off", () => {
     const L = marketLimits({ state: "off" });
     const { container } = render(
-      <OrderTicketLimits limits={L} ticket={ticketFor(L)} direction="long" symbol="SOL" clampedToQ={null} fillResult={null} requestedQ={null} />,
+      <OrderTicketLimits limits={L} ticket={ticketFor(L)} direction="long" symbol="SOL" />,
     );
     expect(container.innerHTML).toBe("");
   });
@@ -216,7 +208,7 @@ describe("Quote panel with the P2 fee channel on", () => {
       engine: { ...marketLimits().engine!, maxTradingFeeBps: 100n },
     });
     const { getAllByTestId, getByTestId } = render(
-      <OrderTicketLimits limits={L} ticket={ticketFor(L)} direction="long" symbol="SOL" clampedToQ={null} fillResult={null} requestedQ={null} />,
+      <OrderTicketLimits limits={L} ticket={ticketFor(L)} direction="long" symbol="SOL" />,
     );
     const row = getAllByTestId("limits-quote-row").find((r) => r.dataset.row === "fee-charged")!;
     expect(row.textContent).toContain("+31 bps");

@@ -49,7 +49,7 @@ export interface MessageContext {
 }
 
 export interface UserMessageAction {
-  id: "use-max" | "get-funds" | "try-again" | "refresh";
+  id: "use-max" | "get-funds" | "try-again" | "refresh" | "stop" | "try-size";
   label: string;
 }
 
@@ -168,6 +168,10 @@ export function resolveUserMessage(err: unknown, ctx: MessageContext): UserMessa
   // ── Wallet / network conditions (no program code) ──────────────────────────
   if (/user rejected|rejected the request|user declined|transaction rejected|request rejected|\b4001\b/i.test(p.raw)) {
     return m("cancelled", "info", "Cancelled", "Cancelled.", { quiet: true });
+  }
+  // UX WP-3: the user pressed Stop on a long wait (lib/tx.ts WaitStoppedError): nothing was sent.
+  if ((err as { name?: string } | null)?.name === "WaitStoppedError") {
+    return m("stopped", "info", "Stopped", "Stopped. Nothing was sent.", { quiet: true });
   }
   if (/has not been authori[sz]ed by the user|wallet is locked|locked wallet|walletnotconnected|wallet not connected|please unlock/i.test(p.raw)) {
     return m("wallet-locked", "error", "Wallet locked", `Unlock ${ctx.walletName ?? "your wallet"} and try again.`);

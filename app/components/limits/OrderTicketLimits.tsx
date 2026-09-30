@@ -1,20 +1,20 @@
 "use client";
 
 /**
- * Order-ticket limits panel (plan §2): live max size per side + reason, the
- * clamp notice, halted-side / same-owner notices, the oracle band, the P2
- * pre-trade quote, the P3 leverage step-down notice, and the measured fill
- * result. Pure renderer of `deriveTicketLimits` (lib/limits/ticket.ts).
+ * Order-ticket limits, the "Details" drawer half (plan §2, UX WP-3 §4.2): live max size per
+ * side + reason, the oracle band and the P2 pre-trade quote (fee cap + margin). The notices
+ * that used to stack here (clamp, halted side, same-owner, step-down, fill result) are the
+ * ticket's ONE status slot / inline helpers now (lib/limits/ticket-state.ts).
+ * Pure renderer of `deriveTicketLimits` (lib/limits/ticket.ts).
  */
 import { type FC } from "react";
 import { COPY } from "@/lib/limits/copy";
 import type { TicketLimits } from "@/lib/limits/ticket";
 import type { MarketLimits } from "@/hooks/useMarketLimits";
-import type { FillResult } from "@/lib/limits/fill-result";
 import { bandEdgesE6, effectiveLpExposureKBps } from "@/lib/limits/risk-limits";
 import type { Side } from "@/lib/limits/risk-limits";
 import { formatUsdPriceE6 } from "@/lib/format";
-import { LimitsNotice, LimitsRow, fmtBandPct, fmtBps } from "./LimitsRow";
+import { LimitsRow, fmtBandPct, fmtBps } from "./LimitsRow";
 import { fmtQ } from "@/lib/limits/format";
 import { clampFeeCapMarginBps } from "@/lib/limits/fee-channel";
 
@@ -23,10 +23,6 @@ export interface OrderTicketLimitsProps {
   ticket: TicketLimits;
   direction: Side;
   symbol: string;
-  /** Set by the ticket when it just clamped the input (base q). */
-  clampedToQ: bigint | null;
-  fillResult: FillResult | null;
-  requestedQ: bigint | null;
   /** Fee-cap slippage margin (bps) and its setter (P2 fee channel). */
   feeMarginBps?: number;
   onFeeMarginChange?: (bps: number) => void;
@@ -34,7 +30,7 @@ export interface OrderTicketLimitsProps {
 
 export { fmtQ };
 
-function reasonCopy(t: TicketLimits, limits: MarketLimits, side: Side): string {
+export function reasonCopy(t: TicketLimits, limits: MarketLimits, side: Side): string {
   const lim = t.sideLimits?.[side];
   if (!lim) return "";
   switch (lim.reason) {
@@ -66,9 +62,6 @@ export const OrderTicketLimits: FC<OrderTicketLimitsProps> = ({
   ticket,
   direction,
   symbol,
-  clampedToQ,
-  fillResult,
-  requestedQ,
   feeMarginBps,
   onFeeMarginChange,
 }) => {
@@ -79,19 +72,6 @@ export const OrderTicketLimits: FC<OrderTicketLimitsProps> = ({
 
   return (
     <div data-testid="limits-order-ticket" data-state={limits.state}>
-      {fillResult && (fillResult.kind === "zero" || fillResult.kind === "partial") && (
-        <LimitsNotice
-          tone={fillResult.kind === "zero" ? "warning" : "info"}
-          title={fillResult.kind === "zero" ? "Market at capacity — no fill" : "Partial fill"}
-          testId="limits-fill-result"
-          data={{ kind: fillResult.kind }}
-        >
-          {fillResult.kind === "zero"
-            ? COPY.zeroFill
-            : COPY.partialFill(fmtQ(fillResult.filledQ ?? 0n), fmtQ(requestedQ ?? 0n), symbol)}
-        </LimitsNotice>
-      )}
-
       {p1 && (
         <div className="mb-3 space-y-0.5">
           {(["long", "short"] as const).map((side) => {
@@ -130,35 +110,6 @@ export const OrderTicketLimits: FC<OrderTicketLimitsProps> = ({
             />
           )}
         </div>
-      )}
-
-      {clampedToQ !== null && sl && (
-        <LimitsNotice tone="info" title="Size reduced" testId="limits-clamp-notice" data={{ "max-q": clampedToQ.toString() }}>
-          {COPY.clamped(fmtQ(clampedToQ), symbol, reasonCopy(ticket, limits, direction))}
-        </LimitsNotice>
-      )}
-
-      {ticket.halted[direction] && (
-        <LimitsNotice tone="error" title="Opening paused" testId="limits-halt-notice" data={{ side: direction }}>
-          {COPY.halted(direction)}
-        </LimitsNotice>
-      )}
-
-      {ticket.sameOwner && (
-        <LimitsNotice tone="error" title="Use a different wallet" testId="limits-same-owner-notice">
-          {COPY.sameOwner}
-        </LimitsNotice>
-      )}
-
-      {ticket.stepDown?.stepped && (
-        <LimitsNotice tone="warning" title="Leverage step-down" testId="limits-stepdown-notice" data={{ "max-leverage": String(ticket.stepDown.maxLeverage) }}>
-          {COPY.stepDown(
-            String(ticket.stepDown.maxLeverage),
-            direction,
-            `${(ticket.stepDown.crowdBps / 100).toFixed(0)}%`,
-            String(ticket.stepDown.baseMaxLeverage),
-          )}
-        </LimitsNotice>
       )}
 
       {limits.flags.p2 && ticket.quote && (

@@ -399,6 +399,11 @@ export function useTrade(slabAddress: string) {
       feeBps?: bigint;
       /** UX WP-2: called while the app waits for the market (no prompt yet): true / false. */
       onWaiting?: (waiting: boolean) => void;
+      /** UX WP-3: the ticket's "Stop" ends the wait loop (no prompt was opened). */
+      abortSignal?: AbortSignal;
+      /** UX WP-3: keep waiting past the schedule (with Stop) and say so after ~30 s. */
+      keepWaiting?: boolean;
+      onWaitingLong?: () => void;
     }) => {
       if (inflightRef.current) throw new Error("Trade already in progress");
       inflightRef.current = true;
@@ -694,6 +699,9 @@ export function useTrade(slabAddress: string) {
         const sig = await sendTxWaiting({
           connection, wallet, instructions,
           onWaiting: params.onWaiting,
+          abortSignal: params.abortSignal,
+          keepWaiting: params.keepWaiting,
+          onWaitingLong: params.onWaitingLong,
           computeUnitsFromSim: { cap: tradeCuCap(legs.length) },
           // P0b: prepend ExpireBackingBucket / FinalizeResetSide only if this
           // trade/close would otherwise revert 19/21 on them (lib/self-heal.ts).

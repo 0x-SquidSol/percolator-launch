@@ -57,7 +57,16 @@ export interface TicketLimits {
     verdict: SignedFeeVerdict;
     charged: boolean;
   } | null;
-  stepDown: { maxLeverage: number; stepped: boolean; baseMaxLeverage: number; crowdBps: number } | null;
+  stepDown: {
+    maxLeverage: number;
+    stepped: boolean;
+    baseMaxLeverage: number;
+    crowdBps: number;
+    /** UX WP-3 row 8: the cap for THIS size (the ticket lowers the leverage to it). */
+    maxLeverageAtSize?: number;
+    /** The other side's cap (the inline note names both). */
+    otherSideMaxLeverage?: number;
+  } | null;
   issues: TicketIssue[];
 }
 
@@ -165,7 +174,15 @@ export function deriveTicketLimits(i: TicketLimitsInput): TicketLimits {
     const base = e.initialMarginBps > 0n ? Number(10_000n / e.initialMarginBps) : 1;
     const absNet = L.vaultLp.lpNetQ < 0n ? -L.vaultLp.lpNetQ : L.vaultLp.lpNetQ;
     const crowdBps = Number((absNet * 10_000n) / L.vaultLp.levCapQ);
-    out.stepDown = { maxLeverage: probe.maxLeverage, stepped: probe.stepped, baseMaxLeverage: base, crowdBps: Math.min(crowdBps, 10_000) };
+    const otherProbe = stepDownMaxLeverage(L.vaultLp.lpNetQ, 1n, i.direction !== "long", L.vaultLp.levCapQ, e.initialMarginBps, L.vaultLp.levMaxImrBps);
+    out.stepDown = {
+      maxLeverage: probe.maxLeverage,
+      stepped: probe.stepped,
+      baseMaxLeverage: base,
+      crowdBps: Math.min(crowdBps, 10_000),
+      maxLeverageAtSize: atSize.stepped ? atSize.maxLeverage : undefined,
+      otherSideMaxLeverage: otherProbe.stepped ? otherProbe.maxLeverage : base,
+    };
     if (atSize.stepped && i.leverage > atSize.maxLeverage) {
       out.issues.push({
         kind: "step-down",
@@ -216,4 +233,21 @@ export function closeLimitNotice(positionQ: bigint, sideLimits: Record<Side, Sid
   if (lim.halted || (lim.reason === "lp-halt" && lim.maxQ === 0n)) return { kind: "halted" };
   if ((lim.reason === "lp-halt" || lim.reason === "lp-exposure") && lim.maxQ < size) return { kind: "capped", maxQ: lim.maxQ };
   return null;
+}
+
+/**
+ * UX WP-3 (§3.3 row 11): the largest size at or under `i.sizeQ` whose P2 quote fee fits the
+ * market's maximum, by bisection over the same pure derivation. null = none fits (or no issue).
+ */
+export function feeFitSizeQ(i: TicketLimitsInput, steps = 64): bigint | null {
+  const over = (q: bigint) => deriveTicketLimits({ ...i, sizeQ: q }).issues.some((x) => x.kind === "fee-over-max");
+  if (i.sizeQ <= 0n || !over(i.sizeQ)) return null;
+  let lo = 0n;
+  let hi = i.sizeQ;
+  for (let k = 0; k < steps && hi - lo > 1n; k++) {
+    const mid = (lo + hi) / 2n;
+    if (over(mid)) hi = mid;
+    else lo = mid;
+  }
+  return lo > 0n && !over(lo) ? lo : null;
 }

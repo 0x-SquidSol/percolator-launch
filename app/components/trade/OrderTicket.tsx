@@ -42,7 +42,7 @@ import { computeNotionalNative } from "@/lib/notional";
 import { availableLeverage as availableLeverageFor, nextLeverageInputState, clampSliderLeverage, LEVERAGE_STEP } from "@/lib/leverage-control";
 import { useTrade, prewarmTradeSubmission } from "@/hooks/useTrade";
 import { useMarketFillCap } from "@/hooks/useMarketFillCap";
-import { remainingSideCapacityQ, wouldExceedInventoryCap, UNLIMITED_CAPACITY } from "@/lib/marketCapacity";
+import { remainingSideCapacityQ, UNLIMITED_CAPACITY } from "@/lib/marketCapacity";
 import { isBlockedSlab } from "@/lib/blocklist";
 import { humanizeError, isEngineLockError, withTransientRetry } from "@/lib/errorMessages";
 import { useSingleMarketHealth } from "@/hooks/useMarketHealth";
@@ -85,17 +85,16 @@ import { isOracleStaleBlocking } from "@/lib/oracle-stale-gate";
 import { invalidatePortfolio } from "@/lib/portfolio-invalidation";
 import { FEE_LEGS, legPercent, splitFeeAtoms } from "@/lib/fee-breakdown";
 import { useMarketLimits } from "@/hooks/useMarketLimits";
-import { closeLimitNotice, deriveTicketLimits, sizeQToInput } from "@/lib/limits/ticket";
+import { closeLimitNotice, deriveTicketLimits, feeFitSizeQ, sizeQToInput, type TicketLimitsInput } from "@/lib/limits/ticket";
+import { balanceMaxQ, deriveTicketState, maxInUnit, oneMaxQ, type TicketRow } from "@/lib/limits/ticket-state";
+import { publishTicketRow } from "@/lib/limits/ticket-status-store";
 import { fmtQ } from "@/lib/limits/format";
-import { sideCapacityForDisplay } from "@/lib/trade-display";
 import { takeFillResult } from "@/lib/limits/fill-check";
 import { defaultFeeCapMarginBps } from "@/lib/limits/fee-channel";
-import type { FillResult } from "@/lib/limits/fill-result";
-import { OrderTicketLimits } from "@/components/limits/OrderTicketLimits";
-import { LimitsNotice } from "@/components/limits/LimitsRow";
+import { OrderTicketLimits, reasonCopy } from "@/components/limits/OrderTicketLimits";
 import { StatusLine } from "@/components/ui/StatusLine";
-import { resolveUserMessage, type UserMessage } from "@/lib/limits/user-message";
-import { COPY } from "@/lib/limits/copy";
+import { resolveUserMessage, type UserMessage, type UserMessageAction } from "@/lib/limits/user-message";
+import { TICKET_COPY } from "@/lib/limits/copy";
 import { decodeMarketEngineView } from "@/lib/limits/decode";
 import { isAdlReduceOnly } from "@/lib/limits/adl-reduce-only";
 
@@ -135,126 +134,19 @@ function parsePercToNative(input: string, decimalsRaw = 6): bigint {
   return BigInt(whole) * 10n ** BigInt(decimals) + BigInt(frac);
 }
 
-/* ── Single-severity-gated validation (dYdX priority-pipeline model) ──
- * Priority-ordered: protocol-level blocks first, user-input issues last.
- * Only the FIRST (highest-priority) issue renders as the single banner;
- * only `error`-severity issues block submit (matches the reference doc's
- * two-severity model — warnings display but don't disable the button). */
-interface TicketValidationCtx {
-  /** Blocklisted/retired market: opens are pointless (and on a bankrupt
-   *  market, DANGEROUS — new money can become unwithdrawable). Highest
-   *  priority: nothing else about the market matters if it's retired. */
-  marketRetired: boolean;
-  marketPaused: boolean;
-  vaultEmpty: boolean;
-  lpUnderfunded: boolean;
-  /** v18: the matcher LP portfolio has 0 capital (market health). */
-  lpDepleted: boolean;
-  /** v18: header.mode == Resolved (market health). */
-  marketResolved: boolean;
-  riskGateActive: boolean;
-  oracleUnavailable: boolean;
-  oracleStale: boolean;
-  engineStale: boolean;
-  hasPrice: boolean;
-  mockMode: boolean;
-  exceedsBalance: boolean;
-  balanceLabel: string;
-  /** True when this order asks for more size than the market's matcher will
-   *  fill in ONE trade (matcherCaps.maxFillAbs). Over the cap the trade does
-   *  NOT partially fill — it reverts with a bare InvalidAccountData — so this
-   *  has to block submit, not just warn. See lib/matcherCaps.ts. */
-  exceedsFillCap: boolean;
-  /** Human-readable per-trade ceiling, e.g. "694.20 USDC". */
-  fillCapLabel: string;
-  /** True when the order fits the per-trade cap but would push the LP's NET
-   *  inventory past maxInventoryAbs — the matcher clamps, the wrapper rejects,
-   *  same bare InvalidAccountData. Direction-dependent: one side can be full
-   *  while the other still has the whole cap. See lib/marketCapacity.ts. */
-  exceedsSideCapacity: boolean;
-  /** Which side the user is taking, for the capacity message. */
-  direction: "long" | "short";
-  /** Human-readable remaining capacity on that side, e.g. "312.40 USDC". */
-  sideCapacityLabel: string;
-}
-interface ValidationIssue {
-  severity: "error" | "warning";
-  title: string;
-  message: string;
-  /** UX WP-2/3: rendered as a StatusLine of this kind (calm system state) instead of the amber box. */
-  kind?: string;
-}
-function buildValidationIssues(ctx: TicketValidationCtx): ValidationIssue[] {
-  if (ctx.mockMode) return [];
-  const issues: ValidationIssue[] = [];
-  if (ctx.marketRetired) {
-    issues.push({
-      severity: "error",
-      title: "Market retired",
-      message:
-        "This market has been retired and no longer accepts new positions or deposits. " +
-        "Existing positions can still be closed and funds withdrawn where the market allows it.",
-    });
-  }
-  if (ctx.marketPaused) {
-    issues.push({ severity: "error", title: "Market paused", message: "Trading, deposits, and withdrawals are disabled by the market admin." });
-  }
-  if (ctx.vaultEmpty) {
-    issues.push({ severity: "error", title: "No vault liquidity", message: "This market has no LP deposits. Trading will be enabled once liquidity is added to the vault." });
-  }
-  if (ctx.marketResolved) {
-    issues.push({ severity: "error", title: "Market resolved", message: "This market is resolved. New positions can't be opened; existing positions can still be closed and funds withdrawn." });
-  }
-  if (ctx.lpDepleted) {
-    issues.push({
-      severity: "error",
-      title: "LP depleted",
-      message: "The market's liquidity provider has no capital left, so there is no counterparty for a new position. Opening is disabled until the LP is re-funded; closing still works.",
-    });
-  } else if (ctx.lpUnderfunded) {
-    issues.push({ severity: "error", title: "Liquidity unavailable", message: "The LP has no capital. Trades cannot execute until the LP is funded." });
-  }
-  if (ctx.riskGateActive) {
-    issues.push({ severity: "error", title: "Risk reduction mode", message: "This market is in de-risking mode. Only closing trades are allowed right now." });
-  }
-  if (ctx.oracleUnavailable) {
-    issues.push({ severity: "error", title: "Oracle unavailable", message: "Oracle not yet active - keeper has not cranked this market." });
-  } else if (ctx.oracleStale) {
-    issues.push({ severity: "error", title: "Oracle stale", message: "The oracle price for this market has not updated recently. Trading is temporarily disabled to prevent failed transactions." });
-  } else if (ctx.engineStale) {
-    // UX WP-2 (SH-3): only a lag BEYOND what the app's own catch-up cranks repair (see
-    // useEngineFreshness) blocks; the button re-enables itself when the market catches up.
-    issues.push({ severity: "error", kind: "engine-catching-up", title: "Catching up", message: "Prices are catching up. Trading resumes automatically, usually within a minute." });
-  }
-  if (!ctx.hasPrice) {
-    issues.push({ severity: "error", title: "No oracle price", message: "Waiting for price feed. Trades will be enabled once oracle data is available." });
-  }
-  if (ctx.exceedsBalance) {
-    issues.push({ severity: "error", title: "Exceeds balance", message: `Order size exceeds your available balance (${ctx.balanceLabel}).` });
-  }
-  if (ctx.exceedsFillCap) {
-    issues.push({
-      severity: "error",
-      title: "Over the market's trade limit",
-      message:
-        `This market fills at most ${ctx.fillCapLabel} in a single trade — the cap that protects its ` +
-        `liquidity provider. Reduce your size, or open the position in several smaller trades.`,
-    });
-  } else if (ctx.exceedsSideCapacity) {
-    // Only when the per-trade cap ISN'T the blocker — one banner, most
-    // specific reason wins. This is the "market is full on your side" case:
-    // the trade fits the per-trade cap but would push the LP's net exposure
-    // past its ceiling, and the matcher rejects rather than partially fills.
-    const other = ctx.direction === "long" ? "shorts" : "longs";
-    issues.push({
-      severity: "error",
-      title: `Market is near its ${ctx.direction} capacity`,
-      message:
-        `This market can only absorb about ${ctx.sideCapacityLabel} more ${ctx.direction} exposure right now ` +
-        `(the LP's total-exposure cap). Reduce your size, or wait for ${other} or position closes to free capacity.`,
-    });
-  }
-  return issues;
+/* UX WP-3: the old priority-ordered validation banner is lib/limits/ticket-state.ts now — the
+ * ticket's ONE status slot + a state-labelled button (audit §3.3), unit-tested there. */
+
+function SummaryCell({ label, value, valueClass = "text-[var(--text)]", tooltip }: { label: string; value: string; valueClass?: string; tooltip?: string }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="flex items-center gap-1 text-[10px] uppercase tracking-[0.08em] text-[var(--text-secondary)]">
+        {label}
+        {tooltip && <InfoIcon tooltip={tooltip} />}
+      </span>
+      <span className={`truncate font-mono ${valueClass}`}>{value}</span>
+    </div>
+  );
 }
 
 function DiffRow({
@@ -433,13 +325,6 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // edit wins over the prefill from then on (touched ref).
   const [starterAmountInput, setStarterAmountInput] = useState("");
   const starterTouchedRef = useRef(false);
-  // Progressive disclosure (first-timer receipt): a never-funded account has
-  // never seen a receipt before, so the full fees/slippage/margin breakdown
-  // is more noise than help on the very first order — collapse it behind a
-  // toggle, defaulting closed. Once the account has capital (has traded /
-  // deposited before), always show the full breakdown — they already know
-  // what it means and want it visible without an extra click.
-  const [showReceiptDetails, setShowReceiptDetails] = useState(false);
   const { networkWarning, reportTxError } = useWalletNetworkGuard();
 
   // Prefill the starter-deposit field once the wallet balance resolves —
@@ -464,8 +349,14 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const marketHealth = useSingleMarketHealth(slabAddress);
   // Limits UI (P1/P2/P3, flag-gated; returns state "off" and does no RPC when all flags are off).
   const marketLimits = useMarketLimits(slabAddress);
-  const [limitsClampedToQ, setLimitsClampedToQ] = useState<bigint | null>(null);
-  const [limitsFill, setLimitsFill] = useState<{ fill: FillResult; requestedQ: bigint } | null>(null);
+  /** WP-3 row 9: the size was just reduced to the max; the helper turns --warning for 4 s. */
+  const [clampedToQ, setClampedToQ] = useState<bigint | null>(null);
+  /** WP-3 result line (§3.3): full / partial / zero fill of the last order, in the status slot. */
+  const [result, setResult] = useState<{ kind: "full" | "partial" | "zero"; body: string; sig: string | null; tryQ: bigint | null } | null>(null);
+  /** WP-3: the wait loop passed ~30 s; "We'll keep trying" + Stop. */
+  const [waitingLong, setWaitingLong] = useState(false);
+  const waitAbortRef = useRef<AbortController | null>(null);
+  const [showDetails, setShowDetails] = useState(false);
   // P2 fee channel: slippage margin on the signed fee cap (default NEXT_PUBLIC_FEE_CAP_MARGIN_BPS or +2).
   const [feeMarginBps, setFeeMarginBps] = useState<number>(() => defaultFeeCapMarginBps());
   const lpDepleted = marketHealth?.lpDepleted === true;
@@ -597,6 +488,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     setLastSig(null);
     setHumanError(null);
     setRefusal(null);
+    setResult(null);
+    setClampedToQ(null);
     setEngineLockError(null);
     setTradePhase("idle");
   }, [slabAddress]);
@@ -620,14 +513,24 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     [priceUsd, decimals],
   );
 
-  const handleSizeChange = useCallback(
+  /** Set the size WITHOUT clearing the status slot (the ticket's own clamp). */
+  const applySize = useCallback(
     (val: string) => {
       const cleaned = sanitizeDecimalInput(val);
       setSizeInput(cleaned);
-      setRefusal(null); // a refusal is about the size that was submitted; editing clears it
       recomputeFromSize(cleaned, sizeUnit, leverage);
     },
     [sizeUnit, leverage, recomputeFromSize],
+  );
+  /** A user edit: the last refusal / result / clamp note were about the old size, so clear them. */
+  const handleSizeChange = useCallback(
+    (val: string) => {
+      setRefusal(null);
+      setResult(null);
+      setClampedToQ(null);
+      applySize(val);
+    },
+    [applySize],
   );
 
   const toggleSizeUnit = useCallback(() => {
@@ -802,7 +705,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   }
 
   // ── Limits (P1/P2/P3) — every decision is lib/limits/ticket.ts ──
-  const ticketLimits = deriveTicketLimits({
+  const limitsInput: TicketLimitsInput = {
     limits: marketLimits,
     direction,
     sizeQ: positionSize,
@@ -812,94 +715,96 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     limitPriceE6: slippageBoundE6,
     markE6: livePriceE6 ?? undefined,
     feeMarginBps,
-  });
-  const limitsBlocking = ticketLimits.issues.some((x) => x.severity === "error") || adlReduceOnly;
+  };
+  const ticketLimits = deriveTicketLimits(limitsInput);
   // P1 99165722 (F-7): a close that GROWS a halted / capped LP is refused or clipped too.
   const limitsCloseNotice = closeLimitNotice(existingPositionSize, ticketLimits.sideLimits);
-  // P1: clamp the size input to the live headroom and SAY so (never silently).
-  const limitsClampTo = ticketLimits.clampToQ;
-  useEffect(() => {
-    if (limitsClampTo === null || !livePriceE6 || livePriceE6 <= 0n) return;
-    handleSizeChange(sizeQToInput(limitsClampTo, sizeUnit, livePriceE6));
-    setLimitsClampedToQ(limitsClampTo);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- fire only when a new clamp is required
-  }, [limitsClampTo]);
 
-  // ── Per-trade fill cap ──
-  // The matcher will not fill more than `maxFillAbs` (base-token units) in one
-  // trade, and going over does NOT partially fill — the wrapper rejects the
-  // whole thing with a bare InvalidAccountData. Compare in the SAME units the
-  // trade instruction takes (positionSize is the `sizeQ` passed to trade()),
-  // then express the ceiling in collateral for the banner, since that is the
-  // unit the size/margin inputs are denominated in.
-  const exceedsFillCap =
-    !mockMode && fillCaps != null && positionSize > 0n && positionSize > fillCaps.maxFillAbs;
-  // maxFillAbs at the i128::MAX sentinel (or 0) means "no practical per-trade cap"
-  // — the newmarkets.ts seed sets it to i128::MAX. Rendering i128::MAX × price is an
-  // astronomical, meaningless number, so treat it as unlimited (null) and let the
-  // "Max per trade" row hide instead of showing ~1.9e37 USDC.
+  // ── ONE max per side (UX WP-3, TR-2) ──
+  // The tightest of every cap the market enforces: P1 maxTradeSizePerSide, the matcher's
+  // per-trade fill cap (over it the trade reverts whole) and the LP's net-inventory room on the
+  // side (legacy "capacity left"). They used to be three rows that disagreed; now one figure.
+  // maxFillAbs at the i128::MAX sentinel (or 0) means "no practical per-trade cap".
   const fillCapUnlimited =
     fillCaps != null && (fillCaps.maxFillAbs <= 0n || fillCaps.maxFillAbs >= UNLIMITED_CAPACITY);
-  const fillCapNotional =
-    fillCaps != null && !fillCapUnlimited && livePriceE6 && livePriceE6 > 0n
-      ? (fillCaps.maxFillAbs * livePriceE6) / 1_000_000n
+  const fillCapQ = !mockMode && fillCaps != null && !fillCapUnlimited ? fillCaps.maxFillAbs : null;
+  const legacySideCapQ = (side: "long" | "short"): bigint | null =>
+    !mockMode && fillCaps != null && fillCaps.inventoryBase != null
+      ? remainingSideCapacityQ(fillCaps.inventoryBase, fillCaps.maxInventoryAbs, side)
       : null;
-  const fillCapLabel =
-    fillCapNotional != null
-      ? `${formatTokenAmount(fillCapNotional, decimals)} ${collateralSymbol}`
-      : "its per-trade limit";
+  const marketMaxQFor = (side: "long" | "short") =>
+    oneMaxQ([ticketLimits.sideLimits?.[side]?.maxQ, fillCapQ, legacySideCapQ(side)]);
+  const marketMaxQ = marketMaxQFor(direction);
+  const sidePaused = {
+    long: ticketLimits.halted.long || legacySideCapQ("long") === 0n,
+    short: ticketLimits.halted.short || legacySideCapQ("short") === 0n,
+  };
+  // The Max the trader sees (and the Max chip fills): the market's cap or what the balance can
+  // margin at this leverage, whichever is smaller, in the input's unit.
+  const displayMaxQ = oneMaxQ([marketMaxQ, balanceMaxQ(effectiveBalance, leverage, livePriceE6)]);
 
-  // ── Side capacity (LP net-inventory ceiling) ──
-  // A trade under the per-trade cap still reverts when it would push the LP's
-  // NET inventory past maxInventoryAbs — the state a one-sided market drifts
-  // into. Direction-dependent: the full side blocks, the other side still has
-  // room. inventoryBase is a 20s poll, so this is advisory-fresh — the banner
-  // stops the guaranteed failures; a razor's-edge race still surfaces as the
-  // humanized on-chain error.
-  const sideCapacityQ =
-    fillCaps != null && fillCaps.inventoryBase != null
-      ? remainingSideCapacityQ(fillCaps.inventoryBase, fillCaps.maxInventoryAbs, direction)
-      : null;
-  const exceedsSideCapacity =
-    !mockMode &&
-    fillCaps != null &&
-    fillCaps.inventoryBase != null &&
-    positionSize > 0n &&
-    wouldExceedInventoryCap(fillCaps.inventoryBase, fillCaps.maxInventoryAbs, direction, positionSize);
-  const sideCapacityNotional =
-    sideCapacityQ != null && sideCapacityQ !== UNLIMITED_CAPACITY && livePriceE6 && livePriceE6 > 0n
-      ? (sideCapacityQ * livePriceE6) / 1_000_000n
-      : null;
-  // E2E B6: a depleted / underfunded LP has no side capacity to advertise.
-  const shownSideCapacity = sideCapacityForDisplay(sideCapacityNotional ?? null, lpUnderfunded || lpDepleted);
-  const sideCapacityLabel =
-    sideCapacityNotional != null
-      ? `${formatTokenAmount(sideCapacityNotional, decimals)} ${collateralSymbol}`
-      : "its remaining capacity";
+  // Row 9 (AUTO): over the max, the size is reduced to it and the helper says so for 4 s.
+  const clampTarget = marketMaxQ !== null && marketMaxQ > 0n && positionSize > marketMaxQ ? marketMaxQ : null;
+  useEffect(() => {
+    if (clampTarget === null || !livePriceE6 || livePriceE6 <= 0n) return;
+    applySize(sizeQToInput(clampTarget, sizeUnit, livePriceE6));
+    setClampedToQ(clampTarget);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fire only when a new clamp is required
+  }, [clampTarget]);
+  useEffect(() => {
+    if (clampedToQ === null) return;
+    const t = setTimeout(() => setClampedToQ(null), 4000);
+    return () => clearTimeout(t);
+  }, [clampedToQ]);
 
-  // ── Validation (single banner, priority-ordered) ──
-  const validationIssues = buildValidationIssues({
-    marketRetired: !mockMode && isBlockedSlab(slabAddress),
-    marketPaused: !!header?.paused,
-    vaultEmpty,
-    lpUnderfunded: lpUnderfunded || lpDepleted,
-    lpDepleted,
-    marketResolved,
-    riskGateActive,
-    oracleUnavailable,
-    oracleStale,
-    engineStale,
-    hasPrice: priceUsd != null,
-    mockMode,
-    exceedsBalance,
-    balanceLabel: `${formatTokenAmount(effectiveBalance, decimals)} ${collateralSymbol}`,
-    exceedsFillCap,
-    fillCapLabel,
-    exceedsSideCapacity,
+  // Row 8 (AUTO): a busy side's step-down lowers the slider max; a chosen leverage above the
+  // cap for this size is set to it.
+  const levCapForSize = Math.min(maxLeverage, ticketLimits.stepDown?.maxLeverageAtSize ?? Number.POSITIVE_INFINITY);
+  useEffect(() => {
+    if (levCapForSize >= 1 && leverage > levCapForSize) updateLeverage(Math.floor(levCapForSize * 100) / 100);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when the cap drops below the choice
+  }, [levCapForSize, leverage]);
+
+  const feeOverMax = ticketLimits.issues.some((x) => x.kind === "fee-over-max");
+  const feeFitQ = feeOverMax ? feeFitSizeQ(limitsInput) : null;
+  const shortfall = marginNative > effectiveBalance ? marginNative - effectiveBalance : 0n;
+
+  // ── The state machine (audit §3.3): one status slot, one state-labelled button ──
+  const ticketState = deriveTicketState({
     direction,
-    sideCapacityLabel,
+    baseSymbol: baseTicker,
+    leverageLabel: formatLeverageValue(leverage),
+    marketRetired: !mockMode && isBlockedSlab(slabAddress),
+    marketResolved,
+    marketPaused: !!header?.paused,
+    adlReduceOnly,
+    engineStale,
+    waitingForPrice: !mockMode && (oracleUnavailable || oracleStale || priceUsd == null),
+    sidePaused,
+    openingPaused: !mockMode && (vaultEmpty || lpDepleted || lpUnderfunded || riskGateActive),
+    sameOwner: ticketLimits.sameOwner,
+    exceedsBalance,
+    shortfallLabel: `${formatTokenAmount(shortfall, decimals)} ${collateralSymbol}`,
+    feeOverMax,
+    feeSuggested: feeFitQ !== null ? `${fmtQ(feeFitQ)} ${baseTicker}` : null,
   });
-  const blockingIssue = validationIssues.find((i) => i.severity === "error") ?? null;
+  // Row 5 (LIMIT): the selected side is paused and the other is open => select the open one.
+  useEffect(() => {
+    if (ticketState.autoSelect) setDirection(ticketState.autoSelect);
+  }, [ticketState.autoSelect]);
+  // Row 2: ADL reduce-only moves the ticket to Close when it starts (the Open tab says why).
+  const adlWasOn = useRef(false);
+  useEffect(() => {
+    if (adlReduceOnly && !adlWasOn.current) setTicketMode("close");
+    adlWasOn.current = adlReduceOnly;
+  }, [adlReduceOnly]);
+  // The mobile sheet's collapsed bar names a blocked ticket ("Trade · Close-only").
+  useEffect(() => {
+    publishTicketRow(slabAddress, ticketState.row === "ok" || ticketState.row === "exceeds-balance" ? null : ticketState.row);
+  }, [slabAddress, ticketState.row]);
+  useEffect(() => () => publishTicketRow(slabAddress, null), [slabAddress]);
+  // A step-down the ticket could not absorb (a cap below 1×) still blocks.
+  const limitsBlocking = ticketLimits.issues.some((x) => x.kind === "step-down" && x.severity === "error") && levCapForSize < 1;
 
   const needsWallet = !connected;
   const needsAccount = connected && !userAccount;
@@ -931,7 +836,12 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
 
     setHumanError(null);
     setRefusal(null);
-setEngineLockError(null);
+    setResult(null);
+    setEngineLockError(null);
+    setWaitingLong(false);
+    const waitAbort = new AbortController();
+    waitAbortRef.current = waitAbort;
+    const submitPriceE6 = getLivePriceSnapshot(slabAddress).priceE6 ?? livePriceE6 ?? 0n;
     setTradePhase("submitting");
     try {
       const size = direction === "short" ? -effectiveSize : effectiveSize;
@@ -950,26 +860,44 @@ setEngineLockError(null);
                 ...(ticketLimits.fee?.channel.enabled ? { feeBps: ticketLimits.fee.signedFeeBps } : {}),
                 // UX WP-2: the app waits for the market (no prompt) instead of failing.
                 onWaiting: (w: boolean) => setTradePhase(w ? "waiting" : "submitting"),
+                // UX WP-3: it keeps waiting past ~30 s ("We'll keep trying") until Stop.
+                keepWaiting: true,
+                onWaitingLong: () => setWaitingLong(true),
+                abortSignal: waitAbort.signal,
               },
               snapshotLimitPriceE6,
             ),
           ),
         { maxRetries: 2, delayMs: 3000 },
       );
+      setWaitingLong(false);
       // P1: a confirmed TradeCpi can be a partial or ZERO fill (lib/limits/fill-check.ts).
       const limitsFillResult = takeFillResult(sig);
-      setLimitsFill(limitsFillResult ? { fill: limitsFillResult, requestedQ: size } : null);
-      setLimitsClampedToQ(null);
+      setClampedToQ(null);
+      const sideWord = direction === "long" ? "long" : "short";
       if (limitsFillResult?.kind === "zero") {
-        // Never "Confirmed!" for a no-op: nothing filled, nothing to save.
+        // Never "Confirmed!" for a no-op: nothing filled, nothing to save. Offer a smaller size.
+        const room = marketMaxQFor(direction);
+        const tryQ = room !== null && room > 0n && room < effectiveSize ? room : effectiveSize / 2n;
+        setResult({ kind: "zero", body: TICKET_COPY.result.zero, sig: sig ?? null, tryQ: tryQ > 0n ? tryQ : null });
         setLastSig(sig ?? null);
         setTradePhase("idle");
         refreshSlab();
         return;
       }
+      setResult(
+        limitsFillResult?.kind === "partial"
+          ? { kind: "partial", body: TICKET_COPY.result.partial(fmtQ(limitsFillResult.filledQ ?? 0n), fmtQ(effectiveSize), baseTicker), sig: sig ?? null, tryQ: null }
+          : {
+              kind: "full",
+              body: TICKET_COPY.result.full(fmtQ(effectiveSize), baseTicker, sideWord, formatUsdPriceE6(submitPriceE6)),
+              sig: sig ?? null,
+              tryQ: null,
+            },
+      );
       setTradePhase("confirming");
       setLastSig(sig ?? null);
-setEngineLockError(null);
+      setEngineLockError(null);
       setMarginInput("");
       setSizeInput("");
       if (livePriceE6 && livePriceE6 > 0n && userAccount) {
@@ -1005,6 +933,7 @@ setEngineLockError(null);
         setTradePhase("idle");
       }, 1500);
     } catch (e) {
+      setWaitingLong(false);
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[OrderTicket] raw error:", msg);
       // PERC-onboarding-5: advisory-only wrong-network-wallet check on the
@@ -1063,10 +992,86 @@ setEngineLockError(null);
   const submitDisabled =
     tradePhase !== "idle" ||
     loading ||
-    !marginInput ||
-    positionSize <= 0n ||
-    !!blockingIssue ||
-    limitsBlocking;
+    ticketState.blocks ||
+    limitsBlocking ||
+    (ticketState.row !== "exceeds-balance" && (!marginInput || positionSize <= 0n));
+
+  // ── The ONE status slot (audit §3.3 / §4.1) ──────────────────────────────
+  // First match wins: a market state that blocks, a long wait, the last refusal / failure,
+  // the last result line, then an advisory wallet-network note. Empty = no DOM.
+  const onSlotAction = (a: UserMessageAction) => {
+    if (a.id === "stop") {
+      waitAbortRef.current?.abort();
+      return;
+    }
+    const q = a.id === "try-size" ? result?.tryQ ?? null : a.id === "use-max" ? ticketLimits.sideLimits?.[direction]?.maxQ ?? null : null;
+    if (q && q > 0n && livePriceE6 && livePriceE6 > 0n) handleSizeChange(sizeQToInput(q, sizeUnit, livePriceE6));
+  };
+  const LEGACY_TESTID: Partial<Record<TicketRow, string>> = {
+    "close-only": "limits-adl-reduce-only",
+    "side-paused": "limits-halt-notice",
+    "same-owner": "limits-same-owner-notice",
+    "fee-over-max": "limits-quote-fee-over-max",
+  };
+  const statusSlot = (() => {
+    if (ticketState.status) {
+      const legacy = LEGACY_TESTID[ticketState.row];
+      const line = <StatusLine message={ticketState.status} legacyTestId={legacy} />;
+      return legacy ? <div data-testid={legacy} data-side={direction}>{line}</div> : line;
+    }
+    if (tradePhase === "waiting" && waitingLong) {
+      return (
+        <StatusLine
+          message={{ kind: "waiting-long", variant: "wait", title: TICKET_COPY.waitingLong.title, body: TICKET_COPY.waitingLong.body, action: { id: "stop", label: TICKET_COPY.waitingLong.stop } }}
+          onAction={onSlotAction}
+        />
+      );
+    }
+    const why = networkWarning ?? undefined;
+    if (refusal) {
+      return (
+        <div data-testid="trade-error" data-kind={refusal.kind}>
+          <StatusLine message={{ ...refusal, why: refusal.why ?? why }} legacyTestId="trade-error" onAction={onSlotAction} />
+        </div>
+      );
+    }
+    if (engineLockError) {
+      return (
+        <div data-testid="trade-error" data-kind="engine-lock">
+          <StatusLine message={{ kind: "engine-lock", variant: "wait", title: "Market busy", body: `${engineLockError} This usually clears within a minute.`, why }} legacyTestId="trade-error" />
+        </div>
+      );
+    }
+    if (humanError) {
+      return (
+        <div data-testid="trade-error" data-kind="trade">
+          <StatusLine message={{ kind: "trade-error", variant: "error", title: "Order not placed", body: humanError, why }} legacyTestId="trade-error" />
+        </div>
+      );
+    }
+    if (result) {
+      const kind = result.kind === "zero" ? "zero-fill" : result.kind === "partial" ? "partial-fill" : "filled";
+      const title = result.kind === "zero" ? "Not filled" : result.kind === "partial" ? "Partly filled" : "Order filled";
+      const line = (
+        <StatusLine
+          message={{
+            kind,
+            variant: "info",
+            title,
+            body: result.body,
+            ...(result.kind === "zero" && result.tryQ ? { action: { id: "try-size" as const, label: TICKET_COPY.result.tryChip(`${fmtQ(result.tryQ)} ${baseTicker}`) } } : {}),
+          }}
+          onAction={onSlotAction}
+          txUrl={result.sig ? explorerTxUrl(result.sig) : undefined}
+        />
+      );
+      return result.kind === "full" ? line : <div data-testid="limits-fill-result" data-kind={result.kind}>{line}</div>;
+    }
+    if (networkWarning) {
+      return <StatusLine message={{ kind: "wallet-network", variant: "info", title: "Check your wallet's network", body: networkWarning }} />;
+    }
+    return null;
+  })();
 
   // ── Close mode ──────────────────────────────────────────────────────────
   const handleClosed = (percent: number) => {
@@ -1102,23 +1107,23 @@ setEngineLockError(null);
   // ── Close mode — swap the order form for a compact close panel ───────────
   if (ticketMode === "close") {
     return (
-      <div className="relative p-3.5">
+      <div className="relative p-3.5" data-testid="order-ticket" data-ticket-mode="close">
         {openCloseToggle}
-        {adlReduceOnly && (
-          <LimitsNotice tone="info" title={COPY.adlReduceOnlyTitle} testId="limits-adl-close-route">
-            {COPY.adlCloseRoute}
-          </LimitsNotice>
-        )}
-        {!adlReduceOnly && limitsCloseNotice?.kind === "halted" && (
-          <LimitsNotice tone="warning" title="Close refused while the LP is at its floor" testId="limits-close-halt-notice">
-            {COPY.closeHalted}
-          </LimitsNotice>
-        )}
-        {!adlReduceOnly && limitsCloseNotice?.kind === "capped" && (
-          <LimitsNotice tone="warning" title="Close limited by the LP's cap" testId="limits-close-cap-notice">
-            {COPY.closeCapped(fmtQ(limitsCloseNotice.maxQ), symbol)}
-          </LimitsNotice>
-        )}
+        {(() => {
+          // UX WP-3 / §3.4: one close note, priority ADL route > halted > capped.
+          const note = adlReduceOnly
+            ? { id: "limits-adl-close-route", kind: "close-adl", variant: "info" as const, title: TICKET_COPY.closeOnly.title, body: TICKET_COPY.close.adl }
+            : limitsCloseNotice?.kind === "halted"
+              ? { id: "limits-close-halt-notice", kind: "close-paused", variant: "paused" as const, title: "Closing paused", body: TICKET_COPY.close.halted }
+              : limitsCloseNotice?.kind === "capped"
+                ? { id: "limits-close-cap-notice", kind: "close-capped", variant: "info" as const, title: "Partial close only", body: TICKET_COPY.close.capped(fmtQ(limitsCloseNotice.maxQ), baseTicker) }
+                : null;
+          return note ? (
+            <div className="mb-3" data-testid={note.id}>
+              <StatusLine message={note} legacyTestId={note.id} />
+            </div>
+          ) : null;
+        })()}
         <OrderTicketClosePanel
           slabAddress={slabAddress}
           positionSize={existingPositionSize}
@@ -1138,23 +1143,32 @@ setEngineLockError(null);
     );
   }
 
+  // Row 8 inline note (only while a step-down is active): both sides' caps, under the slider.
+  const stepDownNote =
+    ticketLimits.stepDown?.stepped
+      ? TICKET_COPY.stepDownInline(
+          formatLeverageValue(ticketLimits.stepDown.maxLeverage),
+          direction === "long" ? "longs" : "shorts",
+          formatLeverageValue(ticketLimits.stepDown.otherSideMaxLeverage ?? ticketLimits.stepDown.baseMaxLeverage),
+          direction === "long" ? "Shorts" : "Longs",
+        )
+      : null;
+  // One Max per side (§4.2): in the input's unit, tap = fill. Hidden while the ticket can't open.
+  const showMax = displayMaxQ !== null && displayMaxQ > 0n && !!livePriceE6 && livePriceE6 > 0n && !ticketState.blocks;
+  const maxLabel = showMax ? maxInUnit(displayMaxQ!, sizeUnit, livePriceE6!, baseTicker) : null;
+  const fillFraction = (pct: number) => {
+    if (displayMaxQ !== null && displayMaxQ > 0n && livePriceE6 && livePriceE6 > 0n) {
+      handleSizeChange(sizeQToInput((displayMaxQ * BigInt(pct)) / 100n, sizeUnit, livePriceE6));
+      return;
+    }
+    setSizePercent(pct);
+  };
+  const clampReason = ticketLimits.sideLimits ? reasonCopy(ticketLimits, marketLimits, direction) : "";
+
   return (
-    <div className="relative p-3.5">
+    <div className="relative p-3.5" data-testid="order-ticket" data-ticket-row={ticketState.row}>
       {openCloseToggle}
-      {/* Top strip — order type (market-only, so a static label rather than
-          a tab you can't actually switch) + a leverage-at-a-glance pill.
-          Hyperliquid-style: leverage is visible from the first glance at the
-          ticket, not only once you've scrolled to the slider below. */}
-      <div className="mb-3 flex items-center justify-between">
-        <span className="text-[10px] font-bold uppercase tracking-[0.15em] text-[var(--text-secondary)]">Market</span>
-        <span
-          className="rounded-none border border-[var(--border)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold text-[var(--text)]"
-          style={{ fontFamily: "var(--font-mono)" }}
-          title="Current leverage — adjust below"
-        >
-          {leverage}x
-        </span>
-      </div>
+      {statusSlot && <div className="mb-3" data-testid="ticket-status-slot">{statusSlot}</div>}
 
       {/* Locked shell — a disabled fieldset natively disables every input and
           button inside (including keyboard focus), and the opacity drop makes
@@ -1167,90 +1181,60 @@ setEngineLockError(null);
         className={`min-w-0 transition-opacity duration-150 ${ticketLocked ? "pointer-events-none select-none opacity-40" : ""}`}
       >
 
-      {/* Long / Short segmented — semantic long/short tokens only, symmetric
-          unselected states (both read as neutral until chosen — previously
-          Short's idle state was tinted red even when not selected, which
-          fought the "green/red are semantic, not decorative" rule and made
-          the two buttons visually asymmetric at rest). */}
+      {/* Long / Short segmented. A paused side (no room for new exposure) carries a "Paused"
+          sublabel, 40% opacity and can't be selected; the ticket selects the open side. */}
       <div className="mb-3 flex gap-1">
         <button
           onClick={() => setDirection("long")}
           data-testid="trade-side-long"
           data-side="long"
-          data-limits-halted={ticketLimits.halted.long ? "true" : undefined}
-          disabled={ticketLimits.halted.long}
-          aria-disabled={ticketLimits.halted.long}
-          title={ticketLimits.halted.long ? "Opening long is paused: the LP is at its capital floor" : undefined}
+          data-limits-halted={sidePaused.long ? "true" : undefined}
+          disabled={sidePaused.long}
+          aria-disabled={sidePaused.long}
           aria-pressed={direction === "long"}
-          className={`flex-1 rounded-none border py-2.5 text-[11px] font-bold uppercase tracking-[0.1em] transition-colors duration-150 ${
+          className={`flex flex-1 flex-col items-center rounded-none border py-2.5 text-[11px] font-bold uppercase tracking-[0.1em] transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-40 ${
             direction === "long"
               ? "border-[var(--long)] bg-[var(--long)] text-black"
               : "border-[var(--border)] bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:border-[var(--long)]/40 hover:text-[var(--text)]"
           }`}
         >
           Long
+          {sidePaused.long && (
+            <span data-testid="trade-side-paused" className="text-[10px] font-medium normal-case tracking-normal">
+              {TICKET_COPY.sidePausedSublabel}
+            </span>
+          )}
         </button>
         <button
           onClick={() => setDirection("short")}
           data-testid="trade-side-short"
           data-side="short"
-          data-limits-halted={ticketLimits.halted.short ? "true" : undefined}
-          disabled={ticketLimits.halted.short}
-          aria-disabled={ticketLimits.halted.short}
-          title={ticketLimits.halted.short ? "Opening short is paused: the LP is at its capital floor" : undefined}
+          data-limits-halted={sidePaused.short ? "true" : undefined}
+          disabled={sidePaused.short}
+          aria-disabled={sidePaused.short}
           aria-pressed={direction === "short"}
-          className={`flex-1 rounded-none border py-2.5 text-[11px] font-bold uppercase tracking-[0.1em] transition-colors duration-150 ${
+          className={`flex flex-1 flex-col items-center rounded-none border py-2.5 text-[11px] font-bold uppercase tracking-[0.1em] transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-40 ${
             direction === "short"
               ? "border-[var(--short)] bg-[var(--short)] text-white"
               : "border-[var(--border)] bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:border-[var(--short)]/40 hover:text-[var(--text)]"
           }`}
         >
           Short
+          {sidePaused.short && (
+            <span data-testid="trade-side-paused" className="text-[10px] font-medium normal-case tracking-normal">
+              {TICKET_COPY.sidePausedSublabel}
+            </span>
+          )}
         </button>
       </div>
 
-      {/* Account strip — Hyperliquid-style "Available to Trade" line: its own
-          clean row above the input rather than crammed into the Size label.
-          "Acc Bal" is AVAILABLE capital (total minus margin already locked by
-          an open position on this market) — when a position is open it shows
-          "avail / total" so the locked portion isn't hidden, just no longer
-          double-counted as spendable. */}
-      <div
-        className="mb-2 flex items-center justify-between text-[10px] text-[var(--text)]"
-        style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}
-        title={lockedMargin > 0n ? `${formatTokenAmount(lockedMargin, decimals, 3)} ${collateralSymbol} locked by your open position on this market` : undefined}
-      >
-        <span>
-          {/* "Balance" read as ambiguous next to "Wallet" — new traders
-              couldn't tell which number was actually spendable on an order.
-              Plain-English: this is capital already deposited into the
-              Percolator account, i.e. what an order can actually draw on. */}
-          <span className="text-[var(--text-secondary)]">Available to trade </span>
-          {userAccount ? formatTokenAmount(availableBalance, decimals, 3) : "0"}
-          {lockedMargin > 0n && (
-            <span className="text-[var(--text-secondary)]">/{formatTokenAmount(capital, decimals, 3)}</span>
-          )}
-          <span className="text-[var(--text-secondary)]"> {collateralSymbol}</span>
-        </span>
-        <span>
-          <span className="text-[var(--text-secondary)]">In wallet (not deposited) </span>
-          {walletAtaBalance != null ? formatTokenAmount(walletAtaBalance, decimals, 3) : "—"}
-          <span className="text-[var(--text-secondary)]"> {collateralSymbol}</span>
-        </span>
-      </div>
-      {capital === 0n && (walletAtaBalance ?? 0n) > 0n && (
-        <p className="mb-2 text-[10px] leading-relaxed text-[var(--text-secondary)]">
-          You have {formatTokenAmount(walletAtaBalance ?? 0n, decimals, 3)} {collateralSymbol} in your wallet —
-          deposit it to start trading.
-        </p>
-      )}
-
-      {/* Size — single input + unit toggle + quick-fill chips */}
+      {/* Size — single input + unit toggle, then ONE helper line: available | Max (tap = fill) */}
       <div className="mb-2">
-        <label htmlFor="order-size-input" className="mb-1.5 block text-[10px] uppercase tracking-[0.15em] text-[var(--text)]">
-          Size
-          <InfoIcon tooltip="Position size in the toggled unit. Switch between token and USD - both stay in sync." />
-        </label>
+        <div className="mb-1.5 flex items-center justify-between">
+          <label htmlFor="order-size-input" className="block text-[10px] uppercase tracking-[0.15em] text-[var(--text)]">
+            Size
+          </label>
+        </div>
         <div className="flex gap-1.5">
           <input
             id="order-size-input"
@@ -1259,105 +1243,77 @@ setEngineLockError(null);
             inputMode="decimal"
             value={sizeInput}
             onChange={(e) => handleSizeChange(e.target.value)}
-            placeholder={sizeUnit === "token" ? "0.000000" : "$0.00"}
+            placeholder={sizeUnit === "token" ? "0.0000" : "$0.00"}
             style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}
             className={`flex-1 rounded-none border px-2 py-2 text-right text-sm text-[var(--text)] placeholder-[var(--text-muted)] focus:outline-none focus:ring-1 focus:border-[var(--accent)] focus:ring-[var(--accent)]/20 ${
-              exceedsBalance ? "border-[var(--short)]/50 bg-[var(--short)]/5" : "border-[var(--border)]/40 bg-[var(--bg)]"
-            }`}
+              exceedsBalance ? "border-[var(--warning)]/50" : "border-[var(--border)]/40"
+            } bg-[var(--bg)]`}
           />
           <button
             onClick={toggleSizeUnit}
+            data-testid="trade-size-unit"
             title={`Switch size unit (currently ${sizeUnit === "token" ? baseTicker : "USD"})`}
             className="w-16 shrink-0 truncate rounded-none border border-[var(--border)] bg-[var(--bg-elevated)] px-1 text-[10px] font-medium uppercase tracking-[0.1em] text-[var(--text-secondary)] transition-colors duration-150 hover:border-[var(--border-hover)] hover:text-[var(--text)]"
           >
             {sizeUnit === "token" ? baseTicker : "USD"}
           </button>
         </div>
-        {exceedsBalance && (
-          <p className="mt-1 text-[10px] text-[var(--short)]" style={{ fontFamily: "var(--font-mono)" }}>
-            Exceeds balance ({formatTokenAmount(effectiveBalance, decimals)} {collateralSymbol})
+        {clampedToQ !== null ? (
+          <p
+            data-testid="limits-clamp-notice"
+            data-max-q={clampedToQ.toString()}
+            title={clampReason || undefined}
+            className="mt-1 text-[11px] text-[var(--warning)]"
+            style={{ fontFamily: "var(--font-mono)" }}
+          >
+            {TICKET_COPY.clamped(livePriceE6 && livePriceE6 > 0n ? maxInUnit(clampedToQ, sizeUnit, livePriceE6, baseTicker).replace(` ${baseTicker}`, "") : fmtQ(clampedToQ), sizeUnit === "token" ? baseTicker : "USD")}
+          </p>
+        ) : (
+          <div
+            className="mt-1 flex items-center justify-between text-[11px]"
+            style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}
+            title={lockedMargin > 0n ? `${formatTokenAmount(lockedMargin, decimals, 3)} ${collateralSymbol} backs your open position on this market` : undefined}
+          >
+            <span data-testid="ticket-available">
+              <span className="text-[var(--text-secondary)]">Available </span>
+              <span className="text-[var(--text)]">{formatTokenAmount(effectiveBalance, decimals, 2)}</span>
+              <span className="text-[var(--text-secondary)]"> {collateralSymbol}</span>
+            </span>
+            {maxLabel && (
+              <button
+                type="button"
+                data-testid="limits-max-size-inline"
+                data-side={direction}
+                data-max-q={displayMaxQ!.toString()}
+                data-unit={sizeUnit}
+                title={clampReason || "The most you can open right now on this side."}
+                onClick={() => fillFraction(100)}
+                className="text-[var(--text-secondary)] hover:text-[var(--text)]"
+              >
+                Max <span className="text-[var(--text)]">{maxLabel}</span>
+              </button>
+            )}
+          </div>
+        )}
+        {capital === 0n && (walletAtaBalance ?? 0n) > 0n && (
+          <p className="mt-1 text-[11px] leading-relaxed text-[var(--text-secondary)]">
+            {formatTokenAmount(walletAtaBalance ?? 0n, decimals, 2)} {collateralSymbol} in your wallet. Deposit it to start trading.
           </p>
         )}
       </div>
-      <div className="mb-2 flex gap-1">
+      <div className="mb-3 flex gap-1">
         {SIZE_PRESETS.map((pct) => (
           <button
             key={pct}
-            onClick={() => setSizePercent(pct)}
-          data-testid="trade-size-preset"
-          data-percent={pct}
+            onClick={() => fillFraction(pct)}
+            data-testid="trade-size-preset"
+            data-percent={pct}
             className="flex-1 rounded-none border border-[var(--border)]/30 py-1 text-[10px] font-medium text-[var(--text-secondary)] transition-colors duration-150 hover:border-[var(--accent)]/30 hover:bg-[var(--accent-subtle)] hover:text-[var(--text)]"
           >
             {pct === 100 ? "Max" : `${pct}%`}
           </button>
         ))}
       </div>
-
-      {/* Market limits — shown BEFORE the user hits them, not only as a
-          rejection banner. Two ceilings the matcher enforces silently (over
-          either one the trade reverts whole, no partial fill): the per-trade
-          cap, and the LP's remaining net-exposure capacity on the CHOSEN side
-          (direction-aware, refreshed on a 20s poll). Without this row the
-          only way to discover the limits was to trip them. */}
-      {adlReduceOnly && (
-        <LimitsNotice tone="warning" title={COPY.adlReduceOnlyTitle} testId="limits-adl-reduce-only">
-          {COPY.adlReduceOnly}
-        </LimitsNotice>
-      )}
-      <OrderTicketLimits
-        limits={marketLimits}
-        ticket={ticketLimits}
-        direction={direction}
-        symbol={symbol}
-        clampedToQ={limitsClampedToQ}
-        fillResult={limitsFill?.fill ?? null}
-        requestedQ={limitsFill?.requestedQ ?? null}
-        feeMarginBps={feeMarginBps}
-        onFeeMarginChange={setFeeMarginBps}
-      />
-      {!mockMode && fillCapNotional != null && (
-        <div className="mb-3 space-y-0.5">
-          <div className="flex items-center justify-between text-[10px]">
-            <span className="flex items-center gap-1 text-[var(--text-secondary)] uppercase tracking-[0.08em]">
-              Max per trade
-              <InfoIcon tooltip="The most this market fills in a single trade — the matcher's per-fill cap protecting the LP. Bigger positions need multiple trades." />
-            </span>
-            <span
-              className={`font-mono tabular-nums ${exceedsFillCap ? "text-[var(--short)]" : "text-[var(--text)]"}`}
-            >
-              {formatTokenAmount(fillCapNotional, decimals)} {collateralSymbol}
-            </span>
-          </div>
-          {shownSideCapacity != null && (
-            <div className="flex items-center justify-between text-[10px]">
-              <span className="flex items-center gap-1 text-[var(--text-secondary)] uppercase tracking-[0.08em]">
-                {direction} capacity left
-                <InfoIcon tooltip="How much more exposure the market can absorb on your side before the LP's total-exposure cap. Fills up as one direction dominates; frees up when the other side trades or positions close." />
-              </span>
-              <span
-                className={`font-mono tabular-nums ${exceedsSideCapacity ? "text-[var(--short)]" : "text-[var(--text)]"}`}
-              >
-                {formatTokenAmount(shownSideCapacity, decimals)} {collateralSymbol}
-              </span>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Order value — surfaced right under the size input (Hyperliquid
-          shows notional at a glance here, not buried below leverage). Moved
-          out of the receipt box below so it isn't shown twice. */}
-      {hasOrder && (
-        <div className="mb-3 flex items-center justify-between text-[10px]">
-          <span className="flex items-center gap-1 text-[var(--text-secondary)] uppercase tracking-[0.08em]">
-            Order value
-            <InfoIcon tooltip="Total notional exposure — margin × leverage. sim-USDC is $1-pegged, so this is your USD exposure." />
-          </span>
-          <span className="font-mono tabular-nums text-[var(--text)]">
-            {formatTokenAmount(notionalNative, decimals)} {collateralSymbol}
-          </span>
-        </div>
-      )}
 
       {/* Leverage slider + input — divider matches the account row's border-t
           below, giving "size" and "leverage/risk" distinct visual sections
@@ -1481,98 +1437,87 @@ setEngineLockError(null);
         )}
       </div>
 
-      {/* Receipt — before -> after. Deliberately "sunken" (var(--bg), the
-          page-level darkness, rather than an elevated surface) so it reads
-          as an inset readout inside the ticket panel — a small depth cue
-          that reinforces the panel/ticket as the raised surface. */}
-      {hasOrder && (() => {
-        const isFirstTimer = capital === 0n;
-        const detailsVisible = !isFirstTimer || showReceiptDetails;
-        return (
-          <div className="mb-3 rounded-none border border-[var(--border)]/60 bg-[var(--bg)]/60 px-2.5 py-2 divide-y divide-[var(--border)]/30">
-            <DiffRow label="Entry" before="—" after={formatUsdPriceE6(estEntry)} />
-            <DiffRow
-              label="Liq price"
-              before={beforeLiqDisplay.text}
-              after={afterLiqDisplay.text}
-              valueClass={
-                afterLiqDisplay.kind !== "price"
-                  ? "text-[var(--text-secondary)]"
-                  : direction === "long" ? "text-[var(--short)]" : "text-[var(--long)]"
-              }
-              tooltip={`Estimated liquidation price if this order fills at the estimated entry.${afterLiqDisplay.title ? ` ${afterLiqDisplay.title}` : ""}`}
-            />
-            {detailsVisible && (
-              <>
+      {stepDownNote && (
+        <p
+          data-testid="limits-stepdown-notice"
+          data-max-leverage={String(ticketLimits.stepDown!.maxLeverage)}
+          className="-mt-2 mb-3 text-[11px] leading-snug text-[var(--text-secondary)]"
+        >
+          {stepDownNote}
+        </p>
+      )}
+
+      {/* Summary (§4.2): entry / liq / fee / margin. Everything else is in Details. */}
+      {hasOrder && (
+        <div className="mb-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]" data-testid="ticket-summary" style={{ fontVariantNumeric: "tabular-nums" }}>
+          <SummaryCell label="Entry" value={formatUsdPriceE6(estEntry)} />
+          <SummaryCell
+            label="Liq. price"
+            value={beforeLiqDisplay.text !== "—" && beforeLiqDisplay.text !== afterLiqDisplay.text ? `${beforeLiqDisplay.text} → ${afterLiqDisplay.text}` : afterLiqDisplay.text}
+            valueClass={
+              afterLiqDisplay.kind !== "price"
+                ? "text-[var(--text-secondary)]"
+                : direction === "long" ? "text-[var(--short)]" : "text-[var(--long)]"
+            }
+            tooltip={`Estimated liquidation price if this order fills at the estimated entry.${afterLiqDisplay.title ? ` ${afterLiqDisplay.title}` : ""}`}
+          />
+          <SummaryCell
+            label="Fee"
+            value={`${formatTokenAmount(fee, decimals)} ${collateralSymbol}`}
+            /* A trader saw what they pay and nothing about where it goes. #2565. */
+            tooltip={feeDestinationTitle}
+          />
+          <SummaryCell
+            label="Margin"
+            value={`${formatTokenAmount(marginNative, decimals)} ${collateralSymbol}`}
+            tooltip="Collateral this order sets aside from your account to back the position, returned (plus or minus PnL) when it closes. Not a fee."
+          />
+        </div>
+      )}
+
+      {/* Details drawer (§4.2): price band, quote breakdown, fee cap + margin, per-side limits
+          with their reason, worst fill price, available before/after. Collapsed by default. */}
+      <div className="mb-3">
+        <button
+          type="button"
+          data-testid="ticket-details-toggle"
+          aria-expanded={showDetails}
+          onClick={() => setShowDetails((v) => !v)}
+          className="text-[11px] text-[var(--text-secondary)] hover:text-[var(--text)]"
+        >
+          Details {showDetails ? "▴" : "▾"}
+        </button>
+        {showDetails && (
+          <div data-testid="ticket-details" className="mt-1.5 border border-[var(--border)]/40 bg-[var(--bg)]/60 px-2.5 py-2">
+            {hasOrder && (
+              <div className="mb-1 divide-y divide-[var(--border)]/30">
                 <DiffRow
-                  label="Fees"
-                  before="—"
-                  after={`${formatTokenAmount(fee, decimals)} ${collateralSymbol}`}
-                  /* A trader saw what they pay and nothing about where it goes.
-                     The split is identical on every market, unlike the rate. #2565. */
-                  tooltip={feeDestinationTitle}
-                />
-                <DiffRow
-                  label="Slippage bound"
+                  label="Worst fill price"
                   before="—"
                   after={slippageBoundE6 > 0n ? formatUsdPriceE6(slippageBoundE6) : "—"}
-                  tooltip="Worst acceptable fill price sent on-chain - the trade reverts rather than fill worse than this."
-                />
-                <DiffRow
-                  label="Margin"
-                  before="—"
-                  after={`${formatTokenAmount(marginNative, decimals)} ${collateralSymbol}`}
-                  tooltip="Collateral this order reserves from your account to back the position — returned (plus or minus PnL) when it closes. Not a fee."
+                  tooltip="Worst acceptable fill price sent on-chain: the trade is refused rather than fill worse than this."
                 />
                 <DiffRow
                   label="Available to trade"
                   before={`${formatTokenAmount(beforeAvailable, decimals)} ${collateralSymbol}`}
                   after={`${formatTokenAmount(afterAvailable, decimals)} ${collateralSymbol}`}
-                  tooltip="Balance left for new orders after this one reserves its margin — same number as the account strip above."
+                  tooltip="Balance left for new orders after this one sets aside its margin."
                 />
-                {/* The market's own ceiling, shown alongside the user's. Buying
-                    power is `collateral x leverage`, but the market fills at
-                    most `10% x LP x leverage` per trade — the two can differ by
-                    a lot, and until this row existed the gap was invisible
-                    until the transaction reverted. */}
-                {fillCapNotional != null && (
-                  <DiffRow
-                    label="Market max / trade"
-                    before="—"
-                    after={`${formatTokenAmount(fillCapNotional, decimals)} ${collateralSymbol}`}
-                    valueClass={exceedsFillCap ? "text-[var(--short)]" : "text-[var(--text)]"}
-                    tooltip="Largest position this market will fill in a single trade — a cap that protects its liquidity provider. Orders above it are rejected, not partially filled; split them across several trades."
-                  />
-                )}
-              </>
+              </div>
             )}
-            {isFirstTimer && (
-              <button
-                type="button"
-                onClick={() => setShowReceiptDetails((v) => !v)}
-                className="w-full pt-1.5 text-center text-[9px] font-medium uppercase tracking-[0.1em] text-[var(--accent)] transition-colors duration-150 hover:brightness-110"
-              >
-                {showReceiptDetails ? "Hide details ▴" : "Show details ▾"}
-              </button>
-            )}
+            <OrderTicketLimits
+              limits={marketLimits}
+              ticket={ticketLimits}
+              direction={direction}
+              symbol={baseTicker}
+              feeMarginBps={feeMarginBps}
+              onFeeMarginChange={setFeeMarginBps}
+            />
           </div>
-        );
-      })()}
+        )}
+      </div>
 
       </fieldset>
-
-      {/* Single validation banner (highest-priority issue only) */}
-      {blockingIssue?.kind ? (
-        <StatusLine
-          className="mb-3"
-          message={{ kind: blockingIssue.kind, variant: "wait", title: blockingIssue.title, body: blockingIssue.message }}
-        />
-      ) : blockingIssue && (
-        <div className="mb-3 rounded-none border border-[var(--warning)]/30 bg-[var(--warning)]/5 p-2.5">
-          <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--warning)]">{blockingIssue.title}</p>
-          <p className="mt-1 text-[9px] leading-relaxed text-[var(--text-secondary)]">{blockingIssue.message}</p>
-        </div>
-      )}
 
       {/* ONE big full-width submit */}
       {needsWallet ? (
@@ -1713,8 +1658,14 @@ setEngineLockError(null);
       ) : (
         <button
           data-testid="trade-submit"
+          data-state={ticketState.row}
           onClick={() => {
             if (submitDisabled) return;
+            // Row 10: the button says "Deposit {x} to trade" and opens the deposit.
+            if (ticketState.row === "exceeds-balance") {
+              toggleInlineDeposit("deposit");
+              return;
+            }
             const signedSize = direction === "short" ? -positionSize : positionSize;
             // Submit-time: re-fetch rather than trust the render-scoped
             // `livePriceE6` above — this is the one value in this component
@@ -1744,73 +1695,20 @@ setEngineLockError(null);
           }}
           disabled={submitDisabled}
           className={`w-full rounded-none py-3 text-[12px] font-bold uppercase tracking-[0.12em] transition-[filter] duration-150 hover:brightness-110 disabled:cursor-not-allowed disabled:hover:brightness-100 ${
-            tradePhase === "error"
-              ? "bg-[var(--short)] text-white disabled:opacity-100 animate-error-shake"
-              : `disabled:opacity-50 ${direction === "long" ? "bg-[var(--long)] text-black" : "bg-[var(--short)] text-white"} ${
-                  tradePhase === "confirming" ? "animate-scale-in" : ""
-                }`
+            ticketState.blocks
+              ? "bg-[var(--bg-elevated)] text-[var(--text-secondary)] disabled:opacity-100"
+              : `disabled:opacity-50 ${direction === "long" ? "bg-[var(--long)] text-black" : "bg-[var(--short)] text-white"}`
           }`}
         >
+          {(ticketState.waiting || tradePhase === "waiting") && (
+            <span aria-hidden="true" data-testid="trade-submit-spinner" className="mr-1.5 inline-block h-2 w-2 animate-pulse rounded-full bg-current align-middle" />
+          )}
           {tradePhase === "submitting"
-            ? "Submitting…"
+            ? TICKET_COPY.confirmInWallet
             : tradePhase === "waiting"
-              ? "Waiting for the latest price…"
-              : blockingIssue?.kind === "engine-catching-up"
-                ? "Waiting for prices…"
-                : tradePhase === "confirming"
-              ? "Confirmed!"
-              : tradePhase === "error"
-                ? "Failed"
-                : `${direction === "long" ? "Long" : "Short"} ${symbol} ${leverage}x`}
+              ? TICKET_COPY.waitingLatest
+              : ticketState.buttonLabel}
         </button>
-      )}
-
-      {/* A trade that reverted with an engine-lock error (EngineStale/
-          EngineLockActive) persists here in a distinct, retryable amber notice
-          rather than the generic red failure banner — the market is temporarily
-          un-tradeable, not the order malformed. Non-blocking (submit stays
-          enabled): retrying clears it (see the submit handler) and re-attempts.
-          engineLockError takes precedence over humanError since a lock failure
-          sets both. */}
-      {refusal ? (
-        <StatusLine
-          className="mt-2"
-          message={refusal}
-          legacyTestId="trade-error"
-          onAction={(a) => {
-            const q = ticketLimits.sideLimits?.[direction]?.maxQ;
-            if (a.id === "use-max" && q && q > 0n && livePriceE6 && livePriceE6 > 0n) {
-              handleSizeChange(sizeQToInput(q, sizeUnit, livePriceE6));
-              setRefusal(null);
-            }
-          }}
-        />
-      ) : engineLockError ? (
-        <div data-testid="trade-error" data-kind="engine-lock" className="mt-2 rounded-none border border-[var(--warning)]/30 bg-[var(--warning)]/5 px-3 py-2">
-          <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--warning)]">Market temporarily locked</p>
-          <p className="mt-1 text-[10px] leading-relaxed text-[var(--text-secondary)]">{engineLockError}</p>
-          <p className="mt-1 text-[10px] leading-relaxed text-[var(--text-muted)]">This usually clears once the market is cranked again — try again shortly.</p>
-        </div>
-      ) : humanError ? (
-        <div data-testid="trade-error" data-kind="trade" className="mt-2 rounded-none border border-[var(--short)]/20 bg-[var(--short)]/5 px-3 py-2">
-          <p className="text-[10px] text-[var(--short)]">{humanError}</p>
-        </div>
-      ) : null}
-      {/* PERC-onboarding-5: advisory wrong-network-wallet banner — same
-          amber "informational, not a hard failure" treatment as the
-          engine-lock notice above, rendered independently since it can
-          co-occur with (or explain) whatever humanError/engineLockError is
-          also showing. Never blocks submission — purely informational. */}
-      {networkWarning && (
-        <div className="mt-2 rounded-none border border-[var(--warning)]/30 bg-[var(--warning)]/5 px-3 py-2">
-          <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--warning)]">Check your wallet's network</p>
-          <p className="mt-1 text-[10px] leading-relaxed text-[var(--text-secondary)]">{networkWarning}</p>
-        </div>
-      )}
-      {lastSig && (
-        <p className="mt-2 text-[10px] text-[var(--text-secondary)]" style={{ fontFamily: "var(--font-mono)" }}>
-          Tx: <a href={explorerTxUrl(lastSig)} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">{lastSig.slice(0, 16)}...</a>
-        </p>
       )}
 
       {/* Account row: buying power / deposit link. Available balance is

@@ -14,6 +14,8 @@ export interface StatusLineProps {
   onAction?: (action: UserMessageAction) => void;
   /** The pre-WP-3 testid this notice replaces, kept one release for the E2E harness. */
   legacyTestId?: string;
+  /** WP-3: a landed tx; "View transaction" lives in Details, never in the body. */
+  txUrl?: string;
   className?: string;
 }
 
@@ -24,12 +26,12 @@ const RULE: Record<StatusVariant, string> = {
   error: "var(--short)",
 };
 
-export const StatusLine: FC<StatusLineProps> = ({ message, onAction, legacyTestId, className = "" }) => {
+export const StatusLine: FC<StatusLineProps> = ({ message, onAction, legacyTestId, txUrl, className = "" }) => {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const d = message.details;
   const hasDetails = !!d && (d.code !== null || !!d.programId || d.logs.length > 0 || !!d.raw);
-  const expandable = !!message.why || hasDetails;
+  const expandable = !!message.why || hasDetails || !!txUrl;
   const detailText = d
     ? [
         d.code !== null ? `code: ${d.code}${d.name ? ` (${d.name})` : ""}` : null,
@@ -67,7 +69,7 @@ export const StatusLine: FC<StatusLineProps> = ({ message, onAction, legacyTestI
             onClick={() => setOpen((v) => !v)}
             className="shrink-0 text-[11px] text-[var(--text-secondary)] underline-offset-2 hover:underline"
           >
-            Why? {open ? "▴" : "▾"}
+            {message.why || hasDetails ? "Why?" : "Details"} {open ? "▴" : "▾"}
           </button>
         )}
       </div>
@@ -91,6 +93,17 @@ export const StatusLine: FC<StatusLineProps> = ({ message, onAction, legacyTestI
       {open && (
         <div data-testid="status-line-details" className="mt-2 space-y-1.5">
           {message.why && <p className="text-[12px] text-[var(--text-secondary)]">{message.why}</p>}
+          {txUrl && (
+            <a
+              data-testid="status-line-tx"
+              href={txUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block text-[11px] text-[var(--accent-text)] underline-offset-2 hover:underline"
+            >
+              View transaction
+            </a>
+          )}
           {hasDetails && (
             <div>
               <div className="flex items-center justify-between">

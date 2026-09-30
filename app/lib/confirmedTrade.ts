@@ -7,6 +7,10 @@ export interface ConfirmedTradeParams {
   feeBps?: bigint;
   /** UX WP-2: the app is waiting for the market before any prompt (useTrade -> sendTxWaiting). */
   onWaiting?: (waiting: boolean) => void;
+  /** UX WP-3: "Stop" on a long wait; keep waiting past the schedule; told after ~30 s. */
+  abortSignal?: AbortSignal;
+  keepWaiting?: boolean;
+  onWaitingLong?: () => void;
 }
 
 /**

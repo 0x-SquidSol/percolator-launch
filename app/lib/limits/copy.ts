@@ -193,3 +193,63 @@ export function p3ErrorCopyByCode(): Record<number, string> {
   }
   return out;
 }
+
+/**
+ * UX WP-3 (audit §3.3 / §3.4 / §4.2): the order ticket's one status slot, its state-labelled
+ * button and its result lines. Plain words only (§5.1): no LP, crank, engine, keeper or codes.
+ */
+export const TICKET_COPY = {
+  settled: { title: "Market settled", body: "This market has settled. Close any position and withdraw; there's nothing else to do.", button: "Market settled" },
+  retired: { title: "Market closed", body: "This market no longer takes new positions. Close any position and withdraw.", button: "Market closed" },
+  adminPaused: { title: "Trading paused", body: "Trading on this market is paused for now. Your funds stay where they are.", button: "Trading paused" },
+  closeOnly: {
+    title: "Close-only for now",
+    body: "Close-only for now while the market rebalances after a liquidation. Closing works normally; new positions reopen on their own, usually within minutes.",
+    button: "Close-only for now",
+  },
+  catchingUp: { title: "Catching up", body: "Prices are catching up. Trading resumes automatically, usually within a minute.", button: "Waiting for prices…" },
+  waitingPrice: { title: "Waiting for price", body: "Waiting for a fresh price. This usually takes a few seconds.", button: "Waiting for price…" },
+  sidePaused: {
+    title: (sides: string) => `New ${sides} paused`,
+    body: (sides: string, side: string, others: string) =>
+      `New ${sides} are paused: the market has no room for more ${side} exposure right now. ${others} and closes work. This reopens as positions close.`,
+    button: (sides: string) => `New ${sides} paused`,
+  },
+  bothPaused: { title: "Opening paused", body: "New positions are paused until the market's liquidity recovers. Closing works normally.", button: "Opening paused" },
+  sameOwner: {
+    title: "Close-only for this wallet",
+    body: "You created this market, so this wallet can only close positions here. Use another wallet to trade it.",
+    button: "Close-only for this wallet",
+  },
+  feeOverMax: {
+    title: "Fee too high for this size",
+    body: (suggested: string | null) =>
+      `This size costs more than the market's maximum fee.${suggested ? ` Try ${suggested}.` : " Try a smaller size."}`,
+    button: "Reduce size",
+  },
+  depositToTrade: (shortfall: string) => `Deposit ${shortfall} to trade`,
+  stepDownInline: (x: string, sides: string, y: string, others: string) =>
+    `Up to ${x}× for new ${sides} right now (busy side). ${others}: up to ${y}×.`,
+  clamped: (max: string, sym: string) => `Reduced to the most available now: ${max} ${sym}`,
+  waitingLong: {
+    title: "Still waiting",
+    body: "Prices are taking longer than usual. We'll keep trying. You can leave this open.",
+    stop: "Stop",
+  },
+  confirmInWallet: "Confirm in wallet…",
+  waitingLatest: "Waiting for the latest price…",
+  sidePausedSublabel: "Paused",
+  result: {
+    full: (size: string, sym: string, side: string, price: string) => `Opened ${size} ${sym} ${side} at ${price}`,
+    partial: (filled: string, requested: string, sym: string) =>
+      `Opened ${filled} of ${requested} ${sym}. The market had room for part of your order.`,
+    zero: "Not filled: the market had no room for this trade when it landed. Nothing changed and no fee was charged.",
+    tryChip: (size: string) => `Try ${size}`,
+  },
+  close: {
+    adl: "Close-only market: your close goes through directly and may fill in parts if the other side is thin.",
+    capped: (max: string, sym: string) => `The market can take ${max} ${sym} of this close right now.`,
+    cappedAction: (max: string) => `Close ${max}`,
+    halted: "Closing this side is paused for a moment while the market rebalances. It reopens as other positions close.",
+  },
+} as const;

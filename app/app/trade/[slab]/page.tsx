@@ -8,6 +8,7 @@ import { SlabProvider, useSlabState } from "@/components/providers/SlabProvider"
 import { isBlockedSlab } from "@/lib/blocklist";
 import { UsdToggleProvider } from "@/components/providers/UsdToggleProvider";
 import { OrderTicket } from "@/components/trade/OrderTicket";
+import { useTicketRow, ticketRowShortLabel } from "@/lib/limits/ticket-status-store";
 import { PositionNftPanel } from "@/components/trade/PositionNftPanel";
 import { PositionsDock } from "@/components/trade/PositionsDock";
 import dynamic from "next/dynamic";
@@ -177,6 +178,9 @@ const SHEET_FOCUSABLE_SELECTOR =
 
 function MobileOrderSheet({ slab }: { slab: string }) {
   const [open, setOpen] = useState(false);
+  // UX WP-3 (§4.2): the collapsed bar names a blocked ticket ("Trade · Close-only").
+  const ticketRow = useTicketRow(slab);
+  const ticketRowLabel = ticketRowShortLabel(ticketRow);
   const sheetRef = useRef<HTMLDivElement>(null);
 
   // While the bottom-sheet (role="dialog" aria-modal) is open, lock background
@@ -243,8 +247,10 @@ function MobileOrderSheet({ slab }: { slab: string }) {
         <button
           onClick={() => setOpen(true)}
           className="flex w-full items-center justify-center gap-2 py-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--text)]"
+          data-testid="mobile-trade-bar"
+          data-ticket-row={ticketRow ?? undefined}
         >
-          Trade
+          {ticketRowLabel ? `Trade · ${ticketRowLabel}` : "Trade"}
         </button>
       </div>
 
