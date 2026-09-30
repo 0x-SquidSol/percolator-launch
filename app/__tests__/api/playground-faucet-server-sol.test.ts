@@ -22,15 +22,13 @@ const mocks = vi.hoisted(() => ({
   releaseFaucetClaim: vi.fn(),
 
   captureException: vi.fn(),
-  solSigner: null as null | { publicKey: { toBase58(): string }; sign(): void },
-  sendServerSol: vi.fn(),
+  grantServerSol: vi.fn(),
   requestAirdrop: vi.fn(),
   getBalance: vi.fn(),
 }));
 
 vi.mock("@/lib/server-sol-faucet", () => ({
-  getSolFaucetSigner: () => mocks.solSigner,
-  sendServerSol: (...a: unknown[]) => mocks.sendServerSol(...a),
+  grantServerSol: (...a: unknown[]) => mocks.grantServerSol(...a),
 }));
 
 vi.mock("@solana/web3.js", () => {
@@ -120,8 +118,7 @@ beforeEach(async () => {
   });
   mocks.requestAirdrop.mockRejectedValue(new Error("429 Too Many Requests: airdrop limit"));
   mocks.getBalance.mockResolvedValue(0);
-  mocks.sendServerSol.mockResolvedValue("server-sol-sig");
-  mocks.solSigner = null;
+  mocks.grantServerSol.mockResolvedValue({ status: "skipped", reason: "disabled" });
 
   mocks.getAssociatedTokenAddress.mockResolvedValue({
     toBase58: () => "11111111111111111111111111111111",
@@ -145,35 +142,36 @@ afterEach(() => {
 const ENV_NAME = /\b[A-Z][A-Z0-9]*_[A-Z0-9_]{3,}\b/;
 
 describe("UX WP-10 AC1: SOL from the server wallet when the public airdrop fails", () => {
-  it("server wallet configured: one click funds >= 0.05 SOL (public airdrop never needed)", async () => {
-    mocks.solSigner = { publicKey: { toBase58: () => "Server1111111111111111111111111111111111111" }, sign: () => undefined };
+  it("server grant sent: one click funds the top-up (public airdrop never needed); the true amount is reported", async () => {
+    mocks.grantServerSol.mockResolvedValue({ status: "sent", signature: "server-sol-sig", lamports: 50_000_000 });
     const res = await POST(createRequest());
     const body = await res.json();
     expect(res.status).toBe(200);
-    expect(body).toMatchObject({ funded: true, sol_airdropped: true, sol_source: "server", sol_sig: "server-sol-sig" });
-    expect(mocks.sendServerSol).toHaveBeenCalledTimes(1);
-    expect((mocks.sendServerSol.mock.calls[0]![0] as { lamports: number }).lamports).toBeGreaterThanOrEqual(0.05 * 1_000_000_000);
+    expect(body).toMatchObject({ funded: true, sol_airdropped: true, sol_source: "server", sol_sig: "server-sol-sig", sol_amount: 0.05 });
+    expect(mocks.grantServerSol).toHaveBeenCalledTimes(1);
     expect(mocks.requestAirdrop).not.toHaveBeenCalled();
   });
-  it("already has >= 0.05 SOL: nothing is sent", async () => {
-    mocks.solSigner = { publicKey: { toBase58: () => "Server1111111111111111111111111111111111111" }, sign: () => undefined };
-    mocks.getBalance.mockResolvedValue(0.2 * 1_000_000_000);
+  it("already has enough: nothing sent, sol_amount 0", async () => {
+    mocks.grantServerSol.mockResolvedValue({ status: "funded", lamports: 0 });
     const body = await (await POST(createRequest())).json();
-    expect(body.sol_airdropped).toBe(true);
-    expect(mocks.sendServerSol).not.toHaveBeenCalled();
+    expect(body).toMatchObject({ sol_airdropped: true, sol_amount: 0 });
+    expect(mocks.requestAirdrop).not.toHaveBeenCalled();
   });
-  it("NEGATIVE CONTROL (env unset): only the public airdrop, which fails -> no SOL", async () => {
+  it("L-1: a pending server send is never topped up again from the public airdrop", async () => {
+    mocks.grantServerSol.mockResolvedValue({ status: "pending", signature: "p-sig" });
     const body = await (await POST(createRequest())).json();
-    expect(body.sol_airdropped).toBe(false);
-    expect(mocks.sendServerSol).not.toHaveBeenCalled();
-    expect(mocks.requestAirdrop).toHaveBeenCalled();
+    expect(body).toMatchObject({ sol_pending: true, sol_airdropped: false });
+    expect(mocks.requestAirdrop).not.toHaveBeenCalled();
   });
-  it("the server send fails: the public airdrop is still tried", async () => {
-    mocks.solSigner = { publicKey: { toBase58: () => "Server1111111111111111111111111111111111111" }, sign: () => undefined };
-    mocks.sendServerSol.mockRejectedValue(new Error("insufficient lamports in PLAYGROUND_SOL_FAUCET_KEYPAIR"));
-    const body = await (await POST(createRequest())).json();
-    expect(mocks.requestAirdrop).toHaveBeenCalled();
-    expect(JSON.stringify(body)).not.toMatch(ENV_NAME);
+  it("NEGATIVE CONTROL (server skipped: disabled / budget / limits): the public airdrop is tried, which fails -> no SOL", async () => {
+    for (const reason of ["disabled", "budget", "ip-limit"]) {
+      mocks.grantServerSol.mockResolvedValue({ status: "skipped", reason });
+      mocks.requestAirdrop.mockClear();
+      const body = await (await POST(createRequest())).json();
+      expect(body.sol_airdropped, reason).toBe(false);
+      expect(mocks.requestAirdrop).toHaveBeenCalled();
+      expect(JSON.stringify(body)).not.toMatch(ENV_NAME);
+    }
   });
 });
 
@@ -201,7 +199,7 @@ describe("UX WP-10 AC3: no env var names in faucet responses", () => {
     for (const f of ["app/api/playground/faucet/route.ts", "app/api/faucet/route.ts"]) {
       const src = readFileSync(`${process.cwd()}/${f}`, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
       const bodies = src.match(/NextResponse\.json\(\s*\{[\s\S]*?\}\s*,/g) ?? [];
-      for (const b of bodies) expect(b.replace(/process\.env\.\w+/g, ""), f).not.toMatch(/"[^"]*\b[A-Z][A-Z0-9]*_[A-Z0-9_]{3,}\b[^"]*"/);
+      for (const b of bodies) expect(b.replace(/process\.env\.\w+/g, ""), f).not.toMatch(/"[^"\n]*\b[A-Z][A-Z0-9]*_[A-Z0-9_]{3,}\b[^"\n]*"/);
     }
   });
 });

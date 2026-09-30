@@ -61,7 +61,7 @@ import {
 } from "@/lib/server-rpc";
 import * as Sentry from "@sentry/nextjs";
 import { assertSuccessfulConfirmation } from "@/lib/transaction-confirmation";
-import { getSolFaucetSigner, sendServerSol } from "@/lib/server-sol-faucet";
+import { grantServerSol } from "@/lib/server-sol-faucet";
 
 export const dynamic = "force-dynamic";
 
@@ -402,23 +402,27 @@ export async function POST(req: NextRequest) {
     let solAirdropped = false;
     let solSig: string | undefined;
     let solSource: "server" | "public" | undefined;
-    // UX WP-10 (FA-1): the server wallet first (env check only), when the wallet is short of SOL.
-    const solSigner = getSolFaucetSigner();
-    if (solSigner) {
-      try {
-        const bal = await connection.getBalance(walletPk, "confirmed");
-        if (bal < SOL_AIRDROP_AMOUNT) {
-          solSig = await sendServerSol({ connection, signer: solSigner, to: walletPk, lamports: SOL_AIRDROP_AMOUNT - bal });
-          solSource = "server";
-        } else {
-          solSource = "server";
-        }
-        solAirdropped = true;
-      } catch (solErr) {
-        console.error("[playground/faucet] server SOL send failed:", solErr instanceof Error ? solErr.message : String(solErr));
-      }
+    // UX WP-10 (FA-1): the server wallet first, within its limits (lib/server-sol-faucet.ts:
+    // balance-aware top-up, one per wallet per day, a global daily budget, 3 per IP per hour);
+    // otherwise the public airdrop below, as before.
+    let solPending = false;
+    let solLamports = 0;
+    const grant = await grantServerSol({ connection, db: supabase, to: walletPk, ip: getClientIp(req) });
+    if (grant.status === "sent") {
+      solAirdropped = true;
+      solSig = grant.signature;
+      solSource = "server";
+      solLamports = grant.lamports;
+    } else if (grant.status === "funded") {
+      solAirdropped = true;
+      solSource = "server";
+    } else if (grant.status === "pending") {
+      // L-1: broadcast with an unknown outcome counts as spent; never send again on top of it.
+      solPending = true;
+      solSig = grant.signature;
+      solSource = "server";
     }
-    for (const rpcEndpoint of solAirdropped ? [] : DEVNET_RPC_POOL) {
+    for (const rpcEndpoint of solAirdropped || solPending ? [] : DEVNET_RPC_POOL) {
       try {
         const pubConn = new Connection(rpcEndpoint, "confirmed");
         // Wrap the airdrop + confirm in a 3 s timeout so a slow/dead RPC
@@ -441,6 +445,7 @@ export async function POST(req: NextRequest) {
         solAirdropped = true;
         solSig = airdropSig;
         solSource = "public";
+        solLamports = SOL_AIRDROP_AMOUNT;
         break;
       } catch {
         // Try next endpoint or give up gracefully
@@ -454,6 +459,9 @@ export async function POST(req: NextRequest) {
       sol_airdropped: solAirdropped,
       ...(solSig ? { sol_sig: solSig } : {}),
       ...(solSource ? { sol_source: solSource } : {}),
+      // I-3: the amount actually sent (0 when the wallet already had enough).
+      sol_amount: solLamports / LAMPORTS_PER_SOL,
+      ...(solPending ? { sol_pending: true } : {}),
       sim_usdc_mint: SIM_USDC_MINT,
       nextClaimAt,
     });

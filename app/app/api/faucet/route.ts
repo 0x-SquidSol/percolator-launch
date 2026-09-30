@@ -21,7 +21,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { getSolFaucetSigner, sendServerSol } from "@/lib/server-sol-faucet";
+import { getSolFaucetSigner, grantServerSol, type ServerSolGrant } from "@/lib/server-sol-faucet";
 import { getClientIp } from "@/lib/get-client-ip";
 import { checkFundRateLimit } from "@/lib/fund-ip-rate-limit";
 import {
@@ -69,8 +69,6 @@ const NETWORK =
 
 const USDC_MINT_AMOUNT = 10_000_000_000; // 10,000 USDC (6 decimals)
 const SOL_AIRDROP_AMOUNT = 2 * LAMPORTS_PER_SOL; // 2 SOL
-/** From the server wallet (WP-10 FA-1): enough for many devnet txs, small enough not to drain it. */
-const SERVER_SOL_LAMPORTS = 0.1 * LAMPORTS_PER_SOL;
 const RATE_LIMIT_HOURS = 24;
 
 // Public devnet RPCs for requestAirdrop (private RPC may reject airdrop requests).
@@ -246,19 +244,42 @@ export async function POST(req: NextRequest) {
       let lastTransientMsg: string | null = null;
       let fatalErr: unknown = null;
 
-      // UX WP-10 (FA-1): the server wallet first (env check only); the public airdrop is the
-      // fallback, as before.
-      const solSigner = getSolFaucetSigner();
-      if (solSigner) {
-        try {
-          sig = await sendServerSol({ connection: getServerConnection("confirmed"), signer: solSigner, to: walletPk, lamports: SERVER_SOL_LAMPORTS });
-        } catch (solErr) {
-          console.error("[faucet] server SOL send failed:", solErr instanceof Error ? solErr.message : String(solErr));
-          sig = null;
-        }
+      // UX WP-10 (FA-1): the server wallet first, within its limits (lib/server-sol-faucet.ts:
+      // balance-aware top-up to 0.05 SOL, one per wallet per day, a global daily budget, 3 per IP
+      // per hour); the public airdrop below is the fallback, as before.
+      // Env check first: without the key, no server connection is even built.
+      const grant: ServerSolGrant = getSolFaucetSigner()
+        ? await grantServerSol({ connection: getServerConnection("confirmed"), db: supabase, to: walletPk, ip: getClientIp(req) })
+        : { status: "skipped", reason: "disabled" };
+      if (grant.status === "sent" || grant.status === "funded") {
+        releaseGateClaimOnExit = null;
+        _faucetRecord(rateKey);
+        return NextResponse.json({
+          funded: true,
+          sol_airdropped: grant.status === "sent",
+          sol_source: "server",
+          // I-3: the true amount (0 when the wallet already had enough).
+          sol_amount: grant.lamports / LAMPORTS_PER_SOL,
+          ...(grant.status === "sent" ? { signature: grant.signature } : {}),
+          nextClaimAt: new Date(Date.now() + RATE_LIMIT_HOURS * 60 * 60 * 1000).toISOString(),
+        });
+      }
+      if (grant.status === "pending") {
+        // L-1: broadcast with an unknown outcome counts as SPENT: keep the claim, never re-send.
+        releaseGateClaimOnExit = null;
+        _faucetRecord(rateKey);
+        return NextResponse.json(
+          {
+            error: "Your test SOL is on its way but not confirmed yet. Check your balance in a minute before trying again.",
+            pending: true,
+            retryable: false,
+            signature: grant.signature,
+          },
+          { status: 503 },
+        );
       }
 
-      for (const rpcUrl of sig ? [] : DEVNET_RPC_POOL) {
+      for (const rpcUrl of DEVNET_RPC_POOL) {
         const pubConn = new Connection(rpcUrl, "confirmed");
         try {
           sig = await pubConn.requestAirdrop(walletPk, SOL_AIRDROP_AMOUNT);
