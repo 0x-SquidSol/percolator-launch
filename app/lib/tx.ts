@@ -10,6 +10,11 @@ import {
   planVaultLpRepair,
   type VaultLpRepairResult,
 } from "@/lib/limits/vault-lp-repair";
+import {
+  connectionSeniorDrawRepairDeps,
+  planSeniorDrawRepair,
+  type SeniorDrawRepairResult,
+} from "@/lib/limits/senior-draw-repair";
 import type { AccountMeta } from "@solana/web3.js";
 import type { SelfHealResult } from "@/lib/self-heal";
 import { getMaintenanceConfig, MaintenanceError } from "@/lib/maintenance";
@@ -93,6 +98,8 @@ export interface SendTxParams {
   /** Test/diagnostic hook: the limit sendTx set and the consumed CU it was sized from. */
   onComputeUnits?: (r: { limit: number; consumed: number | null }) => void;
   onVaultLpRepair?: (result: VaultLpRepairResult) => void;
+  /** Test/diagnostic hook: the senior-draw repair's outcome (runs whenever vaultLpRepair is set). */
+  onSeniorDrawRepair?: (result: SeniorDrawRepairResult) => void;
 }
 
 /**
@@ -663,6 +670,7 @@ export async function sendTx({
   onSelfHeal,
   vaultLpRepair,
   onVaultLpRepair,
+  onSeniorDrawRepair,
   computeUnitsFromSim,
   onComputeUnits,
 }: SendTxParams): Promise<string> {
@@ -762,6 +770,24 @@ export async function sendTx({
           healedInstructions = r.instructions;
           healedComputeUnits = r.computeUnits;
           console.info("[vault-lp-repair] prepended the vault-LP refresh crank");
+        }
+        // d119eebd senior draw: 87 -> crank the vault LP; 88 -> recall (98) before the 77.
+        const d = await planSeniorDrawRepair(
+          {
+            programId: vaultLpRepair.programId,
+            market: vaultLpRepair.market,
+            cranker: feePayer,
+            instructions: healedInstructions,
+            computeUnits: healedComputeUnits,
+            oracleTail: vaultLpRepair.oracleTail,
+          },
+          connectionSeniorDrawRepairDeps(connection, feePayer),
+        );
+        onSeniorDrawRepair?.(d);
+        if (d.outcome === "cranked" || d.outcome === "recalled") {
+          healedInstructions = d.instructions;
+          healedComputeUnits = d.computeUnits;
+          console.info(`[senior-draw-repair] ${d.outcome}${d.recallAtoms !== undefined ? ` ${d.recallAtoms}` : ""}`);
         }
       }
 

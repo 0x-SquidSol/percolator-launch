@@ -1,5 +1,5 @@
 {
-    "p3Sha": "58e379f1aa24f99de3b6625ef7e150ce80c93687",
+    "p3Sha": "39b138c8b0773a446c36da4d3e6ca358ee06ee83",
     "p1Sha": "3acb34ae83b4038a88a02731d1aa023142ef6c11",
     "engineSha": "35ddd692",
     "vectors": {
@@ -410,7 +410,9 @@
         "VaultLpReleaseRefused": 83,
         "VaultLpHarvestPending": 84,
         "VaultLpValuationStale": 85,
-        "VaultLpMultiAssetMarket": 86
+        "VaultLpMultiAssetMarket": 86,
+        "VaultLpSeniorDrawRequired": 87,
+        "VaultLpRedeemNeedsRecall": 88
     },
     "layout": {
         "marketGroupOff": 592,
@@ -450,6 +452,9 @@
         "vs.senior_claim_atoms": 144,
         "vs.junior_deposited_atoms": 160,
         "vs.junior_floor_bps": 226,
+        "vs.senior_drawn_atoms": 240,
+        "vs.senior_draw_outstanding_atoms": 256,
+        "vs.senior_fee_share_bps": 228,
         "vs.account_len": 272,
         "av.approved_matcher_program": 96,
         "av.flags": 90,

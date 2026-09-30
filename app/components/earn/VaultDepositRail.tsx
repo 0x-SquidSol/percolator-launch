@@ -67,7 +67,7 @@ export function VaultDepositRail({ slab, vault, onTxSuccess, onPositionResolved 
 }
 
 function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }: VaultDepositRailProps & { slab: string }) {
-  const { state, loading, deposit, withdraw, refreshState } = useInsuranceLP();
+  const { state, loading, deposit, withdraw, refreshState, lastDrawSummary } = useInsuranceLP();
   const { config, raw: slabRaw } = useSlabState();
   const wallet = useWalletCompat();
   const vaultAvailable = state.registryExists && state.mintExists;
@@ -213,6 +213,7 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
         depositBlockKind={depositBlock}
         onWithdraw={handleWithdraw}
         p3Bound={marketLimits.vaultLp?.bound === true}
+        drawSummary={lastDrawSummary}
       />
     </div>
   );

@@ -1,5 +1,5 @@
 //! Round-4 oracle: the app's P3 end-to-end surface against the REAL P3 crate
-//! (percolator-prog feat/p3-vault-owned-lp@58e379f1 FINAL + engine 35ddd692), path deps only —
+//! (percolator-prog feat/p3-vault-owned-lp@39b138c8 FINAL (senior draw + D-P3-30 recall cap) + engine 35ddd692), path deps only —
 //! nothing is copied. Build it OUTSIDE both repos (see Cargo.toml.example) and run:
 //!   cargo run --quiet -- vectors.txt > app/__tests__/fixtures/limits/rust-p3-final.json
 //! Emits: every app encoder's hex decoded by `ix::Instruction::decode` (with __short/__long
@@ -70,6 +70,8 @@ fn main() {
         ("VaultLpUseSettleResolved", E::VaultLpUseSettleResolved as u32), ("VaultLpReleaseRefused", E::VaultLpReleaseRefused as u32),
         ("VaultLpHarvestPending", E::VaultLpHarvestPending as u32), ("VaultLpValuationStale", E::VaultLpValuationStale as u32),
         ("VaultLpMultiAssetMarket", E::VaultLpMultiAssetMarket as u32),
+        ("VaultLpSeniorDrawRequired", E::VaultLpSeniorDrawRequired as u32),
+        ("VaultLpRedeemNeedsRecall", E::VaultLpRedeemNeedsRecall as u32),
     ];
     out.push(format!("\"errors\":{{{}}}", errs.iter().map(|(n, v)| format!("\"{n}\":{v}")).collect::<Vec<_>>().join(",")));
 
@@ -119,6 +121,10 @@ fn main() {
         o("vs.senior_claim_atoms", h + offset_of!(VaultLpStateV18, senior_claim_atoms)),
         o("vs.junior_deposited_atoms", h + offset_of!(VaultLpStateV18, junior_deposited_atoms)),
         o("vs.junior_floor_bps", h + offset_of!(VaultLpStateV18, junior_floor_bps)),
+        // d119eebd senior draw
+        o("vs.senior_drawn_atoms", h + offset_of!(VaultLpStateV18, senior_drawn_atoms)),
+        o("vs.senior_draw_outstanding_atoms", h + offset_of!(VaultLpStateV18, senior_draw_outstanding_atoms)),
+        o("vs.senior_fee_share_bps", h + offset_of!(VaultLpStateV18, senior_fee_share_bps)),
         o("vs.account_len", state::vault_lp_state_account_len()),
         o("av.approved_matcher_program", offset_of!(AssetVaultLpV18, approved_matcher_program)),
         o("av.flags", offset_of!(AssetVaultLpV18, flags)),
@@ -174,5 +180,5 @@ fn main() {
     }
     out.push(format!("\"registryBound\":[{}]", bound.join(",")));
 
-    println!("{{\"p3Sha\":\"58e379f1aa24f99de3b6625ef7e150ce80c93687\",\"p1Sha\":\"3acb34ae83b4038a88a02731d1aa023142ef6c11\",\"engineSha\":\"35ddd692\",{}}}", out.join(","));
+    println!("{{\"p3Sha\":\"39b138c8b0773a446c36da4d3e6ca358ee06ee83\",\"p1Sha\":\"3acb34ae83b4038a88a02731d1aa023142ef6c11\",\"engineSha\":\"35ddd692\",{}}}", out.join(","));
 }

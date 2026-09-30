@@ -1,0 +1,160 @@
+// @vitest-environment node
+/**
+ * P3 FINAL 39b138c8 (d119eebd senior draw + D-P3-30 recall cap): the client interface.
+ * 87/88, the writable vault LP on 75/77, the 88 recall-then-redeem repair, the draw logs and
+ * "Earn absorbed". The same code runs on real BPF in scripts/limits-parity/p3-sim
+ * (p3_senior_draw.limits-app.patch: limits_app_senior_draw_absorbed_logs_and_88_recall_then_redeem).
+ */
+import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
+import * as C from "@/lib/limits/constants";
+import { decodeVaultLpState } from "@/lib/limits/decode";
+import { withBoundVaultLpTail } from "@/lib/limits/p3-ix";
+import { earnAbsorbed } from "@/lib/limits/vault-tranche";
+import { drawNoticeText, parseP3DrawLogs, readTxDrawSummary, summarizeDrawEvents } from "@/lib/limits/p3-draw-logs";
+import {
+  drawRepairFailure,
+  find77,
+  planSeniorDrawRepair,
+  recallIxFor77,
+  withRecallBefore77,
+} from "@/lib/limits/senior-draw-repair";
+import { P3_ERROR_COPY_BY_NAME } from "@/lib/limits/copy";
+import { earnErrorMessage } from "@/lib/earnErrors";
+
+const k = () => Keypair.generate().publicKey;
+const PROG = k();
+
+describe("87 / 88 are in the one constants module with copy", () => {
+  it("ordinals and copy", () => {
+    expect(C.P3_ERR.VaultLpSeniorDrawRequired).toBe(87);
+    expect(C.P3_ERR.VaultLpRedeemNeedsRecall).toBe(88);
+    expect(P3_ERROR_COPY_BY_NAME.VaultLpSeniorDrawRequired).toMatch(/Nothing moved/);
+    expect(P3_ERROR_COPY_BY_NAME.VaultLpRedeemNeedsRecall).toMatch(/recalls that backing/);
+    const e = (n: number) => new Error(`{"InstructionError":[3,{"Custom":${n}}]}`);
+    expect(earnErrorMessage(e(88), "claim", { p3Bound: true })).toBe(P3_ERROR_COPY_BY_NAME.VaultLpRedeemNeedsRecall);
+    expect(earnErrorMessage(e(87), "deposit")).toBe(P3_ERROR_COPY_BY_NAME.VaultLpSeniorDrawRequired);
+  });
+});
+
+describe("75 / 77 pass the vault LP WRITABLE (d119eebd); 78's tail is state only", () => {
+  const base = (n: number) => Array.from({ length: n }, () => ({ pubkey: k(), isSigner: false, isWritable: true }));
+  it("75 and 77", () => {
+    for (const [tag, n] of [[75, 11], [77, 13]] as const) {
+      const out = withBoundVaultLpTail(tag, base(n), k(), k());
+      expect(out[n].isWritable).toBe(true); // vault_lp_state
+      expect(out[n + 1].isWritable).toBe(true); // vault LP
+    }
+    expect(withBoundVaultLpTail(78, base(6), k())).toHaveLength(7);
+  });
+});
+
+describe("VaultLpStateV18 senior-draw fields -> Earn absorbed", () => {
+  it("decodes drawn/outstanding at +224/+240 and derives absorbed/restored", () => {
+    const acct = new Uint8Array(C.VAULT_LP_STATE_ACCOUNT_LEN);
+    acct[C.HEADER_KIND_OFF] = C.KIND_VAULT_LP_STATE;
+    acct[C.VS.version] = C.VAULT_LP_STATE_VERSION;
+    const dv = new DataView(acct.buffer);
+    dv.setUint16(C.VS.juniorFloorBps, 1_000, true);
+    dv.setBigUint64(C.VS.seniorDrawnAtoms, 1_635_213n, true);
+    dv.setBigUint64(C.VS.seniorDrawOutstandingAtoms, 635_213n, true);
+    const s = decodeVaultLpState(acct)!;
+    expect(s.seniorDrawnAtoms).toBe(1_635_213n);
+    expect(s.seniorDrawOutstandingAtoms).toBe(635_213n);
+    expect(earnAbsorbed(s)).toEqual({ outstanding: 635_213n, drawn: 1_635_213n, restored: 1_000_000n });
+    expect(earnAbsorbed({ seniorDrawnAtoms: 0n, seniorDrawOutstandingAtoms: 0n })).toBeNull();
+  });
+});
+
+describe("draw logs (the program's sol_log lines)", () => {
+  const logs = [
+    "Program Perco1ator111111111111111111111111111111111 invoke [1]",
+    "Program log: p3_senior_draw deficit=1635213 moved=1635213 unfunded=0 even=1471692 odd=163521",
+    "Program log: p3_senior_draw_booked moved=1635213 junior_cover=0 senior_loss=1635213 C=8364787 outstanding=1635213",
+    "Program log: p3_residual_relabel domain=0 atoms=6000000",
+    "Program log: p3_senior_draw_restored to_seniors=1635213 C=10001000 outstanding=0",
+    "Program log: p3_senior_draw deficit=5 moved=0 unfunded=5",
+    "Program log: unrelated p3_senior_draw_booked moved=1",
+  ];
+  it("parses every event kind and ignores other lines", () => {
+    const ev = parseP3DrawLogs(logs);
+    expect(ev.map((e) => e.kind)).toEqual(["draw", "booked", "relabel", "restored", "draw"]);
+    expect(ev[0]).toMatchObject({ deficit: 1_635_213n, moved: 1_635_213n, even: 1_471_692n, odd: 163_521n });
+    expect(ev[4]).toMatchObject({ moved: 0n, unfunded: 5n, even: null, odd: null });
+    expect(summarizeDrawEvents(ev)).toEqual({ earnAbsorbed: 1_635_213n, earnRestored: 1_635_213n });
+    expect(summarizeDrawEvents(parseP3DrawLogs(["Program log: other"]))).toBeNull();
+    expect(drawNoticeText({ earnAbsorbed: 5n, earnRestored: 0n }, (a) => `${a} USDC`)).toMatch(/^Earn absorbed 5 USDC: .*pro rata/);
+  });
+  it("readTxDrawSummary is best effort", async () => {
+    const ok = { getTransaction: vi.fn(async () => ({ meta: { logMessages: logs } })) };
+    expect(await readTxDrawSummary(ok as never, "sig")).toEqual({ earnAbsorbed: 1_635_213n, earnRestored: 1_635_213n });
+    const bad = { getTransaction: vi.fn(async () => { throw new Error("rpc"); }) };
+    expect(await readTxDrawSummary(bad as never, "sig")).toBeNull();
+  });
+});
+
+describe("88 repair: 98 recall inserted before the 77, simulation-verified", () => {
+  // A bound 77 as buildEarnExecuteIxs + tail emit it (15 accounts), domain 0.
+  const keys = Array.from({ length: 15 }, () => ({ pubkey: k(), isSigner: false, isWritable: true }));
+  const ix77 = new TransactionInstruction({ programId: PROG, keys, data: Buffer.from([77, 0, 0]) });
+  const harvest = new TransactionInstruction({ programId: PROG, keys: [], data: Buffer.from([78, 0, 0]) });
+  const cranker = k();
+
+  it("recallIxFor77 maps the 77's accounts onto 98's list", () => {
+    const r = recallIxFor77(ix77, cranker, 1_635_213n);
+    expect(r.data[0]).toBe(98);
+    expect(r.keys.map((m) => m.pubkey.toBase58())).toEqual([
+      cranker, keys[1].pubkey, keys[2].pubkey, keys[13].pubkey, keys[14].pubkey, keys[8].pubkey, keys[11].pubkey,
+    ].map((p) => p.toBase58()).concat([r.keys[7].pubkey.toBase58()]));
+    expect(withRecallBefore77([harvest, ix77], 1, cranker, 5n).map((i) => i.data[0])).toEqual([78, 98, 77]);
+    expect(find77([harvest, ix77], PROG)).toBe(1);
+  });
+
+  it("drawRepairFailure only for a WRAPPER 87/88", () => {
+    const list = [harvest, ix77];
+    expect(drawRepairFailure({ InstructionError: [1, { Custom: 88 }] }, list, PROG)).toEqual({ code: 88, index: 1 });
+    expect(drawRepairFailure({ InstructionError: [1, { Custom: 88 }] }, list, k())).toBeNull();
+    expect(drawRepairFailure({ InstructionError: [1, { Custom: 21 }] }, list, PROG)).toBeNull();
+  });
+
+  it("planSeniorDrawRepair: ok tx untouched; 88 keeps the first candidate that simulates clean", async () => {
+    const market = new Uint8Array(
+      Buffer.from(readFileSync(join(process.cwd(), "__tests__/fixtures/v18-liveness/pengu-market-v18-healthy.b64"), "utf8").trim(), "base64"),
+    );
+    const vs = new Uint8Array(C.VAULT_LP_STATE_ACCOUNT_LEN);
+    vs[C.HEADER_KIND_OFF] = C.KIND_VAULT_LP_STATE;
+    vs[C.VS.version] = C.VAULT_LP_STATE_VERSION;
+    new DataView(vs.buffer).setUint16(C.VS.juniorFloorBps, 1_000, true);
+    // A senior claim far above the pair's physical backing: the estimate is positive.
+    new DataView(vs.buffer).setBigUint64(C.VS.seniorClaimAtoms, 1n << 62n, true);
+    const reads = new Map<string, Uint8Array>([[keys[13].pubkey.toBase58(), vs]]);
+    const mk = k();
+    const read = vi.fn(async (pk: PublicKey) => (pk.equals(mk) ? market : reads.get(pk.toBase58()) ?? null));
+    const tried: bigint[] = [];
+    const simulate = vi.fn(async (ixs: TransactionInstruction[]) => {
+      const r = ixs.find((i) => i.data[0] === 98);
+      if (!r) return { err: { InstructionError: [ixs.length - 1, { Custom: 88 }] } };
+      tried.push(Buffer.from(r.data).readBigUInt64LE(1));
+      // The first (largest) candidate is refused 76 by the program's cap; the next lands.
+      return { err: tried.length === 1 ? { InstructionError: [3, { Custom: 76 }] } : null };
+    });
+    const p = { programId: PROG, market: mk, cranker, instructions: [harvest, ix77], computeUnits: 200_000 };
+    const r = await planSeniorDrawRepair(p, { read, simulate });
+    expect(r.outcome).toBe("recalled");
+    expect(tried.length).toBe(2);
+    expect(tried[1] < tried[0]).toBe(true);
+    expect(r.recallAtoms).toBe(tried[1]);
+    expect(r.instructions.map((i) => i.data[0])).toEqual([78, 98, 77]);
+    expect(r.computeUnits).toBeGreaterThan(200_000);
+    // Every candidate refused -> unchanged, the user sees 88's copy.
+    const never = vi.fn(async (ixs: TransactionInstruction[]) =>
+      ({ err: ixs.some((i) => i.data[0] === 98) ? { InstructionError: [3, { Custom: 76 }] } : { InstructionError: [ixs.length - 1, { Custom: 88 }] } }));
+    expect((await planSeniorDrawRepair(p, { read, simulate: never })).outcome).toBe("repair-did-not-help");
+    // Nothing to repair.
+    expect((await planSeniorDrawRepair(p, { read, simulate: vi.fn(async () => ({ err: null })) })).outcome).toBe("user-tx-ok");
+    // No readable state -> not repairable.
+    expect((await planSeniorDrawRepair(p, { read: vi.fn(async () => null), simulate })).outcome).toBe("not-repairable");
+  });
+});

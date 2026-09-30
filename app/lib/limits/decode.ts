@@ -349,6 +349,10 @@ export interface VaultLpStateView {
   seniorFeeShareBps: number;
   lpPortfolio: Uint8Array;
   juniorOwner: Uint8Array;
+  /** Senior draw (d119eebd): cumulative senior backing moved into the vault LP. */
+  seniorDrawnAtoms: bigint;
+  /** Senior draw: the loss Earn depositors bear right now (restored first on recovery). */
+  seniorDrawOutstandingAtoms: bigint;
 }
 
 /** `read_vault_lp_state` subset: kind byte + version + floor bound; null = refuse. */
@@ -369,6 +373,8 @@ export function decodeVaultLpState(d: Uint8Array): VaultLpStateView | null {
     seniorFeeShareBps: u16(d, C.VS.seniorFeeShareBps),
     lpPortfolio: d.slice(C.VS.lpPortfolio, C.VS.lpPortfolio + 32),
     juniorOwner: d.slice(C.VS.juniorOwner, C.VS.juniorOwner + 32),
+    seniorDrawnAtoms: u128(d, C.VS.seniorDrawnAtoms),
+    seniorDrawOutstandingAtoms: u128(d, C.VS.seniorDrawOutstandingAtoms),
   };
 }
 

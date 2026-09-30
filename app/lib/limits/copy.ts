@@ -104,6 +104,10 @@ export const COPY = {
     result: (sent: number, refused: number) =>
       `Sent ${sent} transaction${sent === 1 ? "" : "s"}.${refused > 0 ? ` ${refused} step${refused === 1 ? " was" : "s were"} refused by the program and left as is.` : ""}`,
   } as const,
+  earnAbsorbedLabel: "Earn absorbed",
+  earnAbsorbedTooltip: (drawn: string, restored: string) =>
+    `A loss bigger than the creator's junior tranche, taken from Earn depositors pro rata (every share loses the same percentage). ` +
+    `${drawn} absorbed in total, ${restored} of it restored so far: if the vault recovers, Earn is restored first.`,
   /** E2E B24: 77 refused (21) on a P3 bound vault. Cause pending P3 confirmation: assert none. */
   earnClaimRefusedP3:
     "The vault couldn't pay this redemption right now (the program refused it, code 21). Nothing moved and your LP shares stay in escrow. Try again later.",
@@ -171,6 +175,10 @@ export const P3_ERROR_COPY_BY_NAME: Record<keyof typeof P3_ERR, string> = {
     "This vault has LP fees waiting to be credited. They must be cranked before the first Earn deposit, so the first depositor can't buy them at 1:1. Try again shortly.",
   VaultLpValuationStale:
     "The vault's LP has open positions and needs a refresh before the vault can be priced. Try again: the refresh is permissionless and usually lands within seconds.",
+  VaultLpSeniorDrawRequired:
+    "The vault's LP has a loss that hasn't been booked yet, so the vault can't be priced. Nothing moved. Try again: the app refreshes the LP first, and the refresh is permissionless.",
+  VaultLpRedeemNeedsRecall:
+    "Part of the backing for this redemption is currently held by the vault's LP, so this pot can't pay it out yet. The app recalls that backing into Earn and retries in the same transaction when it can; if the LP has open positions it can't be recalled right now. Nothing moved and your LP shares stay in escrow: redeem fewer shares, or try again later.",
   VaultLpMultiAssetMarket:
     "An Earn vault can only own the LP of a single-asset market, and this market has more than one asset slot, so the vault can't take its LP. Create a new market to get a vault-owned LP.",
 };

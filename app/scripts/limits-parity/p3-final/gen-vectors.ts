@@ -1,7 +1,7 @@
 /**
  * Emits `id hex` lines from the app's P3 encoders (app/lib/limits/p3-ix.ts) for the Rust
  * oracle (main.rs), which decodes each with the REAL `ix::Instruction::decode` of
- * percolator-prog feat/p3-vault-owned-lp@58e379f1 (FINAL). `__short` / `__long` variants must be
+ * percolator-prog feat/p3-vault-owned-lp@39b138c8 (FINAL, senior draw + recall cap). `__short` / `__long` variants must be
  * REFUSED by the decoder (exact wire length).
  *   npx tsx app/scripts/limits-parity/p3-final/gen-vectors.ts > vectors.txt
  */

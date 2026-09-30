@@ -35,6 +35,7 @@ import { limitsFlags } from "@/lib/limits/flags";
 import { earnVaultLpRepairOption } from "@/lib/limits/vault-lp-repair";
 import { buildEarnDepositIxs, buildEarnExecuteIxs, earnTxPlan, type EarnTxPlan } from "@/lib/limits/earn-ixs";
 import { readEarnP3Context } from "@/lib/limits/earn-p3-read";
+import { readTxDrawSummary, type DrawSummary } from "@/lib/limits/p3-draw-logs";
 import { TAG_DEPOSIT_TO_LP_VAULT, TAG_EXECUTE_REDEMPTION } from "@/lib/limits/constants";
 import { COPY as LIMITS_COPY } from "@/lib/limits/copy";
 import { sanitizeOnChainValue } from '@/lib/health';
@@ -151,6 +152,7 @@ export function useInsuranceLP() {
   const slabAddress = slabState.slabAddress || (params?.slab as string | undefined);
   const programId = slabState.programId;
 
+  const [lastDrawSummary, setLastDrawSummary] = useState<DrawSummary | null>(null);
   const [state, setState] = useState<InsuranceLPState>({
     insuranceBalance: 0n,
     lpSupply: 0n,
@@ -687,6 +689,7 @@ export function useInsuranceLP() {
         plan: p3,
       }));
       const sig = await sendTx({ connection, wallet, instructions: ixs, selfHeal: { programId: progPk, market: marketPk }, vaultLpRepair: earnRepairFor(progPk, marketPk) });
+      void readTxDrawSummary(connection, sig).then(setLastDrawSummary);
       await refreshState();
       return sig;
     } catch (err) {
@@ -812,6 +815,7 @@ export function useInsuranceLP() {
         });
         signature = await sendTx({ connection, wallet, instructions: executeIxs, selfHeal: { programId: progPk, market: marketPk }, vaultLpRepair: earnRepairFor(progPk, marketPk) });
         step = 'executed';
+        void readTxDrawSummary(connection, signature).then(setLastDrawSummary);
       }
       await refreshState();
       return { step, signature };
@@ -832,5 +836,7 @@ export function useInsuranceLP() {
     deposit,
     withdraw,
     refreshState,
+    /** d119eebd: the senior draw booked / restored by the user's LAST Earn tx (its logs), or null. */
+    lastDrawSummary,
   };
 }

@@ -1,5 +1,5 @@
 import { extractErrorCode, humanizeError } from "@/lib/errorMessages";
-import { COPY } from "@/lib/limits/copy";
+import { COPY, P3_ERROR_COPY_BY_NAME } from "@/lib/limits/copy";
 
 /**
  * User-facing copy for a failed Earn (LP vault) action.
@@ -53,6 +53,11 @@ export function earnErrorMessage(err: unknown, action: EarnAction, ctx: EarnErro
             // Cause unconfirmed by the P3 lane, so the copy asserts none.
             COPY.earnClaimRefusedP3
           : "Can't pay this redemption out yet: part of the vault's backing is securing traders' open unrealized PnL, and paying the full amount would leave it under-backed. It becomes claimable as those positions close. Your LP shares stay safe in escrow until then.";
+    // d119eebd senior draw (P3 only; no other program in an Earn tx uses these codes).
+    case 87:
+      return P3_ERROR_COPY_BY_NAME.VaultLpSeniorDrawRequired;
+    case 88:
+      return action === "claim" ? P3_ERROR_COPY_BY_NAME.VaultLpRedeemNeedsRecall : humanizeError(raw);
     case 19:
       return "The market's engine is behind (it hasn't been cranked recently), so the vault can't be priced safely. Nothing moved. It clears once the market is cranked — try again in a moment.";
     case 36:

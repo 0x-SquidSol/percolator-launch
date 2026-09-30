@@ -1,0 +1,174 @@
+diff --git a/tests/p3_senior_draw.rs b/tests/p3_senior_draw.rs
+index 2ae92b2f..52b5a2a8 100644
+--- a/tests/p3_senior_draw.rs
++++ b/tests/p3_senior_draw.rs
+@@ -1894,3 +1894,169 @@ fn p3_valve_fires_only_after_senior_backing_is_exhausted() {
+     assert!(left <= 2_000, "stranded {left}");
+ }
+ 
++
++// ═══════════════════════════════════════════════════════════════════════════════════════
++// limits app (39b138c8 senior draw): APP-BUILT instructions (percolator-launch app/, bridge
++// scripts/limits-parity/p3-app-ixs.ts) on the real wrapper BPF.
++//  - "Earn absorbed": the app's decoder reads senior_draw_outstanding / drawn from real bytes.
++//  - Logs: the app's parser reads p3_senior_draw_restored from a real app-built 75.
++//  - B24 / 88: a senior's app 77 after a draw + recovery is refused 88; the app's 88 repair
++//    (recall-variants: the same list sendTx simulates) inserts 98 before the 77 and the senior
++//    is paid; 75/77 carry the vault LP WRITABLE.
++// ═══════════════════════════════════════════════════════════════════════════════════════
++
++fn la_b64(b: &[u8]) -> String {
++    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
++    let mut s = String::new();
++    for c in b.chunks(3) {
++        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
++        s.push(T[(n >> 18) as usize & 63] as char);
++        s.push(T[(n >> 12) as usize & 63] as char);
++        s.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
++        s.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
++    }
++    s
++}
++
++fn la_app(cmd: &str, args: serde_json::Value) -> serde_json::Value {
++    let app = std::env::var("LIMITS_APP_DIR").expect("LIMITS_APP_DIR (percolator-launch app/ dir)");
++    let tsx = std::env::var("TSX_BIN").expect("TSX_BIN");
++    let out = std::process::Command::new(tsx)
++        .current_dir(&app)
++        .args(["--tsconfig", "tsconfig.json", "scripts/limits-parity/p3-app-ixs.ts", cmd, &args.to_string()])
++        .output()
++        .expect("spawn app builder");
++    assert!(out.status.success(), "app builder {cmd} failed: {}", String::from_utf8_lossy(&out.stderr));
++    serde_json::from_slice(&out.stdout).expect("app builder json")
++}
++
++fn la_ixs(v: &serde_json::Value) -> Vec<Instruction> {
++    v.as_array()
++        .expect("ixs")
++        .iter()
++        .map(|ix| {
++            let hex = ix["dataHex"].as_str().unwrap();
++            let data = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect();
++            let accounts = ix["keys"]
++                .as_array()
++                .unwrap()
++                .iter()
++                .map(|k| {
++                    let pk: Pubkey = k["pubkey"].as_str().unwrap().parse().unwrap();
++                    let s = k["isSigner"].as_bool().unwrap();
++                    if k["isWritable"].as_bool().unwrap() { AccountMeta::new(pk, s) } else { AccountMeta::new_readonly(pk, s) }
++                })
++                .collect();
++            Instruction { program_id: ix["programId"].as_str().unwrap().parse().unwrap(), accounts, data }
++        })
++        .collect()
++}
++
++impl P3 {
++    fn la_b64_of(&self, k: &Pubkey) -> String {
++        la_b64(&self.env.svm.get_account(k).map(|a| a.data).unwrap_or_default())
++    }
++    /// Send APP instructions (fee payer = harness payer); returns the program logs.
++    fn la_send(&mut self, ixs: Vec<Instruction>, signers: &[&Keypair]) -> Result<Vec<String>, String> {
++        let payer = self.env.payer.insecure_clone();
++        let mut all = vec![heap_ix(), cu_ix()];
++        all.extend(ixs);
++        let mut s: Vec<&Keypair> = vec![&payer];
++        s.extend_from_slice(signers);
++        self.env.svm.expire_blockhash();
++        let tx = solana_sdk::transaction::Transaction::new_signed_with_payer(&all, Some(&payer.pubkey()), &s, self.env.svm.latest_blockhash());
++        self.env.svm.send_transaction(tx).map(|m| m.logs).map_err(|e| format!("{e:?}"))
++    }
++    fn la_earn_json(&self, user: &Keypair, extra: serde_json::Value) -> serde_json::Value {
++        let mut v = serde_json::json!({
++            "programId": self.env.program_id.to_string(), "market": self.env.market.to_string(), "domain": 0,
++            "user": user.pubkey().to_string(), "lpMint": self.lp_mint.to_string(), "vaultToken": self.env.vault.to_string(),
++            "vaultAuthority": self.env.vault_authority.to_string(), "escrow": self.escrow.to_string(),
++            "marketB64": self.la_b64_of(&self.env.market), "registryB64": self.la_b64_of(&self.registry),
++            "vaultLpStateB64": self.la_b64_of(&self.state_pda), "lpB64": self.la_b64_of(&self.lp),
++        });
++        for (k, x) in extra.as_object().unwrap() { v[k] = x.clone(); }
++        v
++    }
++}
++
++#[test]
++fn limits_app_senior_draw_absorbed_logs_and_88_recall_then_redeem() {
++    let (mut w, seniors, _t) = q1_world(9_000_000, 1_000_000, 1_000_000, 6);
++    assert_eq!(outstanding(&w), 0, "vacuity: nothing booked yet (the loss is pending on the vault LP)");
++    // 0. The FIRST C-reading instruction is an APP-built Earn deposit (75, vault LP writable, 78
++    //    prepended when fees are pending): it draws/books the loss, and the app's parser reads
++    //    "Earn absorbed" from that transaction's real logs.
++    let first = Keypair::new();
++    w.env.ensure_signer_account(first.pubkey());
++    let f_ata = w.lp_share_ata(first.pubkey());
++    let f_src = w.token(first.pubkey(), 1_000);
++    let v = la_app("deposit", w.la_earn_json(&first, serde_json::json!({ "lpAta": f_ata.to_string(), "source": f_src.to_string(), "amount": "1000" })));
++    let logs0 = w.la_send(la_ixs(&v["ixs"]), &[&first]).expect("APP 75 books the pending draw");
++    let out0 = outstanding(&w);
++    assert!(out0 > 0, "vacuity: the app tx booked a senior draw");
++    let p0 = la_app("draw-logs", serde_json::json!({ "programId": w.env.program_id.to_string(), "market": w.env.market.to_string(), "logs": logs0 }));
++    println!("LIMITS-APP DRAW: first 75 logs -> {}", p0["summary"]);
++    assert_eq!(p0["summary"]["earnAbsorbed"], serde_json::json!(out0.to_string()), "Earn absorbed, read from the app tx's logs: {p0}");
++
++    // 1. "Earn absorbed" from REAL bytes through the app decoder.
++    let ea = la_app("earn-absorbed", serde_json::json!({ "programId": w.env.program_id.to_string(), "market": w.env.market.to_string(), "vaultLpStateB64": w.la_b64_of(&w.state_pda) }));
++    assert_eq!(ea["outstanding"], serde_json::json!(out0.to_string()), "{ea}");
++    assert_eq!(ea["drawn"], serde_json::json!(drawn(&w).to_string()), "{ea}");
++    println!("LIMITS-APP DRAW: Earn absorbed {} (drawn {})", out0, drawn(&w));
++
++    // 2. Recovery: the junior re-funds; an APP-built Earn deposit (75, vault LP writable) books
++    //    the seniors-first restore, and the app's log parser reads it from the real logs.
++    let admin = w.env.admin.insecure_clone();
++    w.junior_deposit(&admin, 2_000_000).unwrap();
++    let lp = w.lp;
++    let _ = w.crank(lp);
++    let dep = Keypair::new();
++    w.env.ensure_signer_account(dep.pubkey());
++    let lp_ata = w.lp_share_ata(dep.pubkey());
++    let src = w.token(dep.pubkey(), 1_000);
++    let v = la_app("deposit", w.la_earn_json(&dep, serde_json::json!({ "lpAta": lp_ata.to_string(), "source": src.to_string(), "amount": "1000" })));
++    let dixs = la_ixs(&v["ixs"]);
++    let d75 = dixs.last().unwrap();
++    assert!(d75.accounts[12].is_writable, "d119eebd: 75 passes the vault LP WRITABLE");
++    assert!(d75.accounts[7].is_writable && d75.accounts[10].is_writable, "both pot ledgers writable");
++    let logs = w.la_send(dixs, &[&dep]).expect("APP 75 (books the restore)");
++    let parsed = la_app("draw-logs", serde_json::json!({ "programId": w.env.program_id.to_string(), "market": w.env.market.to_string(), "logs": logs }));
++    println!("LIMITS-APP DRAW: 75 logs -> {}", parsed["summary"]);
++    assert_eq!(parsed["summary"]["earnRestored"], serde_json::json!(out0.to_string()), "the app reads the restore from the logs: {parsed}");
++    assert_eq!(outstanding(&w), 0, "restored in full");
++    let ea2 = la_app("earn-absorbed", serde_json::json!({ "programId": w.env.program_id.to_string(), "market": w.env.market.to_string(), "vaultLpStateB64": w.la_b64_of(&w.state_pda) }));
++    assert_eq!(ea2["outstanding"], serde_json::json!("0"));
++    assert_eq!(ea2["restored"], serde_json::json!(out0.to_string()));
++
++    // 3. B24 / 88: the senior's APP 77 is refused 88 (the pot can't fund it; value sits in the LP).
++    let (k, ata) = (&seniors[0].0.insecure_clone(), seniors[0].1);
++    let shares = w.tok(&ata) as u128;
++    let (c_before, s_before) = (w.c(), w.registry_shares());
++    let fair = c_before * shares / s_before;
++    w.request_redeem(k, ata, shares).unwrap();
++    let red = state::derive_lp_redemption(&w.env.program_id, &w.registry, &k.pubkey()).0;
++    let dest = w.token(k.pubkey(), 0);
++    let rv = la_app("recall-variants", w.la_earn_json(k, serde_json::json!({ "redemption": red.to_string(), "dest": dest.to_string() })));
++    let plain = la_ixs(&rv["plain"]);
++    let p77 = plain.last().unwrap();
++    assert!(p77.accounts[14].is_writable, "d119eebd: 77 passes the vault LP WRITABLE");
++    assert!(p77.accounts[8].is_writable && p77.accounts[11].is_writable, "both pot ledgers writable");
++    let e = w.la_send(plain, &[k]).unwrap_err();
++    assert!(e.contains("Custom(88)"), "NEGATIVE CONTROL: the plain app 77 is refused 88 VaultLpRedeemNeedsRecall: {e}");
++    // 4. The app's repair: first candidate that lands (sendTx simulates them in this order).
++    let mut paid = None;
++    for var in rv["variants"].as_array().unwrap() {
++        let r = w.la_send(la_ixs(&var["ixs"]), &[k]);
++        println!("LIMITS-APP 88: recall {} -> {:?}", var["amount"], r.as_ref().err());
++        if r.is_ok() {
++            paid = Some((var["amount"].as_str().unwrap().to_string(), w.tok(&dest)));
++            break;
++        }
++    }
++    let (amt, got) = paid.expect("the app's recall-then-redeem path lands");
++    println!("LIMITS-APP 88: recalled {amt}, senior paid {got}");
++    println!("LIMITS-APP 88: fair pro-rata claim {fair} (C {c_before}, shares {shares} / {s_before})");
++    assert!(got as u128 + 2 >= fair, "senior paid its full pro-rata claim: {got} < {fair}");
++    conserved(&w, "limits app 88");
++}

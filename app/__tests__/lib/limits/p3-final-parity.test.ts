@@ -2,7 +2,7 @@
 /**
  * P3 end-to-end surface (round 4) against TWO independent oracles:
  *   1. rust-p3-final.json — app/scripts/limits-parity/p3-final/main.rs on the REAL P3 crate
- *      (feat/p3-vault-owned-lp@58e379f1 FINAL, P1 3acb34ae, engine 35ddd692): this module's bytes decoded by
+ *      (feat/p3-vault-owned-lp@39b138c8 FINAL senior draw + recall cap, P1 3acb34ae, engine 35ddd692): this module's bytes decoded by
  *      `ix::Instruction::decode`, rustc offset_of!, error ordinals by name, the program's own
  *      `read_asset_vault_lp` at the app's offsets and `registry_vault_lp_bound`;
  *   2. sdk-p3-parity.json — SDK 8.0.0 (9e843e5)'s fixture from its own Rust oracle (at 424fe7e4,
@@ -71,8 +71,8 @@ const EXPECT_DECODED: Record<string, Record<string, string | number>> = {
 };
 
 describe("P3 final head: app encoders vs the real ix::Instruction::decode", () => {
-  it("fixture is from the FINAL P3 combined head (58e379f1 on P1 3acb34ae; F-14 + F14-Q2 single-asset)", () => {
-    expect(rust.p3Sha).toBe("58e379f1aa24f99de3b6625ef7e150ce80c93687");
+  it("fixture is from the FINAL P3 head (39b138c8: senior draw + D-P3-30 recall cap, on P1 3acb34ae)", () => {
+    expect(rust.p3Sha).toBe("39b138c8b0773a446c36da4d3e6ca358ee06ee83");
     expect((rust as unknown as { p1Sha: string }).p1Sha).toBe("3acb34ae83b4038a88a02731d1aa023142ef6c11");
     // SDK 8's fixture was generated at 424fe7e4. Since then tag 94's ACCOUNT list changed twice
     // (path B removed; auto-pin tail [8] matcher / [9] ctx / [10] delegate added in 07a1d0eb) but
@@ -174,6 +174,10 @@ describe("P3 final head: layout (rustc offset_of!) and errors (by name)", () => 
     expect(C.VS.seniorClaimAtoms).toBe(L["vs.senior_claim_atoms"]);
     expect(C.VS.juniorDepositedAtoms).toBe(L["vs.junior_deposited_atoms"]);
     expect(C.VS.juniorFloorBps).toBe(L["vs.junior_floor_bps"]);
+    // d119eebd senior draw ("Earn absorbed" on the Earn page)
+    expect(C.VS.seniorFeeShareBps).toBe(L["vs.senior_fee_share_bps"]);
+    expect(C.VS.seniorDrawnAtoms).toBe(L["vs.senior_drawn_atoms"]);
+    expect(C.VS.seniorDrawOutstandingAtoms).toBe(L["vs.senior_draw_outstanding_atoms"]);
     expect(C.VAULT_LP_STATE_ACCOUNT_LEN).toBe(L["vs.account_len"]);
     expect(C.AV_APPROVED_MATCHER_PROGRAM).toBe(L["av.approved_matcher_program"]);
     expect(C.AV_FLAGS).toBe(L["av.flags"]);

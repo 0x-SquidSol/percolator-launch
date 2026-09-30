@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * P3 auto-pin (07a1d0eb, bytes regenerated on FINAL 58e379f1): a market bound by the APP's wizard (createAccount(ctx) + 94 + 96) trades
+ * P3 auto-pin (07a1d0eb, bytes regenerated on FINAL 39b138c8): a market bound by the APP's wizard (createAccount(ctx) + 94 + 96) trades
  * immediately. Fixture = the vault-LP portfolio bytes right after that app-built bind in the P3
  * LiteSVM sim (scripts/limits-parity/p3-sim, LIMITS_DUMP_VAULT_LP), where a trade through
  * exactly these accounts LANDED. The app's own trade-account resolution must produce the same
@@ -24,7 +24,7 @@ vi.mock("@/lib/userAccountScan", async (orig) => {
   return { ...real, getPortfolioRawSnapshot: () => (takerKey ? { pubkey: takerPortfolio, portfolio: { owner: takerKey } } : null) };
 });
 
-const f = JSON.parse(readFileSync(join(__dirname, "../fixtures/limits/sim-vault-lp-58e379f1.json"), "utf8")) as {
+const f = JSON.parse(readFileSync(join(__dirname, "../fixtures/limits/sim-vault-lp-39b138c8.json"), "utf8")) as {
   programId: string; market: string; registry: string; vaultLp: string; ctx: string; delegate: string; matcher: string; dataB64: string; headP3: string;
 };
 
@@ -43,7 +43,7 @@ describe("trade resolution against an auto-pinned vault LP", () => {
       }),
     };
     const r = await resolveV17TradeAccounts(connection as never, new PublicKey(f.programId), new PublicKey(f.market), taker);
-    expect(f.headP3).toBe("58e379f1");
+    expect(f.headP3).toBe("39b138c8");
     expect(r.accountB.toBase58()).toBe(f.vaultLp);
     expect(r.matcherProg.toBase58()).toBe(f.matcher);
     expect(r.matcherCtx.toBase58()).toBe(f.ctx);

@@ -12,7 +12,7 @@
 import { useEffect, useState, type FC } from "react";
 import type { MarketLimits } from "@/hooks/useMarketLimits";
 import { COPY } from "@/lib/limits/copy";
-import { rollFeeSnapshots, type EarnTrancheView, type FeeSnapshot } from "@/lib/limits/vault-tranche";
+import { earnAbsorbed, rollFeeSnapshots, type EarnTrancheView, type FeeSnapshot } from "@/lib/limits/vault-tranche";
 import { formatTokenAmount } from "@/lib/format";
 import { LimitsNotice, LimitsRow } from "./LimitsRow";
 
@@ -72,6 +72,7 @@ export const EarnTrancheCardView: FC<EarnTrancheCardViewProps> = ({ limits, view
   const fmt = (a: bigint | null) => (a === null ? "—" : `${formatTokenAmount(a, decimals)} ${collateralSymbol}`);
   const resolved = limits.engine?.mode === 1;
   const status = view.impaired === null ? "stale" : view.impaired ? "impaired" : "covered";
+  const absorbed = earnAbsorbed(vs);
 
   return (
     <div
@@ -122,6 +123,16 @@ export const EarnTrancheCardView: FC<EarnTrancheCardViewProps> = ({ limits, view
         value={view.cushionBps === null ? "—" : `${(view.cushionBps / 100).toFixed(1)}%`}
         valueClass={view.cushionBps !== null && view.cushionBps < 1_000 ? "text-[var(--warning)]" : undefined}
       />
+      {absorbed && (
+        <LimitsRow
+          testId="limits-earn-absorbed"
+          data={{ outstanding: absorbed.outstanding.toString(), drawn: absorbed.drawn.toString() }}
+          label={COPY.earnAbsorbedLabel}
+          tooltip={COPY.earnAbsorbedTooltip(fmt(absorbed.drawn), fmt(absorbed.restored))}
+          value={fmt(absorbed.outstanding)}
+          valueClass={absorbed.outstanding > 0n ? "text-[var(--short)]" : undefined}
+        />
+      )}
       <LimitsRow
         testId="limits-pending-fees"
         data={{ excludes: view.excludesUncrankedFees ? "true" : "false" }}

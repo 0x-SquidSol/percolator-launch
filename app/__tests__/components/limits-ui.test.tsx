@@ -127,6 +127,26 @@ describe("EarnTrancheCardView", () => {
   });
 });
 
+describe("EarnTrancheCardView: Earn absorbed (39b138c8 senior draw)", () => {
+  it("shows the loss Earn bears now, with the cumulative and restored amounts; hidden when nothing was drawn", () => {
+    const base = marketLimits();
+    const L = marketLimits({ vaultState: { ...base.vaultState!, seniorDrawnAtoms: 1_635_213n, seniorDrawOutstandingAtoms: 635_213n } });
+    const { getByTestId, unmount } = render(
+      <EarnTrancheCardView limits={L} view={earnViewFromLimits(L, 1_000_000_000n, 0n)} slab="S3" withdrawShares={0n} decimals={6} collateralSymbol="USDC" nowSecs={1} />,
+    );
+    const row = getByTestId("limits-earn-absorbed");
+    expect(row.dataset.outstanding).toBe("635213");
+    expect(row.dataset.drawn).toBe("1635213");
+    expect(row.textContent).toContain("Earn absorbed");
+    expect(row.textContent).toContain("0.635213");
+    unmount();
+    const { queryByTestId } = render(
+      <EarnTrancheCardView limits={base} view={earnViewFromLimits(base, 1_000_000_000n, 0n)} slab="S4" withdrawShares={0n} decimals={6} collateralSymbol="USDC" nowSecs={1} />,
+    );
+    expect(queryByTestId("limits-earn-absorbed")).toBeNull();
+  });
+});
+
 describe("EarnTrancheCardView stale valuation", () => {
   it("says 'Needs refresh' instead of guessing when the LP certificate is stale and backing is short", () => {
     const L = marketLimits({ lp: { ...marketLimits().lp!, staleState: 1 } });

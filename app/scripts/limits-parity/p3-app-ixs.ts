@@ -33,8 +33,11 @@ import {
   decodeResolvedPortfolio,
   decodeTerminalBacking,
   decodeVaultLpState,
+  decodePortfolioRisk,
 } from "../../lib/limits/decode";
-import { harvestableFeeAtoms } from "../../lib/limits/vault-tranche";
+import { earnAbsorbed, harvestableFeeAtoms, vaultLpValueAtoms } from "../../lib/limits/vault-tranche";
+import { find77, recallCandidates, withRecallBefore77 } from "../../lib/limits/senior-draw-repair";
+import { parseP3DrawLogs, summarizeDrawEvents } from "../../lib/limits/p3-draw-logs";
 import { planOwnPortfolioCleanup } from "../../lib/limits/own-portfolio-cleanup";
 import { buildJuniorResolvedReleaseIxs, juniorReleaseNeedsHarvest, juniorResolvedReleasableAtoms } from "../../lib/limits/junior-resolved-release";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
@@ -183,6 +186,39 @@ if (cmd === "init-market") {
       { prependHarvest: plan.prependHarvest, tail: !!plan.tail },
     );
   }
+} else if (cmd === "recall-variants") {
+  // The 88 repair (lib/limits/senior-draw-repair.ts, run by sendTx): the SAME execute list the
+  // Earn claim sends, and for each recall candidate the list with a 98 inserted before the 77.
+  // sendTx simulates them in order and keeps the first that succeeds; the sim does the same.
+  const ctx = earnCtx(programId, market);
+  const plan = earnTxPlan(TAG_EXECUTE_REDEMPTION, ctx);
+  if (!plan.ok) throw new Error(`blocked: ${plan.reason}`);
+  const exec = buildEarnExecuteIxs({
+    programId, redeemer: pk("user"), market, registry, redemption: pk("redemption"), lpMint: pk("lpMint"), escrow: pk("escrow"),
+    vaultToken: pk("vaultToken"), vaultAuthority: pk("vaultAuthority"), ledger, redeemerDest: pk("dest"), siblingLedger, domain, plan,
+  });
+  const md = b64(a.marketB64);
+  const vs = decodeVaultLpState(b64(a.vaultLpStateB64));
+  if (!vs) throw new Error("no vault LP state");
+  const eng = decodeMarketEngineView(md);
+  const risk = a.lpB64 ? decodePortfolioRisk(b64(a.lpB64)) : null;
+  const lpVal = eng && risk ? vaultLpValueAtoms(risk, eng) : null;
+  const at = find77(exec, programId);
+  const cands = recallCandidates(md, vs, domain, lpVal && lpVal.kind !== "stale" ? lpVal.atoms : null);
+  process.stdout.write(
+    JSON.stringify({
+      candidates: cands.map(String),
+      plain: exec.map(enc1),
+      variants: cands.map((amount) => ({ amount: amount.toString(), ixs: withRecallBefore77(exec, at, pk("user"), amount).map(enc1) })),
+    }),
+  );
+} else if (cmd === "draw-logs") {
+  const ev = parseP3DrawLogs(a.logs as string[]);
+  process.stdout.write(JSON.stringify({ events: JSON.parse(JSON.stringify(ev, (_k, v) => (typeof v === "bigint" ? v.toString() : v))), summary: JSON.parse(JSON.stringify(summarizeDrawEvents(ev), (_k, v) => (typeof v === "bigint" ? v.toString() : v))) }));
+} else if (cmd === "earn-absorbed") {
+  const vs = decodeVaultLpState(b64(a.vaultLpStateB64));
+  const r = vs ? earnAbsorbed(vs) : null;
+  process.stdout.write(JSON.stringify(r ? { outstanding: r.outstanding.toString(), drawn: r.drawn.toString(), restored: r.restored.toString() } : null));
 } else if (cmd === "junior-withdraw" || cmd === "junior-deposit") {
   // useJuniorTranche: 97 / 96 against the vault LP named by the on-chain vault-LP state.
   const st = decodeVaultLpState(b64(a.vaultLpStateB64));

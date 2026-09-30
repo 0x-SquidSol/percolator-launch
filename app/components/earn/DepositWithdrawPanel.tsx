@@ -3,6 +3,8 @@
 import { useState, useCallback, useMemo } from 'react';
 import { formatPercent } from "@/lib/formatters";
 import { earnErrorMessage } from "@/lib/earnErrors";
+import { formatTokenAmount } from "@/lib/format";
+import { drawNoticeText, type DrawSummary } from "@/lib/limits/p3-draw-logs";
 import { GlowButton } from '@/components/ui/GlowButton';
 import { useWalletCompat } from '@/hooks/useWalletCompat';
 import dynamic from 'next/dynamic';
@@ -72,6 +74,8 @@ interface DepositWithdrawPanelProps {
   onWithdraw: (lpAmount: bigint) => Promise<WithdrawStepResult | void>;
   /** P3: the vault owns its market's LP, which changes what a claim-side 21 means (E2E B24). */
   p3Bound?: boolean;
+  /** d119eebd: senior draw booked / restored by the user's last Earn tx (its program logs). */
+  drawSummary?: DrawSummary | null;
 }
 
 export function DepositWithdrawPanel({
@@ -93,6 +97,7 @@ export function DepositWithdrawPanel({
   depositBlockedReason = null,
   depositBlockKind = null,
   p3Bound = false,
+  drawSummary = null,
 }: DepositWithdrawPanelProps) {
   const { connected } = useWalletCompat();
   const [tab, setTab] = useState<Tab>('deposit');
@@ -504,6 +509,13 @@ export function DepositWithdrawPanel({
         {txError && (
           <div role="alert" data-testid="earn-error" data-kind="tx" className="mb-4 p-3 bg-[var(--short)]/5 border border-[var(--short)]/20 rounded-sm">
             <p className="text-[11px] text-[var(--short)]">{txError}</p>
+          </div>
+        )}
+        {drawSummary && (
+          <div role="status" data-testid="earn-draw-notice" className="mb-4 p-3 bg-[var(--warning)]/5 border border-[var(--warning)]/20 rounded-sm">
+            <p className="text-[11px] text-[var(--text-secondary)]">
+              {drawNoticeText(drawSummary, (a) => `${formatTokenAmount(a, decimals)} ${collateralSymbol}`)}
+            </p>
           </div>
         )}
         {txSuccess && (

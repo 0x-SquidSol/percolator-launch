@@ -152,9 +152,11 @@ export function withBoundVaultLpTail(
   if (keys.length !== at) throw new Error(`tag ${tag}: bound-vault tail goes at [${at}], base list has ${keys.length} accounts`);
   const out = [...keys, meta(vaultLpState, false, true)];
   if (tag !== TAG_LP_VAULT_CRANK_FEES) {
-    // 75 / 77 value the vault LP: `load_bound_vault_lp_tail(.., need_lp = true)`.
+    // 75 / 77 value the vault LP: `load_bound_vault_lp_tail(.., need_lp = true)`. WRITABLE
+    // (d119eebd senior draw): the instruction draws an insolvent LP's deficit itself; a
+    // read-only LP with an undrawn deficit is refused 87 VaultLpSeniorDrawRequired.
     if (!lpPortfolio) throw new Error(`tag ${tag}: the bound-vault tail needs the vault LP portfolio at [${at + 1}]`);
-    out.push(meta(lpPortfolio, false, false));
+    out.push(meta(lpPortfolio, false, true));
   }
   return out;
 }

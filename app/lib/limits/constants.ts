@@ -242,6 +242,10 @@ export const VS = {
   juniorFloorBps: HEADER_LEN + 210,
   seniorFeeShareBps: HEADER_LEN + 212,
   version: HEADER_LEN + 214,
+  /** d119eebd senior draw: cumulative senior backing moved into the vault LP (junior cover excluded). */
+  seniorDrawnAtoms: HEADER_LEN + 224,
+  /** d119eebd senior draw: senior loss still outstanding (C was cut by it; restored first on recovery). */
+  seniorDrawOutstandingAtoms: HEADER_LEN + 240,
 } as const;
 export const VAULT_LP_STATE_ACCOUNT_LEN = HEADER_LEN + 256;
 export const VAULT_LP_MIN_JUNIOR_FLOOR_BPS = 1_000;
@@ -278,6 +282,10 @@ export const P3_ERR = {
   VaultLpValuationStale: 85,
   /** F14-Q2 (58e379f1): tag 94 refuses a market whose configured asset slots != 1. */
   VaultLpMultiAssetMarket: 86,
+  /** d119eebd: 75/77 found an undrawn deficit on the vault LP (the draw must run first: crank, retry). */
+  VaultLpSeniorDrawRequired: 87,
+  /** d119eebd (B24): the redemption's pot can't fund the payout; recall (98) first, or redeem fewer shares. */
+  VaultLpRedeemNeedsRecall: 88,
 } as const;
 
 // ── P3 end-to-end (round 4; FINAL feat/p3-vault-owned-lp@07a1d0eb + engine 35ddd692) ────────

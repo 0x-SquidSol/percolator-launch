@@ -1,5 +1,26 @@
 # P3 sim: the vault-owned-LP journey executing APP-BUILT instructions
 
+## 39b138c8 (P3 FINAL: d119eebd senior draw + D-P3-30 recall cap, 2026-09-30): current run
+
+Patches: `p3_vault_lp.limits-app.patch` (as below) and **`p3_senior_draw.limits-app.patch`** (new),
+over `feat/p3-vault-owned-lp@39b138c8`. The new test is
+`limits_app_senior_draw_absorbed_logs_and_88_recall_then_redeem`, APP-BUILT through `p3-app-ixs.ts`:
+- the FIRST C-reading instruction is the app's Earn deposit (75, vault LP **writable**, both
+  ledgers writable): it books the pending draw, and the app's log parser
+  (`lib/limits/p3-draw-logs.ts`) reads `earnAbsorbed = 1,635,213` from its real logs;
+- "Earn absorbed" from real bytes (`decodeVaultLpState` -> `earnAbsorbed`): outstanding = drawn = 1,635,213;
+- after the junior re-funds, the app's next 75 logs `p3_senior_draw_restored`: `earnRestored = 1,635,213`, outstanding 0;
+- B24 / 88: the senior's plain app 77 (vault LP writable) is refused **Custom(88)** (negative control);
+  the app's repair (`recall-variants`: exactly the lists `sendTx`'s `planSeniorDrawRepair`
+  simulates) lands on its first candidate, a 98 recall of 1,635,213 before the 77. The senior is paid
+  8,998,824 = its exact pro-rata claim (C 10,002,000 x 8,999,000 / 10,002,195); conservation holds.
+
+Results on BOTH builds: my `cargo build-sbf --features devnet` of 39b138c8 (`4320d9dc…`) and the
+P3 lane's relaunch `~/wt-p3-wrapper/out/p3-senior-draw-39b138c8.so` (`e92e204b…`):
+`p3_vault_lp` 50/50 (8/8 `limits_`), `p3_senior_draw` 13/13 (+1 upstream `#[ignore]`).
+Run: `INDEP_WRAPPER_SO=<.so> LIMITS_APP_DIR=... TSX_BIN=... cargo test --release --test p3_senior_draw -- limits_app`.
+
+
 ## 58e379f1 (P3 FINAL, 2026-09-30): current run
 
 Patch now over `feat/p3-vault-owned-lp@58e379f1` (engine `35ddd692` unchanged). Added on top of

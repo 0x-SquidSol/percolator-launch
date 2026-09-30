@@ -517,3 +517,19 @@ export function vaultLpCapQ(equityAtoms: bigint, levBps: number, priceE6: bigint
 export function juniorResolvedSurplusAtoms(physical: bigint, seniorClaim: bigint): bigint {
   return physical > seniorClaim ? physical - seniorClaim : 0n;
 }
+
+/**
+ * d119eebd senior draw: what Earn depositors have absorbed (loss beyond the junior, pro rata).
+ * `outstanding` is the senior loss right now (C was cut by it; a recovery restores it first);
+ * `drawn` is cumulative; `restored` = drawn - outstanding. null when nothing was ever drawn.
+ */
+export function earnAbsorbed(vs: { seniorDrawnAtoms?: bigint; seniorDrawOutstandingAtoms?: bigint }):
+  | { outstanding: bigint; drawn: bigint; restored: bigint }
+  | null {
+  // Absent on a view decoded before the senior-draw layout (treated as nothing drawn).
+  const drawn = vs.seniorDrawnAtoms ?? 0n;
+  const outstanding = vs.seniorDrawOutstandingAtoms ?? 0n;
+  if (drawn === 0n && outstanding === 0n) return null;
+  const restored = drawn > outstanding ? drawn - outstanding : 0n;
+  return { outstanding, drawn, restored };
+}

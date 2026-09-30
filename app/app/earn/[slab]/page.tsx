@@ -125,6 +125,7 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
     deposit: lpVaultDeposit,
     withdraw: lpVaultWithdraw,
     refreshState,
+    lastDrawSummary,
   } = useInsuranceLP();
   const earnWallet = useWalletCompat();
   const earnLimits = useMarketLimits(slabAddress);
@@ -415,6 +416,7 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
               onDeposit={handleDeposit}
               onWithdraw={handleWithdraw}
               p3Bound={earnLimits.vaultLp?.bound === true}
+              drawSummary={lastDrawSummary}
             />
           </ScrollReveal>
         </div>

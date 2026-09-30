@@ -1,5 +1,5 @@
 # Copy to a scratch dir as Cargo.toml (with main.rs at src/main.rs); paths = clean worktrees of
-# percolator-prog feat/p3-vault-owned-lp@58e379f1 (FINAL) and its engine sibling 35ddd692.
+# percolator-prog feat/p3-vault-owned-lp@39b138c8 (FINAL, senior draw + recall cap) and its engine sibling 35ddd692.
 [package]
 name = "limits-p3-final"
 version = "0.1.0"

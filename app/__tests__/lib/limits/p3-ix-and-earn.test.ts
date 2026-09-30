@@ -94,7 +94,8 @@ describe("P3 builders: account order + signer/writable exactly as the handlers r
     expect(() => ix.withBoundVaultLpTail(75, eleven, m.vaultLpState)).toThrow(/vault LP portfolio/);
     const t = ix.withBoundVaultLpTail(75, eleven, m.vaultLpState, m.lpPortfolio);
     expect(t[11]).toEqual({ pubkey: m.vaultLpState, isSigner: false, isWritable: true });
-    expect(t[12]).toEqual({ pubkey: m.lpPortfolio, isSigner: false, isWritable: false });
+    // d119eebd senior draw: the vault LP is WRITABLE on 75/77 (the instruction runs the draw).
+    expect(t[12]).toEqual({ pubkey: m.lpPortfolio, isSigner: false, isWritable: true });
   });
 });
 
