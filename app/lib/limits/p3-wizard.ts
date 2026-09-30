@@ -7,10 +7,10 @@
  *   96 DepositJuniorTranche (the creator's first-loss capital)
  *   -- then M4b StakeInitPool, which rotates marketauth away (94 path A is impossible after it)
  *
- * 99 SetVaultLpRisk (approve the matcher, caps, skew) and 95 VaultLpSetMatcher are
- * UPGRADE-AUTHORITY-only (P3-H2), so no browser wizard can run them: until the protocol does,
- * the bound vault LP has no matcher and - with the exclusive-LP rule - the market takes no
- * risk-increasing fills. The wizard says so; see `vaultLpAwaitingProtocol`.
+ * AUTO-PIN (FINAL 07a1d0eb): tag 94 itself approves the canonical matcher and pins the
+ * protocol's vAMM params + finite caps (the creator chooses none), so the market trades right
+ * after the bind. 99/95 remain upgrade-authority ADJUSTMENTS only. The creator-owned LP and its
+ * matcher steps are not created under P3.
  *
  * Junior requirement: `junior_floor_bps` in 1000..=10000 (the program refuses others), and the
  * junior deposit must at least meet that floor of the senior claim seeded at 94
@@ -18,7 +18,7 @@
  * is at its floor from the first Earn deposit on. Pure.
  */
 import { PublicKey, SystemProgram, type TransactionInstruction } from "@solana/web3.js";
-import { BPS, VAULT_LP_MAX_JUNIOR_FLOOR_BPS, VAULT_LP_MIN_JUNIOR_FLOOR_BPS } from "./constants";
+import { BPS, CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET, VAULT_LP_MATCHER_CTX_LEN, VAULT_LP_MAX_JUNIOR_FLOOR_BPS, VAULT_LP_MIN_JUNIOR_FLOOR_BPS } from "./constants";
 import { buildDepositJuniorTrancheIx, buildInitVaultLpIx, type VaultLpMarket } from "./p3-ix";
 
 /** Default floor: 20% of the senior claim (the seed's P3 test markets use 1000-2000). */
@@ -41,8 +41,20 @@ export function validateP3Wizard(p: { juniorFloorBps: number; juniorAtoms: bigin
 }
 
 /**
- * [createAccount(vault LP portfolio, program-owned, portfolio length), 94, 96]. 94 requires the
- * portfolio pre-created exactly like InitPortfolio's, uninitialised.
+ * Tag 94 accepts only the canonical matcher (07a1d0eb, devnet). The app's configured matcher
+ * must be that program, else the bind would fail VaultLpMatcherNotApproved (81): refuse early.
+ */
+export function canonicalVaultLpMatcher(configuredMatcher: string): PublicKey {
+  if (configuredMatcher !== CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET) {
+    throw new Error(`The configured matcher ${configuredMatcher} is not the protocol's canonical vault-LP matcher; the vault LP cannot be bound on this deployment.`);
+  }
+  return new PublicKey(CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET);
+}
+
+/**
+ * [createAccount(vault LP portfolio, program-owned, portfolio length),
+ *  createAccount(matcher ctx, owner = canonical matcher, VAULT_LP_MATCHER_CTX_LEN, zeroed),
+ *  94 (auto-pin: canonical matcher + protocol caps), 96 junior]. The market trades right after.
  */
 export function buildP3BindIxs(p: {
   market: VaultLpMarket;
@@ -50,6 +62,9 @@ export function buildP3BindIxs(p: {
   vaultLpPortfolio: PublicKey;
   portfolioLen: number;
   portfolioRentLamports: number;
+  matcherProgram: PublicKey;
+  matcherCtx: PublicKey;
+  matcherCtxRentLamports: number;
   juniorFloorBps: number;
   juniorAtoms: bigint;
   creatorAta: PublicKey;
@@ -64,7 +79,14 @@ export function buildP3BindIxs(p: {
       space: p.portfolioLen,
       programId: p.market.programId,
     }),
-    buildInitVaultLpIx(p.market, p.creator, p.juniorFloorBps),
+    SystemProgram.createAccount({
+      fromPubkey: p.creator,
+      newAccountPubkey: p.matcherCtx,
+      lamports: p.matcherCtxRentLamports,
+      space: VAULT_LP_MATCHER_CTX_LEN,
+      programId: p.matcherProgram,
+    }),
+    buildInitVaultLpIx(p.market, p.creator, p.juniorFloorBps, { matcherProgram: p.matcherProgram, matcherCtx: p.matcherCtx }),
     buildDepositJuniorTrancheIx(p.market, p.creator, p.creatorAta, p.vaultToken, p.juniorAtoms),
   ];
 }
@@ -77,10 +99,6 @@ export function p3BindProgress(state: { exists: boolean; juniorDepositedAtoms: b
   return "done";
 }
 
-/** A bound vault LP whose asset has no approved matcher yet (99 not run by the protocol). */
-export function vaultLpAwaitingProtocol(av: { bound: boolean; approvedMatcherProgram: Uint8Array } | null): boolean {
-  return !!av && av.bound && av.approvedMatcherProgram.every((b) => b === 0);
-}
 
 /** The wizard's `CreateMarketParams.p3`: the Liquidity amount IS the junior tranche. */
 export function wizardP3Params(enabled: boolean, lpCollateralAtoms: bigint, juniorFloorBps: number): { juniorFloorBps: number; juniorAtoms: bigint } | undefined {

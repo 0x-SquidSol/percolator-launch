@@ -1,10 +1,10 @@
 diff --git a/tests/p3_vault_lp.rs b/tests/p3_vault_lp.rs
-index 4b387e37..fde5f98d 100644
+index 6eb7e532..0e3a4a3a 100644
 --- a/tests/p3_vault_lp.rs
 +++ b/tests/p3_vault_lp.rs
-@@ -2650,3 +2650,370 @@ fn p3_b12_abandoned_portfolio_cannot_strand_terminal_insurance() {
- fn p3_b12_unbound_market_abandoned_portfolio_cannot_strand_terminal_insurance() {
-     b12_run(false);
+@@ -2885,3 +2885,415 @@ fn p3_c4b_redemption_survives_the_vault_lp_account_being_garbage_collected() {
+     let _ = d2;
+     env.assert_conserved("C-4(b)");
  }
 +
 +// ── limits-UI lane repro (NOT part of the P3 branch; local worktree only) ────────────────
@@ -37,12 +37,19 @@ index 4b387e37..fde5f98d 100644
 +    let shares = env.lp_shares(&d);
 +    env.earn_request(&d, shares);
 +    env.svm.expire_blockhash();
-+    let r = env.earn_execute(&d, Some(lp.portfolio));
-+    println!("REPRO 77 after resolve with pending fees: {r:?}");
++    // 07a1d0eb: 77 still refuses 84 while fees are pending, but 78 now runs once the market is
++    // terminal-flat (it was Live-only before) and then 77 pays.
++    let r0 = env.earn_execute(&d, Some(lp.portfolio));
++    assert!(r0.as_ref().err().map(|e| e.contains(&code(PercolatorError::VaultLpHarvestPending))).unwrap_or(false), "84 before the harvest: {r0:?}");
++    assert!(crank_after.is_err(), "78 before terminal-flat is still refused: {crank_after:?}");
 +    env.svm.expire_blockhash();
 +    let crank_again = env.crank_fees(true);
-+    println!("REPRO 78 again: {crank_again:?}");
-+    assert!(r.is_ok(), "Earn senior cannot redeem after Resolve: {r:?} (78 after resolve: {crank_after:?})");
++    println!("REPRO 78 after terminal-flat: {crank_again:?}");
++    crank_again.expect("78 runs on a terminal-flat Resolved bound vault (07a1d0eb)");
++    env.svm.expire_blockhash();
++    let r = env.earn_execute(&d, Some(lp.portfolio));
++    println!("REPRO 77 after resolve with pending fees: {r:?}");
++    assert!(r.is_ok(), "Earn senior cannot redeem after Resolve: {r:?}");
 +}
 +
 +/// Control for the repro above: identical, but 78 runs BEFORE resolve.
@@ -214,21 +221,43 @@ index 4b387e37..fde5f98d 100644
 +
 +    // 1. APP wizard M4p: createAccount(vault LP) + 94 (path A, creator = marketauth) + 96.
 +    let lp_kp = Keypair::new();
++    let ctx_kp = Keypair::new();
 +    let junior_src = env.token_account(env.mint, admin.pubkey(), 60_000_000);
 +    let rent = env.svm.minimum_balance_for_rent_exemption(env.plen);
++    let ctx_rent = env.svm.minimum_balance_for_rent_exemption(MATCHER_CONTEXT_LEN);
 +    let v = limits_app("bind", serde_json::json!({
 +        "programId": env.pid.to_string(), "market": env.market.to_string(), "domain": DOMAIN,
 +        "creator": admin.pubkey().to_string(), "vaultLpPortfolio": lp_kp.pubkey().to_string(),
 +        "portfolioLen": env.plen, "rent": rent, "floorBps": 2_000, "juniorAtoms": "60000000",
++        "matcherProgram": CANONICAL_MATCHER.to_string(), "matcherCtx": ctx_kp.pubkey().to_string(), "ctxRent": ctx_rent,
 +        "creatorAta": junior_src.to_string(), "vaultToken": env.vault_token.to_string(),
 +    }));
-+    env.limits_send(limits_ixs(&v), &[&admin, &lp_kp]).expect("APP wizard bind (94 + 96)");
++    let bind = limits_ixs(&v);
++    assert_eq!(bind.len(), 4, "createAccount(LP) + createAccount(ctx) + 94 + 96");
++    assert_eq!(bind[2].accounts.len(), 11, "94 carries the auto-pin tail [8] matcher, [9] ctx, [10] delegate");
++    env.limits_send(bind, &[&admin, &lp_kp, &ctx_kp]).expect("APP wizard bind (ctx + 94 auto-pin + 96)");
 +    assert_eq!(env.vlp().junior_deposited_atoms, 60_000_000, "junior funded by the app");
 +    assert_eq!(env.vlp().junior_owner, admin.pubkey().to_bytes(), "path A: creator is the junior owner");
 +    assert_eq!(env.vlp().lp_portfolio, lp_kp.pubkey().to_bytes());
-+    // 2. PROTOCOL (not the app): approve the matcher + set the vault LP's matcher.
-+    env.approve_matcher();
-+    let lp = env.vault_lp_set_matcher_as(&admin, lp_kp.pubkey()).expect("protocol 95");
++    // 2. AUTO-PIN (07a1d0eb): no protocol step. Tag 94 approved the canonical matcher and pinned
++    // the ctx; the market trades right away.
++    assert_eq!(env.asset_rec().approved_matcher_program, CANONICAL_MATCHER.to_bytes());
++    let delegate = Pubkey::find_program_address(
++        &[b"matcher", env.market.as_ref(), lp_kp.pubkey().as_ref(), env.registry.as_ref(), CANONICAL_MATCHER.as_ref(), ctx_kp.pubkey().as_ref()],
++        &env.pid,
++    ).0;
++    let lp = Lp { portfolio: lp_kp.pubkey(), owner_key: env.registry, ctx: ctx_kp.pubkey(), delegate };
++    let early = env.new_trader(20_000_000);
++    env.trade(&early, &lp, 5 * POS).expect("a trade lands immediately after the app's bind");
++    env.svm.expire_blockhash();
++    env.trade(&early, &lp, -5 * POS).expect("and closes");
++    if let Ok(path) = std::env::var("LIMITS_DUMP_VAULT_LP") {
++        let d = env.svm.get_account(&lp_kp.pubkey()).unwrap().data;
++        let j = serde_json::json!({"programId": env.pid.to_string(), "market": env.market.to_string(), "registry": env.registry.to_string(),
++            "vaultLp": lp_kp.pubkey().to_string(), "ctx": ctx_kp.pubkey().to_string(), "delegate": delegate.to_string(),
++            "matcher": CANONICAL_MATCHER.to_string(), "dataB64": limits_b64(&d), "headP3": "07a1d0eb"});
++        std::fs::write(path, j.to_string()).unwrap();
++    }
 +
 +    // 3. APP Earn deposit on the BOUND vault: tail [11]/[12] present.
 +    let d = env.new_depositor();
@@ -286,9 +315,9 @@ index 4b387e37..fde5f98d 100644
 +
 +    // 6. Resolve; the APP plans and runs the terminal sweep from raw account bytes.
 +    env.resolve();
-+    let ports = [lp_kp.pubkey(), t.portfolio];
++    let ports = [lp_kp.pubkey(), t.portfolio, early.portfolio];
 +    let mut phases = Vec::new();
-+    for round in 0..8 {
++    for round in 0..10 {
 +        let v = limits_app("exit", env.limits_exit_json(&ports));
 +        let phase = v["phase"].as_str().unwrap().to_string();
 +        phases.push(format!("{phase}:{}", v["steps"].as_array().map(|s| s.first().map(|x| x["kind"].as_str().unwrap_or("").to_string()).unwrap_or_default()).unwrap_or_default()));
@@ -312,11 +341,13 @@ index 4b387e37..fde5f98d 100644
 +    env.assert_conserved("limits app P3");
 +}
 +
-+/// The app's plan refuses (with the reason) the resolved redemption the program would refuse
-+/// with 84 forever: fees left unharvested at resolution (program finding, repro above).
++/// 07a1d0eb: fees left unharvested at resolution. The APP's sweep runs 78 once the market is
++/// terminal-flat (step "harvest"), and the APP's redemption then pays (it also prepends 78 if
++/// fees are still pending).
 +#[test]
-+fn limits_app_p3_blocks_resolved_harvest_lock() {
++fn limits_app_p3_resolved_harvest_then_redeem() {
 +    let mut env = Env::new(Params { fee_bps: 30, ..Params::default() });
++    env.limits_add_ata_program();
 +    let lp = env.bind(1_000);
 +    let admin = env.admin.insecure_clone();
 +    let d = env.new_depositor();
@@ -327,13 +358,27 @@ index 4b387e37..fde5f98d 100644
 +    env.svm.expire_blockhash();
 +    env.trade(&t, &lp, -50 * POS).expect("close");
 +    env.resolve();
++    let ports = [lp.portfolio, t.portfolio];
++    let mut phases = Vec::new();
++    for round in 0..10 {
++        let v = limits_app("exit", env.limits_exit_json(&ports));
++        let phase = v["phase"].as_str().unwrap().to_string();
++        phases.push(format!("{phase}:{}", v["steps"].as_array().and_then(|s| s.first()).map(|x| x["kind"].as_str().unwrap_or("").to_string()).unwrap_or_default()));
++        if phase == "ready" { break; }
++        let ixs = limits_ixs(&v);
++        assert!(!ixs.is_empty(), "round {round}: nothing planned ({v})");
++        env.limits_send(ixs, &[]).unwrap_or_else(|e| panic!("round {round}: {e}\nplan {v}"));
++    }
++    println!("LIMITS-APP P3 resolved harvest: {phases:?}");
++    assert!(phases.iter().any(|p| p.ends_with(":harvest")), "the sweep harvested after terminal-flat: {phases:?}");
 +    let shares = env.lp_shares(&d);
 +    env.earn_request(&d, shares);
 +    let v = limits_app("execute", env.limits_earn_json(&d.kp, serde_json::json!({
 +        "redemption": d.redemption.to_string(), "dest": d.dest.to_string()})));
-+    assert_eq!(v["blocked"], serde_json::json!("harvest-locked-after-resolve"), "{v}");
-+    let p = limits_app("plan", env.limits_exit_json(&[lp.portfolio, t.portfolio]));
-+    assert!(p["blockers"].as_array().unwrap().iter().any(|b| b == "harvest-pending"), "{p}");
++    assert!(v.get("blocked").is_none(), "{v}");
++    env.limits_send(limits_ixs(&v), &[&d.kp.insecure_clone()]).expect("APP resolved redemption after the harvest");
++    println!("LIMITS-APP P3 resolved harvest: redemption paid {}", env.tok(d.dest));
++    assert!(env.tok(d.dest) > 10_000_000, "the senior got its share of the harvested fees");
 +}
 +
 +/// E2E B12 (app side): a trader's OWN portfolio on a Resolved market is cleaned up by the APP's

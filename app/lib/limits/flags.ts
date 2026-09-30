@@ -36,8 +36,8 @@ export function limitsFlags(): LimitsFlags {
 /**
  * The create-market wizard binds new markets the P3 way (vault-owned LP + junior tranche) when
  * P3 is on. Kill switch NEXT_PUBLIC_LIMITS_P3_WIZARD=0 keeps the legacy creator-LP launch while
- * the rest of the P3 UI stays on (e.g. while protocol approval of new vault-LP matchers, tags
- * 99 + 95, is not staffed).
+ * the rest of the P3 UI stays on (e.g. to pause new vault-LP markets while the auto-pinned
+ * caps are reviewed).
  */
 export function p3WizardEnabled(): boolean {
   if (!limitsFlags().p3) return false;

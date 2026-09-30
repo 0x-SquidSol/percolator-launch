@@ -29,11 +29,6 @@ export const ResolvedExitPanelView: FC<{
       <p data-testid="earn-resolved-exit-status" data-phase={s.phase} className="mt-1 text-[10px] leading-relaxed text-[var(--text-secondary)]">
         {status}
       </p>
-      {s.harvestPending !== null && (
-        <LimitsNotice tone="error" testId="earn-resolved-exit-blocker" data={{ kind: "harvest-pending" }}>
-          {COPY.earnPlanBlocked["harvest-locked-after-resolve"]}
-        </LimitsNotice>
-      )}
       {s.escrowed > 0 && (
         <LimitsNotice tone="warning" testId="earn-resolved-exit-blocker" data={{ kind: "escrowed" }}>
           {COPY.resolvedExit.escrowed(s.escrowed)}

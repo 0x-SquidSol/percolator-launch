@@ -34,11 +34,12 @@ describe("P3 PDAs", () => {
 });
 
 describe("P3 builders: account order + signer/writable exactly as the handlers read them", () => {
-  it("94 InitVaultLp path A (handle_init_vault_lp :25877)", () => {
-    const auth = k();
-    const i = ix.buildInitVaultLpIx(m, auth, 2_000);
-    expect(keys(i)).toEqual([auth, MARKET, m.registry, m.vaultLpState, m.lpPortfolio, SystemProgram.programId, m.ledger, m.siblingLedger].map((x) => x.toBase58()));
-    expect(flags(i)).toBe("sw -w -w -w -w -- -w -w");
+  it("94 InitVaultLp auto-pin (07a1d0eb handle_init_vault_lp): marketauth + [8] matcher, [9] ctx (w), [10] delegate", () => {
+    const auth = k(), mp = k(), ctxk = k();
+    const i = ix.buildInitVaultLpIx(m, auth, 2_000, { matcherProgram: mp, matcherCtx: ctxk });
+    const del = ix.deriveVaultLpMatcherDelegate(PROG, MARKET, m.lpPortfolio, m.registry, mp, ctxk);
+    expect(keys(i)).toEqual([auth, MARKET, m.registry, m.vaultLpState, m.lpPortfolio, SystemProgram.programId, m.ledger, m.siblingLedger, mp, ctxk, del].map((x) => x.toBase58()));
+    expect(flags(i)).toBe("sw -w -w -w -w -- -w -w -- -w --");
   });
   it("96 DepositJuniorTranche (handle_deposit_junior_tranche :26282)", () => {
     const o = k(), src = k(), vt = k();
@@ -127,8 +128,8 @@ describe("earnTxPlan (P3-K1 / P3-L1 / bound flag / resolved harvest lock)", () =
     expect(earnTxPlan(77, ctx())).toMatchObject({ ok: true, prependHarvest: false });
     expect(earnTxPlan(77, ctx({ harvestable: 1n }))).toMatchObject({ ok: true, prependHarvest: true });
   });
-  it("77 bound in RESOLVED mode with fees pending => blocked (78 is Live-only; program finding)", () => {
-    expect(earnTxPlan(77, ctx({ harvestable: 5n, mode: C.MARKET_MODE_RESOLVED }))).toEqual({ ok: false, reason: "harvest-locked-after-resolve" });
+  it("77 bound in RESOLVED mode with fees pending => 78 prepended (07a1d0eb: 78 runs once terminal-flat)", () => {
+    expect(earnTxPlan(77, ctx({ harvestable: 5n, mode: C.MARKET_MODE_RESOLVED }))).toMatchObject({ ok: true, prependHarvest: true });
     expect(earnTxPlan(77, ctx({ harvestable: 0n, mode: C.MARKET_MODE_RESOLVED }))).toMatchObject({ ok: true, prependHarvest: false });
   });
   it("75 bound: 78 prepended only at GENESIS with fees pending (L1)", () => {

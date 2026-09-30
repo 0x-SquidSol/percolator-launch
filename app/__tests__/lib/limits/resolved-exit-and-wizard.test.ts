@@ -11,7 +11,7 @@ import { decodeResolvedMarket, decodeResolvedPortfolio } from "@/lib/limits/deco
 import { batchExitSteps, looksEmpty, planResolvedExit, summarizeResolvedExit, type ExitPortfolio } from "@/lib/limits/resolved-exit";
 import { runResolvedExit, type ResolvedExitDeps } from "@/lib/limits/resolved-exit-run";
 import { exitStepIxs } from "@/lib/limits/resolved-exit-ixs";
-import { buildP3BindIxs, juniorFloorAtoms, maxWizardFloorBps, p3BindProgress, validateP3Wizard, vaultLpAwaitingProtocol, wizardP3Params } from "@/lib/limits/p3-wizard";
+import { buildP3BindIxs, juniorFloorAtoms, maxWizardFloorBps, p3BindProgress, validateP3Wizard, wizardP3Params, canonicalVaultLpMatcher } from "@/lib/limits/p3-wizard";
 import { deriveVaultLpState } from "@/lib/limits/p3-ix";
 import { buildLpCrankIx, decideLpLeg } from "@/lib/pre-resolve";
 import { closeLimitNotice } from "@/lib/limits/ticket";
@@ -105,12 +105,18 @@ describe("planResolvedExit", () => {
     const plan = planResolvedExit({ ...base, boundVault: false, market, portfolios: [pf("N", { capital: 1n }, { escrowed: true }), pf("L", { capital: 1n, rebalanceLock: true })] });
     expect(plan).toEqual({ phase: "sweep", steps: [], blockers: [{ kind: "escrowed", portfolio: "N" }, { kind: "locked", portfolio: "L" }] });
   });
-  it("terminal-flat => ready; a bound vault with fees pending carries the harvest-lock blocker", () => {
+  it("terminal-flat => ready; a BOUND vault with fees pending first gets the 78 harvest step (07a1d0eb)", () => {
     const market = decodeResolvedMarket(marketBytes({ mode: 1 }))!;
     expect(planResolvedExit({ ...base, market, portfolios: [] })).toEqual({ phase: "ready", blockers: [] });
-    const locked = planResolvedExit({ ...base, harvestableAtoms: 42n, market, portfolios: [] });
-    expect(locked).toEqual({ phase: "ready", blockers: [{ kind: "harvest-pending", atoms: 42n }] });
-    expect(summarizeResolvedExit(locked)).toMatchObject({ phase: "ready", runnable: 0, harvestPending: 42n });
+    const h = planResolvedExit({ ...base, harvestableAtoms: 42n, market, portfolios: [] });
+    expect(h).toEqual({ phase: "sweep", steps: [{ kind: "harvest" }], blockers: [] });
+    expect(summarizeResolvedExit(h)).toMatchObject({ phase: "sweep", runnable: 1 });
+    // an unbound (legacy) vault has no Resolved harvest: straight to ready
+    expect(planResolvedExit({ ...base, boundVault: false, harvestableAtoms: 42n, market, portfolios: [] }).phase).toBe("ready");
+    // not terminal-flat yet: no harvest step (78 would be refused 21)
+    const busy = decodeResolvedMarket(marketBytes({ mode: 1, cTot: 1n, count: 1n }))!;
+    const p = planResolvedExit({ ...base, harvestableAtoms: 42n, market: busy, portfolios: [pf("E", {})] });
+    expect(p.phase === "sweep" && p.steps.some((x) => x.kind === "harvest")).toBe(false);
   });
   it("batching keeps order, <= perTx per tx", () => {
     const s = [1, 2, 3, 4, 5].map((i) => ({ kind: "close-empty" as const, portfolio: String(i), isVaultLp: false }));
@@ -183,6 +189,15 @@ describe("exitStepIxs", () => {
     expect(ixs[0].keys[3].pubkey.equals(owner)).toBe(true);
     expect(ixs[0].data[0]).toBe(C.TAG_CLOSE_PORTFOLIO);
   });
+  it("harvest (07a1d0eb) = 78 on the registry's own domain with the bound tail [6]", () => {
+    const vault = { programId: PROG, market: MARKET, registry: k(), vaultLpState: k(), lpPortfolio: k(), ledger: k(), siblingLedger: k(), juniorOwner: k(), domain: 1 };
+    const [i78] = exitStepIxs({ kind: "harvest" }, { ...ctx, vault });
+    expect(i78.data[0]).toBe(C.TAG_LP_VAULT_CRANK_FEES);
+    expect(Buffer.from(i78.data).readUInt16LE(1)).toBe(1);
+    expect(i78.keys).toHaveLength(7);
+    expect(i78.keys[6]).toEqual({ pubkey: vault.vaultLpState, isSigner: false, isWritable: true });
+    expect(() => exitStepIxs({ kind: "harvest" }, ctx)).toThrow();
+  });
   it("settle-vault-lp without a bound vault is a programming error", () => {
     expect(() => exitStepIxs({ kind: "settle-vault-lp", topup: 0, portfolio: "V" }, ctx)).toThrow();
   });
@@ -205,26 +220,38 @@ describe("P3 wizard", () => {
     expect(wizardP3Params(true, 10n, 2_000)).toEqual({ juniorFloorBps: 2_000, juniorAtoms: 10n });
     expect(maxWizardFloorBps(1_000n, 2_000n)).toBe(5_000);
   });
-  it("bind ixs: [createAccount(program-owned, portfolio length), 94 (creator signs), 96]", () => {
-    const PROG = k(), MARKET = k(), lp = k(), creator = k();
+  it("bind ixs: [createAccount(LP), createAccount(ctx, owner = canonical matcher, 320 B), 94 auto-pin (11 accounts), 96]", () => {
+    const PROG = k(), MARKET = k(), lp = k(), creator = k(), ctx = k(), registry = k();
+    const matcher = canonicalVaultLpMatcher(C.CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET);
     const ixs = buildP3BindIxs({
-      market: { programId: PROG, market: MARKET, registry: k(), vaultLpState: deriveVaultLpState(PROG, MARKET), lpPortfolio: lp, ledger: k(), siblingLedger: k() },
-      creator, vaultLpPortfolio: lp, portfolioLen: 9_435, portfolioRentLamports: 1, juniorFloorBps: 2_000, juniorAtoms: 7n, creatorAta: k(), vaultToken: k(),
+      market: { programId: PROG, market: MARKET, registry, vaultLpState: deriveVaultLpState(PROG, MARKET), lpPortfolio: lp, ledger: k(), siblingLedger: k() },
+      creator, vaultLpPortfolio: lp, portfolioLen: 9_435, portfolioRentLamports: 1, matcherProgram: matcher, matcherCtx: ctx, matcherCtxRentLamports: 2,
+      juniorFloorBps: 2_000, juniorAtoms: 7n, creatorAta: k(), vaultToken: k(),
     });
-    expect(ixs.map((i) => (i.programId.equals(PROG) ? i.data[0] : "system"))).toEqual(["system", C.P3_TAG.InitVaultLp, C.P3_TAG.DepositJuniorTranche]);
-    expect(ixs[1].keys[0]).toEqual({ pubkey: creator, isSigner: true, isWritable: true });
-    expect(ixs[1].keys[4].pubkey.equals(lp)).toBe(true);
+    expect(ixs.map((i) => (i.programId.equals(PROG) ? i.data[0] : "system"))).toEqual(["system", "system", C.P3_TAG.InitVaultLp, C.P3_TAG.DepositJuniorTranche]);
+    // createAccount(ctx): SystemProgram data = [u32 2][u64 lamports][u64 space][pubkey owner]
+    const ca = Buffer.from(ixs[1].data);
+    expect(ca.readUInt32LE(0)).toBe(0);
+    expect(Number(ca.readBigUInt64LE(12))).toBe(C.VAULT_LP_MATCHER_CTX_LEN);
+    expect(new PublicKey(ca.subarray(20, 52)).equals(matcher)).toBe(true);
+    const i94 = ixs[2];
+    expect(i94.keys).toHaveLength(11);
+    expect(i94.keys[0]).toEqual({ pubkey: creator, isSigner: true, isWritable: true });
+    expect(i94.keys[8]).toEqual({ pubkey: matcher, isSigner: false, isWritable: false });
+    expect(i94.keys[9]).toEqual({ pubkey: ctx, isSigner: false, isWritable: true });
+    const enc = new TextEncoder();
+    const del = PublicKey.findProgramAddressSync([enc.encode("matcher"), MARKET.toBytes(), lp.toBytes(), registry.toBytes(), matcher.toBytes(), ctx.toBytes()], PROG)[0];
+    expect(i94.keys[10]).toEqual({ pubkey: del, isSigner: false, isWritable: false });
+    expect(Buffer.from(i94.data).toString("hex")).toBe("5ed007");
   });
+  it("only the canonical matcher can be bound (tag 94 refuses others with 81)", () => {
+    expect(() => canonicalVaultLpMatcher(k().toBase58())).toThrow(/canonical/);
+  });
+
   it("resume: bind -> deposit-junior -> done", () => {
     expect(p3BindProgress({ exists: false, juniorDepositedAtoms: null })).toBe("bind");
     expect(p3BindProgress({ exists: true, juniorDepositedAtoms: 0n })).toBe("deposit-junior");
     expect(p3BindProgress({ exists: true, juniorDepositedAtoms: 5n })).toBe("done");
-  });
-  it("awaiting protocol: bound with no approved matcher", () => {
-    expect(vaultLpAwaitingProtocol({ bound: true, approvedMatcherProgram: new Uint8Array(32) })).toBe(true);
-    expect(vaultLpAwaitingProtocol({ bound: true, approvedMatcherProgram: new Uint8Array(32).fill(1) })).toBe(false);
-    expect(vaultLpAwaitingProtocol({ bound: false, approvedMatcherProgram: new Uint8Array(32) })).toBe(false);
-    expect(vaultLpAwaitingProtocol(null)).toBe(false);
   });
 });
 

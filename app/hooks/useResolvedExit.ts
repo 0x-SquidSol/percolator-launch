@@ -138,6 +138,7 @@ export function useResolvedExit(slabAddress: string | null) {
               ledger: deriveLpBackingLedger(prog, market, domain)[0],
               siblingLedger: deriveLpBackingLedger(prog, market, domain ^ 1)[0],
               juniorOwner: new PublicKey(st.juniorOwner),
+              domain,
             }
           : null,
     };

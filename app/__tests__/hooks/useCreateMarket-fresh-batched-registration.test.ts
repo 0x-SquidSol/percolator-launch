@@ -157,6 +157,16 @@ describe("P3 wizard wiring (round 4, sequential path)", () => {
     // the pool read the guard depends on happens BEFORE the bind block
     expect(hookSource.lastIndexOf("const existingPool = await connection.getAccountInfo(stakePoolPda);", bind)).toBeGreaterThan(0);
   });
+  it("P3 auto-pin (07a1d0eb): NO creator-owned LP / matcher in either path (M2, sequential step 2, the LP crank)", () => {
+    expect(hookSource).toContain("const includeM2 = !params.p3;");
+    expect(hookSource).toContain("...(includeM2 ? [m2Descriptor] : []),");
+    expect(hookSource).toContain("if (startStep <= 2 && !params.p3) {");
+    expect(hookSource).toContain("instructions: params.p3 ? [topupIx] : [topupIx, crankIx],");
+    expect(hookSource).toContain("if (isV17SlabDeposit && !params.p3) {");
+    // the bind carries the pre-created ctx and signs with it
+    expect(hookSource).toContain("signers: [vaultLpPortfolioKp, vaultLpCtxKp!],");
+    expect(hookSource).toContain("matcherProgram: canonicalVaultLpMatcher(");
+  });
   it("skips the creator-LP deposit under P3 (the junior replaces it) in BOTH paths", () => {
     expect(hookSource).toContain("if (!params.p3 && alreadyDepositedCapital < params.lpCollateral)");
     expect(hookSource).toContain("const includeM3a = !params.p3;");

@@ -21,7 +21,7 @@
  * by parsing the enum). P3 is still in review, so they stay keyed BY NAME.
  *
  * Round 4: every P1/P3 number here is re-verified at the FINAL combined head
- * `feat/p3-vault-owned-lp@b2b2559e` (tag 94 path A only; P1 `3acb34ae`, engine `35ddd692`) through the REAL
+ * `feat/p3-vault-owned-lp@07a1d0eb` (auto-pin at tag 94; P1 `3acb34ae`, engine `35ddd692`) through the REAL
  * crate — `app/scripts/limits-parity/p3-final` (errors by name, offset_of!, the program's
  * own readers) and the layout / parity emitters, all byte-identical to the fixtures.
  */
@@ -246,7 +246,7 @@ export const VS = {
 export const VAULT_LP_STATE_ACCOUNT_LEN = HEADER_LEN + 256;
 export const VAULT_LP_MIN_JUNIOR_FLOOR_BPS = 1_000;
 
-/** P3 tags (FINAL head b2b2559e; re-verified against the real `ix::Instruction::decode`,
+/** P3 tags (FINAL head 07a1d0eb; re-verified against the real `ix::Instruction::decode`,
  *  fixture `rust-p3-final.json`). Sent by `lib/limits/p3-ix.ts`. */
 export const P3_TAG = {
   InitVaultLp: 94,
@@ -278,7 +278,7 @@ export const P3_ERR = {
   VaultLpValuationStale: 85,
 } as const;
 
-// ── P3 end-to-end (round 4; FINAL feat/p3-vault-owned-lp@b2b2559e + engine 35ddd692) ────────
+// ── P3 end-to-end (round 4; FINAL feat/p3-vault-owned-lp@07a1d0eb + engine 35ddd692) ────────
 /** `LpVaultRegistryV16._reserved[0]` (struct 144) = 1 when a vault LP is bound => absolute 160.
  *  Every bound-vault Earn handler then REQUIRES the vault-LP tail accounts (fail closed). */
 export const REG_VAULT_LP_BOUND_FLAG = HEADER_LEN + 144;
@@ -317,3 +317,14 @@ export const RECEIPT_FINALIZED = 65; // u8 bool
 /** LpVaultRegistryV16.domain u16 (struct 132) => absolute 148. */
 export const REG_DOMAIN = HEADER_LEN + 132;
 export const VAULT_LP_MAX_JUNIOR_FLOOR_BPS = 10_000;
+
+// ── P3 auto-pin (FINAL feat/p3-vault-owned-lp@07a1d0eb) ───────────────────────────────────────
+/** `constants::CANONICAL_VAULT_LP_MATCHER_PROGRAM` (devnet build): tag 94 accepts ONLY this at
+ *  [8] (else VaultLpMatcherNotApproved 81) and pins it; there is no mainnet arm yet (fails closed). */
+export const CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET = "4seJWjv3R5qfXY8R5ntuPHWsoqcVvaxvfFSnU2AnGMhT";
+/** The matcher ctx tag 94 initialises: pre-created by the client, owner = the matcher program,
+ *  zeroed; the wizard's existing size (the wrapper's own floor is 64 B). */
+export const VAULT_LP_MATCHER_CTX_LEN = 320;
+export const MATCHER_DELEGATE_SEED = "matcher";
+/** `vault_lp_v18::PIN_*` (07a1d0eb): the protocol's vAMM pin, shown to the creator (read-only). */
+export const PIN = { kind: 1, tradingFeeBps: 10, baseSpreadBps: 10, maxTotalBps: 100, impactKBps: 50, maxFillUsd: 5_000n, maxInventoryUsd: 25_000n, liquidityUsd: 250_000n } as const;

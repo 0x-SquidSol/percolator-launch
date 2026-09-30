@@ -34,6 +34,8 @@ export interface ExitPortfolio {
 }
 
 export type ExitStep =
+  /** 07a1d0eb: tag 78 on a BOUND vault once the market is terminal-flat (fees -> backing + C). */
+  | { kind: "harvest" }
   | { kind: "settle-vault-lp"; topup: 0 | 1; portfolio: string }
   | { kind: "close-resolved"; portfolio: string }
   | { kind: "claim-topup"; portfolio: string }
@@ -41,8 +43,7 @@ export type ExitStep =
 
 export type ExitBlocker =
   | { kind: "escrowed"; portfolio: string }
-  | { kind: "locked"; portfolio: string }
-  | { kind: "harvest-pending"; atoms: bigint };
+  | { kind: "locked"; portfolio: string };
 
 export type ResolvedExitPlan =
   | { phase: "not-resolved" }
@@ -78,9 +79,9 @@ export function ownerWindowEnd(m: ResolvedMarketView): bigint {
 
 /**
  * Plan the next steps. `nowSlot` is the chain slot (the program admits the authenticated Clock
- * into the resolved clock). `harvestableAtoms` is `lp_vault_harvestable_fee_atoms` on the
- * market: a bound vault's 77 refuses 84 while it is non-zero, and tag 78 (the harvest) is
- * LIVE-only, so after resolution the only thing the app can do is say so.
+ * into the resolved clock). `harvestableAtoms` is `lp_vault_harvestable_fee_atoms`: a bound
+ * vault's 77 refuses 84 while it is non-zero; since 07a1d0eb tag 78 runs on a Resolved bound
+ * vault once TERMINAL-FLAT, so the sweep ends with a "harvest" step (then the redemption pays).
  */
 export function planResolvedExit(input: {
   market: ResolvedMarketView;
@@ -92,7 +93,6 @@ export function planResolvedExit(input: {
   const { market, nowSlot, portfolios, boundVault, harvestableAtoms } = input;
   if (market.mode !== MARKET_MODE_RESOLVED) return { phase: "not-resolved" };
   const blockers: ExitBlocker[] = [];
-  if (boundVault && harvestableAtoms !== null && harvestableAtoms > 0n) blockers.push({ kind: "harvest-pending", atoms: harvestableAtoms });
 
   const windowEnd = ownerWindowEnd(market);
   const inWindow = nowSlot < windowEnd;
@@ -126,6 +126,9 @@ export function planResolvedExit(input: {
   }
 
   const terminalFlat = market.materializedPortfolioCount === 0n && market.cTot === 0n;
+  if (terminalFlat && boundVault && harvestableAtoms !== null && harvestableAtoms > 0n) {
+    return { phase: "sweep", steps: [{ kind: "harvest" }], blockers };
+  }
   if (terminalFlat) return { phase: "ready", blockers };
   if (inWindow) return { phase: "owner-window", untilSlot: windowEnd, steps, blockers };
   return { phase: "sweep", steps, blockers };
@@ -147,19 +150,16 @@ export interface ResolvedExitSummary {
   untilSlot: bigint | null;
   escrowed: number;
   locked: number;
-  harvestPending: bigint | null;
 }
 
 export function summarizeResolvedExit(plan: ResolvedExitPlan): ResolvedExitSummary {
-  if (plan.phase === "not-resolved") return { phase: plan.phase, runnable: 0, untilSlot: null, escrowed: 0, locked: 0, harvestPending: null };
+  if (plan.phase === "not-resolved") return { phase: plan.phase, runnable: 0, untilSlot: null, escrowed: 0, locked: 0 };
   const steps = plan.phase === "ready" ? [] : plan.steps;
-  const hp = plan.blockers.find((b): b is Extract<ExitBlocker, { kind: "harvest-pending" }> => b.kind === "harvest-pending");
   return {
     phase: plan.phase,
     runnable: steps.length,
     untilSlot: plan.phase === "owner-window" ? plan.untilSlot : null,
     escrowed: plan.blockers.filter((b) => b.kind === "escrowed").length,
     locked: plan.blockers.filter((b) => b.kind === "locked").length,
-    harvestPending: hp ? hp.atoms : null,
   };
 }

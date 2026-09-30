@@ -116,10 +116,11 @@ import {
   type CreateStepKind,
 } from "@/lib/create-market-v18";
 import { buildInitMatcherCtxArgs } from "@/lib/matcher-params";
-import { buildP3BindIxs, p3BindProgress, validateP3Wizard } from "@/lib/limits/p3-wizard";
+import { buildP3BindIxs, canonicalVaultLpMatcher, p3BindProgress, validateP3Wizard } from "@/lib/limits/p3-wizard";
 import { COPY as LIMITS_COPY } from "@/lib/limits/copy";
 import { buildDepositJuniorTrancheIx, deriveVaultLpState } from "@/lib/limits/p3-ix";
 import { decodeVaultLpState } from "@/lib/limits/decode";
+import { VAULT_LP_MATCHER_CTX_LEN } from "@/lib/limits/constants";
 
 const P3_WIZARD_ISSUE_COPY = LIMITS_COPY.p3Wizard.issue;
 
@@ -321,9 +322,9 @@ export interface CreateMarketParams {
    */
   p3?: {
     juniorFloorBps: number;
-    /** The creator's first-loss capital. It REPLACES the creator-LP deposit (M3a / sequential
-     *  step 3 skip it under P3): under the exclusive-LP rule a creator-owned LP can take no
-     *  risk-increasing fill once the vault LP is bound, so funding it would only park capital. */
+    /** The creator's first-loss capital. Under P3 there is NO creator-owned LP at all (M2 / M3a
+     *  and sequential steps 2-3's LP parts are skipped): tag 94 auto-pins the vault LP's
+     *  canonical matcher and caps (07a1d0eb), so the vault LP is the market's only LP. */
     juniorAtoms: bigint;
   };
   initialMarginBps: number;
@@ -903,6 +904,8 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     const matcherCtxKp = Keypair.generate();
     // P3: the vault-owned LP portfolio (owner := the LP-vault registry PDA at InitVaultLp).
     const vaultLpPortfolioKp = params.p3 ? Keypair.generate() : null;
+    // P3 auto-pin (07a1d0eb): the vault LP's matcher ctx, pre-created for tag 94 to initialise.
+    const vaultLpCtxKp = params.p3 ? Keypair.generate() : null;
     const stakeLpMintKp = Keypair.generate();
     const stakeVaultKp = Keypair.generate();
 
@@ -1287,7 +1290,8 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     });
     const m3bDescriptor: TailTxDescriptor = {
       label: "Seeding the insurance fund",
-      instructions: [topupIx, crankIx],
+      // P3: no creator-owned LP portfolio exists to crank; the insurance top-up stands alone.
+      instructions: params.p3 ? [topupIx] : [topupIx, crankIx],
       computeUnits: 450_000,
       signers: [],
     };
@@ -1398,13 +1402,16 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
               vaultLpPortfolio: vaultLpPortfolioKp.publicKey,
               portfolioLen: V17_PORTFOLIO_ACCOUNT_LEN,
               portfolioRentLamports: portfolioRent,
+              matcherProgram: canonicalVaultLpMatcher(matcherProgramId.toBase58()),
+              matcherCtx: vaultLpCtxKp!.publicKey,
+              matcherCtxRentLamports: matcherCtxRent,
               juniorFloorBps: params.p3.juniorFloorBps,
               juniorAtoms: params.p3.juniorAtoms,
               creatorAta: userAta,
               vaultToken: vaultAta,
             }),
             computeUnits: P3_BIND_COMPUTE_UNITS,
-            signers: [vaultLpPortfolioKp],
+            signers: [vaultLpPortfolioKp, vaultLpCtxKp!],
           }
         : null;
     const m4bDescriptor: TailTxDescriptor = {
@@ -1429,9 +1436,11 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     // serial confirm-then-broadcast pipeline outruns this blockhash's validity.
     // P3: the creator-LP deposit (M3a) is replaced by the junior tranche (M4p).
     const includeM3a = !params.p3;
+    // P3 auto-pin: no creator-owned LP / matcher (M2) — the vault LP is the market's only LP.
+    const includeM2 = !params.p3;
     const tailDescriptors: TailTxDescriptor[] = [
       m1Descriptor,
-      m2Descriptor,
+      ...(includeM2 ? [m2Descriptor] : []),
       ...(includeM3a ? [m3aDescriptor] : []),
       m3bDescriptor,
       m4aDescriptor,
@@ -1452,7 +1461,8 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       if (!tx) throw new Error(`tail tx "${d.label}" was not built`);
       return tx;
     };
-    const [m1, m2, m3b, m4a, m4b] = [m1Descriptor, m2Descriptor, m3bDescriptor, m4aDescriptor, m4bDescriptor].map(tailTx);
+    const [m1, m3b, m4a, m4b] = [m1Descriptor, m3bDescriptor, m4aDescriptor, m4bDescriptor].map(tailTx);
+    const m2 = includeM2 ? tailTx(m2Descriptor) : null;
     const m3a = includeM3a ? tailTx(m3aDescriptor) : null;
     const m4p = m4pDescriptor ? tailTx(m4pDescriptor) : null;
 
@@ -1460,7 +1470,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     // blockhash, no heap-frame/CU ixs added — never run through buildBatchTx.
     // It is NOT a TailTxDescriptor and is never rebuilt on expiry (see the
     // TailTxDescriptor comment above).
-    const orderedTxs: Transaction[] = [m1, ...(cosignTx ? [cosignTx] : []), m2, ...(m3a ? [m3a] : []), m3b, m4a, ...(m4p ? [m4p] : []), m4b];
+    const orderedTxs: Transaction[] = [m1, ...(cosignTx ? [cosignTx] : []), ...(m2 ? [m2] : []), ...(m3a ? [m3a] : []), m3b, m4a, ...(m4p ? [m4p] : []), m4b];
     // Human-readable label per batched tx, in the SAME order — the progress UI
     // shows what is being CREATED ("Creating the market", "Funding liquidity"),
     // never internal transaction indices. A launching user cares about market
@@ -1468,7 +1478,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     const orderedLabels: string[] = [
       m1Descriptor.label,
       ...(cosignTx ? ["Connecting the price feed"] : []),
-      m2Descriptor.label,
+      ...(includeM2 ? [m2Descriptor.label] : []),
       ...(includeM3a ? [m3aDescriptor.label] : []),
       m3bDescriptor.label,
       m4aDescriptor.label,
@@ -1495,18 +1505,18 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     let idx = 0;
     const signedM1 = signedTxs[idx++];
     const signedCosign = cosignTx ? signedTxs[idx++] : null;
-    const signedM2 = signedTxs[idx++];
+    const signedM2 = m2 ? signedTxs[idx++] : null;
     const signedM3a = m3a ? signedTxs[idx++] : null;
     const signedM3b = signedTxs[idx++];
     const signedM4a = signedTxs[idx++];
     const signedM4p = m4p ? signedTxs[idx++] : null;
     const signedM4b = signedTxs[idx++];
-    if (!signedM1 || !signedM2 || (m3a && !signedM3a) || !signedM3b || !signedM4a || !signedM4b || (m4p && !signedM4p)) {
+    if (!signedM1 || (m2 && !signedM2) || (m3a && !signedM3a) || !signedM3b || !signedM4a || !signedM4b || (m4p && !signedM4p)) {
       throw new Error("Wallet did not return a signature for every transaction in the batch.");
     }
     signedM1.partialSign(slabKp);
-    signedM2.partialSign(lpPortfolioKp, matcherCtxKp);
-    if (signedM4p && vaultLpPortfolioKp) signedM4p.partialSign(vaultLpPortfolioKp);
+    if (signedM2) signedM2.partialSign(lpPortfolioKp, matcherCtxKp);
+    if (signedM4p && vaultLpPortfolioKp && vaultLpCtxKp) signedM4p.partialSign(vaultLpPortfolioKp, vaultLpCtxKp);
     signedM4b.partialSign(stakeLpMintKp, stakeVaultKp);
 
     // ---- Mutable tail state for blockhash-expiry recovery -----------------
@@ -1515,7 +1525,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     // below (defined after `landed`/`landingTotal`/`orderedLabels` exist, just
     // before the pipelined broadcast starts) overwrites entries in place if a
     // not-yet-landed one has to be rebuilt against a fresh blockhash.
-    const signedTail: Transaction[] = [signedM1, signedM2, ...(signedM3a ? [signedM3a] : []), signedM3b, signedM4a, ...(signedM4p ? [signedM4p] : []), signedM4b];
+    const signedTail: Transaction[] = [signedM1, ...(signedM2 ? [signedM2] : []), ...(signedM3a ? [signedM3a] : []), signedM3b, signedM4a, ...(signedM4p ? [signedM4p] : []), signedM4b];
     let blockhashRecoveries = 0;
 
     // ---- Persist recovery state BEFORE the first broadcast ---------------
@@ -1710,10 +1720,12 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       updateInFlightStep(slabPk.toBase58(), 2);
     }
 
-    failingKind = "lp-init";
-    failingLabel = m2Descriptor.label;
-    const m2Sig = await broadcastTailTx(tailIdx(m2Descriptor));
-    advanceLanding(m2Sig);
+    if (includeM2) {
+      failingKind = "lp-init";
+      failingLabel = m2Descriptor.label;
+      const m2Sig = await broadcastTailTx(tailIdx(m2Descriptor));
+      advanceLanding(m2Sig);
+    }
     resumeStep = 3;
     updateInFlightStep(slabPk.toBase58(), 3);
 
@@ -2794,7 +2806,9 @@ export function useCreateMarket() {
         // matcher_ctx account uninitialized). PREREQUISITE ordering (per InitMatcherCtx's own doc
         // comment) also changed: SetMatcherConfig (TX C) must land BEFORE InitMatcherCtx (TX D),
         // since the wrapper cross-checks the LP portfolio's stored matcher config before CPI-ing.
-        if (startStep <= 2) {
+        // P3 auto-pin: no creator-owned LP / matcher — step 2 does not run (the vault LP bound in
+        // step 5 is the market's only LP).
+        if (startStep <= 2 && !params.p3) {
           runningStep = 2;
           setState((s) => ({ ...s, step: 2, stepLabel: STEP_LABELS[2] }));
 
@@ -3328,7 +3342,7 @@ export function useCreateMarket() {
             : false;
 
           let depositPortfolioPk: PublicKey;
-          if (isV17SlabDeposit) {
+          if (isV17SlabDeposit && !params.p3) {
             // Scan for LP portfolio (owner = wallet, market = slabPk) — created in Step 2
             // V17 magic bytes at offset 0: PERCV16\0
             const V17_MAGIC_BYTES = Buffer.from([0x00, 0x36, 0x31, 0x56, 0x43, 0x52, 0x45, 0x50]);
@@ -3352,7 +3366,7 @@ export function useCreateMarket() {
           // the market may be partially set up, so fresh literals can't be assumed).
           // v12 fallback has no v18 portfolio (0n placeholders; abandoned).
           let depLpId = { portfolioId: 0n, matcherSequence: 0n };
-          if (isV17SlabDeposit) {
+          if (isV17SlabDeposit && !params.p3) {
             const lpInfo = await connection.getAccountInfo(depositPortfolioPk);
             if (!lpInfo?.data) throw new Error("LP portfolio not found for deposit");
             const pid = readPortfolioIdentity(new Uint8Array(lpInfo.data));
@@ -3408,7 +3422,7 @@ export function useCreateMarket() {
           // subsequently failed/threw. Without this, every retry re-deposits
           // lpCollateral ON TOP OF whatever's already there.
           let alreadyDepositedCapital = 0n;
-          if (isV17SlabDeposit) {
+          if (isV17SlabDeposit && !params.p3) {
             try {
               const portInfo = await connection.getAccountInfo(depositPortfolioPk);
               if (portInfo?.data) {
@@ -3523,7 +3537,8 @@ export function useCreateMarket() {
             // Hyperp oracle in v17 uses ConfigureHybridOracle (tag 34) managed server-side by keeper.
             // Final crank uses PermissionlessCrank for all oracle modes.
             // v17 PermissionlessCrank: [owner(s,w), market(w), portfolio(w)] + optional oracle tail.
-            {
+            // P3: there is no creator-owned LP portfolio to crank; the top-up stands alone.
+            if (!params.p3) {
               const crankData = encodePermissionlessCrank({ nowSlot: 0n, observations: defaultCrankObservations(0) });
               const crankPortfolioPk = isV17SlabDeposit ? depositPortfolioPk : slabPk;
               const crankKeys = buildAccountMetas(ACCOUNTS_PERMISSIONLESS_CRANK_BASE, {
@@ -3795,6 +3810,7 @@ export function useCreateMarket() {
               const creatorAta = await getAssociatedTokenAddress(params.mint, wallet.publicKey);
               const vaultTokenAta = await getAssociatedTokenAddress(params.mint, vaultPda, true);
               const vaultLpKp = progress === "bind" ? Keypair.generate() : null;
+              const vaultLpCtxKp = progress === "bind" ? Keypair.generate() : null;
               const lpPortfolioPk = vaultLpKp ? vaultLpKp.publicKey : st ? new PublicKey(st.lpPortfolio) : null;
               if (!lpPortfolioPk) throw new Error(LIMITS_COPY.earnPlanBlocked["vault-lp-unreadable"]);
               const p3Market = {
@@ -3813,6 +3829,9 @@ export function useCreateMarket() {
                     vaultLpPortfolio: vaultLpKp.publicKey,
                     portfolioLen: V17_PORTFOLIO_ACCOUNT_LEN,
                     portfolioRentLamports: await connection.getMinimumBalanceForRentExemption(V17_PORTFOLIO_ACCOUNT_LEN),
+                    matcherProgram: canonicalVaultLpMatcher(getConfig().matcherProgramId),
+                    matcherCtx: vaultLpCtxKp!.publicKey,
+                    matcherCtxRentLamports: await connection.getMinimumBalanceForRentExemption(VAULT_LP_MATCHER_CTX_LEN),
                     juniorFloorBps: params.p3.juniorFloorBps,
                     juniorAtoms: params.p3.juniorAtoms,
                     creatorAta,
@@ -3826,7 +3845,7 @@ export function useCreateMarket() {
                 wallet,
                 abortSignal,
                 instructions: p3Ixs,
-                signers: vaultLpKp ? [vaultLpKp] : [],
+                signers: vaultLpKp && vaultLpCtxKp ? [vaultLpKp, vaultLpCtxKp] : [],
                 computeUnits: P3_BIND_COMPUTE_UNITS,
               });
               setState((s) => ({ ...s, txSigs: [...s.txSigs, p3Sig], stepLabel: STEP_LABELS[5] }));

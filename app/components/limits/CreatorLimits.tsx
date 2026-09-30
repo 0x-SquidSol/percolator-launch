@@ -19,7 +19,7 @@ import { useMarketLimits, type MarketLimits } from "@/hooks/useMarketLimits";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { useInsuranceLP } from "@/hooks/useInsuranceLP";
 import { limitsFlags, p3WizardEnabled } from "@/lib/limits/flags";
-import { DEFAULT_JUNIOR_FLOOR_BPS, juniorFloorAtoms, maxWizardFloorBps, validateP3Wizard, vaultLpAwaitingProtocol } from "@/lib/limits/p3-wizard";
+import { DEFAULT_JUNIOR_FLOOR_BPS, juniorFloorAtoms, maxWizardFloorBps, validateP3Wizard } from "@/lib/limits/p3-wizard";
 import { backingSeedPerDomain } from "@/lib/market-params";
 import { COPY } from "@/lib/limits/copy";
 import { defaultLpExposureKBps, lpEquityInitRaw, lpExposureCapQ, maxTradeSizePerSide, nonnegEquity, effectiveLpExposureKBps } from "@/lib/limits/risk-limits";
@@ -92,8 +92,8 @@ export const WizardTranchePanel: FC<{
           {COPY.p3Wizard.issue[issue]}
         </p>
       )}
-      <p data-testid="limits-wizard-awaiting-protocol" className="text-[9px] leading-relaxed text-[var(--warning)]">
-        {COPY.p3Wizard.awaitingProtocol}
+      <p data-testid="limits-wizard-pinned-matcher" className="text-[9px] leading-relaxed text-[var(--text-secondary)]">
+        {COPY.p3Wizard.pinned}
       </p>
     </div>
   );
@@ -187,11 +187,6 @@ const CreatorTranchePanelLive: FC<{ slab: string; decimals: number; collateralSy
         : null;
   return (
     <>
-      {vaultLpAwaitingProtocol(limits.vaultLp) && (
-        <LimitsNotice tone="warning" title="Awaiting protocol approval" testId="limits-creator-awaiting-protocol">
-          {COPY.p3Wizard.awaitingProtocol}
-        </LimitsNotice>
-      )}
       {isJuniorOwner && (
         <JuniorTrancheActionsView
           withdrawableAtoms={withdrawable}

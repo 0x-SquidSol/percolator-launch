@@ -8,6 +8,7 @@ import { PublicKey, type TransactionInstruction } from "@solana/web3.js";
 import { createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { TAG_CLAIM_RESOLVED_PAYOUT_TOPUP, TAG_CLOSE_RESOLVED } from "./constants";
 import {
+  buildLpVaultCrankFeesIx,
   buildPermissionlessResolvedIx,
   buildResolvedClosePortfolioIx,
   buildVaultLpSettleResolvedIx,
@@ -27,8 +28,8 @@ export interface ExitIxContext {
   collateralMint: PublicKey;
   vaultToken: PublicKey;
   vaultAuthority: PublicKey;
-  /** Present when the market has a bound vault LP. */
-  vault: (VaultLpMarket & { juniorOwner: PublicKey }) | null;
+  /** Present when the market has a bound vault LP (`domain` = the registry's own pot). */
+  vault: (VaultLpMarket & { juniorOwner: PublicKey; domain: number }) | null;
   programId: PublicKey;
   market: PublicKey;
   portfolios: ReadonlyMap<string, ExitPortfolioRef>;
@@ -40,6 +41,21 @@ function ownerAta(c: ExitIxContext, owner: PublicKey): { ata: PublicKey; create:
 }
 
 export function exitStepIxs(step: ExitStep, c: ExitIxContext): TransactionInstruction[] {
+  if (step.kind === "harvest") {
+    if (!c.vault) throw new Error("harvest without a bound vault");
+    return [
+      buildLpVaultCrankFeesIx({
+        programId: c.programId,
+        cranker: c.payer,
+        market: c.market,
+        registry: c.vault.registry,
+        ledger: c.vault.ledger,
+        siblingLedger: c.vault.siblingLedger,
+        domain: c.vault.domain,
+        bound: { vaultLpState: c.vault.vaultLpState },
+      }),
+    ];
+  }
   if (step.kind === "settle-vault-lp") {
     if (!c.vault) throw new Error("settle-vault-lp without a bound vault");
     const j = ownerAta(c, c.vault.juniorOwner);

@@ -2,7 +2,7 @@
 /**
  * P3 end-to-end surface (round 4) against TWO independent oracles:
  *   1. rust-p3-final.json — app/scripts/limits-parity/p3-final/main.rs on the REAL P3 crate
- *      (feat/p3-vault-owned-lp@b2b2559e FINAL, P1 3acb34ae, engine 35ddd692): this module's bytes decoded by
+ *      (feat/p3-vault-owned-lp@07a1d0eb FINAL, P1 3acb34ae, engine 35ddd692): this module's bytes decoded by
  *      `ix::Instruction::decode`, rustc offset_of!, error ordinals by name, the program's own
  *      `read_asset_vault_lp` at the app's offsets and `registry_vault_lp_bound`;
  *   2. sdk-p3-parity.json — SDK 8.0.0 (9e843e5)'s fixture from its own Rust oracle (at 424fe7e4,
@@ -65,12 +65,12 @@ const EXPECT_DECODED: Record<string, Record<string, string | number>> = {
 };
 
 describe("P3 final head: app encoders vs the real ix::Instruction::decode", () => {
-  it("fixture is from the FINAL P3 combined head (b2b2559e on P1 3acb34ae; tag 94 path A only)", () => {
-    expect(rust.p3Sha).toBe("b2b2559e62e08a96b978a2d81a67991c93bc6061");
+  it("fixture is from the FINAL P3 combined head (07a1d0eb on P1 3acb34ae; auto-pin at tag 94)", () => {
+    expect(rust.p3Sha).toBe("07a1d0ebec92d3a363b5d7f535cee1321c96d10d");
     expect((rust as unknown as { p1Sha: string }).p1Sha).toBe("3acb34ae83b4038a88a02731d1aa023142ef6c11");
-    // SDK 8's fixture was generated at 424fe7e4; `git diff 424fe7e4 b2b2559e -- src` is one const
-    // assert, Kani harness domains and the removal of tag 94's path-B TAIL ([8]/[9], never sent by
-    // this app): the bytes compared below (94..101 data) are unchanged.
+    // SDK 8's fixture was generated at 424fe7e4. Since then tag 94's ACCOUNT list changed twice
+    // (path B removed; auto-pin tail [8] matcher / [9] ctx / [10] delegate added in 07a1d0eb) but
+    // no instruction DATA did: the bytes compared below (94..101 data) are unchanged.
     expect(sdk.p3Sha).toBe("424fe7e473bec1154eacde1ac8bd7e190b526fd2");
   });
   for (const [id, enc] of Object.entries(INPUTS)) {
@@ -159,6 +159,19 @@ describe("P3 final head: layout (rustc offset_of!) and errors (by name)", () => 
     expect(C.ASSET_VAULT_LP_OFF).toBe(L.assetVaultLpOff);
     expect(C.VAULT_LP_MIN_JUNIOR_FLOOR_BPS).toBe(L.minJuniorFloorBps);
     expect(C.VAULT_LP_MAX_JUNIOR_FLOOR_BPS).toBe(L.maxJuniorFloorBps);
+  });
+  it("auto-pin (07a1d0eb): the protocol pin the app shows read-only, and the canonical matcher", () => {
+    expect(L["pin.kind"]).toBe(C.PIN.kind);
+    expect(L["pin.tradingFeeBps"]).toBe(C.PIN.tradingFeeBps);
+    expect(L["pin.baseSpreadBps"]).toBe(C.PIN.baseSpreadBps);
+    expect(L["pin.maxTotalBps"]).toBe(C.PIN.maxTotalBps);
+    expect(L["pin.impactKBps"]).toBe(C.PIN.impactKBps);
+    expect(BigInt(L["pin.maxFillUsd"])).toBe(C.PIN.maxFillUsd);
+    expect(BigInt(L["pin.maxInventoryUsd"])).toBe(C.PIN.maxInventoryUsd);
+    expect(BigInt(L["pin.liquidityUsd"])).toBe(C.PIN.liquidityUsd);
+    // the oracle compares the program's constant to this exact string
+    expect(C.CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET).toBe("4seJWjv3R5qfXY8R5ntuPHWsoqcVvaxvfFSnU2AnGMhT");
+    expect(L.canonicalMatcherIsDevnet4seJ).toBe(1);
   });
   it("the program's read_asset_vault_lp reads each asset's record at the app's offset (and not 1 off)", () => {
     expect(rust.assetVaultLpReads).toHaveLength(4);

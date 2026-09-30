@@ -112,6 +112,16 @@ fn main() {
         o("assetVaultLpOff", c::ASSET_VAULT_LP_OFF),
         o("minJuniorFloorBps", c::VAULT_LP_MIN_JUNIOR_FLOOR_BPS as usize),
         o("maxJuniorFloorBps", c::VAULT_LP_MAX_JUNIOR_FLOOR_BPS as usize),
+        // 07a1d0eb auto-pin: the protocol's vAMM pin tag 94 applies (the app shows these read-only)
+        o("pin.kind", percolator_prog::vault_lp_v18::PIN_MATCHER_KIND as usize),
+        o("pin.tradingFeeBps", percolator_prog::vault_lp_v18::PIN_TRADING_FEE_BPS as usize),
+        o("pin.baseSpreadBps", percolator_prog::vault_lp_v18::PIN_BASE_SPREAD_BPS as usize),
+        o("pin.maxTotalBps", percolator_prog::vault_lp_v18::PIN_MAX_TOTAL_BPS as usize),
+        o("pin.impactKBps", percolator_prog::vault_lp_v18::PIN_IMPACT_K_BPS as usize),
+        o("pin.maxFillUsd", percolator_prog::vault_lp_v18::PIN_MAX_FILL_USD as usize),
+        o("pin.maxInventoryUsd", percolator_prog::vault_lp_v18::PIN_MAX_INVENTORY_USD as usize),
+        o("pin.liquidityUsd", percolator_prog::vault_lp_v18::PIN_LIQUIDITY_USD as usize),
+        o("canonicalMatcherIsDevnet4seJ", (c::CANONICAL_VAULT_LP_MATCHER_PROGRAM.to_string() == "4seJWjv3R5qfXY8R5ntuPHWsoqcVvaxvfFSnU2AnGMhT") as usize),
     ];
     out.push(format!("\"layout\":{{{}}}", layout.join(",")));
 
@@ -151,5 +161,5 @@ fn main() {
     }
     out.push(format!("\"registryBound\":[{}]", bound.join(",")));
 
-    println!("{{\"p3Sha\":\"b2b2559e62e08a96b978a2d81a67991c93bc6061\",\"p1Sha\":\"3acb34ae83b4038a88a02731d1aa023142ef6c11\",\"engineSha\":\"35ddd692\",{}}}", out.join(","));
+    println!("{{\"p3Sha\":\"07a1d0ebec92d3a363b5d7f535cee1321c96d10d\",\"p1Sha\":\"3acb34ae83b4038a88a02731d1aa023142ef6c11\",\"engineSha\":\"35ddd692\",{}}}", out.join(","));
 }

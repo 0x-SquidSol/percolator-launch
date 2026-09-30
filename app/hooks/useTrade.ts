@@ -201,7 +201,7 @@ function invalidateV17TradeAccounts(programId: PublicKey, slabPk: PublicKey, tak
   v17TradeAccountsCache.delete(tradeAccountsKey(programId, slabPk, takerPk));
 }
 
-async function resolveV17TradeAccounts(
+export async function resolveV17TradeAccounts(
   connection: Connection,
   programId: PublicKey,
   slabPk: PublicKey,

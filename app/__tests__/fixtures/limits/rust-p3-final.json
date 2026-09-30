@@ -1,5 +1,5 @@
 {
-    "p3Sha": "b2b2559e62e08a96b978a2d81a67991c93bc6061",
+    "p3Sha": "07a1d0ebec92d3a363b5d7f535cee1321c96d10d",
     "p1Sha": "3acb34ae83b4038a88a02731d1aa023142ef6c11",
     "engineSha": "35ddd692",
     "vectors": {
@@ -395,7 +395,16 @@
         "av.flags": 90,
         "assetVaultLpOff": 896,
         "minJuniorFloorBps": 1000,
-        "maxJuniorFloorBps": 10000
+        "maxJuniorFloorBps": 10000,
+        "pin.kind": 1,
+        "pin.tradingFeeBps": 10,
+        "pin.baseSpreadBps": 10,
+        "pin.maxTotalBps": 100,
+        "pin.impactKBps": 50,
+        "pin.maxFillUsd": 5000,
+        "pin.maxInventoryUsd": 25000,
+        "pin.liquidityUsd": 250000,
+        "canonicalMatcherIsDevnet4seJ": 1
     },
     "assetVaultLpReads": [
         {

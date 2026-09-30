@@ -53,7 +53,6 @@ export const COPY = {
   withdrawIlliquid:
     "Part of the vault's value is in the LP's open positions. Your redemption may wait for a recall (permissionless) or the keeper.",
   depositsPausedImpaired: "Deposits are paused while the senior tranche is impaired.",
-  depositsPausedHarvest: "The first Earn deposit waits until this vault's pending LP fees are cranked.",
   valuationStale: "Vault value needs a refresh (the LP holds positions and its health certificate is stale).",
   excludesUncrankedFees: "excludes uncranked fees",
   apyInsufficient: "Needs 24 h of fee history",
@@ -114,8 +113,8 @@ export const COPY = {
     minHint: (min: string, sym: string) => `At least ${min} ${sym} (the floor of the Earn seed).`,
     marketauthRotated:
       "The market's admin authority has already moved to its staking pool, so the vault-owned LP can no longer be bound on this market (binding needs the market admin's signature). The market keeps its classic LP.",
-    awaitingProtocol:
-      "Trading on this market opens once the protocol approves the vault LP's matcher. That step needs the protocol's authority, so the wizard cannot run it.",
+    pinned:
+      "The protocol sets this LP's matcher and its limits at launch (a vAMM with a $5,000 per-trade and $25,000 net-exposure cap at the launch price); you choose only the junior tranche and its floor. Trading opens as soon as the market is created.",
     issue: {
       "floor-out-of-range": "The junior floor must be between 10% and 100%.",
       "junior-zero": "Enter a junior tranche deposit greater than zero.",
@@ -126,8 +125,6 @@ export const COPY = {
   earnPlanBlocked: {
     "registry-invalid": "This Earn vault's on-chain registry has an invalid vault-LP flag, so the program refuses every Earn action. Contact the market operator.",
     "vault-lp-unreadable": "This Earn vault is backed by a vault-owned LP whose state could not be read. Retry in a moment.",
-    "harvest-locked-after-resolve":
-      "This market resolved with LP fees still unharvested. The program harvests them only while a market is live, and a vault-owned-LP redemption waits for that harvest, so the program refuses it. Your claim is unchanged.",
   } as const,
 } as const;
 

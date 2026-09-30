@@ -5,8 +5,8 @@
  *   - a BOUND registry (`_reserved[0] == 1`) makes the vault-LP tail REQUIRED, fail closed:
  *     75 [11] vault_lp_state (w) + [12] lp, 77 [13] + [14]; 76 takes none;
  *   - 77 (bound) refuses VaultLpHarvestPending (84) while LP fees are harvestable (P3-K1): bundle
- *     78 in front, in the same tx. 78 is LIVE-only, so after Resolve this cannot be repaired
- *     from the client (program finding, plan section 9) - the plan blocks with that reason;
+ *     78 in front, in the same tx. Since 07a1d0eb 78 also runs on a Resolved bound vault once
+ *     terminal-flat (the only state a Resolved 77 is allowed in), so the same bundle works there;
  *   - 75 (bound) refuses 84 at GENESIS (no shares yet) while fees are harvestable (P3-L1): bundle
  *     78 first (on a bound vault with no seniors it credits the junior);
  *   - registry flag other than 0/1 => the program refuses every Earn op (InvalidAccountData).
@@ -33,7 +33,7 @@ export interface EarnP3Context {
 
 export type EarnTxPlan =
   | { ok: true; tail: { vaultLpState: PublicKey; lpPortfolio: PublicKey } | null; prependHarvest: boolean }
-  | { ok: false; reason: "registry-invalid" | "vault-lp-unreadable" | "harvest-locked-after-resolve" };
+  | { ok: false; reason: "registry-invalid" | "vault-lp-unreadable" };
 
 export function earnTxPlan(op: EarnOp, c: EarnP3Context): EarnTxPlan {
   if (op === TAG_REQUEST_REDEEM_LP_SHARES) return { ok: true, tail: null, prependHarvest: false };
@@ -45,10 +45,7 @@ export function earnTxPlan(op: EarnOp, c: EarnP3Context): EarnTxPlan {
   const tail = { vaultLpState: c.vaultLpState, lpPortfolio: c.lpPortfolio };
   const pending = c.harvestable !== null && c.harvestable > 0n;
   const live = c.mode === MARKET_MODE_LIVE;
-  if (op === TAG_EXECUTE_REDEMPTION) {
-    if (pending && !live) return { ok: false, reason: "harvest-locked-after-resolve" };
-    return { ok: true, tail, prependHarvest: pending };
-  }
+  if (op === TAG_EXECUTE_REDEMPTION) return { ok: true, tail, prependHarvest: pending };
   // 75
   const genesis = c.registryShares === 0n;
   return { ok: true, tail, prependHarvest: pending && genesis && live };

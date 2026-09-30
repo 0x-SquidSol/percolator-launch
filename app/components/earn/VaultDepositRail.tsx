@@ -95,15 +95,16 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
   const marketLimits = useMarketLimits(slab);
   const trancheView = earnViewFromLimits(marketLimits, state.vaultTotalAtoms, state.userLpBalance);
   const gateShares = earnGateShares(marketLimits);
-  const depositBlock = gateShares === null ? null : earnDepositBlock(trancheView, gateShares);
+  // Genesis with fees pending (P3-L1) is NOT a block any more: the deposit tx bundles tag 78
+  // first (lib/limits/earn-ixs.ts earnTxPlan), so only a real refusal disables the button.
+  const rawDepositBlock = gateShares === null ? null : earnDepositBlock(trancheView, gateShares);
+  const depositBlock = rawDepositBlock === 'harvest-pending' ? null : rawDepositBlock;
   const depositBlockedReason =
     depositBlock === 'senior-impaired'
       ? COPY.depositsPausedImpaired
-      : depositBlock === 'harvest-pending'
-        ? COPY.depositsPausedHarvest
-        : depositBlock === 'valuation-stale'
-          ? COPY.valuationStale
-          : null;
+      : depositBlock === 'valuation-stale'
+        ? COPY.valuationStale
+        : null;
 
   // Report the resolved deposit up so the table's "Your Deposit" column fills in
   // for this row as the user browses vaults.

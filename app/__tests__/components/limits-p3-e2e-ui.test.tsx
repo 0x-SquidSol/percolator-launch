@@ -41,13 +41,11 @@ describe("ResolvedExitPanelView", () => {
     expect(getByTestId("earn-resolved-exit-status").textContent).toContain("slot 1400");
     expect((getByTestId("earn-resolved-exit") as HTMLButtonElement).disabled).toBe(true);
   });
-  it("ready: no button; the harvest-lock blocker is shown as an error", () => {
-    const { getByTestId, queryByTestId, getAllByTestId } = render(view({ plan: { phase: "ready", blockers: [{ kind: "harvest-pending", atoms: 5n }] } }));
+  it("ready: no button, no blockers", () => {
+    const { getByTestId, queryByTestId } = render(view({ plan: { phase: "ready", blockers: [] } }));
     expect(queryByTestId("earn-resolved-exit")).toBeNull();
+    expect(queryByTestId("earn-resolved-exit-blocker")).toBeNull();
     expect(getByTestId("earn-resolved-exit-status").dataset.phase).toBe("ready");
-    const bl = getAllByTestId("earn-resolved-exit-blocker");
-    expect(bl.map((b) => b.dataset.kind)).toEqual(["harvest-pending"]);
-    expect(bl[0].textContent).toBe(COPY.earnPlanBlocked["harvest-locked-after-resolve"]);
   });
   it("escrowed / locked blockers and the run result", () => {
     const { getAllByTestId, getByTestId } = render(
@@ -79,7 +77,7 @@ describe("WizardTranchePanel (P3 wizard)", () => {
     fireEvent.click(btns[2]);
     expect(onFloor).toHaveBeenCalledWith(3_000);
     expect(getByTestId("limits-wizard-tranche").dataset.floorBps).toBe("2000");
-    expect(getByTestId("limits-wizard-awaiting-protocol").textContent).toBe(COPY.p3Wizard.awaitingProtocol);
+    expect(getByTestId("limits-wizard-pinned-matcher").textContent).toBe(COPY.p3Wizard.pinned);
   });
   it("kill switch: hidden when NEXT_PUBLIC_LIMITS_P3_WIZARD=0", () => {
     __setLimitsFlagsForTest(ALL_ON);

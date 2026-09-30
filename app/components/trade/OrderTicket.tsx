@@ -87,7 +87,6 @@ import { FEE_LEGS, legPercent, splitFeeAtoms } from "@/lib/fee-breakdown";
 import { useMarketLimits } from "@/hooks/useMarketLimits";
 import { closeLimitNotice, deriveTicketLimits, sizeQToInput } from "@/lib/limits/ticket";
 import { fmtQ } from "@/lib/limits/format";
-import { vaultLpAwaitingProtocol } from "@/lib/limits/p3-wizard";
 import { takeFillResult } from "@/lib/limits/fill-check";
 import { defaultFeeCapMarginBps } from "@/lib/limits/fee-channel";
 import type { FillResult } from "@/lib/limits/fill-result";
@@ -1271,12 +1270,6 @@ setEngineLockError(null);
       {adlReduceOnly && (
         <LimitsNotice tone="warning" title={COPY.adlReduceOnlyTitle} testId="limits-adl-reduce-only">
           {COPY.adlReduceOnly}
-        </LimitsNotice>
-      )}
-      {/* P3: a bound vault LP with no protocol-approved matcher yet takes no opening fills. */}
-      {vaultLpAwaitingProtocol(marketLimits.vaultLp) && (
-        <LimitsNotice tone="warning" title="Trading not open yet" testId="limits-vault-lp-awaiting-protocol">
-          {COPY.p3Wizard.awaitingProtocol}
         </LimitsNotice>
       )}
       <OrderTicketLimits

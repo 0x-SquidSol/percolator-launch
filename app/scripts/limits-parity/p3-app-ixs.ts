@@ -12,9 +12,9 @@
  */
 import { PublicKey, type TransactionInstruction } from "@solana/web3.js";
 import { deriveLpBackingLedger } from "@percolatorct/sdk";
-import { buildP3BindIxs } from "../../lib/limits/p3-wizard";
+import { buildP3BindIxs, canonicalVaultLpMatcher } from "../../lib/limits/p3-wizard";
 import { buildEarnDepositIxs, buildEarnExecuteIxs, earnTxPlan } from "../../lib/limits/earn-ixs";
-import { TAG_DEPOSIT_TO_LP_VAULT, TAG_EXECUTE_REDEMPTION, KIND_PORTFOLIO } from "../../lib/limits/constants";
+import { CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET, TAG_DEPOSIT_TO_LP_VAULT, TAG_EXECUTE_REDEMPTION, KIND_PORTFOLIO } from "../../lib/limits/constants";
 import { buildDepositJuniorTrancheIx, buildWithdrawJuniorTrancheIx, deriveLpVaultRegistryPda, deriveVaultLpState } from "../../lib/limits/p3-ix";
 import { exitStepIxs, type ExitPortfolioRef } from "../../lib/limits/resolved-exit-ixs";
 import { planResolvedExit, type ExitStep, type ExitPortfolio } from "../../lib/limits/resolved-exit";
@@ -89,6 +89,9 @@ if (cmd === "bind") {
       vaultLpPortfolio: pk("vaultLpPortfolio"),
       portfolioLen: Number(a.portfolioLen),
       portfolioRentLamports: Number(a.rent),
+      matcherProgram: canonicalVaultLpMatcher(String(a.matcherProgram ?? CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET)),
+      matcherCtx: pk("matcherCtx"),
+      matcherCtxRentLamports: Number(a.ctxRent),
       juniorFloorBps: Number(a.floorBps),
       juniorAtoms: big("juniorAtoms"),
       creatorAta: pk("creatorAta"),
@@ -182,7 +185,7 @@ if (cmd === "bind") {
       market,
       portfolios: refs,
       vault: st
-        ? { programId, market, registry, vaultLpState: deriveVaultLpState(programId, market), lpPortfolio: new PublicKey(st.lpPortfolio), ledger, siblingLedger, juniorOwner: new PublicKey(st.juniorOwner) }
+        ? { programId, market, registry, vaultLpState: deriveVaultLpState(programId, market), lpPortfolio: new PublicKey(st.lpPortfolio), ledger, siblingLedger, juniorOwner: new PublicKey(st.juniorOwner), domain }
         : null,
     };
     const first = steps[0];

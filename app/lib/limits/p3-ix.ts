@@ -1,8 +1,9 @@
 /**
  * P3 (vault-owned LP) wire for the app: every instruction the Earn, junior-tranche,
  * resolved-exit and wizard flows send. Ported from the program source at
- * `percolator-prog feat/p3-vault-owned-lp@b2b2559e` (FINAL combined head, on P1 3acb34ae; tag 94
- * path A only — path B removed 2026-09-30; otherwise identical to 424fe7e4 for this surface) (handler bodies read directly; the
+ * `percolator-prog feat/p3-vault-owned-lp@07a1d0eb` (FINAL combined head, on P1 3acb34ae; tag 94
+ * marketauth-only with the auto-pin tail [8]/[9]/[10]; 78 also on terminal-flat Resolved; 77's
+ * LP tail key-only in Resolved) (handler bodies read directly; the
  * account orders below cite them), NOT from SDK types. The app pins SDK 7 and SDK 8 is an
  * unpublished tarball, so these are local, byte-checked twice:
  *   1. `app/scripts/limits-parity/p3-final/` feeds this module's hex to the REAL
@@ -15,6 +16,7 @@ import { PublicKey, SystemProgram, TransactionInstruction, type AccountMeta } fr
 import {
   BOUND_TAIL_INDEX,
   LP_VAULT_REGISTRY_SEED,
+  MATCHER_DELEGATE_SEED,
   NFT_REGISTRY_SEED,
   P3_TAG,
   TAG_CLAIM_RESOLVED_PAYOUT_TOPUP,
@@ -185,13 +187,24 @@ export function buildLpVaultCrankFeesIx(p: {
   return new TransactionInstruction({ programId: p.programId, keys, data: Buffer.from(encodeLpVaultCrankFees(p.domain)) });
 }
 
+/** Delegate PDA `["matcher", market, lp_portfolio, registry (the LP's owner), matcher_program, ctx]`. */
+export function deriveVaultLpMatcherDelegate(programId: PublicKey, market: PublicKey, lpPortfolio: PublicKey, registry: PublicKey, matcherProgram: PublicKey, matcherCtx: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [enc.encode(MATCHER_DELEGATE_SEED), market.toBytes(), lpPortfolio.toBytes(), registry.toBytes(), matcherProgram.toBytes(), matcherCtx.toBytes()],
+    programId,
+  )[0];
+}
+
 /**
- * 94 InitVaultLp, path A (`handle_init_vault_lp`): the MARKETAUTH signs and becomes the junior
- * owner. [marketauth (s,w), market (w), registry (w), vault_lp_state (w, fresh PDA),
- * lp_portfolio (w, pre-created program-owned, portfolio length), system, own ledger, sibling
- * ledger]. Must run while the creator is still marketauth (before StakeInitPool rotates it).
+ * 94 InitVaultLp (FINAL 07a1d0eb, AUTO-PIN; marketauth only): [marketauth (s,w), market (w),
+ * registry (w), vault_lp_state (w, fresh PDA), lp_portfolio (w, pre-created program-owned,
+ * portfolio length), system, own ledger, sibling ledger, matcher_program (== the canonical one),
+ * matcher_ctx (w, pre-created, owner = matcher, zeroed), matcher_delegate]. Data is still only
+ * junior_floor_bps: the program approves the canonical matcher and pins the protocol's vAMM
+ * params + price-derived finite caps itself. No creator input; trading opens right after
+ * (+ tag 96). Must run while the creator is still marketauth (before StakeInitPool).
  */
-export function buildInitVaultLpIx(m: VaultLpMarket, marketauth: PublicKey, juniorFloorBps: number): TransactionInstruction {
+export function buildInitVaultLpIx(m: VaultLpMarket, marketauth: PublicKey, juniorFloorBps: number, pin: { matcherProgram: PublicKey; matcherCtx: PublicKey }): TransactionInstruction {
   return new TransactionInstruction({
     programId: m.programId,
     keys: [
@@ -203,6 +216,9 @@ export function buildInitVaultLpIx(m: VaultLpMarket, marketauth: PublicKey, juni
       meta(SystemProgram.programId, false, false),
       meta(m.ledger, false, true),
       meta(m.siblingLedger, false, true),
+      meta(pin.matcherProgram, false, false),
+      meta(pin.matcherCtx, false, true),
+      meta(deriveVaultLpMatcherDelegate(m.programId, m.market, m.lpPortfolio, m.registry, pin.matcherProgram, pin.matcherCtx), false, false),
     ],
     data: Buffer.from(encodeInitVaultLp(juniorFloorBps)),
   });
