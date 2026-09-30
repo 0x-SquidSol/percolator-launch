@@ -1,8 +1,8 @@
 /**
  * P3 (vault-owned LP) wire for the app: every instruction the Earn, junior-tranche,
  * resolved-exit and wizard flows send. Ported from the program source at
- * `percolator-prog feat/p3-vault-owned-lp@ee29b5ac` (FINAL combined head, on P1 3acb34ae; program
- * code identical to 267a9017 and, for this surface, to 424fe7e4) (handler bodies read directly; the
+ * `percolator-prog feat/p3-vault-owned-lp@b2b2559e` (FINAL combined head, on P1 3acb34ae; tag 94
+ * path A only — path B removed 2026-09-30; otherwise identical to 424fe7e4 for this surface) (handler bodies read directly; the
  * account orders below cite them), NOT from SDK types. The app pins SDK 7 and SDK 8 is an
  * unpublished tarball, so these are local, byte-checked twice:
  *   1. `app/scripts/limits-parity/p3-final/` feeds this module's hex to the REAL

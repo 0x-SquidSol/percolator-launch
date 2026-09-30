@@ -151,5 +151,5 @@ fn main() {
     }
     out.push(format!("\"registryBound\":[{}]", bound.join(",")));
 
-    println!("{{\"p3Sha\":\"ee29b5ac8298834952e481e1a403a2ffccfd77e4\",\"p1Sha\":\"3acb34ae83b4038a88a02731d1aa023142ef6c11\",\"engineSha\":\"35ddd692\",{}}}", out.join(","));
+    println!("{{\"p3Sha\":\"b2b2559e62e08a96b978a2d81a67991c93bc6061\",\"p1Sha\":\"3acb34ae83b4038a88a02731d1aa023142ef6c11\",\"engineSha\":\"35ddd692\",{}}}", out.join(","));
 }

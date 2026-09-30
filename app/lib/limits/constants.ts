@@ -21,7 +21,7 @@
  * by parsing the enum). P3 is still in review, so they stay keyed BY NAME.
  *
  * Round 4: every P1/P3 number here is re-verified at the FINAL combined head
- * `feat/p3-vault-owned-lp@ee29b5ac` (P1 `3acb34ae`, engine `35ddd692`) through the REAL
+ * `feat/p3-vault-owned-lp@b2b2559e` (tag 94 path A only; P1 `3acb34ae`, engine `35ddd692`) through the REAL
  * crate — `app/scripts/limits-parity/p3-final` (errors by name, offset_of!, the program's
  * own readers) and the layout / parity emitters, all byte-identical to the fixtures.
  */
@@ -246,7 +246,7 @@ export const VS = {
 export const VAULT_LP_STATE_ACCOUNT_LEN = HEADER_LEN + 256;
 export const VAULT_LP_MIN_JUNIOR_FLOOR_BPS = 1_000;
 
-/** P3 tags (FINAL head ee29b5ac; re-verified against the real `ix::Instruction::decode`,
+/** P3 tags (FINAL head b2b2559e; re-verified against the real `ix::Instruction::decode`,
  *  fixture `rust-p3-final.json`). Sent by `lib/limits/p3-ix.ts`. */
 export const P3_TAG = {
   InitVaultLp: 94,
@@ -278,7 +278,7 @@ export const P3_ERR = {
   VaultLpValuationStale: 85,
 } as const;
 
-// ── P3 end-to-end (round 4; FINAL feat/p3-vault-owned-lp@ee29b5ac + engine 35ddd692) ────────
+// ── P3 end-to-end (round 4; FINAL feat/p3-vault-owned-lp@b2b2559e + engine 35ddd692) ────────
 /** `LpVaultRegistryV16._reserved[0]` (struct 144) = 1 when a vault LP is bound => absolute 160.
  *  Every bound-vault Earn handler then REQUIRES the vault-LP tail accounts (fail closed). */
 export const REG_VAULT_LP_BOUND_FLAG = HEADER_LEN + 144;

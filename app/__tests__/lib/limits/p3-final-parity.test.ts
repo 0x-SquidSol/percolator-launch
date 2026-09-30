@@ -2,7 +2,7 @@
 /**
  * P3 end-to-end surface (round 4) against TWO independent oracles:
  *   1. rust-p3-final.json — app/scripts/limits-parity/p3-final/main.rs on the REAL P3 crate
- *      (feat/p3-vault-owned-lp@ee29b5ac FINAL, P1 3acb34ae, engine 35ddd692): this module's bytes decoded by
+ *      (feat/p3-vault-owned-lp@b2b2559e FINAL, P1 3acb34ae, engine 35ddd692): this module's bytes decoded by
  *      `ix::Instruction::decode`, rustc offset_of!, error ordinals by name, the program's own
  *      `read_asset_vault_lp` at the app's offsets and `registry_vault_lp_bound`;
  *   2. sdk-p3-parity.json — SDK 8.0.0 (9e843e5)'s fixture from its own Rust oracle (at 424fe7e4,
@@ -65,11 +65,12 @@ const EXPECT_DECODED: Record<string, Record<string, string | number>> = {
 };
 
 describe("P3 final head: app encoders vs the real ix::Instruction::decode", () => {
-  it("fixture is from the FINAL P3 combined head (ee29b5ac on P1 3acb34ae)", () => {
-    expect(rust.p3Sha).toBe("ee29b5ac8298834952e481e1a403a2ffccfd77e4");
+  it("fixture is from the FINAL P3 combined head (b2b2559e on P1 3acb34ae; tag 94 path A only)", () => {
+    expect(rust.p3Sha).toBe("b2b2559e62e08a96b978a2d81a67991c93bc6061");
     expect((rust as unknown as { p1Sha: string }).p1Sha).toBe("3acb34ae83b4038a88a02731d1aa023142ef6c11");
-    // SDK 8's fixture was generated at 424fe7e4; `git diff 424fe7e4 ee29b5ac -- src` is one const
-    // assert (VAULT_LP_SENIOR_FEE_SHARE_BPS == 10_000) + Kani harness domains: no wire change.
+    // SDK 8's fixture was generated at 424fe7e4; `git diff 424fe7e4 b2b2559e -- src` is one const
+    // assert, Kani harness domains and the removal of tag 94's path-B TAIL ([8]/[9], never sent by
+    // this app): the bytes compared below (94..101 data) are unchanged.
     expect(sdk.p3Sha).toBe("424fe7e473bec1154eacde1ac8bd7e190b526fd2");
   });
   for (const [id, enc] of Object.entries(INPUTS)) {

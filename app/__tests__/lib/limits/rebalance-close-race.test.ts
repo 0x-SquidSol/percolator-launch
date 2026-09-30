@@ -43,7 +43,7 @@ const base = (after: bigint) => ({
 describe("closeViaRebalanceReduce — already flattened by another holder's exit", () => {
   it("Custom(18) + no leg on a fresh read => full close, no error", async () => {
     sendTxMock.mockRejectedValueOnce(new Error("Program X failed: custom program error: 0x12"));
-    await expect(closeViaRebalanceReduce(base(0n))).resolves.toEqual({ signature: null, fill: { kind: "full", filledQ: -21_400_000n } });
+    await expect(closeViaRebalanceReduce(base(0n))).resolves.toEqual({ signature: null, fill: { kind: "full", filledQ: -21_400_000n }, route: "tag44" });
   });
   it("control: Custom(18) but the leg is still there => the error surfaces", async () => {
     sendTxMock.mockRejectedValueOnce(new Error("Program X failed: custom program error: 0x12"));

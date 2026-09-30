@@ -146,6 +146,17 @@ describe("P3 wizard wiring (round 4, sequential path)", () => {
     expect(bind).toBeGreaterThan(0);
     expect(stake).toBeGreaterThan(bind);
   });
+  it("resume: if StakeInitPool already ran without a bound vault LP, stop with the clear error (94 is marketauth-only)", () => {
+    const bind = hookSource.indexOf("P3: bind the vault-owned LP + fund the junior tranche BEFORE StakeInitPool");
+    const guard = hookSource.indexOf('if (progress === "bind" && existingPool) {', bind);
+    const thrown = hookSource.indexOf("throw new Error(LIMITS_COPY.p3Wizard.marketauthRotated);", guard);
+    const stakeTail = hookSource.indexOf("const sigStake = await sendTx(", bind);
+    expect(guard).toBeGreaterThan(bind);
+    expect(thrown).toBeGreaterThan(guard);
+    expect(stakeTail).toBeGreaterThan(thrown);
+    // the pool read the guard depends on happens BEFORE the bind block
+    expect(hookSource.lastIndexOf("const existingPool = await connection.getAccountInfo(stakePoolPda);", bind)).toBeGreaterThan(0);
+  });
   it("skips the creator-LP deposit under P3 (the junior replaces it) in BOTH paths", () => {
     expect(hookSource).toContain("if (!params.p3 && alreadyDepositedCapital < params.lpCollateral)");
     expect(hookSource).toContain("const includeM3a = !params.p3;");

@@ -1,10 +1,10 @@
 diff --git a/tests/p3_vault_lp.rs b/tests/p3_vault_lp.rs
-index 8fd917ac..4079aa92 100644
+index 4b387e37..fde5f98d 100644
 --- a/tests/p3_vault_lp.rs
 +++ b/tests/p3_vault_lp.rs
-@@ -2490,3 +2490,332 @@ fn p3_p2_negotiated_fee_accrues_to_vault_nav_junior_and_is_protocol_bounded() {
-     let (r, _, _, _, _) = p2_fee_run(1, 20);
-     assert!(r.is_err(), "a request above the protocol max is refused");
+@@ -2650,3 +2650,370 @@ fn p3_b12_abandoned_portfolio_cannot_strand_terminal_insurance() {
+ fn p3_b12_unbound_market_abandoned_portfolio_cannot_strand_terminal_insurance() {
+     b12_run(false);
  }
 +
 +// ── limits-UI lane repro (NOT part of the P3 branch; local worktree only) ────────────────
@@ -334,4 +334,42 @@ index 8fd917ac..4079aa92 100644
 +    assert_eq!(v["blocked"], serde_json::json!("harvest-locked-after-resolve"), "{v}");
 +    let p = limits_app("plan", env.limits_exit_json(&[lp.portfolio, t.portfolio]));
 +    assert!(p["blockers"].as_array().unwrap().iter().any(|b| b == "harvest-pending"), "{p}");
++}
++
++/// E2E B12 (app side): a trader's OWN portfolio on a Resolved market is cleaned up by the APP's
++/// owner-signed groups (useCloseMarket -> lib/limits/own-portfolio-cleanup.ts): 30 then 8, with
++/// the documented fallback (group without the 8) when the 8 cannot land in the same tx.
++#[test]
++fn limits_app_p3_own_cleanup_before_reclaim() {
++    let mut env = Env::new(Params { fee_bps: 30, ..Params::default() });
++    env.limits_add_ata_program();
++    let lp = env.bind(1_000);
++    let admin = env.admin.insecure_clone();
++    env.junior_deposit_as(&admin, lp.portfolio, 60_000_000).expect("junior");
++    let t = env.new_trader(20_000_000);
++    env.trade(&t, &lp, 50 * POS).expect("open");
++    env.svm.expire_blockhash();
++    env.trade(&t, &lp, -50 * POS).expect("close");
++    env.resolve();
++    // settle the vault LP first (the sweep's rule) so the trader's close is not progress-only
++    let junior_dest = env.token_account(env.mint, admin.pubkey(), 0);
++    env.settle_resolved(&Keypair::new(), lp.portfolio, 0, junior_dest).expect("settle vault LP");
++    env.paid_out += env.tok(junior_dest) as u128; // the junior's SPL from 101 (harness books it here)
++    let mut j = env.limits_exit_json(&[t.portfolio]);
++    j["owner"] = serde_json::json!(t.kp.pubkey().to_string());
++    let v = limits_app("own-cleanup", j);
++    assert_eq!(v["kind"], serde_json::json!("close-resolved"), "{v}");
++    let with_close = limits_ixs(&serde_json::json!({"ixs": v["withClose"]}));
++    let without = limits_ixs(&serde_json::json!({"ixs": v["withoutClose"]}));
++    let tk = t.kp.insecure_clone();
++    let ata = Pubkey::find_program_address(&[t.kp.pubkey().as_ref(), spl_token::ID.as_ref(), env.mint.as_ref()], &LIMITS_ATA_PROGRAM).0;
++    let before_count = { let (_, g) = env.market_state(); g.materialized_portfolio_count };
++    let r = env.limits_send(with_close, &[&tk]);
++    let route = if r.is_ok() { "30+8" } else { env.limits_send(without, &[&tk]).expect("fallback without the 8"); "30 only" };
++    let (_, g) = env.market_state();
++    println!("LIMITS-APP B12: route {route}; materialized {before_count} -> {}; owner ATA paid {}", g.materialized_portfolio_count, env.tok(ata));
++    assert!(env.tok(ata) > 0, "the resolved payout went to the owner's ATA");
++    assert_eq!(route, "30+8", "on this path the 8 lands in the same tx");
++    assert_eq!(g.materialized_portfolio_count, before_count - 1, "the trader's portfolio is dematerialized");
++    env.assert_conserved("B12 own cleanup");
 +}

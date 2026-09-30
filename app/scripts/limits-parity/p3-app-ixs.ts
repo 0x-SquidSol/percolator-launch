@@ -27,6 +27,7 @@ import {
   decodeVaultLpState,
 } from "../../lib/limits/decode";
 import { harvestableFeeAtoms } from "../../lib/limits/vault-tranche";
+import { planOwnPortfolioCleanup } from "../../lib/limits/own-portfolio-cleanup";
 
 interface J { [k: string]: unknown }
 const [cmd, raw] = process.argv.slice(2);
@@ -34,6 +35,14 @@ const a = JSON.parse(raw ?? "{}") as J;
 const pk = (k: string): PublicKey => new PublicKey(String(a[k]));
 const big = (k: string): bigint => BigInt(String(a[k]));
 const b64 = (s: unknown): Uint8Array => new Uint8Array(Buffer.from(String(s), "base64"));
+
+function enc1(ix: TransactionInstruction) {
+  return {
+    programId: ix.programId.toBase58(),
+    keys: ix.keys.map((k) => ({ pubkey: k.pubkey.toBase58(), isSigner: k.isSigner, isWritable: k.isWritable })),
+    dataHex: Buffer.from(ix.data).toString("hex"),
+  };
+}
 
 function out(ixs: TransactionInstruction[], extra: J = {}): void {
   process.stdout.write(
@@ -118,6 +127,20 @@ if (cmd === "bind") {
       ? buildWithdrawJuniorTrancheIx(vm, pk("owner"), pk("dest"), pk("vaultToken"), pk("vaultAuthority"), big("amount"))
       : buildDepositJuniorTrancheIx(vm, pk("owner"), pk("source"), pk("vaultToken"), big("amount")),
   ]);
+} else if (cmd === "own-cleanup") {
+  // useCloseMarket (B12): the wallet's OWN portfolios on a Resolved market, owner-signed groups.
+  const portfolios = ((a.portfolios as J[]) ?? []).flatMap((p) => {
+    const view = decodeResolvedPortfolio(b64(p.dataB64));
+    return view ? [{ key: new PublicKey(String(p.key)), view, portfolioId: BigInt(String(p.portfolioId)), matcherSequence: BigInt(String(p.matcherSequence)), positionEpoch: BigInt(String(p.positionEpoch)) }] : [];
+  });
+  const groups = planOwnPortfolioCleanup({ programId, owner: pk("owner"), market, collateralMint: pk("mint"), vaultToken: pk("vaultToken"), vaultAuthority: pk("vaultAuthority"), portfolios });
+  const g = groups[0];
+  if (!g) {
+    out([], { groups: 0 });
+  } else {
+    // two ix lists: [withClose, withoutClose]; the harness applies runOwnPortfolioCleanup's rule
+    process.stdout.write(JSON.stringify({ kind: g.kind, withClose: JSON.parse(JSON.stringify(g.withClose.map(enc1))), withoutClose: g.withoutClose ? g.withoutClose.map(enc1) : null }));
+  }
 } else if (cmd === "plan" || cmd === "exit") {
   // Decode every account exactly as useResolvedExit does, plan, and (exit) build the first step.
   const md = b64(a.marketB64);

@@ -1,7 +1,7 @@
 //! Emits fixture bytes for the P1/P3 records using the struct definitions copied VERBATIM
 //! (field order + types) from feat/p1-safety-release@e74809b1 `AssetRiskLimitsV17` and
 //! feat/p3-vault-owned-lp@0be66041 `AssetVaultLpV18` / `VaultLpStateV18` — re-checked field by
-//! field IDENTICAL at the FINAL combined head ee29b5ac (P1 3acb34ae), with offset_of! asserts
+//! field IDENTICAL at the FINAL combined head b2b2559e (P1 3acb34ae), with offset_of! asserts
 //! so the TS offsets are checked by rustc's repr(C) layout, not by hand.
 use core::mem::{offset_of, size_of};
 #[path = "../p3_vault.rs"]

@@ -79,6 +79,15 @@ export const COPY = {
     "Your close is sent as a unilateral exit you sign yourself (RebalanceReduce), so it does not depend on the market's LP. It may close only part of the position if the other side has little open interest left.",
   adlReduceOnly:
     "A bankrupt position was spread across this side of the market, so new positions are paused until one side has closed out. Closing works: your close is sent as a unilateral exit you sign yourself. The market reopens on its own once positions close; no admin step is needed.",
+  reclaimCleanup: {
+    "progress-only": () =>
+      "Your position on this market is still settling after resolution (its counterparty has not settled yet). Try the reclaim again in a moment.",
+    refused: () => "One of your accounts on this market could not be closed yet, so the market cannot be reclaimed. Try again in a moment.",
+    "others-remain": (n: string) =>
+      `Your accounts are closed, but ${n} other account${n === "1" ? "" : "s"} still hold a position or balance on this market, so it cannot be reclaimed until they close.`,
+  } as const,
+  adlExitTrapped:
+    "The other side of this market has fully closed, and your position cannot settle until the drained side is reset. Nothing was sent. Try again in a moment, after the next market crank.",
   closePartial: (filled: string, requested: string) => `Partially closed: ${filled} of ${requested}. The rest of your position is still open.`,
   resolvedExit: {
     title: "This market has resolved",

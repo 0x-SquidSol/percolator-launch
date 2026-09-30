@@ -27,6 +27,8 @@ import { parseMarketCreationError } from "@/lib/parseMarketError";
 import { closeSlabState, closeSlabUntilClosed, type CloseSlabState } from "@/lib/limits/close-slab";
 import type { Connection } from "@solana/web3.js";
 import { COPY } from "@/lib/limits/copy";
+import { cleanupOwnPortfoliosBeforeReclaim } from "@/lib/limits/own-portfolio-cleanup";
+import { sendTx } from "@/lib/tx";
 
 /** Slab state after `sig`, read at (at least) the tx's slot so a cached pre-close read can't answer. */
 export async function readCloseSlabStateAfter(
@@ -184,6 +186,26 @@ export function useCloseMarket() {
             return null;
           }
           authorityEpoch = plan.authorityEpoch;
+          // E2E B12: on an already-RESOLVED market, CloseSlab needs materialized_portfolio_count
+          // == 0, and CloseResolved alone does not dematerialize. Close the wallet's OWN
+          // portfolios first (owner-signed 30 / 46 -> 8), each sim-gated, then re-check.
+          if (!plan.resolve) {
+            const cleanup = await cleanupOwnPortfoliosBeforeReclaim({
+              connection,
+              programId,
+              market: slabPk,
+              owner: walletCompat.publicKey,
+              collateralMint,
+              vaultToken: vaultPubkey,
+              vaultAuthority,
+              send: (ixs) => sendTx({ connection, wallet: walletCompat, instructions: ixs, computeUnits: 600_000 }),
+            });
+            if (!cleanup.ok) {
+              setError(COPY.reclaimCleanup[cleanup.reason](cleanup.ok === false && cleanup.remaining !== undefined ? String(cleanup.remaining) : ""));
+              setLoading(false);
+              return null;
+            }
+          }
           if (plan.resolve) {
             // P0b pre-resolve gate (fee-flow audit F4): crank the Live-only LP (78) and
             // staker (87 → stake 12) legs in THIS tx before ResolveMarket, and refuse
