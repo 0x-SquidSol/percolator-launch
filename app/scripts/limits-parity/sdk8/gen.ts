@@ -1,3 +1,4 @@
+// @ts-nocheck -- imports sdk8-pricing.ts, the SDK source copied in at regeneration time (see README.md)
 import { writeFileSync } from "node:fs";
 import { vaultLpEquityLagBoundsP3, boundVaultSeniorValueP3, boundVaultDepositQuoteP3, vaultLpSeniorPricingClaimP3 } from "./sdk8-pricing";
 let s = 0x9e3779b9;
