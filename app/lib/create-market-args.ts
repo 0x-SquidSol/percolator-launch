@@ -13,7 +13,7 @@ export const V17_MAX_PORTFOLIO_ASSETS = 14;
 // slab + rent estimate against the actual v17 requirement instead of the stale v12.19
 // tier.dataSize concept (96784/376432/1495024 bytes), which never equals this value for any
 // tier and made every InitMarket revert with InvalidSlabLen while over-charging ~0.67 SOL rent.
-export const DEFAULT_SLAB_SIZE = v17MarketAccountLen(V17_MAX_PORTFOLIO_ASSETS); // 26_364 bytes (cap-14)
+export const DEFAULT_SLAB_SIZE = v17MarketAccountLen(V17_MAX_PORTFOLIO_ASSETS); // 33_900 bytes (cap-14; rust-p3-final.json marketAccountLen14)
 /**
  * P3 (next FINAL, F14-Q2): a vault-owned-LP market is strictly SINGLE-asset. Tag 94 refuses any
  * market whose configured asset slots != 1 (VaultLpMultiAssetMarket, 86), so the P3 wizard
