@@ -181,6 +181,8 @@ interface ValidationIssue {
   severity: "error" | "warning";
   title: string;
   message: string;
+  /** UX WP-2/3: rendered as a StatusLine of this kind (calm system state) instead of the amber box. */
+  kind?: string;
 }
 function buildValidationIssues(ctx: TicketValidationCtx): ValidationIssue[] {
   if (ctx.mockMode) return [];
@@ -220,12 +222,9 @@ function buildValidationIssues(ctx: TicketValidationCtx): ValidationIssue[] {
   } else if (ctx.oracleStale) {
     issues.push({ severity: "error", title: "Oracle stale", message: "The oracle price for this market has not updated recently. Trading is temporarily disabled to prevent failed transactions." });
   } else if (ctx.engineStale) {
-    // H6: the KEEPER's price push can look perfectly fresh (oracleStale
-    // false) while the ENGINE hasn't accrued this market in ~500 slots — a
-    // cliff-dead market that reverts EngineStale(19)/EngineLockActive(21) on
-    // every trade, permanently, until a maintainer re-seeds it. See
-    // useEngineFreshness.
-    issues.push({ severity: "error", title: "Market crank behind", message: "This market's engine hasn't been cranked recently enough to trade safely. Trading is paused to prevent failed transactions - check back later or ask a maintainer to re-seed the market." });
+    // UX WP-2 (SH-3): only a lag BEYOND what the app's own catch-up cranks repair (see
+    // useEngineFreshness) blocks; the button re-enables itself when the market catches up.
+    issues.push({ severity: "error", kind: "engine-catching-up", title: "Catching up", message: "Prices are catching up. Trading resumes automatically, usually within a minute." });
   }
   if (!ctx.hasPrice) {
     issues.push({ severity: "error", title: "No oracle price", message: "Waiting for price feed. Trades will be enabled once oracle data is available." });
@@ -399,7 +398,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // focus-visible outline invisible too, silently regressing keyboard a11y.
   const [leverageFocused, setLeverageFocused] = useState(false);
   const [lastSig, setLastSig] = useState<string | null>(null);
-  const [tradePhase, setTradePhase] = useState<"idle" | "submitting" | "confirming" | "error">("idle");
+  const [tradePhase, setTradePhase] = useState<"idle" | "submitting" | "waiting" | "confirming" | "error">("idle");
   const [humanError, setHumanError] = useState<string | null>(null);
   /** UX WP-1: a refusal the resolver mapped (simulation-gated: the wallet never opened). */
   const [refusal, setRefusal] = useState<UserMessage | null>(null);
@@ -949,6 +948,8 @@ setEngineLockError(null);
                 // P2 fee channel: sign base + the quote's fee (the taker's consent cap); only when
                 // the protocol enabled the channel for this asset — else the base fee as before.
                 ...(ticketLimits.fee?.channel.enabled ? { feeBps: ticketLimits.fee.signedFeeBps } : {}),
+                // UX WP-2: the app waits for the market (no prompt) instead of failing.
+                onWaiting: (w: boolean) => setTradePhase(w ? "waiting" : "submitting"),
               },
               snapshotLimitPriceE6,
             ),
@@ -1561,7 +1562,12 @@ setEngineLockError(null);
       </fieldset>
 
       {/* Single validation banner (highest-priority issue only) */}
-      {blockingIssue && (
+      {blockingIssue?.kind ? (
+        <StatusLine
+          className="mb-3"
+          message={{ kind: blockingIssue.kind, variant: "wait", title: blockingIssue.title, body: blockingIssue.message }}
+        />
+      ) : blockingIssue && (
         <div className="mb-3 rounded-none border border-[var(--warning)]/30 bg-[var(--warning)]/5 p-2.5">
           <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--warning)]">{blockingIssue.title}</p>
           <p className="mt-1 text-[9px] leading-relaxed text-[var(--text-secondary)]">{blockingIssue.message}</p>
@@ -1747,7 +1753,11 @@ setEngineLockError(null);
         >
           {tradePhase === "submitting"
             ? "Submitting…"
-            : tradePhase === "confirming"
+            : tradePhase === "waiting"
+              ? "Waiting for the latest price…"
+              : blockingIssue?.kind === "engine-catching-up"
+                ? "Waiting for prices…"
+                : tradePhase === "confirming"
               ? "Confirmed!"
               : tradePhase === "error"
                 ? "Failed"

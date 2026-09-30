@@ -16,6 +16,8 @@ import {
   type SeniorDrawRepairResult,
 } from "@/lib/limits/senior-draw-repair";
 import type { AccountMeta } from "@solana/web3.js";
+import { WRAPPER_ERR } from "@/lib/wrapper-errors";
+import { resolveDevnetProgramIds } from "@/lib/program-ids";
 import type { SelfHealResult } from "@/lib/self-heal";
 import { getMaintenanceConfig, MaintenanceError } from "@/lib/maintenance";
 
@@ -79,7 +81,12 @@ export interface SendTxParams {
    * (ExpireBackingBucket 89 / FinalizeResetSide 45) to THIS transaction.
    * Steady state (nothing to repair) costs one overlapped account read.
    */
-  selfHeal?: { programId: PublicKey; market: PublicKey };
+  selfHeal?: {
+    programId: PublicKey;
+    market: PublicKey;
+    /** UX WP-2: repair a lagging engine clock with catch-up cranks of this LP (null = bound vault LP). */
+    catchUp?: { portfolio: PublicKey | null; oracleTail?: AccountMeta[] };
+  };
   /** Test/diagnostic hook: receives the self-heal decision once per sendTx. */
   onSelfHeal?: (result: SelfHealResult) => void;
   /**
@@ -779,7 +786,13 @@ export async function sendTx({
   const planHeal = (): Promise<SelfHealResult | null> =>
     selfHeal && selfHealOn
       ? planSelfHeal(
-          { programId: selfHeal.programId, market: selfHeal.market, instructions, computeUnits },
+          {
+            programId: selfHeal.programId,
+            market: selfHeal.market,
+            instructions,
+            computeUnits,
+            catchUp: selfHeal.catchUp ? { cranker: feePayer, portfolio: selfHeal.catchUp.portfolio, oracleTail: selfHeal.catchUp.oracleTail } : undefined,
+          },
           connectionSelfHealDeps(connection, selfHeal.market, feePayer),
         )
       : Promise.resolve(null);
@@ -1336,4 +1349,48 @@ export async function broadcastSignedTx(
     throw confirmErr;
   }
   return signature;
+}
+
+/** UX WP-2 (principle 3): re-simulation backoff while waiting for the market, before any prompt. */
+export const WAIT_DELAYS_MS = [1_500, 3_000, 5_000, 8_000, 12_000];
+
+/**
+ * Wrapper codes the keeper clears within seconds (engine / oracle catching up) and the P2
+ * matcher's stale-mark codes. Only a SimulationRefusal (the wallet was never opened) is waited on.
+ */
+const WAITABLE_WRAPPER = new Set<number>([WRAPPER_ERR.EngineStale, WRAPPER_ERR.EngineBStale, WRAPPER_ERR.EngineLockActive, WRAPPER_ERR.OracleStale, WRAPPER_ERR.OracleInvalid]);
+const WAITABLE_MATCHER = new Set<number>([8002, 8003]);
+
+export function isWaitableRefusal(e: unknown): e is SimulationRefusal {
+  if (!(e instanceof SimulationRefusal) || e.code === null) return false;
+  const ids = resolveDevnetProgramIds();
+  if (e.programId === ids.wrapper) return WAITABLE_WRAPPER.has(e.code);
+  if (e.programId === ids.matcher) return WAITABLE_MATCHER.has(e.code);
+  return false;
+}
+
+/**
+ * sendTx, but a refusal the market clears on its own (engine/oracle catching up) is
+ * re-simulated on WAIT_DELAYS_MS instead of surfacing — the wallet opens as soon as the
+ * simulation is green (self-heal / catch-up cranks re-planned each round). `onWaiting(true)`
+ * while waiting ("Waiting for the latest price…"), `onWaiting(false)` when done either way.
+ */
+export async function sendTxWaiting(
+  params: SendTxParams & { onWaiting?: (waiting: boolean) => void; waitDelaysMs?: readonly number[] },
+): Promise<string> {
+  const { onWaiting, waitDelaysMs = WAIT_DELAYS_MS, ...rest } = params;
+  for (let i = 0; ; i++) {
+    try {
+      const sig = await sendTx(rest);
+      if (i > 0) onWaiting?.(false);
+      return sig;
+    } catch (e) {
+      if (!isWaitableRefusal(e) || i >= waitDelaysMs.length || rest.abortSignal?.aborted) {
+        if (i > 0) onWaiting?.(false);
+        throw e;
+      }
+      onWaiting?.(true);
+      await new Promise((r) => setTimeout(r, waitDelaysMs[i]));
+    }
+  }
 }

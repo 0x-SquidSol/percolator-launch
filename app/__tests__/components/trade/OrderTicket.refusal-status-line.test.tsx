@@ -14,7 +14,14 @@ const mocks = vi.hoisted(() => ({
   useSlabState: vi.fn(),
   useEngineState: vi.fn(),
   trade: vi.fn(),
+  engineStale: false,
+  listeners: new Set<() => void>(),
 }));
+/** Flip the freshness hook the way the real one does (a store update re-renders subscribers). */
+function setEngineStale(v: boolean) {
+  mocks.engineStale = v;
+  for (const l of mocks.listeners) l();
+}
 
 vi.mock("@/hooks/useWalletCompat", () => ({ useWalletCompat: mocks.useWalletCompat, useConnectionCompat: mocks.useConnectionCompat }));
 vi.mock("@/hooks/useUserAccount", () => ({ useUserAccount: mocks.useUserAccount }));
@@ -25,7 +32,17 @@ vi.mock("@/hooks/useTrade", () => ({ useTrade: () => ({ trade: mocks.trade, load
 vi.mock("@/hooks/useMarketFillCap", () => ({ useMarketFillCap: () => null }));
 vi.mock("@/hooks/useTokenMeta", () => ({ useTokenMeta: () => null }));
 vi.mock("@/hooks/useOracleFreshness", () => ({ useOracleFreshness: () => ({ isStale: false, stale: false }) }));
-vi.mock("@/hooks/useEngineFreshness", () => ({ useEngineFreshness: () => ({ isStale: false, stale: false }) }));
+vi.mock("@/hooks/useEngineFreshness", async () => {
+  const React = await import("react");
+  return {
+    useEngineFreshness: () => ({
+      engineStale: React.useSyncExternalStore(
+        (l: () => void) => { mocks.listeners.add(l); return () => mocks.listeners.delete(l); },
+        () => mocks.engineStale,
+      ),
+    }),
+  };
+});
 vi.mock("@/hooks/usePrivySafe", () => ({ usePrivyLogin: () => vi.fn(), usePrivyAvailable: () => false }));
 vi.mock("@/hooks/useWalletAdapterAvailable", () => ({ useWalletAdapterAvailable: () => true }));
 vi.mock("@/hooks/useLivePrice", () => ({ useLivePrice: () => ({ priceE6: 1_000_000n, priceUsd: 1 }) }));
@@ -68,6 +85,7 @@ const WRAPPER = resolveDevnetProgramIds().wrapper;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.engineStale = false;
   mocks.useWalletCompat.mockReturnValue({ publicKey: new PublicKey("11111111111111111111111111111111"), connected: true });
   mocks.useConnectionCompat.mockReturnValue({ connection: {} });
   mocks.useUserAccount.mockReturnValue({ account: { capital: 1_000_000_000n, positionSize: 0n, entryPrice: 0n, pnl: 0n }, accountIndex: 0 });
@@ -127,5 +145,26 @@ describe("a refused trade shows ONE StatusLine with the next step", () => {
     expect(mocks.trade).toHaveBeenCalledTimes(1);
     expect(screen.queryByTestId("status-line")).toBeNull();
     expect(screen.queryByTestId("trade-error")).toBeNull();
+  });
+});
+
+describe("UX WP-2 AC2: beyond the catch-up cap the ticket waits calmly and re-enables itself", () => {
+  it("engine-catching-up StatusLine + disabled 'Waiting for prices…'; clears with no click", async () => {
+    mocks.engineStale = true;
+    render(<OrderTicket slabAddress={SLAB} />);
+    fireEvent.change(screen.getByTestId("trade-size-input"), { target: { value: "5" } });
+    const line = screen.getByTestId("status-line");
+    expect(line.dataset.kind).toBe("engine-catching-up");
+    expect(line.dataset.variant).toBe("wait");
+    const btn = screen.getByTestId("trade-submit") as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    expect(btn.textContent).toBe("Waiting for prices…");
+    expect(document.body.textContent).not.toMatch(/maintainer|re-seed|crank behind/i);
+    // the keeper catches up: the freshness hook flips; no click, no reload
+    await act(async () => setEngineStale(false));
+    const btn2 = screen.getByTestId("trade-submit") as HTMLButtonElement;
+    expect(btn2.disabled).toBe(false);
+    expect(btn2.textContent).not.toBe("Waiting for prices…");
+    expect(screen.queryByTestId("status-line")).toBeNull();
   });
 });

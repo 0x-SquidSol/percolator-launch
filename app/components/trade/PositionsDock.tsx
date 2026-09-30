@@ -155,7 +155,7 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
   // H6: engine accrue-staleness — distinct from the oracle-push freshness
   // above. A market can look perfectly fresh here (keeper still pushing
   // prices) while the ENGINE hasn't accrued in ~500 slots, cliff-dead and
-  // permanently reverting every close until a maintainer re-seeds it. See
+  // permanently reverting every close (UX WP-2: only beyond the app's own catch-up). See
   // useEngineFreshness's file header.
   const { engineStale } = useEngineFreshness();
   const closeBlockedByStaleness = !mockMode && (oracleStale || engineStale);
@@ -367,12 +367,10 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
           <span className="text-[9px] font-medium uppercase tracking-[0.12em] text-[var(--warning)]">LP Underfunded</span>
         </div>
       )}
-      {/* H6: engine-stale takes priority over the generic oracle-stale copy
-          when it's specifically the engine accrue guard that tripped — tells
-          the user this needs a re-seed, not just "wait a moment". */}
+      {/* UX WP-2 (SH-3): the engine is catching up beyond the app's own repair; calm, clears itself. */}
       {engineStale && !oracleStale && (
         <div className="border-b border-[var(--warning)]/20 bg-[var(--warning)]/5 px-4 py-1.5 text-center">
-          <span className="text-[9px] font-medium uppercase tracking-[0.12em] text-[var(--warning)]">Market Crank Behind — Trading Paused</span>
+          <span className="text-[9px] font-medium uppercase tracking-[0.12em] text-[var(--text-secondary)]">Catching up with the latest prices</span>
         </div>
       )}
       {isNftWrapped && (
@@ -516,7 +514,7 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
                     onClick={() => { prewarmClose(); setShowCloseModal(true); }}
                     data-testid="position-close"
                     disabled={closeLoading || lpUnderfunded || !hasValidMark || engineStale}
-                    title={!hasValidMark ? "Waiting for price data…" : engineStale ? "Market crank behind — trading paused. This market needs a re-seed before closing works." : undefined}
+                    title={!hasValidMark ? "Waiting for price data…" : engineStale ? "Prices are catching up. Closing resumes automatically, usually within a minute." : undefined}
                     className="rounded-none border border-[var(--short)]/30 px-3 py-1 text-[9px] font-medium uppercase tracking-[0.1em] text-[var(--short)] transition-colors duration-150 hover:bg-[var(--short)]/8 hover:border-[var(--short)]/50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     Close

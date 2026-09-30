@@ -38,6 +38,7 @@ import {
 import { earnAbsorbed, harvestableFeeAtoms, vaultLpValueAtoms } from "../../lib/limits/vault-tranche";
 import { find77, recallCandidates, redeemRepairVariants } from "../../lib/limits/senior-draw-repair";
 import { parseP3DrawLogs, summarizeDrawEvents } from "../../lib/limits/p3-draw-logs";
+import { buildCatchUpCrankIx, planCatchUp } from "../../lib/self-heal";
 import { planOwnPortfolioCleanup } from "../../lib/limits/own-portfolio-cleanup";
 import { buildJuniorResolvedReleaseIxs, juniorReleaseNeedsHarvest, juniorResolvedReleasableAtoms } from "../../lib/limits/junior-resolved-release";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
@@ -212,6 +213,12 @@ if (cmd === "init-market") {
       variants: redeemRepairVariants(exec, at, pk("user"), cands).map((v) => ({ kind: v.kind, amount: v.amount?.toString() ?? null, ixs: v.ixs.map(enc1) })),
     }),
   );
+} else if (cmd === "catch-up") {
+  // UX WP-2 (SH-2): the catch-up cranks planSelfHeal prepends (lib/self-heal.ts).
+  const md = b64(a.marketB64);
+  const plan = planCatchUp(md, big("readSlot"), Number(a.userCu ?? 200_000));
+  const ixs = Array.from({ length: plan.k }, () => buildCatchUpCrankIx(programId, pk("cranker"), market, pk("portfolio")));
+  out(ixs, { k: plan.k, lagSlots: plan.lagSlots.toString(), dtSlots: plan.dtSlots?.toString() ?? null, beyondCap: plan.beyondCap });
 } else if (cmd === "draw-logs") {
   const ev = parseP3DrawLogs(a.logs as string[]);
   process.stdout.write(JSON.stringify({ events: JSON.parse(JSON.stringify(ev, (_k, v) => (typeof v === "bigint" ? v.toString() : v))), summary: JSON.parse(JSON.stringify(summarizeDrawEvents(ev), (_k, v) => (typeof v === "bigint" ? v.toString() : v))) }));

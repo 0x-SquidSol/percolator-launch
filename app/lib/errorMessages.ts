@@ -162,7 +162,7 @@ const ERROR_CODE_MAP: Record<number, string> = {
   [WRAPPER_ERR.AssetSlotAlreadyConfigured]: "This asset slot is already configured/active — only an append at the next index or a re-activation of a retired slot is allowed.",
   // 62-65: on the DEPLOYED wrapper (deploy/v18.2-wrapper@6377376a PercolatorError), missing here until P0b.
   [WRAPPER_ERR.CreatorFeeOverClaim]: "That's more than the creator fees available to claim right now. Claim the amount shown, or wait for more trading.",
-  [WRAPPER_ERR.LpVaultBackingBucketNotEmpty]: "This market's backing is already funded outside the Earn vault, so an Earn vault can't be created for it. The market needs a maintainer to set up its vault.",
+  [WRAPPER_ERR.LpVaultBackingBucketNotEmpty]: "This market's backing is already funded outside the Earn vault, so an Earn vault can't be created for it.",
   [WRAPPER_ERR.RentExemptRequired]: "The market account must stay rent-exempt after this action. Please report this — it should not happen on a normal market.",
   [WRAPPER_ERR.AssetGenerationMismatch]: "This market's asset changed since the transaction was built. Refresh the page and try again.",
   // ── P1 safety release (oracle band, auto-halt, exposure cap) ──────────────

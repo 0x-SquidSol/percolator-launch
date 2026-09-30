@@ -68,9 +68,12 @@ import {
   TransactionInstruction,
   VersionedTransaction,
 } from "@solana/web3.js";
-import type { Connection } from "@solana/web3.js";
+import type { AccountMeta, Connection } from "@solana/web3.js";
+import { ACCOUNTS_PERMISSIONLESS_CRANK_BASE, buildAccountMetas, buildIx, encodePermissionlessCrank } from "@percolatorct/sdk";
+import { defaultCrankObservations } from "@/lib/v18-wire";
 
 import { WRAPPER_ERR } from "@/lib/wrapper-errors";
+import { decodeAssetVaultLp } from "@/lib/limits/decode";
 // ── Wire tags (deployed wrapper decode arms) ─────────────────────────────────
 export const EXPIRE_BACKING_BUCKET_TAG = 89;
 export const FINALIZE_RESET_SIDE_TAG = 45;
@@ -300,6 +303,73 @@ export interface SelfHealParams {
   market: PublicKey;
   instructions: TransactionInstruction[];
   computeUnits: number;
+  /**
+   * UX WP-2 (SH-2): when set, a wrapper 19/21 caused by the engine clock lagging is repaired by
+   * prepending `k` PermissionlessCrank instructions of `portfolio` (the market's LP; the
+   * bound vault LP on P3 when null), each accruing up to max_accrual_dt_slots.
+   */
+  catchUp?: { cranker: PublicKey; portfolio: PublicKey | null; oracleTail?: readonly AccountMeta[] };
+}
+
+/**
+ * Measured on the relaunch wrapper .so p3-batched-4b1a5d30: 17,010 CU (LiteSVM, scripts/limits-parity/p3-sim
+ * `limits_app_catch_up_cranks_then_trade`): one catch-up crank of the vault LP. The planner
+ * budgets this per crank; recorded in the plan §15.
+ */
+export const CATCH_UP_CRANK_CU = 20_000;
+/** Total CU the repairs + the user's own instructions may reach (SH-2 cap). */
+export const CATCH_UP_TOTAL_CU = 1_200_000;
+
+export interface CatchUpPlan {
+  /** Cranks to prepend (0 = none needed / not possible). */
+  k: number;
+  lagSlots: bigint;
+  dtSlots: bigint | null;
+  /** The lag needs more cranks than the CU budget allows: the keeper must catch up (SH-3). */
+  beyondCap: boolean;
+}
+
+/**
+ * SH-2: how many catch-up cranks bring asset 0's engine clock (`slot_last`) to `nowSlot`.
+ * Each crank accrues at most `max_accrual_dt_slots`, so k = ceil(lag / dt) (at least 1 when
+ * lagging). Capped so `userCu + k * CATCH_UP_CRANK_CU <= CATCH_UP_TOTAL_CU`.
+ */
+/** AssetStateV16Account.slot_last within the engine asset slot (lib/v17-engine-clock.ts: 41). */
+const ASSET_SLOT_LAST_REL = 41;
+/** V16ConfigAccount.max_accrual_dt_slots within the config block (lib/v17-engine-clock.ts: 118). */
+const CONFIG_MAX_ACCRUAL_DT_REL = 118;
+
+/** Local readers (no SDK constants at import time: this module is loaded by sendTx everywhere). */
+function readSlotLast(d: Uint8Array): bigint | null {
+  const off = MARKET_GROUP_OFF + MARKET_GROUP_LEN + ASSET_WRAPPER_LEN + ASSET_SLOT_LAST_REL;
+  if (off + 8 > d.length) return null;
+  const v = view(d).getBigUint64(off, true);
+  return v > 0n ? v : null;
+}
+function readMaxAccrualDt(d: Uint8Array): bigint | null {
+  const off = MARKET_GROUP_OFF + GROUP_CONFIG_REL + CONFIG_MAX_ACCRUAL_DT_REL;
+  if (off + 8 > d.length) return null;
+  const v = view(d).getBigUint64(off, true);
+  return v > 0n ? v : null;
+}
+
+export function planCatchUp(data: Uint8Array, readSlot: bigint, userCu: number): CatchUpPlan {
+  const slotLast = readSlotLast(data);
+  const dt = readMaxAccrualDt(data);
+  const headerSlot = data.length >= MARKET_GROUP_OFF + GROUP_CURRENT_SLOT_REL + 8 ? view(data).getBigUint64(MARKET_GROUP_OFF + GROUP_CURRENT_SLOT_REL, true) : 0n;
+  const now = readSlot > headerSlot ? readSlot : headerSlot;
+  if (slotLast === null || dt === null || now <= slotLast) return { k: 0, lagSlots: 0n, dtSlots: dt, beyondCap: false };
+  const lag = now - slotLast;
+  const k = Number((lag + dt - 1n) / dt);
+  const kMax = Math.max(0, Math.floor((CATCH_UP_TOTAL_CU - userCu) / CATCH_UP_CRANK_CU));
+  return k > kMax ? { k: 0, lagSlots: lag, dtSlots: dt, beyondCap: true } : { k: Math.max(1, k), lagSlots: lag, dtSlots: dt, beyondCap: false };
+}
+
+/** The catch-up crank the keeper sends: [cranker, market, portfolio, ...oracle tail], nowSlot 0. */
+export function buildCatchUpCrankIx(programId: PublicKey, cranker: PublicKey, market: PublicKey, portfolio: PublicKey, oracleTail: readonly AccountMeta[] = []): TransactionInstruction {
+  const keys = buildAccountMetas(ACCOUNTS_PERMISSIONLESS_CRANK_BASE, [cranker, market, portfolio]);
+  for (const k of oracleTail) keys.push(k);
+  return buildIx({ programId, keys, data: encodePermissionlessCrank({ nowSlot: 0n, observations: defaultCrankObservations(0) }) });
 }
 
 export type SelfHealOutcome =
@@ -315,21 +385,35 @@ export interface SelfHealResult {
   computeUnits: number;
   repairs: LivenessRepair[];
   outcome: SelfHealOutcome;
+  /** Catch-up cranks included (SH-2); 0 when none. */
+  catchUpCranks?: number;
+  /** The engine clock lags past the catch-up cap (SH-3: the keeper must catch up). */
+  catchUpBeyondCap?: boolean;
 }
 
 /** See the module header for the flow. Never throws. */
 export async function planSelfHeal(params: SelfHealParams, deps: SelfHealDeps): Promise<SelfHealResult> {
-  const unchanged = (outcome: SelfHealOutcome): SelfHealResult => ({
+  const unchanged = (outcome: SelfHealOutcome, extra: Partial<SelfHealResult> = {}): SelfHealResult => ({
     instructions: params.instructions,
     computeUnits: params.computeUnits,
     repairs: [],
     outcome,
+    ...extra,
   });
   try {
     const acct = await deps.readMarket();
     if (!acct) return unchanged("no-repair-needed");
     const repairs = planLivenessRepairs(decodeMarketLiveness(acct.data, acct.slot));
-    if (repairs.length === 0) return unchanged("no-repair-needed");
+    // SH-2: catch-up cranks for a lagging engine clock (only when the caller opted in).
+    const catchUp = params.catchUp ? planCatchUp(acct.data, acct.slot, params.computeUnits + REPAIR_CU * repairs.length) : null;
+    let crankPortfolio: PublicKey | null = params.catchUp?.portfolio ?? null;
+    if (params.catchUp && !crankPortfolio) {
+      const rec = decodeAssetVaultLp(acct.data, 0);
+      crankPortfolio = rec?.bound ? new PublicKey(rec.vaultLpPortfolio) : null;
+    }
+    const cranks = catchUp && catchUp.k > 0 && crankPortfolio ? catchUp.k : 0;
+    const beyondCap = catchUp?.beyondCap === true;
+    if (repairs.length === 0 && cranks === 0) return unchanged("no-repair-needed", { catchUpBeyondCap: beyondCap });
 
     const prefixOrig = computeBudgetPrefix(params.computeUnits);
     const origList = [...prefixOrig, ...params.instructions];
@@ -337,15 +421,20 @@ export async function planSelfHeal(params: SelfHealParams, deps: SelfHealDeps): 
     if (!orig.err) return unchanged("user-tx-ok");
     if (!isRepairableFailure(orig.err, origList, params.programId)) return unchanged("not-repairable");
 
+    const crankIxs = cranks > 0 && params.catchUp && crankPortfolio
+      ? Array.from({ length: cranks }, () =>
+          buildCatchUpCrankIx(params.programId, params.catchUp!.cranker, params.market, crankPortfolio!, params.catchUp!.oracleTail ?? []),
+        )
+      : [];
     const repairIxs = repairs.map((r) => buildLivenessRepairIx(params.programId, params.market, r));
-    const healedCu = Math.min(MAX_TX_CU, params.computeUnits + REPAIR_CU * repairs.length);
-    const healedIxs = [...repairIxs, ...params.instructions];
+    const healedCu = Math.min(MAX_TX_CU, params.computeUnits + REPAIR_CU * repairs.length + CATCH_UP_CRANK_CU * crankIxs.length);
+    const healedIxs = [...crankIxs, ...repairIxs, ...params.instructions];
     const healedList = [...computeBudgetPrefix(healedCu), ...healedIxs];
     const healed = await deps.simulate(healedList);
     if (healed.err && isRepairableFailure(healed.err, healedList, params.programId)) {
-      return unchanged("repair-did-not-help");
+      return unchanged("repair-did-not-help", { catchUpBeyondCap: beyondCap });
     }
-    return { instructions: healedIxs, computeUnits: healedCu, repairs, outcome: "repaired" };
+    return { instructions: healedIxs, computeUnits: healedCu, repairs, outcome: "repaired", catchUpCranks: crankIxs.length };
   } catch (e) {
     console.warn("[self-heal] skipped:", e);
     return unchanged("rpc-error");

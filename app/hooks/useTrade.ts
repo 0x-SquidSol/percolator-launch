@@ -26,7 +26,7 @@ import {
   encodePushOraclePrice,
   ACCOUNTS_PUSH_ORACLE_PRICE,
 } from "@/lib/sdk-compat";
-import { sendTx, prewarmTxLanding } from "@/lib/tx";
+import { sendTx, sendTxWaiting, prewarmTxLanding } from "@/lib/tx";
 import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
 import { applyConfirmedFill, getPortfolioRawSnapshot, isLpPortfolio, makePortfolioScanKey } from "@/lib/userAccountScan";
 import { limitsFlags } from "@/lib/limits/flags";
@@ -397,6 +397,8 @@ export function useTrade(slabAddress: string) {
        * Omitted => the market's base trade fee (the only value accepted without it).
        */
       feeBps?: bigint;
+      /** UX WP-2: called while the app waits for the market (no prompt yet): true / false. */
+      onWaiting?: (waiting: boolean) => void;
     }) => {
       if (inflightRef.current) throw new Error("Trade already in progress");
       inflightRef.current = true;
@@ -689,12 +691,24 @@ export function useTrade(slabAddress: string) {
         // Explicit limit sized from a simulation of THIS tx (P1: CPI trades cost ~13k more CU;
         // a single-leg batch on asset 1 is 216k > the 200k default), capped at 400k per leg
         // (lib/compute-budget.ts). Also used by closes (useClosePosition calls trade()).
-        const sig = await sendTx({
+        const sig = await sendTxWaiting({
           connection, wallet, instructions,
+          onWaiting: params.onWaiting,
           computeUnitsFromSim: { cap: tradeCuCap(legs.length) },
           // P0b: prepend ExpireBackingBucket / FinalizeResetSide only if this
           // trade/close would otherwise revert 19/21 on them (lib/self-heal.ts).
-          selfHeal: isV17Market ? { programId, market: slabPk } : undefined,
+          // UX WP-2 (SH-2): a lagging engine clock is caught up by cranking the market's LP
+          // (accountB; the vault LP on P3) inside THIS tx — never "ask a maintainer".
+          selfHeal: isV17Market
+            ? {
+                programId,
+                market: slabPk,
+                catchUp: {
+                  portfolio: accountB,
+                  oracleTail: useAdminOracle ? [] : [{ pubkey: oracleAccount, isSigner: false, isWritable: false }],
+                },
+              }
+            : undefined,
         });
 
         // Immediate local application of the confirmed fill: sendTx's
