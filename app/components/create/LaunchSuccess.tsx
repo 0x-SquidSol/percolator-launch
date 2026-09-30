@@ -44,13 +44,16 @@ interface LaunchSuccessProps {
   /** E2E B21: the market's price comes from a keeper-read DEX pool, so it is not launched
    *  until the keeper registration succeeds. */
   priceFeedRequired?: boolean;
+  /** UX WP-7: the background registration loop's phase (connecting / slow / ready / failed). */
+  keeperPhase?: "connecting" | "slow" | "ready" | "failed" | null;
 }
 
-/** E2E B21 copy: the price-feed step failed, so the launch is NOT finished. */
-export const PRICE_FEED_MISSING_TITLE = "PRICE FEED NOT REGISTERED";
-export const priceFeedMissingBody = (symbol: string) =>
-  `${symbol}-PERP was created on-chain, but its price feed isn't registered, so it has no price and can't be traded yet. ` +
-  "The launch isn't finished: retry the price-feed step below.";
+/**
+ * UX WP-7 (§3.15): until the live price is connected the launch is NOT finished — the title is
+ * "Almost ready", never a green "launched". The app connects it in the background, no signature.
+ */
+export const PRICE_FEED_MISSING_TITLE = "Almost ready";
+export const priceFeedMissingBody = (symbol: string) => `${symbol} is created. Connecting its live price is the last step.`;
 
 /**
  * Success state after market launch.
@@ -72,6 +75,7 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
   keeperRegistering,
   onRetryKeeperRegistration,
   priceFeedRequired = false,
+  keeperPhase = null,
 }) => {
   const feed = launchPriceFeedStatus({ priceFeedRequired, keeperDelegated: !!keeperDelegated });
   const [copied, setCopied] = useState(false);
@@ -165,31 +169,27 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
 
   if (feed === "missing") {
     return (
-      <div data-testid="launch-price-feed-missing" className="border border-[var(--warning)]/40 bg-[var(--warning)]/[0.05] p-6 text-center">
-        <div className="mb-4">
-          <div className="inline-flex h-12 w-12 items-center justify-center border-2 border-[var(--warning)]/50 bg-[var(--warning)]/[0.1] text-[24px] text-[var(--warning)]">
-            !
-          </div>
-        </div>
-        <h2 className="text-[18px] font-bold text-[var(--warning)] mb-2">{PRICE_FEED_MISSING_TITLE}</h2>
+      <div data-testid="launch-price-feed-missing" className="border border-[var(--border)] bg-[var(--panel-bg)] p-6 text-center">
+        <h2 className="text-[18px] font-bold text-[var(--text)] mb-2">{PRICE_FEED_MISSING_TITLE}</h2>
         <p className="text-[13px] text-[var(--text-secondary)] mb-4">{priceFeedMissingBody(tokenSymbol)}</p>
         <code className="mb-4 inline-block font-mono text-[10px] text-[var(--accent)]/80 bg-[var(--bg)] border border-[var(--border)] px-3 py-1.5 break-all">
           {marketAddress}
         </code>
-        <div className="mx-auto mb-4 max-w-sm border border-[var(--warning)]/30 bg-[var(--warning)]/[0.04] px-4 py-2.5 text-left text-[11px] text-[var(--text-secondary)]">
-          <p data-testid="launch-price-feed-reason">
-            {keeperMessage || "The keeper didn't accept this market's price-feed registration."}
-          </p>
-        </div>
-        {onRetryKeeperRegistration && (
+        <p data-testid="launch-price-feed-reason" data-phase={keeperPhase ?? "connecting"} className="mx-auto mb-4 flex max-w-sm items-center justify-center gap-1.5 text-[13px] text-[var(--text)]">
+          {keeperPhase !== "slow" && keeperPhase !== "failed" && (
+            <span aria-hidden="true" className="inline-block h-[6px] w-[6px] animate-pulse rounded-full bg-[var(--text-muted)]" />
+          )}
+          {keeperMessage || "Connecting the live price… usually under a minute."}
+        </p>
+        {onRetryKeeperRegistration && (keeperPhase === "slow" || keeperPhase === "failed") && (
           <button
             type="button"
             data-testid="launch-price-feed-retry"
             onClick={() => void onRetryKeeperRegistration()}
             disabled={keeperRegistering}
-            className="border border-[var(--warning)]/50 bg-[var(--warning)]/[0.1] px-4 py-2 text-[11px] font-bold uppercase tracking-[0.1em] text-[var(--warning)] transition-colors hover:bg-[var(--warning)]/[0.16] disabled:cursor-not-allowed disabled:opacity-60"
+            className="border border-[var(--border)] px-4 py-2 text-[12px] font-medium text-[var(--text)] transition-colors hover:border-[var(--accent)]/40 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {keeperRegistering ? "RETRYING…" : "RETRY PRICE-FEED REGISTRATION"}
+            {keeperRegistering ? "Trying…" : "Try now"}
           </button>
         )}
         <div className="mt-4">
@@ -215,7 +215,7 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
       </div>
 
       <h2 className="text-[18px] font-bold text-[var(--long)] mb-2">
-        MARKET LAUNCHED
+        Ready to trade
       </h2>
       <p className="text-[13px] text-[var(--text-secondary)] mb-4">
         {tokenSymbol}-PERP is live on Percolator devnet

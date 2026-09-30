@@ -236,7 +236,7 @@ describe("oracle resolve lands after the advance: edge cases", () => {
     gateResolve.release(); await flush();
     const s = snapshot("failed");
     expect(s.disabled).toBe(true);
-    expect(s.ariaLabel).toMatch(/no supported DEX pool/);
+    expect(s.ariaLabel).toMatch(/pool type we can't price yet/);
     await pressLaunch();
     expect(create).not.toHaveBeenCalled();
   });
@@ -247,7 +247,7 @@ describe("oracle resolve lands after the advance: edge cases", () => {
     gateResolve.release(); await flush();
     const s = snapshot("no pool");
     expect(s.disabled).toBe(true);
-    expect(s.ariaLabel).toMatch(/no supported DEX pool/);
+    expect(s.ariaLabel).toMatch(/pool type we can't price yet/);
     await pressLaunch();
     expect(create).not.toHaveBeenCalled();
   });
@@ -274,7 +274,7 @@ describe("oracle resolve lands after the advance: edge cases", () => {
     expect(create).toHaveBeenCalledTimes(1);
     createState = { ...IDLE, step: 1, error: "Block height exceeded", slabAddress: SystemProgram.programId.toBase58() };
     view.rerender(<CreateMarketWizard />); await flush();
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /retry step 2/i })); });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /^Continue$/i })); });
     await flush();
     expect(create).toHaveBeenCalledTimes(2);
     for (const [p] of create.mock.calls) {

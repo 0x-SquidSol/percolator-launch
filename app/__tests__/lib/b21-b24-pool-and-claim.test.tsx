@@ -162,37 +162,47 @@ describe("B21: never 'launched' without a registered price feed", () => {
   const props = (over: Partial<Parameters<typeof LaunchSuccess>[0]>) =>
     ({ tokenSymbol: "WIF", tradingFeeBps: 5, maxLeverage: 5, marketAddress: DLMM_POOL, txSigs: [], onDeployAnother: () => {}, ...over }) as Parameters<typeof LaunchSuccess>[0];
 
-  it("registration failed: the failed step with the reason and a working retry, and no MARKET LAUNCHED", () => {
+  // UX WP-7: registration runs in the background with no signature; the launch is "Almost ready"
+  // (never "Ready to trade") until the live price is connected; "Try now" once it is slow / failed.
+  it("connecting: 'Almost ready' with the calm connecting line and no Try now yet", () => {
+    render(<LaunchSuccess {...props({ priceFeedRequired: true, keeperDelegated: false, keeperPhase: "connecting", keeperMessage: "Connecting the live price… usually under a minute." })} />);
+    expect(screen.queryByText("Ready to trade")).toBeNull();
+    expect(screen.getByText(PRICE_FEED_MISSING_TITLE)).toBeTruthy();
+    expect(PRICE_FEED_MISSING_TITLE).toBe("Almost ready");
+    expect(screen.getByTestId("launch-price-feed-reason").textContent).toMatch(/Connecting the live price/);
+    expect(screen.queryByTestId("launch-price-feed-retry")).toBeNull();
+  });
+
+  it("slow / failed: the reason and a working 'Try now', and still not 'Ready to trade'", () => {
     const retry = vi.fn();
     render(
       <LaunchSuccess
         {...props({
           priceFeedRequired: true,
           keeperDelegated: false,
+          keeperPhase: "failed",
           keeperMessage: "Price-feed registration failed: This pool is on a DEX type the price feed can't read",
           onRetryKeeperRegistration: retry,
         })}
       />,
     );
-    expect(screen.queryByText("MARKET LAUNCHED")).toBeNull();
-    expect(screen.getByText(PRICE_FEED_MISSING_TITLE)).toBeTruthy();
+    expect(screen.queryByText("Ready to trade")).toBeNull();
     expect(screen.getByTestId("launch-price-feed-reason").textContent).toMatch(/can't read/);
     fireEvent.click(screen.getByTestId("launch-price-feed-retry"));
     expect(retry).toHaveBeenCalledTimes(1);
   });
 
-  it("registration failed with no message still explains it", () => {
+  it("no message still explains it", () => {
     render(<LaunchSuccess {...props({ priceFeedRequired: true, keeperDelegated: false, keeperMessage: "" })} />);
-    expect(screen.queryByText("MARKET LAUNCHED")).toBeNull();
-    expect(screen.getByTestId("launch-price-feed-reason").textContent).toMatch(/didn't accept/);
+    expect(screen.getByTestId("launch-price-feed-reason").textContent).toMatch(/Connecting the live price/);
   });
 
-  it("registered (or no feed needed): MARKET LAUNCHED", () => {
+  it("registered (or no feed needed): 'Ready to trade'", () => {
     const { unmount } = render(<LaunchSuccess {...props({ priceFeedRequired: true, keeperDelegated: true })} />);
-    expect(screen.getByText("MARKET LAUNCHED")).toBeTruthy();
+    expect(screen.getByText("Ready to trade")).toBeTruthy();
     unmount();
     render(<LaunchSuccess {...props({ priceFeedRequired: false, keeperDelegated: false })} />);
-    expect(screen.getByText("MARKET LAUNCHED")).toBeTruthy();
+    expect(screen.getByText("Ready to trade")).toBeTruthy();
   });
 
   it("both create flows set priceFeedRequired, and the wizard passes it", () => {

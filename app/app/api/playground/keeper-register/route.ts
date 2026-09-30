@@ -29,48 +29,19 @@
  *      message if the Blob write fails (never throws uncaught — market creation
  *      itself already landed on-chain regardless of this route's outcome).
  *
- * Authentication (H1v2): two accepted paths —
- *   a) Wallet-signed STATELESS deployer proof — no server-stored nonce:
- *        1. Sign the UTF-8 message `keeper-register:<slabAddress>:<unix-minute>`
- *           (unix-minute = Math.floor(Date.now()/60000), computed client-side) with
- *           the deployer keypair → base64 signature.
- *        2. POST here with { ...body, deployer, signature }.
- *      The route independently reconstructs that message for a small window of
- *      minutes around its OWN clock (tolerates clock skew + wallet-sign latency,
- *      no round trip needed) and accepts if the ed25519 signature verifies for any
- *      candidate. It then reads the slab account on devnet and requires `deployer`
- *      to match its on-chain admin/marketauth field — cryptographic proof of the
- *      key PLUS proof that key actually administers this specific market.
- *
- *      H1v1 (superseded) used a nonce+claim flow mirroring PERC-8332
- *      (GET /api/markets/challenge → nonce, sign it, claim it here) backed by a
- *      process-local Map (lib/playground-nonce-store.ts). On Vercel that Map is
- *      per-lambda-instance: the GET that issued the nonce and the POST that claimed
- *      it could land on different instances with no shared memory, so a real launch
- *      would 400 "Missing required fields: deployer, nonce, signature" (client sent
- *      them; a stale deployed bundle predating the wiring fix, or the nonce simply
- *      not existing in this instance's Map) or 401 "invalid/expired nonce" — often
- *      enough to make registration effectively unreliable in production. The
- *      stateless message scheme above needs no shared state between requests, so it
- *      works correctly regardless of which instance handles the call. (The
- *      /api/markets nonce+challenge flow is unaffected by this change and keeps
- *      using lib/playground-nonce-store.ts — see that file's header for the same
- *      latent race, out of scope here.)
- *   b) Admin bypass: header `x-admin-secret` matching ADMIN_API_SECRET (the same
- *      shared secret already used by /api/oracle/set-price-cap) — for maintainer
- *      manual fixes (e.g. re-registering an orphaned market, as done for ANSEM).
- *      Timing-safe compare; unset/empty ADMIN_API_SECRET disables this path
- *      entirely (fails closed, matches the set-price-cap convention).
- *
- * CALLER ORDERING REQUIREMENT (confirmed by live end-to-end repro): `deployer` is
- * checked against the slab's LIVE on-chain admin/marketauth (see below), not a
- * point-in-time snapshot. percolator-stake's InitPool ROTATES marketauth from the
- * creator wallet to the stake-pool PDA — once that instruction lands, no wallet can
- * pass this check again for that slab (the PDA has no private key to sign with).
- * Callers MUST invoke this route BEFORE InitPool, while marketauth is still the
- * creator wallet — see hooks/useCreateMarket.ts, which now registers between Step 4
- * (Earn LP vault) and Step 5 (Stake InitPool) for exactly this reason. Calling it
- * after InitPool always 403s with "Deployer does not match slab admin", permanently.
+ * Authentication (UX WP-7, 2026-09-30 — SECURITY REVIEW REQUIRED before merge): two paths —
+ *   a) Creation-transaction proof: `proofTx` is the signature of the market's M1 transaction.
+ *      That transaction carries an SPL Memo `percolator:keeper-register:v1:<sha256(canonical
+ *      params)>` signed by the creator (lib/keeper-register-memo.ts). The route fetches it and
+ *      accepts only if it succeeded, the memo matches THIS request's parameters exactly (slab,
+ *      pool, CA, dex type, symbol, label), and the memo's signer is the market's creator: the
+ *      admin of an InitMarket for this slab in the same tx, or (P3) the vault's on-chain
+ *      junior_owner. A stranger cannot repoint a market (they cannot put a memo in the
+ *      creator's tx), the creator needs no extra wallet prompt, and there is no replay window or
+ *      server nonce. This REPLACES the H1v2 signed-message proof (`deployer` + `signature`).
+ *      Because the proof is historical, the call no longer has to happen before StakeInitPool
+ *      rotates marketauth.
+ *   b) Admin bypass: header `x-admin-secret` matching ADMIN_API_SECRET (maintainer fixes).
  *
  * Body: {
  *   slabAddress:    string  — devnet market account
@@ -80,10 +51,8 @@
  *                             "raydium", …) — see lib/dex-type.ts
  *   symbol?:        string  — token symbol (e.g. "SOL")
  *   label?:         string  — human label (e.g. "SOL/USDC — Raydium CLMM")
- *   deployer?:      string  — required unless using the admin bypass; see above
- *   signature?:     string  — required unless using the admin bypass; base64
- *                             ed25519 signature over the stateless proof message;
- *                             see above
+ *   proofTx?:       string  — required unless using the admin bypass: the market's
+ *                             creation-tx signature (see Authentication above)
  * }
  *
  * Environment:
@@ -93,14 +62,12 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { checkAdminSecret } from "@/lib/admin-secret";
-import {
-  buildKeeperRegisterProofMessage,
-  type KeeperRegisterProofParams,
-} from "@/lib/keeper-register-proof";
+import { verifyKeeperRegisterProofTx } from "@/lib/keeper-register-memo";
+import { UNSUPPORTED_POOL_COPY } from "@/lib/wizard-copy";
+import { deriveVaultLpState } from "@/lib/limits/p3-ix";
+import { decodeVaultLpState } from "@/lib/limits/decode";
 import { PublicKey } from "@solana/web3.js";
-import nacl from "tweetnacl";
 import * as Sentry from "@sentry/nextjs";
-import { isV17Account, parseWrapperConfigV17, parseHeader, V17_HEADER_LEN } from "@percolatorct/sdk";
 import type { RegisteredMarket } from "@/lib/playground-registered-markets";
 import { upsertRegisteredMarket } from "@/lib/playground-registered-markets";
 import { KEEPER_DEX_TYPES, type KeeperDexType } from "@/lib/dex-type";
@@ -121,52 +88,6 @@ function isAdminBypass(req: NextRequest): boolean {
   return checkAdminSecret(req, "register");
 }
 
-/** H1v2 stateless deployer proof — see "Authentication (H1v2)" in the file header
- *  for why this replaced the nonce+claim scheme. No server-stored state: the
- *  message is fully determined by (slabAddress, unix-minute), so any lambda
- *  instance can verify it without having "seen" an issuance step. */
-const STATELESS_PROOF_PREFIX = "keeper-register";
-/** Tolerance window: candidate minutes tried are [now - BACK, now + FWD]. Generous
- *  enough to absorb clock skew and wallet-approval latency without meaningfully
- *  weakening the check — a signature is still scoped to one specific slab and only
- *  useful if the signer also holds that slab's on-chain admin key (checked below). */
-const STATELESS_PROOF_WINDOW_BACK_MIN = 5;
-const STATELESS_PROOF_WINDOW_FWD_MIN = 1;
-
-// #2505 / #2468: the proof now covers the parameters the route ACTS ON, not just
-// the slab. Built by the shared module so the client and this verifier cannot
-// drift — see lib/keeper-register-proof.ts for what is and is not fixed.
-function statelessProofMessage(
-  params: KeeperRegisterProofParams,
-  unixMinute: number,
-): Uint8Array {
-  return buildKeeperRegisterProofMessage(params, unixMinute);
-}
-
-/** Verify `signatureBytes` is a valid ed25519 signature by `deployerPubkeyBytes` over
- *  `keeper-register:<slabAddress>:<unix-minute>` for some minute within the tolerance
- *  window of the server's own clock. Stateless — no nonce store, no shared memory
- *  needed between the "issuing" and "verifying" request (there is no issuing request). */
-function verifyStatelessDeployerProof(
-  params: KeeperRegisterProofParams,
-  deployerPubkeyBytes: Uint8Array,
-  signatureBytes: Uint8Array,
-): boolean {
-  const nowMinute = Math.floor(Date.now() / 60_000);
-  for (let d = -STATELESS_PROOF_WINDOW_BACK_MIN; d <= STATELESS_PROOF_WINDOW_FWD_MIN; d++) {
-    const msg = statelessProofMessage(params, nowMinute + d);
-    try {
-      if (nacl.sign.detached.verify(msg, signatureBytes, deployerPubkeyBytes)) return true;
-    } catch {
-      // Malformed input for this candidate — try the next one.
-    }
-  }
-  return false;
-}
-
-/** Classify a mainnet pool by its owner program (lib/dex-pool-owner.ts — the ONE
- *  authoritative classifier, shared with /api/oracle/resolve and the wizard's pool
- *  search). "rpc-failed" when mainnet could not be reached. */
 async function classifyPoolByOwner(
   poolAddress: string,
 ): Promise<PoolClass | "rpc-failed"> {
@@ -198,15 +119,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const { slabAddress, mainnetCA, dexPoolAddress, dexType, symbol, label, deployer, signature, payload } = body as {
+  const { slabAddress, mainnetCA, dexPoolAddress, dexType, symbol, label, proofTx, deployer, payload } = body as {
     slabAddress?: string;
     mainnetCA?: string;
     dexPoolAddress?: string;
     dexType?: string;
     symbol?: string;
     label?: string;
+    proofTx?: string;
+    /** Admin bypass only: the market's deployer to record (maintainer re-registration). Not auth. */
     deployer?: string;
-    signature?: string;
     /** Full markets-row payload from the wizard's buildMarketRegistrationPayload.
      *  Absent on the retry path, which re-registers an already-listed market. */
     payload?: Record<string, unknown> | null;
@@ -274,70 +196,14 @@ export async function POST(req: NextRequest) {
   let slabAdmin: string | null = null;
 
   if (!isAdminBypass(req)) {
-    if (!deployer || !signature) {
-      return NextResponse.json(
-        {
-          error:
-            "Missing required fields: deployer, signature. " +
-            'Sign the message "keeper-register:<slabAddress>:<unix-minute>" (UTF-8, ' +
-            "unix-minute = Math.floor(Date.now()/60000)) with the deployer keypair and " +
-            "include the base64 signature. No separate challenge call needed.",
-        },
-        { status: 400 },
-      );
+    // UX WP-7 (SECURITY REVIEW REQUIRED before merge): the creator proves the registration with
+    // the transaction that CREATED the market. Its M1 carries an SPL Memo, signed by the creator,
+    // binding exactly these parameters (lib/keeper-register-memo.ts). This REPLACES the H1v2
+    // signed-message proof (no signMessage prompt, no replay window, no parallel user auth path;
+    // the admin bypass above stays the maintainer path).
+    if (!proofTx || typeof proofTx !== "string") {
+      return NextResponse.json({ error: "Missing required field: proofTx (the market-creation transaction signature)" }, { status: 400 });
     }
-
-    let deployerPubkeyBytes: Uint8Array;
-    try {
-      deployerPubkeyBytes = new PublicKey(deployer).toBytes();
-    } catch {
-      return NextResponse.json({ error: "Invalid deployer: must be a valid Solana public key" }, { status: 400 });
-    }
-
-    let signatureBytes: Uint8Array;
-    try {
-      signatureBytes = Buffer.from(signature, "base64");
-      if (signatureBytes.length !== 64) throw new Error("Signature must be 64 bytes");
-    } catch {
-      return NextResponse.json(
-        { error: "Invalid signature: must be a base64-encoded 64-byte ed25519 signature" },
-        { status: 400 },
-      );
-    }
-
-    // H1v2: stateless deployer proof — no nonce to claim, so no server-stored state to
-    // race across serverless lambda instances (see file header for why this replaced
-    // the nonce+claim scheme).
-    // #2505 / #2468: verify against the parameters this request ACTS ON, not the
-    // slab alone. A signature is now valid for exactly one (slab, pool, CA, type,
-    // symbol, label) tuple, so a captured one can no longer authorise the same
-    // slab against a substituted pool.
-    const sigValid = verifyStatelessDeployerProof(
-      { slabAddress, dexPoolAddress, mainnetCA: mainnetCA ?? "", dexType: dexType ?? "", symbol, label },
-      deployerPubkeyBytes,
-      signatureBytes,
-    );
-    if (!sigValid) {
-      Sentry.captureMessage("[playground/keeper-register] Deployer signature verification failed", {
-        level: "warning",
-        tags: { endpoint: "/api/playground/keeper-register", auth: "sig-fail" },
-        extra: { deployer, slabAddress },
-      });
-      return NextResponse.json(
-        {
-          error:
-            "Signature verification failed. The proof must cover the registration " +
-            "parameters, not just the slab — build it with " +
-            "buildKeeperRegisterProofMessage() from lib/keeper-register-proof and sign " +
-            "with the deployer keypair within the last few minutes.",
-        },
-        { status: 401 },
-      );
-    }
-
-    // Cryptographic proof of the deployer key alone isn't enough — verify that key
-    // actually administers THIS slab (on-chain admin/marketauth), so a valid
-    // signature from an unrelated wallet can't repoint someone else's market.
     try {
       const connection = getServerConnection("confirmed");
       const slabPubkey = new PublicKey(slabAddress);
@@ -345,25 +211,41 @@ export async function POST(req: NextRequest) {
       if (!accountInfo) {
         return NextResponse.json({ error: "Slab account does not exist on-chain" }, { status: 400 });
       }
-      if (!getAllProgramIds().includes(accountInfo.owner.toBase58())) {
+      const programIds = getAllProgramIds();
+      if (!programIds.includes(accountInfo.owner.toBase58())) {
         return NextResponse.json({ error: "Slab account not owned by a known percolator program" }, { status: 400 });
       }
-      const dataBytes = new Uint8Array(accountInfo.data);
-      // isV17Account-first, parseHeader fallback — mirrors the same pattern used by
-      // POST /api/markets (R2-S8) and hooks/useCreateMarket.ts for admin resolution.
-      const admin = isV17Account(dataBytes)
-        ? parseWrapperConfigV17(dataBytes, V17_HEADER_LEN).marketauth
-        : parseHeader(accountInfo.data).admin;
-      if (admin.toBase58() !== deployer) {
-        return NextResponse.json({ error: "Deployer does not match slab admin" }, { status: 403 });
+      // P3: the vault's on-chain junior owner is the creator too (accepted when the memo is not in
+      // the InitMarket tx itself).
+      let juniorOwner: string | null = null;
+      try {
+        const st = await connection.getAccountInfo(deriveVaultLpState(accountInfo.owner, slabPubkey));
+        const decoded = st ? decodeVaultLpState(new Uint8Array(st.data)) : null;
+        juniorOwner = decoded ? new PublicKey(decoded.juniorOwner).toBase58() : null;
+      } catch {
+        juniorOwner = null;
       }
-      slabAdmin = admin.toBase58();
-    } catch (err) {
-      console.error(
-        "[playground/keeper-register] Slab ownership check failed:",
-        err instanceof Error ? err.message : String(err),
+      const tx = await connection.getTransaction(proofTx, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+      const verdict = await verifyKeeperRegisterProofTx(
+        tx,
+        { slabAddress, dexPoolAddress, mainnetCA: mainnetCA ?? "", dexType: dexType ?? "", symbol, label },
+        programIds,
+        juniorOwner,
       );
-      return NextResponse.json({ error: "Failed to verify slab ownership on-chain" }, { status: 400 });
+      if (!verdict.ok) {
+        Sentry.captureMessage("[playground/keeper-register] creation-tx proof refused", {
+          level: "warning",
+          tags: { endpoint: "/api/playground/keeper-register", auth: "memo-fail" },
+          extra: { slabAddress, proofTx, reason: verdict.reason },
+        });
+        // Not landed yet reads as "not found": the client retries with backoff.
+        const status = verdict.reason === "proof transaction not found" ? 409 : 403;
+        return NextResponse.json({ error: `Registration proof refused: ${verdict.reason}` }, { status });
+      }
+      slabAdmin = verdict.creator;
+    } catch (err) {
+      console.error("[playground/keeper-register] proof check failed:", err instanceof Error ? err.message : String(err));
+      return NextResponse.json({ error: "Failed to verify the market-creation proof on-chain" }, { status: 503 });
     }
   }
 
@@ -380,10 +262,7 @@ export async function POST(req: NextRequest) {
   if (classified === "unsupported") {
     return NextResponse.json(
       {
-        error:
-          "This pool is on a DEX type the price feed can't read (for example Meteora DAMM). " +
-          `Only ${KEEPER_DEX_TYPES.filter((t) => t !== "raydium-clmm").join(", ")} pools can be priced, so retrying won't help: ` +
-          "start a new market on a supported pool.",
+        error: UNSUPPORTED_POOL_COPY,
       },
       { status: 400 },
     );
@@ -455,7 +334,8 @@ export async function POST(req: NextRequest) {
   // marketauth read from chain rather than writing something that merely looks
   // plausible. Every pre-existing row has the sim-USDC MINT in this column —
   // that is the mistake this avoids repeating.
-  const registeredDeployer = deployer ?? slabAdmin;
+  // The creator proven by the creation tx; on the admin (maintainer) path, the deployer it names.
+  const registeredDeployer = slabAdmin ?? (isAdminBypass(req) ? deployer ?? null : null);
   if (!registeredDeployer) {
     return NextResponse.json(
       { ok: false, registered: false, error: "Cannot determine the market's deployer" },

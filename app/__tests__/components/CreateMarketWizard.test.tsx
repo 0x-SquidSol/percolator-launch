@@ -110,7 +110,7 @@ describe("LaunchProgress", () => {
       />
     );
     expect(screen.getByText("Transaction cancelled")).toBeDefined();
-    expect(screen.getByRole("button", { name: /Retry Step 3/i })).toBeDefined();
+    expect(screen.getByRole("button", { name: /^Continue$/i })).toBeDefined();
     expect(screen.getByRole("button", { name: /Start Over/i })).toBeDefined();
   });
 
@@ -122,7 +122,7 @@ describe("LaunchProgress", () => {
         onRetry={onRetry}
       />
     );
-    fireEvent.click(screen.getByRole("button", { name: /Retry/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^Continue$/i }));
     expect(onRetry).toHaveBeenCalledOnce();
   });
 
@@ -145,7 +145,7 @@ describe("LaunchProgress", () => {
         onReset={onReset}
       />
     );
-    expect(screen.queryByRole("button", { name: /Retry/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Continue$/i })).toBeNull();
     expect(screen.getByRole("button", { name: /Start Over/i })).toBeDefined();
   });
 
@@ -204,9 +204,9 @@ describe("LaunchSuccess", () => {
     vi.clearAllMocks();
   });
 
-  it("shows MARKET LAUNCHED heading", () => {
+  it("shows the 'Ready to trade' heading", () => {
     render(<LaunchSuccess {...defaultProps} />);
-    expect(screen.getByText("MARKET LAUNCHED")).toBeDefined();
+    expect(screen.getByText("Ready to trade")).toBeDefined();
   });
 
   it("shows token symbol in PERP format", () => {

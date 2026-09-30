@@ -109,7 +109,7 @@ describe("wizard wiring (code-level control)", () => {
   const src = readFileSync(path.join(root, "hooks/useCreateMarket.ts"), "utf8");
   it("M3a funds nothing but the LP deposit; M4a carries the vault + both deposits", () => {
     expect(src).toMatch(/instructions: \[depositIx\],\s*\n\s*computeUnits: \d[\d_]*,\s*\n\s*signers: \[\],\s*\n\s*\};\s*\n\s*\n\s*\/\/ M3b/);
-    expect(src).toMatch(/label: "Creating the Earn vault",\s*\n\s*instructions: earnVaultIxs/);
+    expect(src).toMatch(/label: WIZARD_STEP_COPY\.earnVault,\s*\n\s*instructions: earnVaultIxs/);
     expect(src).not.toMatch(/TopUpBackingBucket\(|encodeTopUpBackingBucket/);
   });
   it("sequential Step 4 seeds via the helper and tells old-flow markets apart", () => {

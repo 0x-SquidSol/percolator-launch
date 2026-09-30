@@ -1,4 +1,5 @@
 "use client";
+import { UNSUPPORTED_POOL_COPY } from "@/lib/wizard-copy";
 
 import { DEFAULT_JUNIOR_FLOOR_BPS, validateP3Wizard, wizardP3Params } from "@/lib/limits/p3-wizard";
 import { COPY as LIMITS_COPY } from "@/lib/limits/copy";
@@ -535,10 +536,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
   const registrable = !isDevnet || resolvedOracleType === "keeper";
   const notRegistrableReason = registrable
     ? null
-    : (quickLaunch.error ??
-      "This token has no supported DEX pool (Pump.fun or Meteora), so the keeper " +
-        "cannot price it. A market launched now would never be listed or priced. " +
-        "Pick a token that trades on a supported pool.");
+    : (quickLaunch.error ?? UNSUPPORTED_POOL_COPY);
 
   /**
    * The oracle fields the wizard must hold for the detected oracle. Written by
@@ -1035,6 +1033,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
         keeperRegistering={createState.keeperRegistering}
         onRetryKeeperRegistration={handleRetryKeeperRegistration}
         priceFeedRequired={createState.priceFeedRequired}
+        keeperPhase={createState.keeperPhase ?? null}
       />
     );
   }

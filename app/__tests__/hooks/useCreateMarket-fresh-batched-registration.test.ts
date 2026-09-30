@@ -25,92 +25,42 @@ describe("useCreateMarket fresh batched registration", () => {
     expect(freshBatchSource.length).toBeGreaterThan(1000);
   });
 
-  it("registers in exactly ONE call, with no dead markets-challenge signature", () => {
-    // Registration was consolidated onto keeper-register, which writes the
-    // markets row under the on-chain marketauth proof. POST /api/markets and
-    // its separate nonce+signature challenge are gone — that challenge cost the
-    // user a second wallet prompt whose result fed nothing.
+  it("UX WP-7: NO signMessage prompt — the proof is a memo inside M1 (the InitMarket tx)", () => {
     expect(freshBatchSource).not.toContain('fetch("/api/markets"');
-    expect(freshBatchSource).not.toContain("marketsNonce");
-    expect(freshBatchSource).not.toContain("marketsSignature");
     expect(freshBatchSource).not.toContain("/api/markets/challenge");
-
-    // The keeper proof is the one remaining signature.
-    //
-    // #2505 / #2468: this used to look for the literal "keeper-register:" — the
-    // old message, which bound the slab and nothing else. The proof is now built
-    // by the shared module that binds the registration PARAMETERS, so assert on
-    // the builder rather than on a string that must no longer appear.
-    expect(freshBatchSource).toContain("buildKeeperRegisterProofMessage");
-    expect(freshBatchSource).not.toContain("keeper-register:${");
+    expect(freshBatchSource).not.toContain("wallet.signMessage(");
+    expect(freshBatchSource).not.toContain("buildKeeperRegisterProofMessage");
+    // the memo is built from the exact fields the registration POSTs and rides in M1
+    expect(freshBatchSource).toContain("await buildKeeperRegisterMemoIx(walletPk, keeperMemoParams(keeperRequestBase))");
+    expect(freshBatchSource).toMatch(/buildM1Instructions\(\{[\s\S]*memo: keeperMemoIx,/);
+    // the creation tx signature is kept as the proof
+    expect(freshBatchSource).toContain("if (keeperRequestBase) saveProofTx(slabPk.toBase58(), m1Sig);");
   });
 
-  it("does not publish the market until it actually holds collateral", () => {
-    // THE ZOMBIE GUARD. Registration used to fire right after M1, so any launch
-    // that died later (steps 4-5 never ran) still published a listed, unfunded,
-    // untradeable market — and because "create the market" always succeeds,
-    // EVERY failed launch left one behind. That is what happened to the ANSEM
-    // market: it registered, then M3a never landed.
-    //
-    // Registration must therefore come AFTER the M3a broadcast
-    // (DepositCollateral + backing seed).
-    // keeper-register now writes the markets row, so THE REGISTRATION CALL is
-    // what must come after M3a. It used to be created before M2, which was safe
-    // only while it wrote nothing but the keeper's blob.
-    //
-    // #2464 TIGHTENED THIS. The call used to be STARTED here and awaited later,
-    // so it was in flight — and could have completed — while the insurance check
-    // was still deciding whether the launch had failed. It is now a thunk
-    // (`startKeeperRegister`) INVOKED after that check, so assert on the
-    // invocation, which is the moment the request actually leaves.
-    // Tail indices are by descriptor since round 4 (M3a is skipped and M4p inserted under P3).
-    const m3a = freshBatchSource.indexOf("const m3aSig = await broadcastTailTx(tailIdx(m3aDescriptor))");
-    const register = freshBatchSource.indexOf("await startKeeperRegister()");
-    expect(m3a).toBeGreaterThanOrEqual(0);
-    expect(register).toBeGreaterThan(m3a);
-
-    // And the point of #2464: it must also come after the insurance verification,
-    // so a launch that throws there publishes nothing.
-    const insuranceGate = freshBatchSource.indexOf("Insurance fund was not seeded");
-    expect(insuranceGate).toBeGreaterThanOrEqual(0);
-    expect(register).toBeGreaterThan(insuranceGate);
+  it("the ZOMBIE GUARD, now stricter: nothing registers until the WHOLE launch has landed", () => {
+    // Registration writes the markets row, so it must never run for a launch that dies later
+    // (ANSEM). It is no longer called inside the batch at all: the hook starts the background
+    // loop only on a "success" outcome (after M3a, the insurance check, M4a, M4p, M4b).
+    expect(freshBatchSource).not.toContain("registerMarketWithKeeper(");
+    expect(freshBatchSource).not.toContain("postKeeperRegistration(");
+    expect(freshBatchSource).not.toContain("startKeeperLoop(");
+    const createEntry = hookSource.indexOf("async (params: CreateMarketParams, retryFromStep?: number) => {");
+    const success = hookSource.indexOf('if (outcome.status === "success") {', createEntry);
+    const start = hookSource.indexOf("startKeeperLoop(params, slabKp.publicKey.toBase58())", createEntry);
+    expect(success).toBeGreaterThan(createEntry);
+    expect(start).toBeGreaterThan(success);
+    expect(start - success).toBeLessThan(300);
   });
 
-  it("keeps keeper-registration before M4b, where marketauth still works", () => {
-    // Deliberately NOT deferred like the DB registration: StakeInitPool (now in
-    // M4b — M4 was split into M4a/M4b on 2026-09-25 to fix a tester-reported
-    // "Step 5 Create Earn vault — Internal error" caused by the old single M4
-    // bundling CreateLpVault + the entire stake-pool tail into one oversized,
-    // fragile transaction) rotates marketauth away from the deployer, and
-    // keeper-register's H1 check requires marketauth to still equal the
-    // deployer. Pinning the order stops someone "fixing" the asymmetry and
-    // silently breaking keeper registration.
-    //
-    // #2464 narrowed the window from "after M3a" to "after the insurance check",
-    // but this upper bound is unchanged and is the reason it could not move any
-    // later. Asserting on the INVOCATION, not the thunk's declaration.
-    const keeper = freshBatchSource.indexOf("await startKeeperRegister()");
+  it("the stake tail order is unchanged (M4a -> M4p -> M4b); registration no longer constrains it", () => {
+    // The proof is the historical creation tx, not the live marketauth, so StakeInitPool rotating
+    // marketauth no longer matters to registration.
     const m4a = freshBatchSource.indexOf("const m4aSig = await broadcastTailTx(tailIdx(m4aDescriptor))");
     const m4b = freshBatchSource.indexOf("const m4bSig = await broadcastTailTx(tailIdx(m4bDescriptor))");
-    expect(keeper).toBeGreaterThanOrEqual(0);
-    expect(m4a).toBeGreaterThan(keeper);
-    // M4a (CreateLpVault) does not rotate marketauth; M4b (StakeInitPool) does.
-    // Both must still follow keeper-register — M4a because CreateLpVault is
-    // itself marketauth-gated, M4b for the reason above — and M4b must follow
-    // M4a (CreateLpVault must land before the marketauth it depends on rotates).
-    expect(m4b).toBeGreaterThan(m4a);
-    // P3 (round 4): M4p (InitVaultLp path A + junior deposit) needs the creator as marketauth
-    // and the vault from M4a, so it sits strictly between them.
     const m4p = freshBatchSource.indexOf("const m4pSig = await broadcastTailTx(tailIdx(m4pDescriptor))");
+    expect(m4a).toBeGreaterThan(0);
     expect(m4p).toBeGreaterThan(m4a);
     expect(m4b).toBeGreaterThan(m4p);
-  });
-
-  it("keeps registration to a single call site in the batched path", () => {
-    // Two registration writes to two stores is what let the creator's metadata
-    // lose to the indexer. One call, one store.
-    const calls = freshBatchSource.match(/registerMarketWithKeeper\(/g) ?? [];
-    expect(calls.length).toBe(1);
   });
 });
 

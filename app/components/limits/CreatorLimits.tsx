@@ -31,6 +31,7 @@ import type { VaultLpValue } from "@/lib/limits/vault-tranche";
 import { formatTokenAmount } from "@/lib/format";
 import { LimitsNotice, LimitsRow } from "./LimitsRow";
 import { fmtQ } from "./OrderTicketLimits";
+import { CREATOR_STAKE_COPY } from "@/lib/wizard-copy";
 
 export const WizardTranchePanel: FC<{
   juniorUnits: number;
@@ -53,13 +54,16 @@ export const WizardTranchePanel: FC<{
   const caps = projectCreatorCaps(j, k, floor);
   const fmt = (a: bigint) => `${formatTokenAmount(a, decimals)} ${collateralSymbol}`;
   return (
-    <div data-testid="limits-wizard-tranche" data-floor-bps={String(floor)} className="mt-4 border border-[var(--border)] bg-[var(--bg-elevated)] p-3 space-y-0.5">
-      <p className="mb-1 text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--text-muted)]">{COPY.p3Wizard.title}</p>
-      <p className="pb-1 text-[9px] leading-relaxed text-[var(--text-secondary)]">{COPY.p3Wizard.explain}</p>
-      <LimitsRow label={COPY.p3Wizard.amountLabel} value={fmt(j)} testId="limits-wizard-junior-amount" />
-      <div className="flex items-center justify-between py-0.5 text-[10px]">
-        <span className="text-[var(--text-secondary)] uppercase tracking-[0.08em]">{COPY.p3Wizard.floorLabel}</span>
-        <span className="flex gap-1" role="radiogroup" aria-label={COPY.p3Wizard.floorLabel}>
+    // UX WP-7 (§4.6): "Your creator stake" in plain words; the protocol detail sits in Details.
+    <div data-testid="limits-wizard-tranche" data-floor-bps={String(floor)} className="mt-4 border border-[var(--border)] bg-[var(--bg-elevated)] p-3 space-y-1.5">
+      <div className="flex items-baseline justify-between" data-testid="limits-wizard-junior-amount">
+        <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--text-secondary)]">{CREATOR_STAKE_COPY.title}</p>
+        <p className="font-mono text-[13px] tabular-nums text-[var(--text)]">{fmt(j)}</p>
+      </div>
+      <p className="text-[12px] leading-snug text-[var(--text-secondary)]">{CREATOR_STAKE_COPY.explain}</p>
+      <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+        <span className="uppercase tracking-[0.08em] text-[var(--text-secondary)]">{CREATOR_STAKE_COPY.floorLabel}</span>
+        <span className="flex gap-1" role="radiogroup" aria-label={CREATOR_STAKE_COPY.floorLabel}>
           {WIZARD_FLOOR_CHOICES_BPS.map((b) => (
             <button
               key={b}
@@ -70,7 +74,7 @@ export const WizardTranchePanel: FC<{
               data-value={String(b)}
               disabled={!onFloorChange || b > maxFloor}
               onClick={() => onFloorChange?.(b)}
-              className={`border px-1.5 py-0.5 font-mono text-[9px] tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+              className={`border px-1.5 py-0.5 font-mono text-[11px] tabular-nums transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                 b === floor ? "border-[var(--accent)]/60 text-[var(--accent)]" : "border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text)]"
               }`}
             >
@@ -78,26 +82,29 @@ export const WizardTranchePanel: FC<{
             </button>
           ))}
         </span>
+        <span className="text-[var(--text-secondary)]">{CREATOR_STAKE_COPY.floorSuffix}</span>
       </div>
-      <LimitsRow
-        label="Max LP exposure"
-        tooltip="The protocol caps the LP's open exposure at your junior capital times the market's max leverage."
-        value={fmt(caps.maxLpNotionalAtoms)}
-      />
-      <LimitsRow
-        label="Max Earn deposits"
-        tooltip={`Earn deposits are capped so your junior stays at least ${floor / 100}% of them.`}
-        value={fmt(caps.maxSeniorAtoms)}
-      />
-      <p className="pt-1 text-[9px] text-[var(--text-dim)]">{COPY.p3Wizard.minHint(fmt(juniorFloorAtoms(seedNav, floor)).replace(` ${collateralSymbol}`, ""), collateralSymbol)}</p>
+      <p className="text-[11px] text-[var(--text-secondary)]">{CREATOR_STAKE_COPY.floorHint}</p>
+      <p data-testid="limits-wizard-pinned-matcher" className="text-[11px] text-[var(--text-secondary)]" title={CREATOR_STAKE_COPY.limitsTooltip}>
+        {CREATOR_STAKE_COPY.limits} <span aria-hidden="true">ⓘ</span>
+      </p>
       {issue && (
-        <p data-testid="limits-wizard-junior-issue" data-issue={issue} className="text-[9px] text-[var(--short)]">
-          {COPY.p3Wizard.issue[issue]}
+        <p data-testid="limits-wizard-junior-issue" data-issue={issue} className="text-[11px] text-[var(--warning)]">
+          {issue === "junior-zero"
+            ? CREATOR_STAKE_COPY.issueEmpty
+            : issue === "junior-below-floor"
+              ? CREATOR_STAKE_COPY.issueMin(fmt(juniorFloorAtoms(seedNav, floor)).replace(` ${collateralSymbol}`, ""), String(floor / 100))
+              : COPY.p3Wizard.issue[issue]}
         </p>
       )}
-      <p data-testid="limits-wizard-pinned-matcher" className="text-[9px] leading-relaxed text-[var(--text-secondary)]">
-        {COPY.p3Wizard.pinned}
-      </p>
+      <details className="text-[11px] text-[var(--text-secondary)]">
+        <summary className="cursor-pointer">Details</summary>
+        <div className="mt-1 space-y-0.5">
+          <LimitsRow label="Largest Earn deposits" tooltip={`Earn deposits are capped so your stake stays at least ${floor / 100}% of them.`} value={fmt(caps.maxSeniorAtoms)} />
+          <LimitsRow label="Largest open exposure" value={fmt(caps.maxLpNotionalAtoms)} />
+          <p className="pt-1 leading-snug">{COPY.p3Wizard.explain}</p>
+        </div>
+      </details>
     </div>
   );
 };

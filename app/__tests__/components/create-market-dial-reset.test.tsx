@@ -277,7 +277,7 @@ describe("dial reset when a detection result lands on step 2 (#2588)", () => {
     createState = { ...IDLE, step: 2, error: "blockhash expired", slabAddress: POOL };
     view!.rerender(<CreateMarketWizard />); await flush();
     gateDex.release(); await flush(); // medium tier: 1538 bps, 10 bps fee
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /retry step/i })); }); await flush();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /^Continue$/i })); }); await flush();
     expect(create).toHaveBeenCalledTimes(2);
     expect(sentParams(create.mock.calls[1][0])).toEqual(first);
   });

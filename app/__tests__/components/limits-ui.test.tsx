@@ -296,7 +296,8 @@ describe("Creator panels", () => {
   it("wizard tranche panel (P3 on) / hidden (off)", () => {
     __setLimitsFlagsForTest(ALL_ON);
     const { getByTestId, unmount } = render(<WizardTranchePanel juniorUnits={1000} initialMarginBps={1000} decimals={6} collateralSymbol="USDC" />);
-    expect(getByTestId("limits-wizard-tranche").textContent).toContain("Max LP exposure10000 USDC");
+    expect(getByTestId("limits-wizard-tranche").textContent).toContain("Largest open exposure10000 USDC"); // UX WP-7: in Details
+    expect(getByTestId("limits-wizard-tranche").textContent).toContain("Your creator stake");
     unmount();
     __setLimitsFlagsForTest({ ...ALL_ON, p3: false });
     const { container } = render(<WizardTranchePanel juniorUnits={1000} initialMarginBps={1000} decimals={6} collateralSymbol="USDC" />);

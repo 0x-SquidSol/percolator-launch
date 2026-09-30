@@ -77,7 +77,8 @@ describe("WizardTranchePanel (P3 wizard)", () => {
     fireEvent.click(btns[2]);
     expect(onFloor).toHaveBeenCalledWith(3_000);
     expect(getByTestId("limits-wizard-tranche").dataset.floorBps).toBe("2000");
-    expect(getByTestId("limits-wizard-pinned-matcher").textContent).toBe(COPY.p3Wizard.pinned);
+    // UX WP-7 (§4.6): the protocol-set limits in plain words (no "matcher" / "vAMM").
+    expect(getByTestId("limits-wizard-pinned-matcher").textContent).toMatch(/^Market limits at launch: up to \$5,000 per trade, \$25,000 total exposure\./);
   });
   it("kill switch: hidden when NEXT_PUBLIC_LIMITS_P3_WIZARD=0", () => {
     __setLimitsFlagsForTest(ALL_ON);
