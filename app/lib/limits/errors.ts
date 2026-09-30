@@ -28,21 +28,23 @@ export function originOf(originProgramId: string | null, wrapperId: string, matc
 }
 
 /**
- * Copy for a limits error, or null. With an UNKNOWN origin (no program log —
- * Solflare's bare InstructionError JSON), 66..71 are still mapped because no
- * other program in a trade tx uses them (SPL token codes stop at 20, the
- * matcher's are 8000+); 8002..8005 likewise are matcher-only numbers.
+ * Copy for a limits error, or null. A Custom(n) is decoded ONLY by the program that raised it
+ * (error-codes-4b1a5d30.md: CPI callees reuse the same numbers): wrapper codes (P1 66..71, P3)
+ * need a wrapper origin, matcher codes (8002..8005) a matcher origin. An UNKNOWN origin (no
+ * program log, e.g. a bare Solflare InstructionError JSON) is not guessed.
  */
 export function limitsErrorCopy(i: LimitsErrorInput): string | null {
   if (i.code === null) return null;
   const origin = originOf(i.originProgramId, i.wrapperId, i.matcherId);
-  if (origin === "other") return null;
-  if (origin !== "matcher" && P1_ERROR_MESSAGES[i.code]) return P1_ERROR_MESSAGES[i.code];
-  if (origin !== "matcher" && i.p3Enabled) {
-    const p3 = p3ErrorCopyByCode()[i.code];
-    if (p3) return p3;
+  if (origin === "wrapper") {
+    if (P1_ERROR_MESSAGES[i.code]) return P1_ERROR_MESSAGES[i.code];
+    if (i.p3Enabled) {
+      const p3 = p3ErrorCopyByCode()[i.code];
+      if (p3) return p3;
+    }
+    return null;
   }
-  if (origin !== "wrapper" && P2_ERROR_COPY[i.code]) return P2_ERROR_COPY[i.code];
+  if (origin === "matcher" && P2_ERROR_COPY[i.code]) return P2_ERROR_COPY[i.code];
   return null;
 }
 
@@ -60,3 +62,7 @@ export function isSizeLimitError(code: number | null): boolean {
 export function p3LimitsErrorCopy(code: number): string | null {
   return p3ErrorCopyByCode()[code] ?? null;
 }
+
+// UX WP-1: the one user-message resolver (§5.3) lives in ./user-message and is re-exported here.
+export { resolveUserMessage, parseFailure } from "./user-message";
+export type { UserMessage, MessageContext, StatusVariant, UserMessageAction } from "./user-message";

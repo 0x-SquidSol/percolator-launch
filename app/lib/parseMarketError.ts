@@ -6,6 +6,7 @@
 
 import { P3_ERR } from "@/lib/limits/constants";
 import { WRAPPER_ERR } from "@/lib/wrapper-errors";
+import { keepAppMessage, resolveUserMessage } from "@/lib/limits/user-message";
 import { decodeError } from "@percolatorct/sdk";
 import type { CreateStepKind } from "@/lib/create-market-v18";
 
@@ -251,7 +252,7 @@ function parseMarketCreationErrorBase(error: unknown, context?: MarketCreationEr
       if (override) return override;
       const sdkErr = decodeError(code);
       if (sdkErr) return `${sdkErr.hint}`;
-      return `Program error (code ${code}). The on-chain program rejected the transaction.`;
+      return resolveUserMessage(error, { surface: "create" }).body;
     }
   }
 
@@ -294,9 +295,10 @@ function parseMarketCreationErrorBase(error: unknown, context?: MarketCreationEr
   }
 
   // Fallback: truncate long messages but keep them informative
+  // UX WP-1: raw chain text never reaches the user; the resolver keeps it in Details.
   if (msg.length > 200) {
-    return `Transaction failed: ${msg.slice(0, 180)}... Click Retry or Start Over.`;
+    return resolveUserMessage(error, { surface: "create" }).body;
   }
 
-  return `Transaction failed: ${msg}`;
+  return keepAppMessage(msg) === msg ? msg : resolveUserMessage(error, { surface: "create" }).body;
 }

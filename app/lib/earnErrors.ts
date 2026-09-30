@@ -1,7 +1,5 @@
-import { extractErrorCode, humanizeError } from "@/lib/errorMessages";
-import { COPY, P3_ERROR_COPY_BY_NAME } from "@/lib/limits/copy";
+import { resolveUserMessage, type MessageContext, type UserMessage } from "@/lib/limits/user-message";
 
-import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 /**
  * User-facing copy for a failed Earn (LP vault) action.
  *
@@ -37,39 +35,17 @@ export interface EarnErrorContext {
   p3Bound?: boolean;
 }
 
+/** The full message (title, body, action, details) for a failed Earn action (§5.3). */
+export function earnUserMessage(err: unknown, action: EarnAction, ctx: EarnErrorContext & Omit<MessageContext, "surface"> = {}): UserMessage {
+  return resolveUserMessage(err, { ...ctx, surface: action === "deposit" ? "earn-deposit" : "earn-withdraw" });
+}
+
+/**
+ * The one line for a failed Earn action. UX WP-1: delegates to the single resolver
+ * (lib/limits/user-message.ts), so every P3 code (74/84/85/87/88/89, 21 on a bound claim)
+ * and every wallet/network condition gets its plain line; nothing reaches the user as
+ * "Program error" / "Custom(n)" (those are in the StatusLine's Details).
+ */
 export function earnErrorMessage(err: unknown, action: EarnAction, ctx: EarnErrorContext = {}): string {
-  const raw = err instanceof Error ? err.message : typeof err === "string" ? err : "";
-  if (!raw) return "Transaction failed";
-  if (/NotEnoughAccountKeys|insufficient account keys/i.test(raw)) {
-    return "The app sent an outdated instruction layout for this vault. Please refresh the page and try again; if it persists, report it — your funds have not moved.";
-  }
-  const code = extractErrorCode(raw);
-  switch (code) {
-    case WRAPPER_ERR.EngineLockActive:
-      return action === "deposit"
-        ? "This market's Earn vault is temporarily locked: its backing pot can't accept new deposits right now (the market is recovering from a realized loss or its backing window has lapsed). Nothing was deposited. It clears once the market is repaired by the keeper — try again later."
-        : ctx.p3Bound
-          ? // E2E B24: on a P3 bound vault 21 fires with NO open positions (suspected: the
-            // payout's earnings portion exceeds the pot's fee earnings, which are 0 on P3).
-            // Cause unconfirmed by the P3 lane, so the copy asserts none.
-            COPY.earnClaimRefusedP3
-          : "Can't pay this redemption out yet: part of the vault's backing is securing traders' open unrealized PnL, and paying the full amount would leave it under-backed. It becomes claimable as those positions close. Your LP shares stay safe in escrow until then.";
-    // d119eebd senior draw (P3 only; no other program in an Earn tx uses these codes).
-    case WRAPPER_ERR.VaultLpSeniorDrawRequired:
-      return P3_ERROR_COPY_BY_NAME.VaultLpSeniorDrawRequired;
-    case WRAPPER_ERR.VaultLpPausedForSeniorDraw:
-      return P3_ERROR_COPY_BY_NAME.VaultLpPausedForSeniorDraw;
-    case WRAPPER_ERR.VaultLpRedeemNeedsRecall:
-      return action === "claim" ? P3_ERROR_COPY_BY_NAME.VaultLpRedeemNeedsRecall : humanizeError(raw);
-    case WRAPPER_ERR.EngineStale:
-      return "The market's engine is behind (it hasn't been cranked recently), so the vault can't be priced safely. Nothing moved. It clears once the market is cranked — try again in a moment.";
-    case WRAPPER_ERR.LpVaultCooldownActive:
-      return "Your redemption cooldown hasn't finished yet — claim it once the countdown reaches zero.";
-    case WRAPPER_ERR.LpVaultOiReservationViolated:
-      return action === "claim"
-        ? "Claiming this much now would leave too little backing covering the market's open interest. Try a smaller redemption, or wait for open interest to fall."
-        : humanizeError(raw);
-    default:
-      return humanizeError(raw);
-  }
+  return earnUserMessage(err, action, ctx).body;
 }

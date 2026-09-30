@@ -462,7 +462,9 @@ export function humanizeError(rawMsg: string, context?: "trade"): string {
     if (code === WRAPPER_ERR.InvalidInstruction && context === "trade") {
       return "The trade was rejected by the program (invalid instruction) — usually the price moved past your slippage tolerance, or a trade parameter was off. Try again with the same size and leverage.";
     }
-    if (ERROR_CODE_MAP[code]) {
+    // error-codes-4b1a5d30.md: a Custom(n) is the WRAPPER's code only when the wrapper raised
+    // it. An unattributed code (no "Program X failed" line) or another program's is not guessed.
+    if (origin === WRAPPER_PROGRAM_ID && ERROR_CODE_MAP[code]) {
       return ERROR_CODE_MAP[code];
     }
   }

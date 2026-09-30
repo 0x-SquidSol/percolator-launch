@@ -93,6 +93,8 @@ import { defaultFeeCapMarginBps } from "@/lib/limits/fee-channel";
 import type { FillResult } from "@/lib/limits/fill-result";
 import { OrderTicketLimits } from "@/components/limits/OrderTicketLimits";
 import { LimitsNotice } from "@/components/limits/LimitsRow";
+import { StatusLine } from "@/components/ui/StatusLine";
+import { resolveUserMessage, type UserMessage } from "@/lib/limits/user-message";
 import { COPY } from "@/lib/limits/copy";
 import { decodeMarketEngineView } from "@/lib/limits/decode";
 import { isAdlReduceOnly } from "@/lib/limits/adl-reduce-only";
@@ -399,6 +401,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const [lastSig, setLastSig] = useState<string | null>(null);
   const [tradePhase, setTradePhase] = useState<"idle" | "submitting" | "confirming" | "error">("idle");
   const [humanError, setHumanError] = useState<string | null>(null);
+  /** UX WP-1: a refusal the resolver mapped (simulation-gated: the wallet never opened). */
+  const [refusal, setRefusal] = useState<UserMessage | null>(null);
   const [engineLockError, setEngineLockError] = useState<string | null>(null);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [confirmSnapshot, setConfirmSnapshot] = useState<{
@@ -593,6 +597,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     setLeverageText("1");
     setLastSig(null);
     setHumanError(null);
+    setRefusal(null);
     setEngineLockError(null);
     setTradePhase("idle");
   }, [slabAddress]);
@@ -620,6 +625,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     (val: string) => {
       const cleaned = sanitizeDecimalInput(val);
       setSizeInput(cleaned);
+      setRefusal(null); // a refusal is about the size that was submitted; editing clears it
       recomputeFromSize(cleaned, sizeUnit, leverage);
     },
     [sizeUnit, leverage, recomputeFromSize],
@@ -925,6 +931,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     }
 
     setHumanError(null);
+    setRefusal(null);
 setEngineLockError(null);
     setTradePhase("submitting");
     try {
@@ -1009,6 +1016,27 @@ setEngineLockError(null);
       // P0b: refine 19/21/49 with live market health (LP depleted / resolved /
       // bankruptcy / repairable) — lib/market-error.ts. Wallet lock and program
       // Unauthorized(8) are never refined into "locked".
+      // UX WP-1: one resolver. A mapped refusal (usually caught by sendTx's pre-sign
+      // simulation, so the wallet never opened) renders as ONE StatusLine with its next
+      // step ("Use {max}"); only unmapped failures fall back to the legacy explanations.
+      const sideMaxQ = ticketLimits.sideLimits?.[direction]?.maxQ ?? null;
+      const um = resolveUserMessage(e, {
+        surface: "trade",
+        side: direction,
+        symbol: marketInfo?.symbol ?? undefined,
+        maxNow: sideMaxQ !== null && sideMaxQ > 0n && sideMaxQ < UNLIMITED_CAPACITY ? fmtQ(sideMaxQ) : undefined,
+        health: { lpDepleted, adlReduceOnly, resolved: marketResolved },
+      });
+      if (um.quiet) {
+        setTradePhase("idle");
+        return;
+      }
+      if (um.kind !== "unmapped") {
+        setRefusal(um);
+        setTradePhase("error");
+        setTimeout(() => setTradePhase("idle"), 1200);
+        return;
+      }
       const friendlyMsg = safeExplainMarketTxError(msg, "open", marketHealth) ?? humanizeError(msg, "trade");
     if (isEngineLockError(msg)) {
       setEngineLockError(friendlyMsg);
@@ -1734,7 +1762,20 @@ setEngineLockError(null);
           enabled): retrying clears it (see the submit handler) and re-attempts.
           engineLockError takes precedence over humanError since a lock failure
           sets both. */}
-      {engineLockError ? (
+      {refusal ? (
+        <StatusLine
+          className="mt-2"
+          message={refusal}
+          legacyTestId="trade-error"
+          onAction={(a) => {
+            const q = ticketLimits.sideLimits?.[direction]?.maxQ;
+            if (a.id === "use-max" && q && q > 0n && livePriceE6 && livePriceE6 > 0n) {
+              handleSizeChange(sizeQToInput(q, sizeUnit, livePriceE6));
+              setRefusal(null);
+            }
+          }}
+        />
+      ) : engineLockError ? (
         <div data-testid="trade-error" data-kind="engine-lock" className="mt-2 rounded-none border border-[var(--warning)]/30 bg-[var(--warning)]/5 px-3 py-2">
           <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--warning)]">Market temporarily locked</p>
           <p className="mt-1 text-[10px] leading-relaxed text-[var(--text-secondary)]">{engineLockError}</p>

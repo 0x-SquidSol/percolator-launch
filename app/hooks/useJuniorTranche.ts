@@ -14,6 +14,7 @@ import { createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAd
 import { useConnectionCompat, useWalletCompat } from '@/hooks/useWalletCompat';
 import { useSlabState } from '@/components/providers/SlabProvider';
 import { sendTx } from '@/lib/tx';
+import { keepAppMessage, plainMessage } from '@/lib/limits/user-message';
 import { assertDepositWithinBalance, readTokenBalance } from '@/lib/deposit-guard';
 import { decodeLpVaultRegistryDomain, decodeVaultLpState } from '@/lib/limits/decode';
 import { buildJuniorResolvedReleaseIxs, juniorReleaseNeedsHarvest } from '@/lib/limits/junior-resolved-release';
@@ -83,8 +84,8 @@ export function useJuniorTranche(slabAddress: string | null) {
               ];
         return await sendTx({ connection, wallet, instructions: ixs });
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        setError(msg);
+        // UX WP-1 (JR-2): the one resolver, never the raw "custom program error: 0x4b".
+        setError(plainMessage(e, { surface: 'creator-stake' }, keepAppMessage));
         throw e;
       } finally {
         setBusy(false);
@@ -108,8 +109,8 @@ export function useJuniorTranche(slabAddress: string | null) {
         const ixs = buildJuniorResolvedReleaseIxs(c, amount, juniorReleaseNeedsHarvest(c.marketData, c.domain));
         return await sendTx({ connection, wallet, instructions: ixs });
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        setError(msg);
+        // UX WP-1 (JR-2): the one resolver, never the raw "custom program error: 0x4b".
+        setError(plainMessage(e, { surface: 'creator-stake' }, keepAppMessage));
         throw e;
       } finally {
         setBusy(false);

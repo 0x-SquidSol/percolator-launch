@@ -103,6 +103,95 @@ export interface SendTxParams {
 }
 
 /**
+ * UX WP-1 (SH-1): a simulation refused the transaction, so the wallet was NOT opened.
+ * Carries what the message resolver (lib/limits/user-message.ts) needs; the message keeps
+ * the historic "Transaction simulation failed: …" prefix so older string classifiers work.
+ */
+export class SimulationRefusal extends Error {
+  readonly err: unknown;
+  readonly logs: string[];
+  /** Custom program error code, when the refusal is one. */
+  readonly code: number | null;
+  /** Index of the failing instruction in the simulated list, when known. */
+  readonly instructionIndex: number | null;
+  /** Program id of the failing instruction (from the list, else the "Program X failed" log). */
+  readonly programId: string | null;
+  constructor(err: unknown, logs: readonly string[] = [], instructions: readonly TransactionInstruction[] = []) {
+    const failing = logs.filter((l) => l.includes("Error") || l.includes("failed") || l.includes("Program log:")).slice(-3).join("\n");
+    super(`Transaction simulation failed: ${JSON.stringify(err)}` + (failing ? `\n${failing}` : ""));
+    this.name = "SimulationRefusal";
+    this.err = err;
+    this.logs = [...logs];
+    const ie = (err as { InstructionError?: unknown } | null)?.InstructionError;
+    let index: number | null = null;
+    let code: number | null = null;
+    if (Array.isArray(ie) && typeof ie[0] === "number") {
+      index = ie[0];
+      const inner = ie[1] as { Custom?: unknown } | null;
+      if (inner && typeof inner === "object" && typeof inner.Custom === "number") code = inner.Custom;
+    }
+    this.code = code;
+    this.instructionIndex = index;
+    // The INNERMOST failing program owns the code (a CPI failure is logged by the callee
+    // first): take the first "Program X failed" log line, else the failing instruction.
+    let pid: string | null = null;
+    for (const l of logs) {
+      const m = /^Program (\w{32,44}) failed/.exec(l);
+      if (m) { pid = m[1]; break; }
+    }
+    if (!pid && index !== null && instructions[index]) pid = instructions[index].programId.toBase58();
+    this.programId = pid;
+  }
+}
+
+export interface GateSimulation {
+  consumed: number | null;
+  err: unknown;
+  logs: string[];
+  /** The simulation RPC itself failed: no verdict (never a refusal). */
+  rpcFailed: boolean;
+  /** The exact list simulated (compute-budget prefix included), for refusal attribution. */
+  simulated: TransactionInstruction[];
+}
+
+/**
+ * Simulate `instructions` under the full heap frame and the maximum CU limit (sigVerify off,
+ * blockhash replaced). One RPC gives both the CU sizing and the pre-sign verdict (SH-1).
+ */
+export async function simulateForGate(
+  connection: Connection,
+  feePayer: PublicKey,
+  instructions: TransactionInstruction[],
+): Promise<GateSimulation> {
+  const simulated = [
+    ComputeBudgetProgram.requestHeapFrame({ bytes: 131072 }),
+    ComputeBudgetProgram.setComputeUnitLimit({ units: MAX_TX_COMPUTE_UNITS }),
+    ...instructions,
+  ];
+  try {
+    const tx = new Transaction();
+    for (const ix of simulated) tx.add(ix);
+    tx.feePayer = feePayer;
+    tx.recentBlockhash = "11111111111111111111111111111111"; // placeholder; replaceRecentBlockhash
+    const sim = await connection.simulateTransaction(new VersionedTransaction(tx.compileMessage()), {
+      replaceRecentBlockhash: true,
+      sigVerify: false,
+      commitment: "confirmed",
+    });
+    const u = sim.value.unitsConsumed;
+    return {
+      consumed: !sim.value.err && typeof u === "number" && u > 0 ? u : null,
+      err: sim.value.err ?? null,
+      logs: sim.value.logs ?? [],
+      rpcFailed: false,
+      simulated,
+    };
+  } catch {
+    return { consumed: null, err: null, logs: [], rpcFailed: true, simulated };
+  }
+}
+
+/**
  * Units consumed by `instructions` under the full heap frame and the maximum CU limit
  * (sigVerify off, blockhash replaced). null when the simulation errors or the RPC fails:
  * the caller then uses its cap, and sendTx's own simulation surfaces the real error.
@@ -112,32 +201,14 @@ export async function simulateConsumedUnits(
   feePayer: PublicKey,
   instructions: TransactionInstruction[],
 ): Promise<number | null> {
-  try {
-    const tx = new Transaction();
-    tx.add(ComputeBudgetProgram.requestHeapFrame({ bytes: 131072 }));
-    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: MAX_TX_COMPUTE_UNITS }));
-    for (const ix of instructions) tx.add(ix);
-    tx.feePayer = feePayer;
-    tx.recentBlockhash = "11111111111111111111111111111111"; // placeholder; replaceRecentBlockhash
-    const sim = await connection.simulateTransaction(new VersionedTransaction(tx.compileMessage()), {
-      replaceRecentBlockhash: true,
-      sigVerify: false,
-      commitment: "confirmed",
-    });
-    if (sim.value.err) return null;
-    const u = sim.value.unitsConsumed;
-    return typeof u === "number" && u > 0 ? u : null;
-  } catch {
-    return null;
-  }
+  return (await simulateForGate(connection, feePayer, instructions)).consumed;
 }
 
 /**
- * Simulate `tx` (unsigned or partially signed) and throw a
- * "Transaction simulation failed: …" error carrying the program error and the
- * failing log lines if it would revert. RPC errors during the simulation
- * itself are logged and do NOT throw — the broadcast's own preflight still
- * guards the send.
+ * Simulate `tx` (unsigned or partially signed) and throw a SimulationRefusal ("Transaction
+ * simulation failed: …", carrying the program error and the failing log lines) if it would
+ * revert. RPC errors during the simulation itself are logged and do NOT throw — the
+ * broadcast's own preflight still guards the send.
  */
 export async function presimulateOrThrow(
   connection: Connection,
@@ -151,20 +222,10 @@ export async function presimulateOrThrow(
       commitment: "confirmed",
     });
     if (simResult.value.err) {
-      const logs = simResult.value.logs ?? [];
-      const errorLog = logs
-        .filter((l: string) => l.includes("Error") || l.includes("failed") || l.includes("Program log:"))
-        .slice(-3)
-        .join("\n");
-      throw new Error(
-        `Transaction simulation failed: ${JSON.stringify(simResult.value.err)}` +
-        (errorLog ? `\n${errorLog}` : ""),
-      );
+      throw new SimulationRefusal(simResult.value.err, simResult.value.logs ?? [], tx.instructions);
     }
   } catch (simError) {
-    if (simError instanceof Error && simError.message.startsWith("Transaction simulation failed")) {
-      throw simError;
-    }
+    if (simError instanceof SimulationRefusal) throw simError;
     console.warn("[presimulateOrThrow] simulation RPC failed (non-blocking):", simError);
   }
 }
@@ -791,10 +852,15 @@ export async function sendTx({
         }
       }
 
+      // SH-1: the CU-sizing simulation IS the pre-sign verdict when it runs — a refusal
+      // here never opens the wallet, and a green one is not simulated a second time.
+      let gateGreen = false;
       if (computeUnitsFromSim) {
-        const consumed = await simulateConsumedUnits(connection, feePayer, healedInstructions);
-        healedComputeUnits = sizeComputeUnitLimit(consumed, computeUnitsFromSim);
-        onComputeUnits?.({ limit: healedComputeUnits, consumed });
+        const g = await simulateForGate(connection, feePayer, healedInstructions);
+        if (g.err && !skipPreflight) throw new SimulationRefusal(g.err, g.logs, g.simulated);
+        gateGreen = !g.err && !g.rpcFailed;
+        healedComputeUnits = sizeComputeUnitLimit(g.consumed, computeUnitsFromSim);
+        onComputeUnits?.({ limit: healedComputeUnits, consumed: g.consumed });
       }
 
       // Get dynamic priority fee on first attempt (cached 45s)
@@ -872,21 +938,16 @@ export async function sendTx({
       const usesAtomicSend =
         !!wallet.signAndSendTransaction && signers.length === 0 && getNetwork() !== "devnet";
       const runSimulation = (): Promise<void> => presimulateOrThrow(connection, tx);
-      const wantSimulation = !skipPreflight && (signers.length === 0 || simulateBeforeSign);
-      const simulateFirst = usesAtomicSend || simulateBeforeSign;
-      if (wantSimulation && simulateFirst) {
+      // UX WP-1 (SH-1): simulate BEFORE the wallet opens, on every network and also with
+      // keypair signers (sigVerify:false, so missing signatures don't matter). A refusal
+      // throws SimulationRefusal and the wallet is never prompted. The only skips: the
+      // Lighthouse fallback (skipPreflight) and a green CU-sizing simulation of this exact
+      // list above. `simulateBeforeSign` is kept for callers; it is now the default.
+      void simulateBeforeSign;
+      const wantSimulation = !skipPreflight && !gateGreen;
+      if (wantSimulation) {
         await runSimulation();
       }
-      // Settled-result wrapper so a simulation rejection can't become an
-      // unhandled rejection while we're awaiting the wallet popup.
-      const concurrentSimGate: Promise<Error | null> | null =
-        wantSimulation && !simulateFirst
-          ? runSimulation().then(
-              () => null,
-              (e) => (e instanceof Error ? e : new Error(String(e))),
-            )
-          : null;
-
       // ================================================================
       // PERC-8388: Use signAndSendTransaction when available.
       // This is the definitive fix for Lighthouse/Blowfish injection.
@@ -943,15 +1004,6 @@ export async function sendTx({
             `Sending with skipPreflight=true as workaround.`
           );
           skipPreflight = true;
-        }
-
-        // Gate the broadcast on the concurrent simulation's verdict (started
-        // before the wallet popup, see above). If simulation reported a
-        // program error, the user's signature is simply never broadcast —
-        // same safety property as the old simulate-then-popup ordering.
-        if (concurrentSimGate) {
-          const simErr = await concurrentSimGate;
-          if (simErr) throw simErr;
         }
 
         try {

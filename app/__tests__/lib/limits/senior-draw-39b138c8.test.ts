@@ -12,6 +12,7 @@ import { Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
 import * as C from "@/lib/limits/constants";
 import { decodeVaultLpState } from "@/lib/limits/decode";
 import { withBoundVaultLpTail } from "@/lib/limits/p3-ix";
+import { buildEarnExecuteIxs } from "@/lib/limits/earn-ixs";
 import { earnAbsorbed } from "@/lib/limits/vault-tranche";
 import { drawNoticeText, parseP3DrawLogs, readTxDrawSummary, summarizeDrawEvents } from "@/lib/limits/p3-draw-logs";
 import {
@@ -25,6 +26,7 @@ import {
 } from "@/lib/limits/senior-draw-repair";
 import { P3_ERROR_COPY_BY_NAME } from "@/lib/limits/copy";
 import { earnErrorMessage } from "@/lib/earnErrors";
+import { resolveDevnetProgramIds } from "@/lib/program-ids";
 
 const k = () => Keypair.generate().publicKey;
 const PROG = k();
@@ -35,9 +37,10 @@ describe("87 / 88 are in the one constants module with copy", () => {
     expect(C.P3_ERR.VaultLpRedeemNeedsRecall).toBe(88);
     expect(P3_ERROR_COPY_BY_NAME.VaultLpSeniorDrawRequired).toMatch(/Nothing moved/);
     expect(P3_ERROR_COPY_BY_NAME.VaultLpRedeemNeedsRecall).toMatch(/recalls that backing/);
-    const e = (n: number) => new Error(`{"InstructionError":[3,{"Custom":${n}}]}`);
-    expect(earnErrorMessage(e(88), "claim", { p3Bound: true })).toBe(P3_ERROR_COPY_BY_NAME.VaultLpRedeemNeedsRecall);
-    expect(earnErrorMessage(e(87), "deposit")).toBe(P3_ERROR_COPY_BY_NAME.VaultLpSeniorDrawRequired);
+    const e = (n: number) => new Error(`{"InstructionError":[3,{"Custom":${n}}]}\nProgram ${resolveDevnetProgramIds().wrapper} failed: custom program error: 0x${n.toString(16)}`);
+    // UX WP-1: the Earn panel shows the ONE resolver's line (lib/limits/user-message.ts).
+    expect(earnErrorMessage(e(88), "claim", { p3Bound: true })).toMatch(/^Part of this vault's money is in use by open trades right now\./);
+    expect(earnErrorMessage(e(87), "deposit")).toBe("The vault is booking a recent market move; we'll retry automatically.");
   });
 });
 
@@ -47,8 +50,9 @@ describe("89 VaultLpPausedForSeniorDraw (4b1a5d30): one calm, specific message",
     const copy = P3_ERROR_COPY_BY_NAME.VaultLpPausedForSeniorDraw;
     expect(copy).toMatch(/^Paused while Earn covers a loss\./);
     expect(copy).toMatch(/nothing moved/);
-    const e = new Error('{"InstructionError":[2,{"Custom":89}]}');
-    expect(earnErrorMessage(e, "claim", { p3Bound: true })).toBe(copy);
+    const e = new Error(`{"InstructionError":[2,{"Custom":89}]}\nProgram ${resolveDevnetProgramIds().wrapper} failed: custom program error: 0x59`);
+    // the Earn panel's line (the resolver) keeps the same calm opening
+    expect(earnErrorMessage(e, "claim", { p3Bound: true })).toMatch(/^Paused while Earn covers a loss\./);
   });
 });
 
@@ -61,6 +65,35 @@ describe("75 / 77 pass the vault LP WRITABLE (d119eebd); 78's tail is state only
       expect(out[n + 1].isWritable).toBe(true); // vault LP
     }
     expect(withBoundVaultLpTail(78, base(6), k())).toHaveLength(7);
+  });
+});
+
+describe("security (221cf006): a bound-vault 77 ALWAYS carries BOTH pot ledgers writable", () => {
+  // A read-only sibling ledger skips the cross-pot top-up and Live returns 88 (wrong fix).
+  it("the Earn claim's 77 and every repair variant built from it", () => {
+    const ledger = k();
+    const siblingLedger = k();
+    const plan = { ok: true as const, tail: { vaultLpState: k(), lpPortfolio: k() }, prependHarvest: true };
+    const ixs = buildEarnExecuteIxs({
+      programId: PROG, redeemer: k(), market: k(), registry: k(), redemption: k(), lpMint: k(), escrow: k(),
+      vaultToken: k(), vaultAuthority: k(), ledger, redeemerDest: k(), siblingLedger, domain: 0, plan,
+    });
+    const at = find77(ixs, PROG);
+    const check = (ix: TransactionInstruction) => {
+      expect(ix.keys[8].pubkey.equals(ledger) && ix.keys[8].isWritable).toBe(true);
+      expect(ix.keys[11].pubkey.equals(siblingLedger) && ix.keys[11].isWritable).toBe(true);
+      expect(ix.keys[14].isWritable).toBe(true); // vault LP (d119eebd)
+    };
+    check(ixs[at]);
+    for (const v of redeemRepairVariants(ixs, at, k(), [5n])) check(v.ixs[find77(v.ixs, PROG)]);
+    // the 78 in front and any 98 recall carry both ledgers writable too
+    for (const ix of withRecallBefore77(ixs, at, k(), 5n)) {
+      if (ix.data[0] === 98 || ix.data[0] === 78) {
+        const w = ix.keys.filter((m) => m.pubkey.equals(ledger) || m.pubkey.equals(siblingLedger));
+        expect(w).toHaveLength(2);
+        expect(w.every((m) => m.isWritable)).toBe(true);
+      }
+    }
   });
 });
 

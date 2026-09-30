@@ -35,7 +35,7 @@ import { normalizeDexType } from "@/lib/dex-type";
 import { launchPriceFeedStatus } from "@/lib/launch-outcome";
 import { LaunchSuccess, PRICE_FEED_MISSING_TITLE } from "@/components/create/LaunchSuccess";
 import { earnErrorMessage } from "@/lib/earnErrors";
-import { COPY } from "@/lib/limits/copy";
+import { resolveDevnetProgramIds } from "@/lib/program-ids";
 
 const DLMM = "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo";
 const PUMP = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
@@ -204,16 +204,16 @@ describe("B21: never 'launched' without a registered price feed", () => {
 });
 
 describe("B24: a P3 senior claim refused with 21 is not blamed on open PnL", () => {
-  const e21 = new Error('Transaction failed: {"InstructionError":[2,{"Custom":21}]}');
+  const e21 = new Error(`Transaction failed: {"InstructionError":[2,{"Custom":21}]}\nProgram ${resolveDevnetProgramIds().wrapper} failed: custom program error: 0x15`);
   it("P3 bound vault: neutral copy, no unrealized-PnL claim", () => {
     const m = earnErrorMessage(e21, "claim", { p3Bound: true });
-    expect(m).toBe(COPY.earnClaimRefusedP3);
-    expect(m).not.toMatch(/unrealized PnL|open positions/i);
-    expect(m).toMatch(/escrow/);
+    // UX WP-1 §3.6 item 7 (supersedes COPY.earnClaimRefusedP3): calm, retried automatically.
+    expect(m).toBe("This withdrawal can't be paid out this moment. Nothing moved; your withdrawal stays ready to collect and we'll retry automatically.");
+    expect(m).not.toMatch(/unrealized PnL|open positions|escrow/i);
   });
-  it("legacy vault keeps the open-PnL explanation; deposit copy unchanged", () => {
-    expect(earnErrorMessage(e21, "claim")).toMatch(/securing traders' open unrealized PnL/);
-    expect(earnErrorMessage(e21, "deposit", { p3Bound: true })).toMatch(/temporarily locked/);
+  it("legacy vault: in use by open trades; deposit: nothing deposited, retried", () => {
+    expect(earnErrorMessage(e21, "claim")).toMatch(/in use by open trades/);
+    expect(earnErrorMessage(e21, "deposit", { p3Bound: true })).toMatch(/Nothing was deposited/);
   });
   it("both Earn panels pass the bound flag", () => {
     expect(read("components/earn/VaultDepositRail.tsx")).toContain("p3Bound={marketLimits.vaultLp?.bound === true}");

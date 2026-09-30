@@ -9,6 +9,7 @@ import { assertKnownProgram } from "@/lib/programAllowlist";
 import { usePositionNft } from "@/hooks/usePositionNft";
 import { sendTx } from "@/lib/tx";
 import { humanizeError } from "@/lib/errorMessages";
+import { plainMessage } from "@/lib/limits/user-message";
 import { useToast } from "@/hooks/useToast";
 import { PERCOLATOR_NFT_PROGRAM_ID } from "@/lib/nft-program";
 import { sendEmergencyBurn } from "@/hooks/useEmergencyBurn";
@@ -184,7 +185,7 @@ export function useBurnPositionNft(slabAddress: string, override?: PositionNftOv
           return sig;
         } catch (emergencyErr) {
           const emergencyMsg = emergencyErr instanceof Error ? emergencyErr.message : String(emergencyErr);
-          const msg = humanizeError(emergencyMsg);
+          const msg = plainMessage(emergencyMsg, { surface: "nft" }, humanizeError);
           console.error("[useBurnPositionNft] EmergencyBurn fallback failed", emergencyMsg);
           setError(msg);
           toast(msg, "error");
@@ -192,7 +193,7 @@ export function useBurnPositionNft(slabAddress: string, override?: PositionNftOv
         }
       }
 
-      const msg = humanizeError(errMsg);
+      const msg = plainMessage(errMsg, { surface: "nft" }, humanizeError);
       console.error("[useBurnPositionNft]", errMsg);
       setError(msg);
       toast(msg, "error");

@@ -25,10 +25,11 @@ afterEach(() => __setLimitsFlagsForTest(null));
 
 describe("P1 wrapper codes 66..71", () => {
   for (const code of Object.values(P1_ERR)) {
-    it(`${code}: plain copy in Phantom and Solflare shapes`, () => {
+    it(`${code}: plain copy in Phantom and Solflare shapes (attributed); bare Solflare is not guessed`, () => {
       expect(P1_ERROR_MESSAGES[code]).toBeTruthy();
       expect(humanizeError(phantom(W, code))).toBe(P1_ERROR_MESSAGES[code]);
-      expect(humanizeError(solflare(code))).toBe(P1_ERROR_MESSAGES[code]);
+      expect(humanizeError(`${solflare(code)}\nProgram ${W} failed: custom program error: 0x${code.toString(16)}`)).toBe(P1_ERROR_MESSAGES[code]);
+      expect(humanizeError(solflare(code))).not.toBe(P1_ERROR_MESSAGES[code]);
     });
   }
   it("a 66 raised by SPL/matcher is not read as the band error", () => {
@@ -45,10 +46,12 @@ describe("P2 matcher codes 8002..8005", () => {
       expect(limitsErrorCopy({ code, originProgramId: W, wrapperId: W, matcherId: M, p3Enabled: false })).toBeNull();
     });
   }
-  it("Solflare bare JSON (no program log) still maps 8002 (matcher-only number)", () => {
-    expect(limitsErrorCopy({ code: 8002, originProgramId: null, wrapperId: W, matcherId: M, p3Enabled: false })).toBe(
-      P2_ERROR_COPY[8002],
-    );
+  it("Solflare bare JSON (no program log): NOT guessed (error-codes-4b1a5d30.md: decode by the raising program)", () => {
+    expect(limitsErrorCopy({ code: 8002, originProgramId: null, wrapperId: W, matcherId: M, p3Enabled: false })).toBeNull();
+    expect(limitsErrorCopy({ code: 66, originProgramId: null, wrapperId: W, matcherId: M, p3Enabled: false })).toBeNull();
+    // attributed, both map
+    expect(limitsErrorCopy({ code: 8002, originProgramId: M, wrapperId: W, matcherId: M, p3Enabled: false })).toBe(P2_ERROR_COPY[8002]);
+    expect(limitsErrorCopy({ code: 66, originProgramId: W, wrapperId: W, matcherId: M, p3Enabled: false })).not.toBeNull();
   });
   it("an unknown matcher code keeps the generic matcher line", () => {
     expect(humanizeError(phantom(M, 8009))).toMatch(/matcher rejected this fill/);

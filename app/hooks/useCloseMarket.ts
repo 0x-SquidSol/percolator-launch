@@ -31,6 +31,7 @@ import { cleanupOwnPortfoliosBeforeReclaim } from "@/lib/limits/own-portfolio-cl
 import { sendTx } from "@/lib/tx";
 
 import { WRAPPER_ERR } from "@/lib/wrapper-errors";
+import { plainMessage } from "@/lib/limits/user-message";
 /** Slab state after `sig`, read at (at least) the tx's slot so a cached pre-close read can't answer. */
 export async function readCloseSlabStateAfter(
   connection: { getSignatureStatuses: Connection["getSignatureStatuses"]; getAccountInfo: Connection["getAccountInfo"] },
@@ -338,11 +339,13 @@ export function useCloseMarket() {
           // wizard uses (SDK PERCOLATOR_ERRORS hint table) instead of dumping the raw
           // simulation log, so an unrecognised code still gets a real explanation where
           // possible rather than an opaque "custom program error: 0xNN".
+          // UX WP-1: the one resolver first; the create-market decoder only for codes it
+          // does not own, and never raw simulation text.
           const decoded = parseMarketCreationError(err);
           setError(
-            decoded.startsWith("Transaction failed:")
-              ? `Failed to close slab: ${msg.slice(0, 200)}`
-              : `Cannot close: ${decoded}`
+            plainMessage(err, { surface: "close-market" }, () =>
+              decoded.startsWith("Transaction failed:") ? "Something went wrong and nothing was sent." : decoded,
+            )
           );
         }
 

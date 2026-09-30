@@ -21,6 +21,7 @@ import { Connection, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
 import { getConfig } from "@/lib/config";
+import { keepAppMessage, plainMessage } from "@/lib/limits/user-message";
 
 export type FaucetStep = "idle" | "sol" | "usdc" | "deposit" | "done" | "error";
 
@@ -293,7 +294,7 @@ export function useDevnetFaucet(): DevnetFaucetState {
       await refreshBalances();
     } catch (e) {
       lastOpFailedRef.current = true;
-      setError(e instanceof Error ? e.message : "SOL airdrop failed — devnet may be rate-limiting. Try the Solana Faucet.");
+      setError(plainMessage(e, { surface: "faucet" }, (raw) => keepAppMessage(raw) === raw ? raw : "SOL airdrop failed — devnet may be rate-limiting. Try the Solana Faucet."));
     } finally {
       setLoading(false);
     }
