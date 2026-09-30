@@ -164,7 +164,7 @@ function EarnInfoStrip({ totalInsurance }: { totalInsurance: number }) {
         <div className="mb-2 text-[10px] uppercase tracking-[0.15em] text-[var(--warning)]">⚠ Risk Notice</div>
         <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">
           {limitsFlags().p3
-            ? COPY.earnRiskP3
+            ? COPY.howLossesWork
             : "LP deposits are exposed to trader PnL — when traders win, LPs may see drawdowns. The insurance fund provides a buffer. Only deposit what you can afford to lose."}
         </p>
       </div>

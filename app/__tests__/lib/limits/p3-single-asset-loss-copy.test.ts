@@ -44,19 +44,25 @@ describe("error 86 VaultLpMultiAssetMarket", () => {
 describe("loss copy = P3 doc §0.8: junior first, then Earn pro rata; winners paid in full unless Earn's backing is used up", () => {
   const SECTION_0_8 =
     "The creator's junior tranche takes losses first. Only a loss bigger than the junior reaches Earn, and then every Earn depositor loses the same percentage. Winning traders are always paid in full unless Earn's backing is used up too.";
-  const QUALIFIER = /always paid in full unless Earn's backing is used up too/;
+  // UX WP-5 / audit §5.2: "Earn's money" is accepted as the synonym for "Earn's backing".
+  const QUALIFIER = /always paid in full unless Earn's (backing|money) is used up too/;
+  const HOW_LOSSES_WORK =
+    "The market creator's stake takes losses first. Only a loss bigger than that stake reaches Earn, and then every Earn depositor loses the same percentage. Winning traders are always paid in full unless Earn's money is used up too. Share value can go down; only deposit what you can afford to lose.";
   it("the wizard requirement, wizard explainer and Earn risk notice carry §0.8 verbatim", () => {
     for (const s of [COPY.wizardRequirement("20%"), COPY.p3Wizard.explain, COPY.earnRiskP3]) expect(s).toContain(SECTION_0_8);
   });
   it("the exhausted notice and the tranche card keep the pro-rata rule and the qualifier", () => {
     expect(COPY.juniorExhausted).toMatch(/every Earn depositor loses the same percentage/);
     expect(COPY.juniorExhausted).toMatch(QUALIFIER);
+    // §5.2: the card's "How losses work" is the §0.8 rule in plain words, verbatim, with the qualifier.
+    expect(COPY.howLossesWork).toBe(HOW_LOSSES_WORK);
+    expect(COPY.howLossesWork).toMatch(/every Earn depositor loses the same percentage/);
+    expect(COPY.howLossesWork).toMatch(QUALIFIER);
     const card = readFileSync(resolve(process.cwd(), "components/limits/EarnTrancheCard.tsx"), "utf8");
-    expect(card).toMatch(/every Earn depositor loses the same percentage/);
-    expect(card).toMatch(QUALIFIER);
+    expect(card).toContain("{COPY.howLossesWork}");
     // The real on-chain withdraw value stays on screen (it can be below principal).
     expect(card).toContain("COPY.withdrawImpaired(");
-    expect(COPY.withdrawImpaired("1.00")).toMatch(/below principal/);
+    expect(COPY.withdrawImpaired("1.00")).toMatch(/below what was put in/);
   });
   it("no P3 surface says seniors are whole, principal is guaranteed, winners are haircut, or paid in full unqualified", () => {
     const WRONG =
@@ -75,12 +81,13 @@ describe("loss copy = P3 doc §0.8: junior first, then Earn pro rata; winners pa
     for (const s of strings) {
       expect(s).not.toMatch(WRONG);
       // Every "paid in full" claim must carry the qualifier.
-      for (const m of s.matchAll(/paid in full[^.]*\./g)) expect(m[0]).toMatch(/unless Earn's backing is used up too/);
+      for (const m of s.matchAll(/paid in full[^.]*\./g)) expect(m[0]).toMatch(/unless Earn's (backing|money) is used up too/);
     }
     const creator = readFileSync(resolve(process.cwd(), "components/limits/CreatorLimits.tsx"), "utf8");
     expect(creator).toContain("{COPY.juniorExhausted}");
     const earn = readFileSync(resolve(process.cwd(), "components/earn/EarnVaultView.tsx"), "utf8");
-    expect(earn).toContain("COPY.earnRiskP3");
+    // one wording on every Earn surface (§3.8)
+    expect(earn).toContain("COPY.howLossesWork");
   });
 });
 

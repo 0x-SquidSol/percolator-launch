@@ -9,9 +9,10 @@ import { useInsuranceLP } from '@/hooks/useInsuranceLP';
 import { useWalletCompat } from '@/hooks/useWalletCompat';
 import { ResolvedExitPanel } from '@/components/limits/ResolvedExitPanel';
 import { EarnTrancheCardView } from '@/components/limits/EarnTrancheCard';
+import { useVaultLpValuation } from '@/hooks/useVaultLpValuation';
 import { useMarketLimits } from '@/hooks/useMarketLimits';
 import { earnViewFromLimits, earnPanelPricing } from '@/lib/limits/earn';
-import { previewWithdrawAtoms } from '@/lib/limits/earn-withdraw';
+import { cooldownPhrase, previewWithdrawAtoms } from '@/lib/limits/earn-withdraw';
 import { formatTokenAmount } from '@/lib/format';
 import { chargedTradeFeeLabel } from '@/lib/limits/format';
 import { decodeMarketEngineView } from '@/lib/limits/decode';
@@ -131,7 +132,10 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
   } = useInsuranceLP();
   const earnWallet = useWalletCompat();
   const earnLimits = useMarketLimits(slabAddress);
-  const earnTrancheView = earnViewFromLimits(earnLimits, lpVaultState.vaultTotalAtoms, lpVaultState.userLpBalance);
+  // UX WP-5 (§3.7): a stale LP certificate is valued by a simulated crank, never "Needs refresh".
+  const lpValuation = useVaultLpValuation(slabAddress, earnLimits);
+  const earnTrancheView = earnViewFromLimits(earnLimits, lpVaultState.vaultTotalAtoms, lpVaultState.userLpBalance, undefined, lpValuation.value);
+  const earnPricing = earnPanelPricing(earnLimits, lpVaultState.vaultTotalAtoms, lpValuation.value);
   const { engine, totalOI, vault: engineVault } = useEngineState();
 
   // BUG-5 FIX: resolve actual collateral mint from on-chain slab data.
@@ -383,7 +387,7 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
               loading={loading}
               pendingWithdrawalLabel={(() => {
                 if (!lpVaultState.hasPendingRedemption) return null;
-                const pr = earnPanelPricing(earnLimits, lpVaultState.vaultTotalAtoms);
+                const pr = earnPricing;
                 const atoms = pr ? previewWithdrawAtoms(lpVaultState.pendingRedemptionShares, pr.totalShares, pr.withdrawSeniorValue) : null;
                 return atoms !== null
                   ? `${formatTokenAmount(atoms, collateralDecimals)} ${collateralSymbol}`
@@ -402,6 +406,8 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
             withdrawShares={lpVaultState.userLpBalance}
             decimals={collateralDecimals}
             collateralSymbol={collateralSymbol}
+            valuation={lpValuation}
+            maxNowAtoms={earnPricing?.maxNowAtoms ?? null}
           />
 
           {/* P3 / F-4: after Resolve, finish the market so Earn can pay out (nothing on a live market). */}
@@ -427,7 +433,7 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
               onWithdraw={handleWithdraw}
               p3Bound={earnLimits.vaultLp?.bound === true}
               drawSummary={lastDrawSummary}
-              pricing={earnPanelPricing(earnLimits, lpVaultState.vaultTotalAtoms)}
+              pricing={earnPricing}
               onRefresh={refreshState}
             />
           </ScrollReveal>
@@ -444,21 +450,9 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
               Vault Details
             </h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-[12px]">
-              <InfoRow label="Slab Address" value={slabAddress} mono />
               <InfoRow
-                label="Vault Registry"
-                value={lpVaultState.registryAddress?.toBase58() ?? '-'}
-                mono
-              />
-              <InfoRow
-                label="Cooldown Period"
-                value={
-                  lpVaultState.redemptionCooldownSlots > 0n
-                    ? `${lpVaultState.redemptionCooldownSlots.toString()} slots (~${Math.round(
-                        Number(lpVaultState.redemptionCooldownSlots) * 0.4,
-                      )}s)`
-                    : 'None'
-                }
+                label="Withdrawal wait"
+                value={lpVaultState.redemptionCooldownSlots > 0n ? cooldownPhrase(lpVaultState.redemptionCooldownSlots) : 'None'}
               />
               {/* LP Vault Registry has no deposit-cap field (unlike the /stake pools) —
                   it's bounded indirectly via oiReservationThresholdBps, not a hard cap. */}
@@ -470,10 +464,18 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
                 value={chargedTradeFeeLabel(slabRaw ? decodeMarketEngineView(slabRaw)?.tradeFeeBaseBps : null) ?? '—'}
               />
               <InfoRow
-                label="Pool Status"
+                label="Vault status"
                 value={vaultAvailable ? 'Active' : 'Unavailable'}
               />
             </div>
+            {/* UX WP-5 (§4.4): addresses live under Details. */}
+            <details className="mt-4 text-[12px]" data-testid="earn-vault-details-more">
+              <summary className="cursor-pointer text-[11px] text-[var(--text-secondary)] hover:text-[var(--text)]">Details</summary>
+              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <InfoRow label="Market address" value={slabAddress} mono />
+                <InfoRow label="Vault address" value={lpVaultState.registryAddress?.toBase58() ?? '-'} mono />
+              </div>
+            </details>
           </div>
         </ScrollReveal>
       </div>

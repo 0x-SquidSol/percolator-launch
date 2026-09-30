@@ -26,6 +26,8 @@ import { defaultLpExposureKBps, lpEquityInitRaw, lpExposureCapQ, maxTradeSizePer
 import { juniorWithdrawableAtoms, projectCreatorCaps } from "@/lib/limits/vault-tranche";
 import { juniorResolvedReleasableAtoms } from "@/lib/limits/junior-resolved-release";
 import { earnViewFromLimits } from "@/lib/limits/earn";
+import { useVaultLpValuation } from "@/hooks/useVaultLpValuation";
+import type { VaultLpValue } from "@/lib/limits/vault-tranche";
 import { formatTokenAmount } from "@/lib/format";
 import { LimitsNotice, LimitsRow } from "./LimitsRow";
 import { fmtQ } from "./OrderTicketLimits";
@@ -212,9 +214,11 @@ const CreatorTranchePanelLive: FC<{ slab: string; decimals: number; collateralSy
   const { assetProfile, raw: slabRaw } = useSlabState();
   const wallet = useWalletCompat();
   const junior = useJuniorTranche(slab);
+  // UX WP-5 (§3.7): a stale LP certificate is valued by a simulated crank, never "Needs refresh".
+  const lpValuation = useVaultLpValuation(slab, limits);
   const vs = limits.flags.p3 ? limits.vaultState : null;
   const isJuniorOwner = !!vs && !!wallet.publicKey && new PublicKey(vs.juniorOwner).equals(wallet.publicKey);
-  const view = earnViewFromLimits(limits, lpState.vaultTotalAtoms, 0n);
+  const view = earnViewFromLimits(limits, lpState.vaultTotalAtoms, 0n, undefined, lpValuation.value);
   const withdrawable =
     view && vs && view.vaultValue !== null && limits.lp?.posQ === 0n
       ? juniorWithdrawableAtoms(view.vaultValue, view.seniorClaimEff, view.backingCover, vs.juniorFloorBps)
@@ -246,6 +250,7 @@ const CreatorTranchePanelLive: FC<{ slab: string; decimals: number; collateralSy
       creatorFeesAtoms={assetProfile?.creatorFeeClaimableAtoms ?? null}
       decimals={decimals}
       collateralSymbol={collateralSymbol}
+      simulatedLpValue={lpValuation.value}
       />
     </>
   );
@@ -258,13 +263,14 @@ export const CreatorTranchePanelView: FC<{
   creatorFeesAtoms: bigint | null;
   decimals: number;
   collateralSymbol: string;
-}> = ({ limits, slab, backingNavAtoms, creatorFeesAtoms, decimals, collateralSymbol }) => {
+  simulatedLpValue?: VaultLpValue | null;
+}> = ({ limits, slab, backingNavAtoms, creatorFeesAtoms, decimals, collateralSymbol, simulatedLpValue = null }) => {
   if (limits.state === "off" || (!limits.flags.p3 && !limits.flags.p1)) return null;
   const fmt = (a: bigint) => `${formatTokenAmount(a, decimals)} ${collateralSymbol}`;
   const e = limits.engine;
   const lp = limits.lp;
   const vs = limits.flags.p3 ? limits.vaultState : null;
-  const view = earnViewFromLimits(limits, backingNavAtoms, 0n);
+  const view = earnViewFromLimits(limits, backingNavAtoms, 0n, undefined, simulatedLpValue);
   const lpFlat = lp ? lp.posQ === 0n : false;
   const withdrawable =
     view && vs && view.vaultValue !== null
@@ -297,7 +303,7 @@ export const CreatorTranchePanelView: FC<{
         <>
           <LimitsRow
             label="Junior at risk"
-            value={view.junior === null ? "Needs refresh" : fmt(view.junior)}
+            value={view.junior === null ? "Updating…" : fmt(view.junior)}
             valueClass={view.junior === 0n ? "text-[var(--short)]" : undefined}
           />
           <LimitsRow label="Cushion vs Earn" value={view.cushionBps === null ? "—" : `${(view.cushionBps / 100).toFixed(1)}%`} />

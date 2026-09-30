@@ -83,7 +83,7 @@ export function LpPositionDashboard({
             className="text-sm font-medium text-[var(--text)]"
             style={{ fontFamily: 'var(--font-display)' }}
           >
-            Your LP Position
+            Your Earn position
           </h3>
           {(hasPosition || pending) && (
             <span className="text-[10px] px-2 py-0.5 rounded-sm bg-[var(--cyan)]/10 border border-[var(--cyan)]/20 text-[var(--cyan)]">
@@ -112,7 +112,7 @@ export function LpPositionDashboard({
             {/* Main value */}
             <div className="mb-5 p-4 bg-[var(--bg)] border border-[var(--border)] rounded-sm">
               <div className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-secondary)] mb-1">
-                Position Value
+                Value
               </div>
               <div className="flex items-baseline gap-2">
                 <AnimatedNumber
@@ -126,33 +126,15 @@ export function LpPositionDashboard({
               </div>
             </div>
 
-            {/* Metrics grid */}
+            {/* Metrics grid (UX WP-5 §4.4: shares at 2 dp, never raw atoms; one share value) */}
             <div className="grid grid-cols-2 gap-4">
+              <MetricCell label="Shares" value={formatShares(userLpBalance, lpDecimals)} />
+              <MetricCell label="Of the vault" value={`${userSharePct.toFixed(2)}%`} highlight />
               <MetricCell
-                label="LP Tokens"
-                value={formatRaw(userLpBalance, lpDecimals)}
-              />
-              <MetricCell
-                label="Pool Share"
-                value={`${userSharePct.toFixed(2)}%`}
-                highlight
-              />
-              {/* "Share Value" — how much 1 LP token redeems for. Sourced from the
-                  on-chain redemption rate (vaultTotalAtoms / lpSupply, read fresh
-                  by useInsuranceLP) rather than recomputed locally — the two used
-                  to be shown as separate cells that could visibly disagree. */}
-              <MetricCell
-                label="Share Value"
+                label="Share value"
                 value={`${(Number(redemptionRateE6) / 1_000_000).toFixed(4)} ${collateralSymbol}`}
               />
-              <MetricCell
-                label="Redemption Rate"
-                value={`${(Number(redemptionRateE6) / 1_000_000).toFixed(4)}`}
-              />
-              <MetricCell
-                label="Total Vault"
-                value={`${formatRaw(vaultBalance, decimals)} ${collateralSymbol}`}
-              />
+              <MetricCell label="Vault total" value={`${formatShares(vaultBalance, decimals)} ${collateralSymbol}`} />
             </div>
           </>
         )}
@@ -196,11 +178,9 @@ function MetricCell({
   );
 }
 
-function formatRaw(raw: bigint, decimals: number): string {
-  if (raw <= 0n) return '0';
-  const divisor = 10n ** BigInt(decimals);
-  const whole = raw / divisor;
-  const frac = raw % divisor;
-  const fracStr = frac.toString().padStart(decimals, '0').replace(/0+$/, '');
-  return fracStr ? `${whole}.${fracStr}` : whole.toString();
+/** 2 dp, floored, grouped. */
+function formatShares(raw: bigint, decimals: number): string {
+  const cents = (raw * 100n) / 10n ** BigInt(decimals);
+  return `${(cents / 100n).toLocaleString('en-US')}.${(cents % 100n).toString().padStart(2, '0')}`;
 }
+

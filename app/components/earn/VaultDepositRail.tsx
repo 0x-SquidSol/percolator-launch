@@ -6,10 +6,11 @@ import { useInsuranceLP } from '@/hooks/useInsuranceLP';
 import { useTokenMeta } from '@/hooks/useTokenMeta';
 import { DepositWithdrawPanel } from '@/components/earn/DepositWithdrawPanel';
 import { EarnTrancheCardView } from '@/components/limits/EarnTrancheCard';
+import { useVaultLpValuation } from '@/hooks/useVaultLpValuation';
 import { ResolvedExitPanel } from '@/components/limits/ResolvedExitPanel';
 import { useWalletCompat } from '@/hooks/useWalletCompat';
 import { useMarketLimits } from '@/hooks/useMarketLimits';
-import { earnGateShares, earnViewFromLimits, earnPanelPricing } from '@/lib/limits/earn';
+import { earnDepositPause, earnGateShares, earnViewFromLimits, earnPanelPricing } from '@/lib/limits/earn';
 import { earnDepositBlock } from '@/lib/limits/vault-tranche';
 import { COPY } from '@/lib/limits/copy';
 import { chargedTradeFeeLabel } from '@/lib/limits/format';
@@ -95,18 +96,18 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
   // P3 (flag-gated; "off" = no RPC): one limits read model feeds the tranche card AND the
   // deposit gate, which mirrors the program's own tag-75 refusals (lib/limits/vault-tranche.ts).
   const marketLimits = useMarketLimits(slab);
-  const trancheView = earnViewFromLimits(marketLimits, state.vaultTotalAtoms, state.userLpBalance);
+  // UX WP-5 (§3.7): a stale LP certificate is valued by a simulated crank, never "Needs refresh".
+  const lpValuation = useVaultLpValuation(slab, marketLimits);
+  const trancheView = earnViewFromLimits(marketLimits, state.vaultTotalAtoms, state.userLpBalance, undefined, lpValuation.value);
+  const earnPricing = earnPanelPricing(marketLimits, state.vaultTotalAtoms, lpValuation.value);
   const gateShares = earnGateShares(marketLimits);
   // Genesis with fees pending (P3-L1) is NOT a block any more: the deposit tx bundles tag 78
   // first (lib/limits/earn-ixs.ts earnTxPlan), so only a real refusal disables the button.
   const rawDepositBlock = gateShares === null ? null : earnDepositBlock(trancheView, gateShares);
-  const depositBlock = rawDepositBlock === 'harvest-pending' ? null : rawDepositBlock;
-  const depositBlockedReason =
-    depositBlock === 'senior-impaired'
-      ? COPY.depositsPausedImpaired
-      : depositBlock === 'valuation-stale'
-        ? COPY.valuationStale
-        : null;
+  // UX WP-5 (§3.6): "valuation-stale" is not a block either — the deposit tx self-repairs 85
+  // (vault-LP crank bundled by sendTx). Only "covering a loss" pauses deposits.
+  const depositBlock = earnDepositPause(rawDepositBlock);
+  const depositBlockedReason = depositBlock === 'senior-impaired' ? COPY.depositsPausedImpaired : null;
 
   // Report the resolved deposit up so the table's "Your Deposit" column fills in
   // for this row as the user browses vaults.
@@ -147,6 +148,8 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
         withdrawShares={state.userLpBalance}
         decimals={collateralDecimals}
         collateralSymbol={collateralSymbol}
+        valuation={lpValuation}
+        maxNowAtoms={earnPricing?.maxNowAtoms ?? null}
       />
       {/* Selected-vault header + key figures + position */}
       <div className="border border-[var(--border)] bg-[var(--panel-bg)] hud-corners">
@@ -214,7 +217,7 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
         onWithdraw={handleWithdraw}
         p3Bound={marketLimits.vaultLp?.bound === true}
         drawSummary={lastDrawSummary}
-        pricing={earnPanelPricing(marketLimits, state.vaultTotalAtoms)}
+        pricing={earnPricing}
         onRefresh={refreshState}
       />
     </div>

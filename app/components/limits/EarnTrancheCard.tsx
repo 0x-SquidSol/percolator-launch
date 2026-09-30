@@ -1,78 +1,78 @@
 "use client";
 
 /**
- * P3 Earn tranche card (plan §2 P3-a/b/c): NAV share price, senior vs junior
- * tranche sizes, first-loss cushion, withdrawal effect, APY from REAL fee
- * credits, and the risk disclosure. Values follow the program's own NAV path:
- * the vault LP is valued from its CERTIFIED equity (or conservative equity when
- * flat), pending LP fees are the on-chain harvestable leg. When the LP's
- * certificate is stale the card says so instead of guessing. Pure renderer:
- * the rail passes the one `useMarketLimits` instance it also gates deposits with.
+ * UX WP-5 (audit §4.4): "How your deposit is protected" (was "Vault tranches"). Values follow the
+ * program's own share-value path (tags 75/77): the vault LP at its certified equity, or — when
+ * its certificate is stale — the value a simulated crank would certify (hooks/useVaultLpValuation),
+ * never "Needs refresh". Plain words only (§5.1): creator stake, Earn deposits, share value.
+ * Pure renderer: the rail/page pass the one `useMarketLimits` instance they also gate deposits with.
  */
-import { useEffect, useState, type FC } from "react";
+import { useState, type FC } from "react";
 import type { MarketLimits } from "@/hooks/useMarketLimits";
 import { COPY } from "@/lib/limits/copy";
-import { earnAbsorbed, rollFeeSnapshots, type EarnTrancheView, type FeeSnapshot } from "@/lib/limits/vault-tranche";
-import { formatTokenAmount } from "@/lib/format";
-import { LimitsNotice, LimitsRow } from "./LimitsRow";
+import { earnAbsorbed, seniorAtomsForRedemption, type EarnTrancheView } from "@/lib/limits/vault-tranche";
 
 export interface EarnTrancheCardViewProps {
   limits: MarketLimits;
   view: EarnTrancheView | null;
   slab: string;
+  /** The wallet's Earn shares (the card shows their value). */
   withdrawShares: bigint;
   decimals: number;
   collateralSymbol: string;
+  /** Kept for callers; the APY row waits for fee history (WP-5: "APY later"). */
   nowSecs?: number;
+  /** The simulated valuation's state (§3.7): running / last known as of. */
+  valuation?: { updating: boolean; asOf: number | null } | null;
+  /** What the vault can pay out now (88 path); the footnote shows only when it binds. */
+  maxNowAtoms?: bigint | null;
 }
 
-const SNAP_KEY = (slab: string) => `perc.limits.feeSnapshots.${slab}`;
-
-function loadSnaps(slab: string): FeeSnapshot[] {
-  try {
-    const raw = window.localStorage.getItem(SNAP_KEY(slab));
-    if (!raw) return [];
-    const arr = JSON.parse(raw) as { t: number; f: string; c: string }[];
-    return arr.map((x) => ({ t: x.t, seniorFeeCreditedAtoms: BigInt(x.f), seniorClaimAtoms: BigInt(x.c) }));
-  } catch {
-    return [];
-  }
+/** "$1,234.56" (2 dp, floored) for collateral atoms. */
+function usd(a: bigint, decimals: number): string {
+  const neg = a < 0n;
+  const x = neg ? -a : a;
+  const cents = (x * 100n) / 10n ** BigInt(decimals);
+  return `${neg ? "−" : ""}$${(cents / 100n).toLocaleString("en-US")}.${(cents % 100n).toString().padStart(2, "0")}`;
 }
-function saveSnaps(slab: string, list: FeeSnapshot[]): void {
-  try {
-    window.localStorage.setItem(
-      SNAP_KEY(slab),
-      JSON.stringify(list.map((s) => ({ t: s.t, f: s.seniorFeeCreditedAtoms.toString(), c: s.seniorClaimAtoms.toString() }))),
-    );
-  } catch {
-    /* private window / blocked storage: APY simply stays "needs history" */
-  }
+function pct(num: bigint, den: bigint): string {
+  if (den <= 0n) return "0%";
+  const bps = Number((num * 10_000n) / den);
+  return `${(bps / 100).toFixed(2)}%`;
 }
 
-export const EarnTrancheCardView: FC<EarnTrancheCardViewProps> = ({ limits, view, slab, withdrawShares, decimals, collateralSymbol, nowSecs }) => {
+function Row({ label, value, sub, testId, data }: { label: string; value: React.ReactNode; sub?: React.ReactNode; testId?: string; data?: Record<string, string> }) {
+  const dataAttrs = Object.fromEntries(Object.entries(data ?? {}).map(([k, v]) => [`data-${k}`, v]));
+  return (
+    <div className="flex items-baseline justify-between gap-3 py-1" data-testid={testId} {...dataAttrs}>
+      <span className="text-[10px] uppercase tracking-[0.08em] text-[var(--text-secondary)]">{label}</span>
+      <span className="text-right">
+        <span className="font-mono text-[12px] tabular-nums text-[var(--text)]">{value}</span>
+        {sub && <span className="ml-1.5 text-[11px] text-[var(--text-secondary)]">{sub}</span>}
+      </span>
+    </div>
+  );
+}
+
+export const EarnTrancheCardView: FC<EarnTrancheCardViewProps> = ({ limits, view, withdrawShares, decimals, valuation = null, maxNowAtoms = null }) => {
+  const [open, setOpen] = useState(false);
   const vs = limits.vaultState;
-  const [apyBps, setApyBps] = useState<number | null>(null);
-  useEffect(() => {
-    if (!vs) return;
-    const now: FeeSnapshot = {
-      t: nowSecs ?? Math.floor(Date.now() / 1000),
-      seniorFeeCreditedAtoms: vs.seniorFeeCreditedAtoms,
-      seniorClaimAtoms: vs.seniorClaimAtoms,
-    };
-    const r = rollFeeSnapshots(loadSnaps(slab), now);
-    saveSnaps(slab, r.list);
-    setApyBps(r.apyBps);
-  }, [vs, slab, nowSecs]);
-
   if (!limits.flags.p3 || limits.state === "off") return null;
   if (limits.state === "loading") {
     return <div data-testid="limits-tranche-card" data-state="loading" className="mb-3 h-24 animate-pulse border border-[var(--border)] bg-[var(--bg-elevated)]" />;
   }
-  if (!vs || !view) return null; // vault does not own an LP on this market
-  const fmt = (a: bigint | null) => (a === null ? "—" : `${formatTokenAmount(a, decimals)} ${collateralSymbol}`);
+  if (!vs || !view) return null; // the vault does not own this market's liquidity
   const resolved = limits.engine?.mode === 1;
-  const status = view.impaired === null ? "stale" : view.impaired ? "impaired" : "covered";
+  // Never "Needs refresh": a stale certificate is valued by simulation (or shows the last value).
+  const status = view.impaired === true ? "impaired" : view.senior === null ? "updating" : "covered";
   const absorbed = earnAbsorbed(vs);
+  const totalShares = limits.registryShares ?? 0n;
+  const yours = view.senior !== null && withdrawShares > 0n && totalShares > 0n ? seniorAtomsForRedemption(withdrawShares, totalShares, view.senior) : null;
+  const money = (a: bigint | null) => (a === null ? "—" : usd(a, decimals));
+  const showMaxNow = maxNowAtoms !== null && yours !== null && yours > maxNowAtoms;
+  const updatingDot = (valuation?.updating || view.senior === null) && (
+    <span aria-label="updating" data-testid="earn-value-updating" className="mr-1 inline-block h-[6px] w-[6px] animate-pulse rounded-full bg-[var(--text-muted)] align-middle" />
+  );
 
   return (
     <div
@@ -80,92 +80,84 @@ export const EarnTrancheCardView: FC<EarnTrancheCardViewProps> = ({ limits, view
       data-status={status}
       data-valuation={view.valuation}
       data-state={limits.state}
-      className="mb-3 border border-[var(--border)] bg-[var(--panel-bg)] p-3 space-y-0.5"
+      className="mb-3 border border-[var(--border)] bg-[var(--panel-bg)] p-3"
     >
       <div className="mb-1 flex items-center justify-between">
-        <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--text-muted)]">Vault tranches</p>
-        <span
-          className={`border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider ${
-            status === "impaired"
-              ? "border-[var(--short)]/40 text-[var(--short)]"
-              : status === "stale"
-                ? "border-[var(--warning)]/40 text-[var(--warning)]"
-                : "border-[var(--long)]/40 text-[var(--long)]"
-          }`}
-        >
-          {status === "impaired" ? "Impaired" : status === "stale" ? "Needs refresh" : "Covered"}
-        </span>
+        <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--text-secondary)]">How your deposit is protected</p>
+        {status === "impaired" && (
+          <span data-testid="earn-status-chip" className="border border-[var(--warning)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--warning)]">
+            Covering a loss
+          </span>
+        )}
       </div>
-      <LimitsRow
-        testId="limits-share-price"
-        data={{ "price-e6": view.sharePriceE6?.toString() ?? "" }}
-        label="Share price"
-        tooltip="Senior tranche value per Earn share. The creator's junior tranche takes losses first; only a loss bigger than the junior reaches Earn, and then every Earn depositor loses the same percentage, so it can fall below principal."
-        value={view.sharePriceE6 === null ? "—" : (Number(view.sharePriceE6) / 1e6).toFixed(6)}
-      />
-      <LimitsRow label="Senior (Earn)" value={fmt(view.senior)} />
-      <LimitsRow
-        testId="limits-junior-value"
-        data={{ valuation: view.valuation }}
-        label="Junior (creator)"
-        tooltip={
-          view.valuation === "certified"
-            ? "Includes the vault LP at its certified equity (the program's own valuation)."
-            : view.valuation === "flat"
-              ? "The vault LP is flat; valued at its capital net of losses and fee debt."
-              : COPY.valuationStale
-        }
-        value={fmt(view.junior)}
-      />
-      <LimitsRow
-        label="First-loss cushion"
-        tooltip="Junior tranche as a share of Earn deposits: how big a loss the creator's capital takes before any of it reaches Earn. Winning traders are always paid in full unless Earn's backing is used up too."
-        value={view.cushionBps === null ? "—" : `${(view.cushionBps / 100).toFixed(1)}%`}
-        valueClass={view.cushionBps !== null && view.cushionBps < 1_000 ? "text-[var(--warning)]" : undefined}
-      />
-      {absorbed && (
-        <LimitsRow
-          testId="limits-earn-absorbed"
-          data={{ outstanding: absorbed.outstanding.toString(), drawn: absorbed.drawn.toString() }}
-          label={COPY.earnAbsorbedLabel}
-          tooltip={COPY.earnAbsorbedTooltip(fmt(absorbed.drawn), fmt(absorbed.restored))}
-          value={fmt(absorbed.outstanding)}
-          valueClass={absorbed.outstanding > 0n ? "text-[var(--short)]" : undefined}
+      <div className="divide-y divide-[var(--border)]/30">
+        <Row
+          testId="limits-share-price"
+          data={{ "price-e6": view.sharePriceE6?.toString() ?? "" }}
+          label="Share value"
+          value={
+            <>
+              {updatingDot}
+              {view.sharePriceE6 === null ? "—" : `${(Number(view.sharePriceE6) / 1e6).toFixed(4)} USDC`}
+            </>
+          }
+          sub={valuation?.asOf ? `as of ${new Date(valuation.asOf).toTimeString().slice(0, 5)}` : undefined}
         />
-      )}
-      <LimitsRow
-        testId="limits-pending-fees"
-        data={{ excludes: view.excludesUncrankedFees ? "true" : "false" }}
-        label="Pending LP fees"
-        tooltip="LP fees earned but not yet cranked into the vault. They are priced into the share value already."
-        value={view.excludesUncrankedFees ? <span className="text-[var(--text-dim)]">{COPY.excludesUncrankedFees}</span> : fmt(view.harvestable)}
-      />
-      <LimitsRow
-        testId="limits-apy"
-        data={{ state: apyBps === null ? "insufficient-history" : "ready" }}
-        label="APY (fees, trailing)"
-        tooltip="Annualised from LP fees actually credited to the senior tranche on-chain. Never a projection."
-        value={apyBps === null ? <span className="text-[var(--text-dim)]">{COPY.apyInsufficient}</span> : `${(apyBps / 100).toFixed(2)}%`}
-      />
-      {view.valuation === "stale" && <p className="text-[9px] text-[var(--warning)]">{COPY.valuationStale}</p>}
-      {withdrawShares > 0n && (
-        <p
-          className={`pt-1 text-[9px] leading-relaxed ${view.withdrawKind === "normal" ? "text-[var(--text-secondary)]" : "text-[var(--warning)]"}`}
-          data-testid="limits-withdraw-effect"
-          data-kind={view.withdrawKind}
-        >
-          {view.withdrawAtoms !== null && COPY.withdrawReceive(fmt(view.withdrawAtoms))}{" "}
-          {view.withdrawKind === "impaired" && COPY.withdrawImpaired(fmt(view.senior))}
-          {view.withdrawKind === "illiquid" && COPY.withdrawIlliquid}
-          {view.withdrawKind === "stale" && COPY.valuationStale}
+        {yours !== null && (
+          <Row testId="earn-your-balance" label="Your Earn balance" value={money(yours)} sub={`(${pct(withdrawShares, totalShares)} of vault)`} />
+        )}
+        <Row testId="limits-junior-value" data={{ valuation: view.valuation }} label="Creator stake" value={money(view.junior)} sub="covers the first losses" />
+        <Row testId="earn-deposits-value" label="Earn deposits" value={money(view.senior)} />
+        <Row
+          testId="limits-earn-absorbed"
+          data={{ outstanding: (absorbed?.outstanding ?? 0n).toString(), drawn: (absorbed?.drawn ?? 0n).toString() }}
+          label="Losses shared by Earn"
+          value={absorbed && absorbed.outstanding > 0n ? `−${usd(absorbed.outstanding, decimals)}` : "$0.00"}
+          sub={
+            absorbed && absorbed.outstanding > 0n
+              ? `(−${pct(absorbed.outstanding, (view.senior ?? 0n) + absorbed.outstanding)}) · ${usd(absorbed.restored, decimals)} restored`
+              : undefined
+          }
+        />
+        <Row
+          testId="earn-fees-paid"
+          data={{ atoms: vs.seniorFeeCreditedAtoms.toString() }}
+          label="Fees paid to Earn"
+          value={usd(vs.seniorFeeCreditedAtoms, decimals)}
+          sub="so far"
+        />
+      </div>
+      {view.impaired === true && (
+        <p data-testid="limits-withdraw-effect" data-kind="impaired" className="pt-2 text-[12px] leading-snug text-[var(--text)]">
+          {COPY.withdrawImpaired(money(view.senior))}
         </p>
       )}
-      {view.impaired === true && <p className="text-[9px] text-[var(--short)]">{COPY.depositsPausedImpaired}</p>}
-      {resolved && <p className="text-[9px] text-[var(--warning)]">{COPY.resolvedVault}</p>}
-      <div className="pt-2">
-        <LimitsNotice tone="info" testId="limits-risk-disclosure">
-          {COPY.riskDisclosure}
-        </LimitsNotice>
+      {showMaxNow && (
+        <p data-testid="limits-withdraw-effect" data-kind="max-now" className="pt-2 text-[12px] leading-snug text-[var(--text-secondary)]">
+          {COPY.withdrawIlliquid(money(maxNowAtoms))}
+        </p>
+      )}
+      {resolved && (
+        <p data-testid="earn-resolved" className="pt-2 text-[12px] leading-snug text-[var(--text-secondary)]">
+          {COPY.resolvedSettled}
+        </p>
+      )}
+      <div className="pt-2" data-testid="limits-risk-disclosure">
+        <button
+          type="button"
+          data-testid="earn-how-losses-toggle"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+          className="text-[11px] text-[var(--text-secondary)] hover:text-[var(--text)]"
+        >
+          How losses work {open ? "▴" : "▾"}
+        </button>
+        {open && (
+          <div className="mt-1 space-y-1.5">
+            <p className="text-[12px] leading-snug text-[var(--text)]">{COPY.howLossesWork}</p>
+            <p className="text-[11px] leading-snug text-[var(--text-secondary)]">{COPY.howLossesFinePrint}</p>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -59,6 +59,6 @@ describe("B17: the P3 tranche card is on the market's own Earn page", () => {
     const s = src("app/earn/[slab]/page.tsx");
     expect(s).toContain("<EarnTrancheCardView");
     expect(s).toContain("const earnLimits = useMarketLimits(slabAddress);");
-    expect(s).toContain("earnViewFromLimits(earnLimits, lpVaultState.vaultTotalAtoms, lpVaultState.userLpBalance)");
+    expect(s).toContain("earnViewFromLimits(earnLimits, lpVaultState.vaultTotalAtoms, lpVaultState.userLpBalance, undefined, lpValuation.value)");
   });
 });

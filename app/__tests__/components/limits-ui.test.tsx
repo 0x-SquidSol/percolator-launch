@@ -93,62 +93,100 @@ describe("MarketLimitsStripView", () => {
   });
 });
 
-describe("EarnTrancheCardView", () => {
-  it("share price, tranche status, APY needs history, disclosure, withdrawal effect", () => {
-    const { getByTestId } = render(
-      <EarnTrancheCardView
-        limits={marketLimits()}
-        view={earnViewFromLimits(marketLimits(), 1_000_000_000n, 100_000_000n)}
-        slab="SLAB"
-        withdrawShares={100_000_000n}
-        decimals={6}
-        collateralSymbol="USDC"
-        nowSecs={1_700_000_000}
-      />,
+/** UX_SHOTS_OUT: write the REAL card markup for scripts/ux-shots/shoot-html.mjs (375/1440). */
+function snapCard(name: string) {
+  const out = process.env.UX_SHOTS_OUT;
+  if (!out) return;
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const fs = require("node:fs") as typeof import("node:fs");
+  fs.mkdirSync(out, { recursive: true });
+  fs.writeFileSync(`${out}/${name}.html`, document.querySelector("[data-testid=limits-tranche-card]")!.outerHTML);
+}
+
+describe("EarnTrancheCardView = 'How your deposit is protected' (UX WP-5, §4.4)", () => {
+  it("share value 4 dp, your balance, creator stake, Earn deposits, losses shared, fees paid; no chip when covered", () => {
+    const L = marketLimits();
+    const { getByTestId, queryByTestId, getByText } = render(
+      <EarnTrancheCardView limits={L} view={earnViewFromLimits(L, 1_000_000_000n, 100_000_000n)} slab="SLAB" withdrawShares={100_000_000n} decimals={6} collateralSymbol="USDC" />,
     );
     const card = getByTestId("limits-tranche-card");
+    expect(card.textContent).toContain("How your deposit is protected");
     expect(card.dataset.status).toBe("covered");
     expect(card.dataset.valuation).toBe("certified");
-    // C_eff = 1e9 + 2e6 harvestable; senior = C_eff => price 1.002
+    // C_eff = 1e9 + 2e6 harvestable; senior = C_eff => 1.0020
     expect(getByTestId("limits-share-price").dataset.priceE6).toBe("1002000");
-    expect(getByTestId("limits-pending-fees").dataset.excludes).toBe("false");
-    expect(getByTestId("limits-junior-value").dataset.valuation).toBe("certified");
-    expect(getByTestId("limits-apy").dataset.state).toBe("insufficient-history");
-    expect(getByTestId("limits-withdraw-effect").dataset.kind).toBe("normal");
-    expect(getByTestId("limits-risk-disclosure").textContent).toContain("senior tranche");
+    expect(getByTestId("limits-share-price").textContent).toContain("1.0020 USDC");
+    expect(getByTestId("earn-your-balance").textContent).toMatch(/\$100\.20.*\(10\.00% of vault\)/);
+    expect(getByTestId("limits-junior-value").textContent).toContain("covers the first losses");
+    expect(getByTestId("earn-deposits-value").textContent).toContain("$1,002.00");
+    expect(getByTestId("limits-earn-absorbed").textContent).toContain("$0.00");
+    // AC2: "Fees paid to Earn" = senior_fee_credited_atoms
+    expect(getByTestId("earn-fees-paid").dataset.atoms).toBe(L.vaultState!.seniorFeeCreditedAtoms.toString());
+    expect(getByTestId("earn-fees-paid").textContent).toContain("$5.00");
+    expect(queryByTestId("earn-status-chip")).toBeNull();
+    expect(queryByTestId("limits-withdraw-effect")).toBeNull();
+    // "How losses work" once, collapsed; §5.2 wording when open
+    fireEvent.click(getByTestId("earn-how-losses-toggle"));
+    expect(getByText(COPY.howLossesWork)).toBeTruthy();
+    snapCard("covered");
+    expect(card.textContent).not.toMatch(/tranche|senior|junior|\bLP\b|cushion|Needs refresh|APY/i);
   });
-});
 
-describe("EarnTrancheCardView: Earn absorbed (39b138c8 senior draw)", () => {
-  it("shows the loss Earn bears now, with the cumulative and restored amounts; hidden when nothing was drawn", () => {
+  it("covering a loss: 'Covering a loss' chip and the real (below-principal) value", () => {
+    const L = marketLimits();
+    const view = earnViewFromLimits(L, 800_000_000n, 0n)!; // pots + LP < the Earn claim
+    expect(view.impaired).toBe(true);
+    const { getByTestId } = render(<EarnTrancheCardView limits={L} view={view} slab="S" withdrawShares={0n} decimals={6} collateralSymbol="USDC" />);
+    expect(getByTestId("limits-tranche-card").dataset.status).toBe("impaired");
+    expect(getByTestId("earn-status-chip").textContent).toBe("Covering a loss");
+    expect(getByTestId("limits-withdraw-effect").dataset.kind).toBe("impaired");
+    expect(getByTestId("limits-withdraw-effect").textContent).toMatch(/below what was put in/);
+    snapCard("covering-a-loss");
+  });
+
+  it("losses shared by Earn: −$X (−p%) · $Y restored, in --text (not red)", () => {
     const base = marketLimits();
     const L = marketLimits({ vaultState: { ...base.vaultState!, seniorDrawnAtoms: 1_635_213n, seniorDrawOutstandingAtoms: 635_213n } });
-    const { getByTestId, unmount } = render(
-      <EarnTrancheCardView limits={L} view={earnViewFromLimits(L, 1_000_000_000n, 0n)} slab="S3" withdrawShares={0n} decimals={6} collateralSymbol="USDC" nowSecs={1} />,
-    );
+    const { getByTestId } = render(<EarnTrancheCardView limits={L} view={earnViewFromLimits(L, 1_000_000_000n, 0n)} slab="S3" withdrawShares={0n} decimals={6} collateralSymbol="USDC" />);
     const row = getByTestId("limits-earn-absorbed");
     expect(row.dataset.outstanding).toBe("635213");
     expect(row.dataset.drawn).toBe("1635213");
-    expect(row.textContent).toContain("Earn absorbed");
-    expect(row.textContent).toContain("0.635213");
-    unmount();
-    const { queryByTestId } = render(
-      <EarnTrancheCardView limits={base} view={earnViewFromLimits(base, 1_000_000_000n, 0n)} slab="S4" withdrawShares={0n} decimals={6} collateralSymbol="USDC" nowSecs={1} />,
-    );
-    expect(queryByTestId("limits-earn-absorbed")).toBeNull();
+    expect(row.textContent).toMatch(/−\$0\.63.*\$1\.00 restored/);
+    expect(row.innerHTML).not.toMatch(/--short/);
   });
-});
 
-describe("EarnTrancheCardView stale valuation", () => {
-  it("says 'Needs refresh' instead of guessing when the LP certificate is stale and backing is short", () => {
+  it("AC1: a stale certificate never shows 'Needs refresh': with a simulated value the card has numbers; without one it shows 'updating'", () => {
     const L = marketLimits({ lp: { ...marketLimits().lp!, staleState: 1 } });
+    const stale = render(<EarnTrancheCardView limits={L} view={earnViewFromLimits(L, 900_000_000n, 0n)} slab="S2" withdrawShares={0n} decimals={6} collateralSymbol="USDC" valuation={{ updating: true, asOf: null }} />);
+    expect(stale.getByTestId("limits-tranche-card").dataset.status).toBe("updating");
+    expect(stale.getByTestId("earn-value-updating")).toBeTruthy();
+    expect(stale.container.textContent).not.toMatch(/Needs refresh/);
+    stale.unmount();
+    const sim = { kind: "certified" as const, atoms: 120_000_000n };
     const { getByTestId } = render(
-      <EarnTrancheCardView limits={L} view={earnViewFromLimits(L, 900_000_000n, 0n)} slab="S2" withdrawShares={0n} decimals={6} collateralSymbol="USDC" nowSecs={1} />,
+      <EarnTrancheCardView limits={L} view={earnViewFromLimits(L, 900_000_000n, 0n, undefined, sim)} slab="S2" withdrawShares={0n} decimals={6} collateralSymbol="USDC" valuation={{ updating: false, asOf: null }} />,
     );
-    const card = getByTestId("limits-tranche-card");
-    expect(card.dataset.status).toBe("stale");
-    expect(card.textContent).toContain("Needs refresh");
-    expect(getByTestId("limits-share-price").dataset.priceE6).toBe("");
+    expect(getByTestId("limits-tranche-card").dataset.status).toBe("covered");
+    expect(getByTestId("limits-share-price").dataset.priceE6).not.toBe("");
+  });
+
+  it("resolved: a calm settled line, never 'not available yet'", () => {
+    const base = marketLimits();
+    const L = marketLimits({ engine: { ...base.engine!, mode: 1 } });
+    const { getByTestId, container } = render(<EarnTrancheCardView limits={L} view={earnViewFromLimits(L, 1_000_000_000n, 0n)} slab="S" withdrawShares={0n} decimals={6} collateralSymbol="USDC" />);
+    expect(getByTestId("earn-resolved").textContent).toBe(COPY.resolvedSettled);
+    expect(container.textContent).not.toMatch(/not available yet/);
+    snapCard("resolved");
+  });
+
+  it("the max-now footnote shows only when it binds", () => {
+    const L = marketLimits();
+    const v = earnViewFromLimits(L, 1_000_000_000n, 0n);
+    const a = render(<EarnTrancheCardView limits={L} view={v} slab="S" withdrawShares={100_000_000n} decimals={6} collateralSymbol="USDC" maxNowAtoms={50_000_000n} />);
+    expect(a.getByTestId("limits-withdraw-effect").dataset.kind).toBe("max-now");
+    a.unmount();
+    const b = render(<EarnTrancheCardView limits={L} view={v} slab="S" withdrawShares={100_000_000n} decimals={6} collateralSymbol="USDC" maxNowAtoms={500_000_000n} />);
+    expect(b.queryByTestId("limits-withdraw-effect")).toBeNull();
   });
 });
 
@@ -176,7 +214,7 @@ describe("DepositWithdrawPanel deposit gate", () => {
     expect((getByTestId("earn-deposit-submit") as HTMLButtonElement).disabled).toBe(true);
     const b = getByTestId("earn-deposit-blocked");
     expect(b.dataset.reason).toBe("senior-impaired");
-    expect(b.textContent).toContain("impaired");
+    expect(b.textContent).toContain("covering a loss");
   });
   it("control: without a block the same deposit is enabled", () => {
     const { getByTestId, queryByTestId } = render(

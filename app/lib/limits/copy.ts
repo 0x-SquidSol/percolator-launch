@@ -45,18 +45,22 @@ export const COPY = {
   legacyQuote: (bps: string) => `Quote: within ${bps} of mark.`,
   skew: (dir: "long" | "short" | "flat", size: string, sym: string) =>
     dir === "flat" ? "Book skew: balanced" : `Book skew: traders net ${dir} ${size} ${sym} (LP ${dir === "long" ? "short" : "long"})`,
-  riskDisclosure:
-    "Earn deposits are the senior tranche of the vault that is this market's liquidity provider. Trader profits are paid first from the creator's junior tranche; once it is exhausted, from Earn deposits. Share price can fall. Withdrawals can be delayed while the LP holds open positions.",
+  /** UX WP-5 / audit §5.2: "How losses work" — the P3 §0.8 rule in plain words, shown ONCE (Earn card). */
+  howLossesWork:
+    "The market creator's stake takes losses first. Only a loss bigger than that stake reaches Earn, and then every Earn depositor loses the same percentage. Winning traders are always paid in full unless Earn's money is used up too. Share value can go down; only deposit what you can afford to lose.",
+  howLossesFinePrint:
+    "The first deposit into a vault leaves a tiny permanent amount (0.001 USDC) behind, and each withdrawal rounds down by at most 0.000001 USDC.",
   withdrawReceive: (amt: string) => `You receive ≈ ${amt}.`,
-  withdrawImpaired: (senior: string) =>
-    `The senior tranche is impaired; you receive your share of ${senior}, below principal.`,
-  withdrawIlliquid:
-    "Part of the vault's value is in the LP's open positions. Your redemption may wait for a recall (permissionless) or the keeper.",
-  depositsPausedImpaired: "Deposits are paused while the senior tranche is impaired.",
-  valuationStale: "Vault value needs a refresh (the LP holds positions and its health certificate is stale).",
+  withdrawImpaired: (value: string) =>
+    `This vault is covering a loss, so Earn deposits are worth ${value} in total right now, below what was put in.`,
+  withdrawIlliquid: (max: string) =>
+    `Part of this vault's money is in use by open trades right now. You can withdraw up to ${max} now, or the rest once those trades close.`,
+  depositsPausedImpaired: "Deposits are paused while this vault is covering a loss. Withdrawals still work.",
+  /** Never shown (audit §3.7); kept for the deposit-gate fallback only. */
+  valuationStale: "Updating the vault's value; we'll retry automatically.",
   excludesUncrankedFees: "excludes uncranked fees",
   apyInsufficient: "Needs 24 h of fee history",
-  resolvedVault: "This market is resolved. Vault settlement for resolved markets is not available yet.",
+  resolvedSettled: "This market has settled. Earn deposits can be withdrawn once the market has closed out.",
   fundingPay: (amt: string) => `Skew funding: you pay ${amt}/h`,
   fundingReceive: (amt: string) => `Skew funding: you receive ${amt}/h`,
   liqDrift: (delta: string) =>
