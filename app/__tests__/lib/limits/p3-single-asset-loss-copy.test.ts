@@ -41,20 +41,26 @@ describe("error 86 VaultLpMultiAssetMarket", () => {
   });
 });
 
-describe("loss copy (user decision, reversed): junior first, then Earn pro rata; winners always paid in full", () => {
-  const JUNIOR_THEN_EARN = /junior first, then Earn depositors pro rata/;
-  const WINNERS_PAID = /Winning trades are (always|still) paid in full/;
-  it("every P3 'who bears losses' string says it", () => {
-    for (const s of [COPY.wizardRequirement("20%"), COPY.p3Wizard.explain, COPY.earnRiskP3]) {
-      expect(s).toMatch(JUNIOR_THEN_EARN);
-      expect(s).toMatch(WINNERS_PAID);
-    }
-    expect(COPY.juniorExhausted).toMatch(/Earn depositors pro rata/);
-    expect(COPY.juniorExhausted).toMatch(WINNERS_PAID);
+describe("loss copy = P3 doc §0.8: junior first, then Earn pro rata; winners paid in full unless Earn's backing is used up", () => {
+  const SECTION_0_8 =
+    "The creator's junior tranche takes losses first. Only a loss bigger than the junior reaches Earn, and then every Earn depositor loses the same percentage. Winning traders are always paid in full unless Earn's backing is used up too.";
+  const QUALIFIER = /always paid in full unless Earn's backing is used up too/;
+  it("the wizard requirement, wizard explainer and Earn risk notice carry §0.8 verbatim", () => {
+    for (const s of [COPY.wizardRequirement("20%"), COPY.p3Wizard.explain, COPY.earnRiskP3]) expect(s).toContain(SECTION_0_8);
   });
-  it("no P3 surface claims seniors are protected or winners are haircut", () => {
+  it("the exhausted notice and the tranche card keep the pro-rata rule and the qualifier", () => {
+    expect(COPY.juniorExhausted).toMatch(/every Earn depositor loses the same percentage/);
+    expect(COPY.juniorExhausted).toMatch(QUALIFIER);
+    const card = readFileSync(resolve(process.cwd(), "components/limits/EarnTrancheCard.tsx"), "utf8");
+    expect(card).toMatch(/every Earn depositor loses the same percentage/);
+    expect(card).toMatch(QUALIFIER);
+    // The real on-chain withdraw value stays on screen (it can be below principal).
+    expect(card).toContain("COPY.withdrawImpaired(");
+    expect(COPY.withdrawImpaired("1.00")).toMatch(/below principal/);
+  });
+  it("no P3 surface says seniors are whole, principal is guaranteed, winners are haircut, or paid in full unqualified", () => {
     const WRONG =
-      /haircut on the winning|winners? (are|get|is) haircut|stay whole|seniors? (are|stay|remain) (whole|protected|safe)|not on Earn deposits|Earn deposits (are|stay) (whole|protected|safe)|never lose|can(no|')t lose|principal is (protected|guaranteed)/i;
+      /haircut on the winning|winners? (are|get|is) haircut|stay whole|seniors? (are|stay|remain) (whole|protected|safe)|not on Earn deposits|Earn deposits (are|stay) (whole|protected|safe)|never lose|can(no|')t lose|principal is (protected|guaranteed)|guaranteed principal/i;
     const strings: string[] = [];
     const walk = (v: unknown): void => {
       if (typeof v === "string") strings.push(v);
@@ -66,14 +72,13 @@ describe("loss copy (user decision, reversed): junior first, then Earn pro rata;
     for (const f of ["components/limits/CreatorLimits.tsx", "components/limits/EarnTrancheCard.tsx", "components/earn/EarnVaultView.tsx"]) {
       strings.push(readFileSync(resolve(process.cwd(), f), "utf8"));
     }
-    for (const s of strings) expect(s).not.toMatch(WRONG);
+    for (const s of strings) {
+      expect(s).not.toMatch(WRONG);
+      // Every "paid in full" claim must carry the qualifier.
+      for (const m of s.matchAll(/paid in full[^.]*\./g)) expect(m[0]).toMatch(/unless Earn's backing is used up too/);
+    }
     const creator = readFileSync(resolve(process.cwd(), "components/limits/CreatorLimits.tsx"), "utf8");
     expect(creator).toContain("{COPY.juniorExhausted}");
-    const card = readFileSync(resolve(process.cwd(), "components/limits/EarnTrancheCard.tsx"), "utf8");
-    expect(card).toMatch(JUNIOR_THEN_EARN);
-    // The real on-chain withdraw value stays on screen (it can be below principal).
-    expect(card).toContain("COPY.withdrawImpaired(");
-    expect(COPY.withdrawImpaired("1.00")).toMatch(/below principal/);
     const earn = readFileSync(resolve(process.cwd(), "components/earn/EarnVaultView.tsx"), "utf8");
     expect(earn).toContain("COPY.earnRiskP3");
   });

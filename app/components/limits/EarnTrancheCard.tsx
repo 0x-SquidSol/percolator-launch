@@ -99,7 +99,7 @@ export const EarnTrancheCardView: FC<EarnTrancheCardViewProps> = ({ limits, view
         testId="limits-share-price"
         data={{ "price-e6": view.sharePriceE6?.toString() ?? "" }}
         label="Share price"
-        tooltip="Senior tranche value per Earn share. Losses hit the creator's junior first, then Earn depositors pro rata, so it can fall below principal."
+        tooltip="Senior tranche value per Earn share. The creator's junior tranche takes losses first; only a loss bigger than the junior reaches Earn, and then every Earn depositor loses the same percentage, so it can fall below principal."
         value={view.sharePriceE6 === null ? "—" : (Number(view.sharePriceE6) / 1e6).toFixed(6)}
       />
       <LimitsRow label="Senior (Earn)" value={fmt(view.senior)} />
@@ -118,7 +118,7 @@ export const EarnTrancheCardView: FC<EarnTrancheCardViewProps> = ({ limits, view
       />
       <LimitsRow
         label="First-loss cushion"
-        tooltip="Junior tranche as a share of Earn deposits: how much loss the creator's capital takes before Earn depositors share the rest pro rata. Winning trades are always paid in full."
+        tooltip="Junior tranche as a share of Earn deposits: how big a loss the creator's capital takes before any of it reaches Earn. Winning traders are always paid in full unless Earn's backing is used up too."
         value={view.cushionBps === null ? "—" : `${(view.cushionBps / 100).toFixed(1)}%`}
         valueClass={view.cushionBps !== null && view.cushionBps < 1_000 ? "text-[var(--warning)]" : undefined}
       />
