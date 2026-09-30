@@ -96,6 +96,31 @@ describe("vault_lp_equity_lag_bounds_ro", () => {
   });
 });
 
+describe("77 Live security MEDIUM fix (2026-09-30): worse < 0 and nav < C values the pots at nav - |worse|", () => {
+  it("the coordinator's vector: C 1,000,000, nav 800,000, certified e 200,000, adverse d 300,000 -> 700,000", () => {
+    const worse = 200_000n - 300_000n; // e - d
+    expect(liveRedeemSeniorValue({ c: 1_000_000n, nav: 800_000n, lpValue: 200_000n, worse })).toBe(700_000n);
+    // through the bounds too: a short of 300 units facing +$0.001 at certified equity 200,000
+    const b = vaultLpEquityLagBounds(lp({ cert: { ...lp().cert, certifiedEquity: 200_000n }, legs: [{ slot: 0, assetIndex: 0, side: 1, basisPosQ: -300_000_000n }] }), market(1_000_000n, 1_001_000n));
+    expect(b).toEqual({ worse: -100_000n, better: 200_000n });
+    expect(earnSeniorPricing({ resolved: false, cEff: 1_000_000n, nav: 800_000n, outstanding: 0n, lp: lp({ cert: { ...lp().cert, certifiedEquity: 200_000n }, legs: [{ slot: 0, assetIndex: 0, side: 1, basisPosQ: -300_000_000n }] }), market: market(1_000_000n, 1_001_000n) }).withdrawSeniorValue).toBe(700_000n);
+  });
+  it("NEGATIVE: the old rule (pots at nav when nav < C) would have paid 800,000", () => {
+    const old = (c: bigint, nav: bigint, worse: bigint) => {
+      const cp = worse < 0n ? seniorPricingClaim(c, -worse, nav > c ? nav - c : 0n) : c;
+      return nav >= cp ? cp : nav + 0n < cp ? nav : cp;
+    };
+    expect(old(1_000_000n, 800_000n, -100_000n)).toBe(800_000n);
+    expect(liveRedeemSeniorValue({ c: 1_000_000n, nav: 800_000n, lpValue: 0n, worse: -100_000n })).toBe(700_000n);
+  });
+  it("unchanged where the fix does not bite: nav >= C, or worse >= 0; never negative", () => {
+    expect(liveRedeemSeniorValue({ c: 1_000n, nav: 1_000n, lpValue: 0n, worse: -30n })).toBe(970n);
+    expect(liveRedeemSeniorValue({ c: 1_000n, nav: 1_020n, lpValue: 0n, worse: -30n })).toBe(990n);
+    expect(liveRedeemSeniorValue({ c: 1_000n, nav: 600n, lpValue: 500n, worse: 300n })).toBe(900n);
+    expect(liveRedeemSeniorValue({ c: 1_000n, nav: 50n, lpValue: 0n, worse: -300n })).toBe(0n);
+  });
+});
+
 describe("77 / 75 Live composition", () => {
   it("77: a move the junior absorbs changes nothing for seniors (worse >= 0)", () => {
     expect(liveRedeemSeniorValue({ c: 1_000n, nav: 1_000n, lpValue: 120n, worse: 80n })).toBe(1_000n);
@@ -156,8 +181,19 @@ describe("parity with @percolatorct/sdk 8.0.0 (52b7412)", () => {
     }
     expect(legsSeen).toBeGreaterThan(300);
   });
-  it("boundVaultSeniorValueP3 (77 Live)", () => {
-    for (const r of V.redeem) expect(liveRedeemSeniorValue({ c: BigInt(r.c), nav: BigInt(r.nav), lpValue: BigInt(r.lpValue), worse: BigInt(r.worse) })).toBe(BigInt(r.senior));
+  it("boundVaultSeniorValueP3 (77 Live) — outside the region the security fix changed", () => {
+    // SDK 52b7412 predates the security MEDIUM fix (worse < 0 and nav < C: pots at nav - |worse|);
+    // those vectors are superseded (pinned by the fix vectors below), every other one must hold.
+    let held = 0;
+    let superseded = 0;
+    for (const r of V.redeem) {
+      const [c, nav, worse] = [BigInt(r.c), BigInt(r.nav), BigInt(r.worse)];
+      if (worse < 0n && nav < c) { superseded++; continue; }
+      expect(liveRedeemSeniorValue({ c, nav, lpValue: BigInt(r.lpValue), worse })).toBe(BigInt(r.senior));
+      held++;
+    }
+    expect(held).toBeGreaterThan(200);
+    expect(superseded).toBeGreaterThan(20);
   });
   it("boundVaultDepositQuoteP3 cEff (75 Live)", () => {
     expect(V.deposit.length).toBeGreaterThan(300);

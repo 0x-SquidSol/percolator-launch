@@ -135,7 +135,8 @@ export async function runOwnPortfolioCleanup(groups: readonly OwnCleanupGroup[],
 
 // ── RPC orchestration for useCloseMarket (reclaim on a RESOLVED market) ────────────────────
 
-const CLEANUP_CU = 600_000;
+/** Covers CloseResolved (up to 204k CU on the final wrapper) + ClosePortfolio in one tx. */
+export const CLEANUP_CU = 600_000;
 
 export type OwnCleanupOutcome =
   | { ok: true; closed: number; signatures: string[] }

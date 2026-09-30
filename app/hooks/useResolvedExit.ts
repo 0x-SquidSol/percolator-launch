@@ -16,7 +16,7 @@ import { getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { useConnectionCompat, useWalletCompat } from '@/hooks/useWalletCompat';
 import { useSlabState } from '@/components/providers/SlabProvider';
 import { sendTx } from '@/lib/tx';
-import { connectionSelfHealDeps } from '@/lib/self-heal';
+import { computeBudgetPrefix, connectionSelfHealDeps } from '@/lib/self-heal';
 import { readPortfolioIdentity } from '@/lib/v18-wire';
 import { KIND_PORTFOLIO, MARKET_MODE_RESOLVED } from '@/lib/limits/constants';
 import {
@@ -36,7 +36,13 @@ import { harvestableFeeAtoms } from '@/lib/limits/vault-tranche';
 
 /** Raw account offset of the portfolio's provenance market group (see hooks/useTrade.ts). */
 const PORTFOLIO_PROVENANCE_MARKET_GROUP_OFF = 16;
-const EXIT_TX_CU = 600_000;
+/**
+ * One exit step per tx. Measured on the final wrapper: CloseResolved up to 204k CU, 101
+ * (SettleVaultLpResolved) up to 285k; the budget must cover both (>= 300k / 400k), and the
+ * pre-send SIMULATION must carry it too (a bare simulation gets the 200k per-instruction default,
+ * so a 285k step would look refused).
+ */
+export const EXIT_TX_CU = 600_000;
 
 interface Snapshot {
   plan: ResolvedExitPlan;
@@ -179,7 +185,7 @@ export function useResolvedExit(slabAddress: string | null) {
           if (!ctx) throw new Error('market not loaded');
           return exitStepIxs(step, ctx);
         },
-        simulate: async (ixs) => (await sim.simulate(ixs)).err ?? null,
+        simulate: async (ixs) => (await sim.simulate([...computeBudgetPrefix(EXIT_TX_CU), ...ixs])).err ?? null,
         send: (ixs) => sendTx({ connection, wallet, instructions: ixs, computeUnits: EXIT_TX_CU }),
       });
       if (alive.current) setState((p) => ({ ...p, running: false, lastRun: result, plan: result.final }));

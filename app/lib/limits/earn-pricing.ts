@@ -12,10 +12,10 @@
  *      atoms = ceil(q * delta / POS_SCALE)   (risk_notional_ceil), per side
  *    worse  = certified_equity - Σ adverse       better = certified_equity + Σ favorable
  *
- *  77 Live:  C_price = vault_lp_senior_pricing_claim(C, max(0, -worse), nav - C)
- *                    = C - max(0, max(0, -worse) - max(0, nav - C))   (saturating at 0)
- *            senior  = nav >= C_price ? C_price
- *                      : min(nav + min(vault_lp_value_atoms, max(worse, 0)), C_price)
+ *  77 Live:  C' = vault_lp_senior_pricing_claim(C, max(0, -worse), nav - C)
+ *               = C - max(0, max(0, -worse) - max(0, nav - C))   (saturating at 0)
+ *            v  = worse < 0 ? max(0, nav - |worse|) : nav + min(vault_lp_value_atoms, worse)
+ *            senior = tranche_split(v, C').senior = min(v, C')   (security MEDIUM fix: no nav >= C shortcut)
  *  75 Live:  draw outstanding => C_price = C_eff + min(outstanding, max(0, nav + max(better,0) - C_eff))
  *            else unchanged; shares = senior_shares_for_deposit(amount, S, C_price)
  *  Resolved: unchanged.
@@ -105,11 +105,19 @@ export function seniorPricingClaim(c: bigint, undrawnDeficit: bigint, juniorSurp
   return sat(c, sat(undrawnDeficit, juniorSurplus));
 }
 
-/** 77 Live: the senior value a redemption is priced at. */
+/**
+ * 77 Live: the senior value a redemption is priced at. Security MEDIUM fix (2026-09-30, wrapper
+ * after ede691b6): when worse < 0 the pots are valued at v_worse = nav - |worse| (the deficit the
+ * pending target would realise), and the senior is ALWAYS tranche_split(v, C').senior — the old
+ * "nav >= C => C" shortcut is gone (it priced an exit at nav when nav < C and worse < 0).
+ *   C' = worse < 0 ? vault_lp_senior_pricing_claim(C, |worse|, max(0, nav - C)) : C
+ *   v  = worse < 0 ? max(0, nav - |worse|) : nav + min(vault_lp_value_atoms, worse)
+ *   senior = min(v, C')
+ */
 export function liveRedeemSeniorValue(i: { c: bigint; nav: bigint; lpValue: bigint; worse: bigint }): bigint {
   const cPrice = i.worse < 0n ? seniorPricingClaim(i.c, -i.worse, sat(i.nav, i.c)) : i.c;
-  if (i.nav >= cPrice) return cPrice;
-  return min(i.nav + min(i.lpValue, max0(i.worse)), cPrice);
+  const v = i.worse < 0n ? sat(i.nav, -i.worse) : i.nav + min(i.lpValue, i.worse);
+  return min(v, cPrice);
 }
 
 /** 75 Live: the claim a deposit's shares are minted against. */
