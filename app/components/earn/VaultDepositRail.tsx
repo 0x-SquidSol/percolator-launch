@@ -12,6 +12,8 @@ import { useMarketLimits } from '@/hooks/useMarketLimits';
 import { earnGateShares, earnViewFromLimits } from '@/lib/limits/earn';
 import { earnDepositBlock } from '@/lib/limits/vault-tranche';
 import { COPY } from '@/lib/limits/copy';
+import { chargedTradeFeeLabel } from '@/lib/limits/format';
+import { decodeMarketEngineView } from '@/lib/limits/decode';
 import { MarketLogo } from '@/components/market/MarketLogo';
 import { formatCompact } from '@/lib/formatters';
 import type { MarketVaultInfo } from '@/hooks/useEarnStats';
@@ -66,7 +68,7 @@ export function VaultDepositRail({ slab, vault, onTxSuccess, onPositionResolved 
 
 function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }: VaultDepositRailProps & { slab: string }) {
   const { state, loading, deposit, withdraw, refreshState } = useInsuranceLP();
-  const { config } = useSlabState();
+  const { config, raw: slabRaw } = useSlabState();
   const wallet = useWalletCompat();
   const vaultAvailable = state.registryExists && state.mintExists;
 
@@ -164,7 +166,8 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
           {/* Key figures */}
           <div className="grid grid-cols-2 gap-3 border-t border-[var(--border)]/60 pt-3">
             <Figure label="TVL" value={`$${formatCompact(vaultUsd)}`} />
-            <Figure label="Fee" value={`${((vault?.tradingFeeBps ?? 10) / 100).toFixed(2)}%`} />
+            {/* E2E B5: the CHARGED fee (trade_fee_base_bps), not the matcher's tradingFeeBps. */}
+            <Figure label="Fee" value={chargedTradeFeeLabel(slabRaw ? decodeMarketEngineView(slabRaw)?.tradeFeeBaseBps : null) ?? '—'} />
             <Figure label="Cooldown" value={slotsToLabel(state.redemptionCooldownSlots)} />
             <Figure
               label="Your Deposit"

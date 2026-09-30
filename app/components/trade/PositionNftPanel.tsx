@@ -14,6 +14,8 @@ import { formatTokenAmount } from "@/lib/format";
 import { sanitizeSymbol } from "@/lib/symbol-utils";
 import { SendPositionNftModal } from "@/components/trade/SendPositionNftModal";
 import { explorerAccountUrl } from "@/lib/config";
+import { useWalletCompat } from "@/hooks/useWalletCompat";
+import { positionNftEmptyText } from "@/lib/trade-display";
 
 /**
  * PositionNftPanel — compact card showing NFT status for the user's position.
@@ -28,6 +30,7 @@ import { explorerAccountUrl } from "@/lib/config";
  */
 export const PositionNftPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const userAccount = useUserAccount();
+  const nftWallet = useWalletCompat();
   const { hasMintedNft, nftMint, nftPdaAddress, pendingSettlement, isLoading } = usePositionNft(slabAddress);
   const { mint: mintNft, loading: mintLoading, error: mintError } = useMintPositionNft(slabAddress);
 
@@ -127,7 +130,7 @@ export const PositionNftPanel: FC<{ slabAddress: string }> = ({ slabAddress }) =
     return (
       <div className="relative flex h-full min-h-[120px] w-full flex-col items-center justify-center p-3 text-center">
         <p className="text-[11px] font-medium text-[var(--text)]">Position NFT</p>
-        <p className="mt-1 text-[10px] text-[var(--text-dim)]">Connect wallet to view NFT status.</p>
+        <p className="mt-1 text-[10px] text-[var(--text-dim)]" data-testid="position-nft-empty">{positionNftEmptyText(!!nftWallet.publicKey)}</p>
       </div>
     );
   }

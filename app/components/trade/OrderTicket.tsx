@@ -87,6 +87,7 @@ import { FEE_LEGS, legPercent, splitFeeAtoms } from "@/lib/fee-breakdown";
 import { useMarketLimits } from "@/hooks/useMarketLimits";
 import { closeLimitNotice, deriveTicketLimits, sizeQToInput } from "@/lib/limits/ticket";
 import { fmtQ } from "@/lib/limits/format";
+import { sideCapacityForDisplay } from "@/lib/trade-display";
 import { takeFillResult } from "@/lib/limits/fill-check";
 import { defaultFeeCapMarginBps } from "@/lib/limits/fee-channel";
 import type { FillResult } from "@/lib/limits/fill-result";
@@ -864,6 +865,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     sideCapacityQ != null && sideCapacityQ !== UNLIMITED_CAPACITY && livePriceE6 && livePriceE6 > 0n
       ? (sideCapacityQ * livePriceE6) / 1_000_000n
       : null;
+  // E2E B6: a depleted / underfunded LP has no side capacity to advertise.
+  const shownSideCapacity = sideCapacityForDisplay(sideCapacityNotional ?? null, lpUnderfunded || lpDepleted);
   const sideCapacityLabel =
     sideCapacityNotional != null
       ? `${formatTokenAmount(sideCapacityNotional, decimals)} ${collateralSymbol}`
@@ -1296,7 +1299,7 @@ setEngineLockError(null);
               {formatTokenAmount(fillCapNotional, decimals)} {collateralSymbol}
             </span>
           </div>
-          {sideCapacityNotional != null && (
+          {shownSideCapacity != null && (
             <div className="flex items-center justify-between text-[10px]">
               <span className="flex items-center gap-1 text-[var(--text-secondary)] uppercase tracking-[0.08em]">
                 {direction} capacity left
@@ -1305,7 +1308,7 @@ setEngineLockError(null);
               <span
                 className={`font-mono tabular-nums ${exceedsSideCapacity ? "text-[var(--short)]" : "text-[var(--text)]"}`}
               >
-                {formatTokenAmount(sideCapacityNotional, decimals)} {collateralSymbol}
+                {formatTokenAmount(shownSideCapacity, decimals)} {collateralSymbol}
               </span>
             </div>
           )}

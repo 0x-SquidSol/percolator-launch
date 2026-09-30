@@ -77,7 +77,7 @@ export const FEE_LEGS: readonly FeeLeg[] = [
     id: "insurance",
     label: "Insurance fund",
     bps: FEE_SPLIT.DEFAULT_INSURANCE_SHARE_BPS,
-    note: "Backs losses a liquidation cannot cover. Stakers provide this fund's first-loss capital — they do NOT receive this share as yield.",
+    note: "Backs losses a liquidation cannot cover. Stakers provide this fund's first-loss capital and receive this share: the keeper moves it into the stake pool.",
     fixed: true,
   },
 ];
@@ -88,16 +88,13 @@ export function legPercent(leg: FeeLeg): number {
 }
 
 /**
- * What a staker earns from trading fees: nothing, by design.
- *
- * Not an omission and not a missing crank. The wizard creates the stake pool
- * with StakeInitPool, which sets `pool_mode = 0`, and percolator-stake's
- * `process_accrue_fees` rejects anything but `pool_mode == 1` with
- * InvalidPoolMode. Verified on a freshly created market — `pool_mode` reads 0
- * at offset 280. The Stake page already states this; the constant exists so
- * that page and any fee breakdown cannot drift apart.
+ * What stakers receive of a trade fee: the INSURANCE leg. It accrues to the wrapper's
+ * insurance reserve (`insurance_reserve_accrued_atoms`) and the keeper pushes it to the market's
+ * bound stake pool (wrapper tag 87 WithdrawInsuranceReserveToStake -> stake tag 12 AccrueFees;
+ * keeper b004a0c, lib/pre-resolve.ts). E2E 2026-09-30: stakers C3 +5.86 USDC and U3 +7.01 USDC.
+ * (The old 0 assumed AccrueFees rejected insurance pools; that is no longer the program's rule.)
  */
-export const STAKER_FEE_SHARE_BPS = 0;
+export const STAKER_FEE_SHARE_BPS = FEE_SPLIT.DEFAULT_INSURANCE_SHARE_BPS;
 
 /**
  * The fee a trade pays, in collateral atoms.

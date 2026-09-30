@@ -89,8 +89,8 @@ export const FeeBreakdown: FC<FeeBreakdownProps> = ({
             >
               Stakers
               <span className="ml-1 text-[var(--text-muted)]">
-                — none of the trading fee. Staking backs the insurance fund above and takes
-                first loss; it is not a fee-earning position.
+                — the insurance share above, paid into the stake pool by the keeper. Stakers
+                back that fund and take first loss.
               </span>
             </span>
             <span className="shrink-0 font-mono tabular-nums text-[var(--text-secondary)]">

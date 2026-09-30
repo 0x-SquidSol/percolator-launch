@@ -329,23 +329,15 @@ function StakeHeader({
           Stake collateral into a market&apos;s insurance pool to provide first-loss backing —
           fully on-chain and transparent.
         </p>
-        {/* Honest 0% caption — kept small and muted, not a prominent banner.
-            CHECKED 2026-07-28, and it is accurate — do NOT "correct" it the way
-            the Earn caption was corrected. Those two are different products:
-              - Earn / LP vault DOES earn trading fees (48% share, cranked by the
-                keeper). Its old "not active on the deployed program" copy was
-                false and has been fixed.
-              - Stake is INSURANCE backing. The wizard creates its pool with
-                StakeInitPool, which sets pool_mode = 0; percolator-stake's
-                process_accrue_fees rejects anything but pool_mode == 1
-                (InitTradingPool) with InvalidPoolMode. Verified on a freshly
-                created market: pool_mode reads 0 at offset 280.
-            So stake genuinely earns nothing here — not because a crank is
-            missing, but because an insurance pool is not a fee-earning pool. */}
+        {/* E2E B4 (2026-09-30): stakers ARE paid. The insurance fee leg accrues to the wrapper's
+            insurance reserve and the keeper (b004a0c) pushes it into the bound stake pool:
+            wrapper tag 87 WithdrawInsuranceReserveToStake -> stake tag 12 AccrueFees, which takes
+            insurance pools (pool_mode 0; see lib/pre-resolve.ts decideStakeLeg). Measured: stakers
+            C3 +5.86 USDC, U3 +7.01 USDC. The old zero-yield caption was false. */}
         <p className="mt-1.5 max-w-lg text-[11px] text-[var(--text-muted)]">
-          Staking backs the insurance fund — it doesn&apos;t earn trading fees, so APR is
-          0% by design and flushes to insurance reduce staked value. For fee yield, use
-          an LP vault on Earn.
+          Staking backs the insurance fund, and stakers are paid its share of every trading
+          fee: the keeper moves the insurance fee leg into the stake pool. Your stake is
+          first-loss capital, so flushes to insurance reduce staked value.
         </p>
         {/* The 0% above reads as an oversight without the other shares beside
             it — "16% to insurance" is the number it gets mistaken for. #2565. */}
@@ -1338,7 +1330,7 @@ function StakeSidebar() {
         <div className="mb-2 text-[10px] uppercase tracking-[0.15em] text-[var(--warning)]">⚠ Risk Notice</div>
         <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">
           Staked funds are first-loss insurance capital. Admin flushes permanently reduce your
-          redeemable value, and there is no yield distribution — APR is genuinely 0%. Only stake
+          redeemable value, and the fee income shown as APR depends on trading volume. Only stake
           what you can afford to lose.
         </p>
       </div>

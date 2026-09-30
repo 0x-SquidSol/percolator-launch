@@ -8,6 +8,11 @@ import { SlabProvider, useSlabState } from '@/components/providers/SlabProvider'
 import { useInsuranceLP } from '@/hooks/useInsuranceLP';
 import { useWalletCompat } from '@/hooks/useWalletCompat';
 import { ResolvedExitPanel } from '@/components/limits/ResolvedExitPanel';
+import { EarnTrancheCardView } from '@/components/limits/EarnTrancheCard';
+import { useMarketLimits } from '@/hooks/useMarketLimits';
+import { earnViewFromLimits } from '@/lib/limits/earn';
+import { chargedTradeFeeLabel } from '@/lib/limits/format';
+import { decodeMarketEngineView } from '@/lib/limits/decode';
 import { useEngineState } from '@/hooks/useEngineState';
 import { useEarnStats, type MarketVaultInfo } from '@/hooks/useEarnStats';
 import { useTokenMeta } from '@/hooks/useTokenMeta';
@@ -122,11 +127,13 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
     refreshState,
   } = useInsuranceLP();
   const earnWallet = useWalletCompat();
+  const earnLimits = useMarketLimits(slabAddress);
+  const earnTrancheView = earnViewFromLimits(earnLimits, lpVaultState.vaultTotalAtoms, lpVaultState.userLpBalance);
   const { engine, totalOI, vault: engineVault } = useEngineState();
 
   // BUG-5 FIX: resolve actual collateral mint from on-chain slab data.
   // Previously hardcoded to USDC — wrong for coin-margined markets.
-  const { config: slabConfig } = useSlabState();
+  const { config: slabConfig, raw: slabRaw } = useSlabState();
   const collateralTokenMeta = useTokenMeta(slabConfig?.collateralMint ?? null);
   const collateralSymbol = collateralTokenMeta?.symbol ?? 'Token';
   const collateralDecimals = collateralTokenMeta?.decimals ?? 6;
@@ -374,6 +381,18 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
             />
           </ScrollReveal>
 
+          {/* E2E B17: the P3 tranche card (senior/junior, NAV share price, cushion) belongs on the
+              market's own Earn page too, not only in the /earn list rail. Renders nothing unless
+              the vault owns the LP (and LIMITS_P3 is on). */}
+          <EarnTrancheCardView
+            limits={earnLimits}
+            view={earnTrancheView}
+            slab={slabAddress}
+            withdrawShares={lpVaultState.userLpBalance}
+            decimals={collateralDecimals}
+            collateralSymbol={collateralSymbol}
+          />
+
           {/* P3 / F-4: after Resolve, finish the market so Earn can pay out (nothing on a live market). */}
           <ResolvedExitPanel slab={slabAddress} walletConnected={!!earnWallet.publicKey} onDone={refreshState} />
 
@@ -429,9 +448,11 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
               {/* LP Vault Registry has no deposit-cap field (unlike the /stake pools) —
                   it's bounded indirectly via oiReservationThresholdBps, not a hard cap. */}
               <InfoRow label="Deposit Cap" value="Unlimited" />
+              {/* E2E B5: the CHARGED fee (wrapper trade_fee_base_bps), not the matcher's
+                  tradingFeeBps (fills settle at mark, so that one is never charged). */}
               <InfoRow
                 label="Trading Fee"
-                value={`${((marketInfo?.tradingFeeBps ?? 10) / 100).toFixed(2)}%`}
+                value={chargedTradeFeeLabel(slabRaw ? decodeMarketEngineView(slabRaw)?.tradeFeeBaseBps : null) ?? '—'}
               />
               <InfoRow
                 label="Pool Status"

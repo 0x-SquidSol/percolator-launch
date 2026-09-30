@@ -127,7 +127,9 @@ export function useMarketLimits(slabAddress: string | null | undefined, assetInd
       fetching = true;
       try {
         const known = boundVaultLpKey ? new PublicKey(boundVaultLpKey) : null;
-        const lpAccts = await resolveLpAccounts(connection, programPk, slabPk, known);
+        // E2E B17: LP discovery (a program scan when the LP is not known) can fail on a public
+        // RPC; that must not hide the P3 vault state / registry reads the tranche card needs.
+        const lpAccts = await resolveLpAccounts(connection, programPk, slabPk, known).catch(() => null);
         const keys: PublicKey[] = [];
         if (lpAccts) keys.push(lpAccts.lpPortfolio);
         if (lpAccts?.matcherCtx) keys.push(lpAccts.matcherCtx);
