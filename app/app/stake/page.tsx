@@ -1,5 +1,6 @@
 "use client";
 
+import { STAKE_COPY, cooldownDuration } from "@/lib/stake-copy";
 import { useEffect, useState, useCallback, useSyncExternalStore, type CSSProperties } from "react";
 import { DEVNET_PROGRAM_IDS } from "@/lib/program-ids";
 import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
@@ -119,11 +120,6 @@ function formatUsd(n: number): string {
   return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function slotsToTime(slots: number): string {
-  const seconds = Math.round(slots * 0.4);
-  if (seconds < 60) return `~${seconds}s`;
-  return `~${Math.round(seconds / 60)} min`;
-}
 
 /**
  * Browser-safe u64 LE reader. Buffer.readBigUInt64LE relies on Node's Buffer
@@ -441,8 +437,8 @@ function PositionCard({
             <span className="text-[9px] uppercase tracking-[0.15em] text-[var(--text-secondary)]">Cooldown</span>
             <span className="text-[10px] text-[var(--text-muted)] tabular-nums" style={{ fontFamily: "var(--font-mono)" }}>
               {position.cooldownElapsed
-                ? "Complete ✓"
-                : `${position.cooldownRemaining.toLocaleString()} slots (${slotsToTime(position.cooldownRemaining)})`
+                ? STAKE_COPY.ready
+                : STAKE_COPY.availableIn(position.cooldownRemaining)
               }
             </span>
           </div>
@@ -475,7 +471,7 @@ function PositionCard({
               ? "Withdrawing…"
               : position.cooldownElapsed
               ? "Withdraw All →"
-              : `Withdraw in ${position.cooldownRemaining.toLocaleString()} slots`}
+              : STAKE_COPY.availableIn(position.cooldownRemaining)}
           </button>
 
           {/* Manage / Withdraw Partial — jumps to DepositWidget's Withdraw
@@ -890,7 +886,7 @@ function DepositWidget({
             {/* Cooldown info */}
             {pool && (
               <p className="text-[10px] text-[var(--text-muted)]">
-                Cooldown period: ~{pool.cooldownSlots.toLocaleString()} slots ({slotsToTime(pool.cooldownSlots)} before withdrawal)
+                {STAKE_COPY.period(pool.cooldownSlots)}
               </p>
             )}
 
@@ -999,7 +995,7 @@ function DepositWidget({
               <p className={`text-[10px] ${withdrawPosition.cooldownElapsed ? "text-[var(--text-muted)]" : "text-[var(--short)]"}`}>
                 {withdrawPosition.cooldownElapsed
                   ? "Cooldown complete — ready to withdraw."
-                  : `Cooldown: ~${withdrawPosition.cooldownRemaining.toLocaleString()} slots (${slotsToTime(withdrawPosition.cooldownRemaining)}) remaining.`}
+                  : `${STAKE_COPY.availableIn(withdrawPosition.cooldownRemaining)}.`}
               </p>
             )}
 
@@ -1034,7 +1030,7 @@ function DepositWidget({
                   : !withdrawPosition
                   ? "Nothing to Withdraw"
                   : !withdrawPosition.cooldownElapsed
-                  ? `Withdraw in ${withdrawPosition.cooldownRemaining.toLocaleString()} slots`
+                  ? STAKE_COPY.availableIn(withdrawPosition.cooldownRemaining)
                   : "Withdraw →"}
               </button>
             )}
@@ -1110,7 +1106,7 @@ function PoolRow({
 
       {/* Cooldown */}
       <span className="text-right text-[12px] tabular-nums text-[var(--text-secondary)]" style={{ fontFamily: "var(--font-mono)" }}>
-        {slotsToTime(pool.cooldownSlots)}
+        {cooldownDuration(pool.cooldownSlots)}
       </span>
 
       {/* Your stake */}
@@ -1321,7 +1317,7 @@ function StakeSidebar() {
         <div className="space-y-2">
           <SidebarStep num={1} title="Deposit" desc="Stake sim-USDC into a market's insurance pool" />
           <SidebarStep num={2} title="Back the fund" desc="Your deposit becomes first-loss backing" />
-          <SidebarStep num={3} title="Withdraw" desc="Redeem LP tokens for your share after cooldown" />
+          <SidebarStep num={3} title="Withdraw" desc={STAKE_COPY.sidebar} />
         </div>
       </div>
 

@@ -309,7 +309,8 @@ describe("Creator panels", () => {
     );
     const p = getByTestId("limits-creator-tranche");
     expect(p.dataset.market).toBe("SLAB");
-    expect(p.textContent).toContain("Junior at risk");
-    expect(p.textContent).toContain("LP has open positions");
+    // UX WP-9: the stake rows moved to "Your creator stake"; this card keeps fees and caps.
+    expect(p.textContent).not.toContain("Junior at risk");
+    expect(p.textContent).toContain("Creator fees (claimable)");
   });
 });

@@ -9,7 +9,6 @@ import { isBlockedSlab } from "@/lib/blocklist";
 import { UsdToggleProvider } from "@/components/providers/UsdToggleProvider";
 import { OrderTicket } from "@/components/trade/OrderTicket";
 import { useTicketRow, ticketRowShortLabel } from "@/lib/limits/ticket-status-store";
-import { PositionNftPanel } from "@/components/trade/PositionNftPanel";
 import { PositionsDock } from "@/components/trade/PositionsDock";
 import dynamic from "next/dynamic";
 import { MarketInfoBar } from "@/components/trade/MarketInfoBar";
@@ -154,9 +153,8 @@ function OrderTicketRail({ slab, framed = false }: { slab: string; framed?: bool
           <OrderTicket slabAddress={slab} />
         </RenderProfiler>
       </ErrorBoundary>
-      <div className={framed ? "flex flex-1 border-t border-[var(--border)]/60" : "border-t border-[var(--border)]/40 pt-3"}>
-        <ErrorBoundary label="PositionNftPanel"><PositionNftPanel slabAddress={slab} /></ErrorBoundary>
-      </div>
+      {/* UX WP-9 (§3.13, NF-1): the Position NFT panel left the ticket rail; its actions are in
+          the position row's "⋯" menu (components/trade/PositionNftMenu.tsx). */}
     </div>
   );
 }

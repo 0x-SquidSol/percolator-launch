@@ -10,8 +10,10 @@ import { describe, it, expect, vi } from "vitest";
 import { Keypair } from "@solana/web3.js";
 import {
   closeSlabState,
+  closeInOneApproval,
   closeSlabUntilClosed,
   MAX_CLOSE_SLAB_RESENDS,
+  PRESIGNED_CLOSE_RESENDS,
   type CloseSlabState,
 } from "@/lib/limits/close-slab";
 import { readCloseSlabStateAfter } from "@/hooks/useCloseMarket";
@@ -90,5 +92,63 @@ describe("closeSlabUntilClosed", () => {
     const d = driver(["unknown"]);
     const r = await closeSlabUntilClosed({ firstSig: "sig1", ...d, rebookedMessage: COPY.closeRebooked });
     expect(r).toEqual({ signature: "sig1", resends: 0, finalState: "unknown" });
+  });
+});
+
+/**
+ * UX WP-9 AC3 (audit §3.11, MM-2): Close market = ONE prompt, including the re-book case. The
+ * cleanups, the main tx and PRESIGNED_CLOSE_RESENDS CloseSlab copies are signed together; a copy
+ * is broadcast only while the slab still reads as a live market.
+ */
+describe("closeInOneApproval: prompts counted", () => {
+  const run = async (states: CloseSlabState[], cleanup = 0) => {
+    const signAll = vi.fn(async (t: string[]) => t.map((x) => `signed:${x}`));
+    const sent: string[] = [];
+    let n = 0;
+    const r = closeInOneApproval({
+      cleanup: Array.from({ length: cleanup }, (_, i) => `cleanup${i}`),
+      main: "main",
+      resends: Array.from({ length: PRESIGNED_CLOSE_RESENDS }, (_, i) => `resend${i}`),
+      signAll,
+      broadcast: async (t) => {
+        sent.push(t);
+        return `sig:${t}`;
+      },
+      readState: async () => states[Math.min(n++, states.length - 1)]!,
+      rebookedMessage: COPY.closeRebooked,
+    });
+    return { r, signAll, sent };
+  };
+  it("closed on the main tx: 1 prompt, no copy broadcast", async () => {
+    const { r, signAll, sent } = await run(["closed"]);
+    expect(await r).toMatchObject({ signature: "sig:signed:main", resends: 0, finalState: "closed" });
+    expect(signAll).toHaveBeenCalledTimes(1);
+    expect(signAll.mock.calls[0]![0]).toEqual(["main", "resend0", "resend1"]);
+    expect(sent).toEqual(["signed:main"]);
+  });
+  it("re-book once: still 1 prompt; exactly one pre-signed copy broadcast", async () => {
+    const { r, signAll, sent } = await run(["still-open", "closed"]);
+    expect(await r).toMatchObject({ resends: 1, finalState: "closed" });
+    expect(signAll).toHaveBeenCalledTimes(1);
+    expect(sent).toEqual(["signed:main", "signed:resend0"]);
+  });
+  it("own-portfolio cleanups ride in the same prompt, broadcast first", async () => {
+    const { r, signAll, sent } = await run(["closed"], 2);
+    await r;
+    expect(signAll).toHaveBeenCalledTimes(1);
+    expect(sent).toEqual(["signed:cleanup0", "signed:cleanup1", "signed:main"]);
+  });
+  it("copies exhausted: the calm 'last fee sweep' line, never success; still 1 prompt", async () => {
+    const { r, signAll, sent } = await run(["still-open"]);
+    await expect(r).rejects.toThrow("The market is finishing its last fee sweep. Close again in a minute.");
+    expect(signAll).toHaveBeenCalledTimes(1);
+    expect(sent).toHaveLength(1 + PRESIGNED_CLOSE_RESENDS);
+  });
+  it("the hook uses the one-approval path (no per-tx signTransaction left)", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(`${process.cwd()}/hooks/useCloseMarket.ts`, "utf8");
+    expect(src).toContain("closeInOneApproval({");
+    expect(src).not.toMatch(/walletCompat\.signTransaction\(/);
+    expect(src).not.toMatch(/signTransaction!\(/);
   });
 });

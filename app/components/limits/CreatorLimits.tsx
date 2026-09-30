@@ -6,8 +6,8 @@
  *     (first-loss) tranche under P3; shows the requirement and the caps that
  *     capital projects to (P1 LP exposure cap = junior × k; the most Earn
  *     capital the 10% protocol floor allows = junior / floor).
- *   - CreatorTranchePanel: my-markets drawer — junior at risk, cushion,
- *     withdrawable now, creator fees earned, live caps.
+ *   - CreatorTranchePanel: my-markets drawer — "Your creator stake" for its owner (value, what
+ *     it protects, the minimum, withdrawable now with its reason; UX WP-9), creator fees, caps.
  * Flag-gated (P3 for tranche rows, P1 for caps). Pure math in lib/limits.
  */
 import { type FC, useState } from "react";
@@ -18,12 +18,16 @@ import { parseHumanAmount } from "@/lib/parseAmount";
 import { useMarketLimits, type MarketLimits } from "@/hooks/useMarketLimits";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { useInsuranceLP } from "@/hooks/useInsuranceLP";
+import { useTokenMeta } from "@/hooks/useTokenMeta";
 import { limitsFlags, p3WizardEnabled } from "@/lib/limits/flags";
 import { DEFAULT_JUNIOR_FLOOR_BPS, juniorFloorAtoms, maxWizardFloorBps, validateP3Wizard } from "@/lib/limits/p3-wizard";
 import { backingSeedPerDomain } from "@/lib/market-params";
 import { COPY } from "@/lib/limits/copy";
 import { defaultLpExposureKBps, lpEquityInitRaw, lpExposureCapQ, maxTradeSizePerSide, nonnegEquity, effectiveLpExposureKBps } from "@/lib/limits/risk-limits";
-import { juniorWithdrawableAtoms, projectCreatorCaps } from "@/lib/limits/vault-tranche";
+import { projectCreatorCaps } from "@/lib/limits/vault-tranche";
+import { CREATOR_STAKE_PANEL_COPY, clampStakeWithdraw, creatorStakeState, stakeReasonFromRefusal, type CreatorStakeState, type StakeReason } from "@/lib/limits/creator-stake";
+import { useResolvedExit } from "@/hooks/useResolvedExit";
+import { resolvedPayoutEta } from "@/lib/limits/resolved-eta";
 import { juniorResolvedReleasableAtoms } from "@/lib/limits/junior-resolved-release";
 import { earnViewFromLimits } from "@/lib/limits/earn";
 import { useVaultLpValuation } from "@/hooks/useVaultLpValuation";
@@ -110,89 +114,135 @@ export const WizardTranchePanel: FC<{
 };
 
 /**
- * Junior tranche top-up (96) / withdraw (97) for the junior owner. Withdraw is capped at the
- * program's "withdrawable now" (LP flat, above the floor, backing covers the seniors).
+ * UX WP-9 (audit §3.10, JR-1): "Your creator stake" for the junior owner. Four rows, one reason
+ * line when nothing can be withdrawn, Withdraw enabled exactly when `withdrawable > 0` with the
+ * input capped at it ("Max"), top up (96). A refused 75 never opens the wallet (sendTx simulates
+ * first) and shows the same reason line. Resolved: the terminal exit (102, 78 bundled when needed)
+ * as "Withdraw {x}", or when it opens.
  */
 export const JuniorTrancheActionsView: FC<{
-  withdrawableAtoms: bigint | null;
+  stake: CreatorStakeState | null;
   decimals: number;
   collateralSymbol: string;
   busy: boolean;
   error: string | null;
+  /** A 75 refusal came back from the simulation: show this reason line instead of the error. */
+  refusedReason?: StakeReason | null;
   onDeposit: (atoms: bigint) => void;
   onWithdraw: (atoms: bigint) => void;
   /** RESOLVED market: the junior's terminal exit (102) takes only what is above the seniors' claim. */
-  resolved?: { surplusAtoms: bigint | null; onRelease: (atoms: bigint) => void } | null;
-}> = ({ withdrawableAtoms, decimals, collateralSymbol, busy, error, onDeposit, onWithdraw, resolved }) => {
+  resolved?: { surplusAtoms: bigint | null; waitingUntil: string | null; onRelease: (atoms: bigint) => void } | null;
+}> = ({ stake, decimals, collateralSymbol, busy, error, refusedReason = null, onDeposit, onWithdraw, resolved }) => {
   const [raw, setRaw] = useState("");
-  let atoms = 0n;
+  const K = CREATOR_STAKE_PANEL_COPY;
+  const fmt = (a: bigint) => `${formatTokenAmount(a, decimals)} ${collateralSymbol}`;
+  let typed = 0n;
   try {
-    atoms = raw.trim() ? parseHumanAmount(raw, decimals) : 0n;
+    typed = raw.trim() ? parseHumanAmount(raw, decimals) : 0n;
   } catch {
-    atoms = 0n;
+    typed = 0n;
   }
-  const canWithdraw = atoms > 0n && withdrawableAtoms !== null && atoms <= withdrawableAtoms;
+  const w = stake?.withdrawable ?? null;
+  const reason = refusedReason ?? stake?.reason ?? null;
+  const header = (
+    <>
+      <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--text-muted)]">{K.title}</p>
+      <p className="mb-1 text-[10px] text-[var(--text-secondary)]">{K.subtitle}</p>
+    </>
+  );
   if (resolved) {
     const s = resolved.surplusAtoms;
+    const open = s !== null && s > 0n;
     return (
       <div data-testid="limits-junior-actions" data-mode="resolved" className="mb-3 border border-[var(--border)] bg-[var(--panel-bg)] p-3">
-        <p className="mb-1 text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--text-muted)]">Junior tranche (market resolved)</p>
-        <p className="text-[9px] leading-relaxed text-[var(--text-secondary)]">{COPY.juniorResolvedExplain}</p>
-        <LimitsRow
-          label="Available to you"
-          testId="limits-junior-resolved-surplus"
-          value={s === null ? "—" : `${formatTokenAmount(s, decimals)} ${collateralSymbol}`}
-        />
-        <button
-          type="button"
-          data-testid="limits-junior-release-resolved"
-          disabled={busy || s === null || s <= 0n}
-          onClick={() => s !== null && resolved.onRelease(s)}
-          className="mt-2 w-full border border-[var(--accent)]/50 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          Take the junior surplus
-        </button>
+        {header}
+        <p data-testid="limits-junior-resolved-surplus" className="text-[11px] leading-relaxed text-[var(--text)]">
+          {open ? K.resolvedAvailable(fmt(s)) : resolved.waitingUntil ? K.resolvedWaiting(resolved.waitingUntil) : K.resolvedAvailable(fmt(0n))}
+        </p>
+        {open && (
+          <button
+            type="button"
+            data-testid="limits-junior-release-resolved"
+            disabled={busy}
+            onClick={() => resolved.onRelease(s)}
+            className="mt-2 w-full border border-[var(--accent)]/50 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {K.resolvedWithdraw(fmt(s))}
+          </button>
+        )}
         {error && (
-          <p data-testid="limits-junior-error" className="mt-2 text-[9px] text-[var(--short)]">
+          <p data-testid="limits-junior-error" className="mt-2 text-[10px] text-[var(--short)]">
             {error}
           </p>
         )}
       </div>
     );
   }
+  const amount = clampStakeWithdraw(typed, w);
   return (
-    <div data-testid="limits-junior-actions" className="mb-3 border border-[var(--border)] bg-[var(--panel-bg)] p-3">
-      <p className="mb-1 text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--text-muted)]">Junior tranche</p>
-      <input
-        data-testid="limits-junior-amount-input"
-        inputMode="decimal"
-        value={raw}
-        onChange={(e) => setRaw(e.target.value)}
-        placeholder={`Amount (${collateralSymbol})`}
-        className="w-full border border-[var(--border)] bg-[var(--bg-elevated)] px-2 py-1 font-mono text-[11px] text-[var(--text)]"
-      />
+    <div data-testid="limits-junior-actions" data-reason={reason ?? ""} className="mb-3 border border-[var(--border)] bg-[var(--panel-bg)] p-3">
+      {header}
+      {stake && (
+        <div className="mb-2 space-y-0.5">
+          <LimitsRow label={K.stakeValue} testId="limits-junior-value" value={stake.stakeValue === null ? "Updating…" : fmt(stake.stakeValue)} />
+          <LimitsRow label={K.protects} value={fmt(stake.protects)} />
+          {stake.mustKeep !== null && <LimitsRow label={K.mustKeep} value={K.mustKeepValue(fmt(stake.mustKeep), stake.floorPct)} />}
+          <LimitsRow label={K.withdrawable} testId="limits-junior-withdrawable" value={w === null ? "—" : fmt(w)} />
+          {reason && (
+            <p data-testid="limits-junior-reason" data-reason={reason} className="text-[10px] leading-snug text-[var(--text-secondary)]">
+              {K.reasons[reason]}
+            </p>
+          )}
+        </div>
+      )}
+      {stake?.exhausted && (
+        <LimitsNotice tone="warning" testId="limits-creator-impaired">
+          {/* The P3 §0.8 loss rule, one wording on every surface (p3-single-asset-loss-copy guard). */}
+          {COPY.juniorExhausted}
+        </LimitsNotice>
+      )}
+      <div className="flex items-center gap-2">
+        <input
+          data-testid="limits-junior-amount-input"
+          inputMode="decimal"
+          value={raw}
+          onChange={(e) => setRaw(e.target.value)}
+          placeholder={`Amount (${collateralSymbol})`}
+          className="min-w-0 flex-1 border border-[var(--border)] bg-[var(--bg-elevated)] px-2 py-1 font-mono text-[11px] text-[var(--text)]"
+        />
+        {w !== null && w > 0n && (
+          <button
+            type="button"
+            data-testid="limits-junior-max"
+            onClick={() => setRaw(formatTokenAmount(w, decimals).replace(/,/g, ""))}
+            className="shrink-0 text-[10px] text-[var(--accent)] underline underline-offset-2"
+          >
+            {K.max(fmt(w))}
+          </button>
+        )}
+      </div>
       <div className="mt-2 grid grid-cols-2 gap-2">
         <button
           type="button"
           data-testid="limits-junior-deposit"
-          disabled={busy || atoms <= 0n}
-          onClick={() => onDeposit(atoms)}
+          disabled={busy || typed <= 0n}
+          onClick={() => onDeposit(typed)}
           className="border border-[var(--accent)]/50 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40"
         >
-          Top up
+          {K.topUp}
         </button>
         <button
           type="button"
           data-testid="limits-junior-withdraw"
-          disabled={busy || !canWithdraw}
-          onClick={() => onWithdraw(atoms)}
+          disabled={busy || w === null || w <= 0n || amount <= 0n}
+          onClick={() => onWithdraw(amount)}
           className="border border-[var(--border)] py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-[var(--text-secondary)] disabled:cursor-not-allowed disabled:opacity-40"
         >
-          Withdraw
+          {K.withdraw}
         </button>
       </div>
-      {error && (
-        <p data-testid="limits-junior-error" className="mt-2 text-[9px] text-[var(--short)]">
+      {error && !refusedReason && (
+        <p data-testid="limits-junior-error" className="mt-2 text-[10px] text-[var(--short)]">
           {error}
         </p>
       )}
@@ -215,10 +265,13 @@ export const CreatorTranchePanel: FC<{ slab: string; decimals: number; collatera
   return <CreatorTranchePanelLive {...p} />;
 };
 
-const CreatorTranchePanelLive: FC<{ slab: string; decimals: number; collateralSymbol: string }> = ({ slab, decimals, collateralSymbol }) => {
+const CreatorTranchePanelLive: FC<{ slab: string; decimals: number; collateralSymbol: string }> = ({ slab, decimals, collateralSymbol: fallbackSymbol }) => {
   const limits = useMarketLimits(slab);
   const { state: lpState } = useInsuranceLP();
-  const { assetProfile, raw: slabRaw } = useSlabState();
+  const { assetProfile, raw: slabRaw, config: slabConfig } = useSlabState();
+  // UX WP-9 (§3.10): the collateral symbol comes from the market's mint, not a literal.
+  const collateralMeta = useTokenMeta(slabConfig?.collateralMint ?? null);
+  const collateralSymbol = collateralMeta?.symbol ?? fallbackSymbol;
   const wallet = useWalletCompat();
   const junior = useJuniorTranche(slab);
   // UX WP-5 (§3.7): a stale LP certificate is valued by a simulated crank, never "Needs refresh".
@@ -226,26 +279,43 @@ const CreatorTranchePanelLive: FC<{ slab: string; decimals: number; collateralSy
   const vs = limits.flags.p3 ? limits.vaultState : null;
   const isJuniorOwner = !!vs && !!wallet.publicKey && new PublicKey(vs.juniorOwner).equals(wallet.publicKey);
   const view = earnViewFromLimits(limits, lpState.vaultTotalAtoms, 0n, undefined, lpValuation.value);
-  const withdrawable =
-    view && vs && view.vaultValue !== null && limits.lp?.posQ === 0n
-      ? juniorWithdrawableAtoms(view.vaultValue, view.seniorClaimEff, view.backingCover, vs.juniorFloorBps)
-      : vs
-        ? 0n
-        : null;
+  const stake =
+    view && vs
+      ? creatorStakeState({
+          vaultValue: view.vaultValue,
+          seniorClaimEff: view.seniorClaimEff,
+          backingCover: view.backingCover,
+          floorBps: vs.juniorFloorBps,
+          lpFlat: limits.lp?.posQ === 0n,
+          drawOutstandingAtoms: vs.seniorDrawOutstandingAtoms,
+          impaired: view.impaired === true,
+        })
+      : null;
+  const resolvedMode = limits.engine?.mode === 1 && !!vs;
+  const exit = useResolvedExit(resolvedMode ? slab : null);
+  const eta =
+    resolvedMode && exit.plan && exit.plan.phase !== "ready" && exit.plan.phase !== "not-resolved" && exit.nowSlot !== null
+      ? resolvedPayoutEta({ untilSlot: exit.plan.phase === "owner-window" ? exit.plan.untilSlot : null, nowSlot: exit.nowSlot, now: new Date() })
+      : null;
   return (
     <>
       {isJuniorOwner && (
         <JuniorTrancheActionsView
-          withdrawableAtoms={withdrawable}
+          stake={stake}
           decimals={decimals}
           collateralSymbol={collateralSymbol}
           busy={junior.busy}
           error={junior.error}
+          refusedReason={junior.refused75 && stake ? stakeReasonFromRefusal(stake) : null}
           onDeposit={(a) => void junior.deposit(a).catch(() => undefined)}
           onWithdraw={(a) => void junior.withdraw(a).catch(() => undefined)}
           resolved={
-            limits.engine?.mode === 1 && vs
-              ? { surplusAtoms: juniorResolvedSurplus(slabRaw, vs.assetIndex, vs.seniorClaimAtoms), onRelease: (a) => void junior.releaseResolved(a).catch(() => undefined) }
+            resolvedMode && vs
+              ? {
+                  surplusAtoms: exit.plan && exit.plan.phase !== "ready" ? null : juniorResolvedSurplus(slabRaw, vs.assetIndex, vs.seniorClaimAtoms),
+                  waitingUntil: eta ? `${eta.label}, ${eta.relative}` : null,
+                  onRelease: (a) => void junior.releaseResolved(a).catch(() => undefined),
+                }
               : null
           }
         />
@@ -277,14 +347,11 @@ export const CreatorTranchePanelView: FC<{
   const e = limits.engine;
   const lp = limits.lp;
   const vs = limits.flags.p3 ? limits.vaultState : null;
-  const view = earnViewFromLimits(limits, backingNavAtoms, 0n, undefined, simulatedLpValue);
-  const lpFlat = lp ? lp.posQ === 0n : false;
-  const withdrawable =
-    view && vs && view.vaultValue !== null
-      ? lpFlat
-        ? juniorWithdrawableAtoms(view.vaultValue, view.seniorClaimEff, view.backingCover, vs.juniorFloorBps)
-        : 0n
-      : null;
+  // UX WP-9: the stake rows (value, protects, must keep, withdrawable + reason) live in "Your
+  // creator stake" (JuniorTrancheActionsView); this card keeps the market's caps.
+  void backingNavAtoms;
+  void simulatedLpValue;
+  void vs;
   const sides =
     limits.flags.p1 && e && limits.riskLimits
       ? maxTradeSizePerSide({
@@ -306,21 +373,6 @@ export const CreatorTranchePanelView: FC<{
   return (
     <div data-testid="limits-creator-tranche" data-market={slab} data-state={limits.state} className="mb-4 space-y-0.5">
       <p className="mb-1 text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--text-muted)]">Risk &amp; caps</p>
-      {view && (
-        <>
-          <LimitsRow
-            label="Junior at risk"
-            value={view.junior === null ? "Updating…" : fmt(view.junior)}
-            valueClass={view.junior === 0n ? "text-[var(--short)]" : undefined}
-          />
-          <LimitsRow label="Cushion vs Earn" value={view.cushionBps === null ? "—" : `${(view.cushionBps / 100).toFixed(1)}%`} />
-          <LimitsRow
-            label="Withdrawable now"
-            tooltip="Junior above the floor, only while the LP is flat and the vault's backing covers Earn deposits."
-            value={withdrawable === null ? "—" : withdrawable === 0n ? (lpFlat ? "0" : "0 · LP has open positions") : fmt(withdrawable)}
-          />
-        </>
-      )}
       {creatorFeesAtoms !== null && <LimitsRow label="Creator fees (claimable)" value={fmt(creatorFeesAtoms)} />}
       {capQ !== null && <LimitsRow label="LP exposure cap" value={`${fmtQ(capQ)} units`} />}
       {sides && (
@@ -328,11 +380,6 @@ export const CreatorTranchePanelView: FC<{
           label="Max trade long / short"
           value={`${sides.long.halted ? "Paused" : fmtQ(sides.long.maxQ)} / ${sides.short.halted ? "Paused" : fmtQ(sides.short.maxQ)}`}
         />
-      )}
-      {view?.impaired === true && (
-        <LimitsNotice tone="error" title="Junior tranche exhausted" testId="limits-creator-impaired">
-          {COPY.juniorExhausted}
-        </LimitsNotice>
       )}
     </div>
   );

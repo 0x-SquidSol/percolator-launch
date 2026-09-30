@@ -70,7 +70,7 @@ export const COPY = {
   wizardRequirement: (floor: string) =>
     `Your junior tranche is first-loss capital. The creator's junior tranche takes losses first. Only a loss bigger than the junior reaches Earn, and then every Earn depositor loses the same percentage. Winning traders are always paid in full unless Earn's backing is used up too. It can't be withdrawn while the LP holds positions, or below ${floor} of Earn deposits.`,
   wizardAfterLaunch: "Junior deposit is added after launch.",
-  closeRebooked: "Fees were re-booked; press Close again to finish.",
+  closeRebooked: "The market is finishing its last fee sweep. Close again in a minute.",
   closeZeroFill:
     "Market at capacity — no fill. Your close landed but the LP had no room to take it, so your position did not change. Try a smaller percentage or again shortly.",
   rebalanceZeroFill:

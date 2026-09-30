@@ -30,6 +30,7 @@
 import { FC, memo, useMemo, useState } from "react";
 import { useUserAccount } from "@/hooks/useUserAccount";
 import { useNftWrappedPosition } from "@/hooks/useNftWrappedPosition";
+import { PositionNftMenu, NFT_MENU_COPY } from "@/components/trade/PositionNftMenu";
 import { useClosePosition } from "@/hooks/useClosePosition";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { useMarketLimits } from "@/hooks/useMarketLimits";
@@ -409,8 +410,8 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
                   {isLong ? "LONG" : "SHORT"}
                 </span>
                 {isNftWrapped && (
-                  <span className="ml-1 inline-block rounded-sm bg-[var(--accent)]/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-[var(--accent)]" title="This position is wrapped in a Position NFT you hold.">
-                    🎫 NFT
+                  <span data-testid="position-nft-badge" className="ml-1 inline-block rounded-sm bg-[var(--accent)]/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-[var(--accent)]" title="This position is wrapped in a Position NFT you hold.">
+                    {NFT_MENU_COPY.badge}
                   </span>
                 )}
               </td>
@@ -499,12 +500,10 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
                 {hasValidMark && pnlIsKnown ? formatPercent(roe) : "--"}
               </td>
               <td className="whitespace-nowrap px-3 py-2.5 text-right">
+                <span className="inline-flex items-center justify-end gap-1">
                 {isNftWrapped ? (
-                  <span
-                    title="This position is wrapped in a Position NFT. Burn the NFT in the Position NFT panel to unwrap it, then close."
-                    className="inline-block cursor-help rounded-none border border-[var(--accent)]/30 px-3 py-1 text-[9px] font-medium uppercase tracking-[0.1em] text-[var(--accent)]"
-                  >
-                    🎫 Wrapped
+                  <span data-testid="position-close-wrapped" className="text-[9px] text-[var(--text-secondary)]">
+                    {NFT_MENU_COPY.closeWrapped}
                   </span>
                 ) : (
                   <button
@@ -520,6 +519,9 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
                     Close
                   </button>
                 )}
+                {/* UX WP-9 (§3.13): Wrap / Send / Unwrap live in this row's "⋯" menu. */}
+                <PositionNftMenu slabAddress={slabAddress} />
+                </span>
               </td>
             </tr>
             {marketLimits.flags.p3 && (

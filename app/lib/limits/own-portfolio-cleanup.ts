@@ -184,3 +184,53 @@ export async function cleanupOwnPortfoliosBeforeReclaim(p: {
   }
   return { ok: true, closed: res.closed.length, signatures: res.signatures };
 }
+
+/**
+ * UX WP-9 (audit §3.11): the same cleanup, PLANNED for the close-market one approval instead of
+ * sent. Each group is simulated now; the run can close the market only when every own group
+ * closes its portfolio (a progress-only or refused group, or other accounts left, stops it
+ * before anything is signed). Returns the instruction lists to sign with the CloseSlab tx.
+ */
+export async function planOwnCleanupForOneApproval(p: {
+  connection: Connection;
+  programId: PublicKey;
+  market: PublicKey;
+  owner: PublicKey;
+  collateralMint: PublicKey;
+  vaultToken: PublicKey;
+  vaultAuthority: PublicKey;
+}): Promise<{ ok: true; groups: TransactionInstruction[][] } | { ok: false; reason: "progress-only" | "refused" | "others-remain"; remaining?: bigint }> {
+  const accts = await p.connection.getProgramAccounts(p.programId, {
+    commitment: "confirmed",
+    filters: [{ memcmp: { offset: 16, bytes: p.market.toBase58() } }],
+  });
+  const own: OwnPortfolio[] = [];
+  for (const { pubkey, account } of accts) {
+    const d = new Uint8Array(account.data);
+    if (d[10] !== KIND_PORTFOLIO) continue;
+    const view = decodeResolvedPortfolio(d);
+    if (!view || !new PublicKey(view.owner).equals(p.owner)) continue;
+    try {
+      own.push({ key: pubkey, view, ...readPortfolioIdentity(d) });
+    } catch {
+      // not a v18 portfolio this wire can address
+    }
+  }
+  const groups = planOwnPortfolioCleanup({ ...p, portfolios: own });
+  const sim = connectionSelfHealDeps(p.connection, p.market, p.owner);
+  const out: TransactionInstruction[][] = [];
+  for (const g of groups) {
+    const e1 = (await sim.simulate([...computeBudgetPrefix(CLEANUP_CU), ...g.withClose])).err ?? null;
+    if (e1 === null) {
+      out.push(g.withClose);
+      continue;
+    }
+    const e2 = g.withoutClose ? (await sim.simulate([...computeBudgetPrefix(CLEANUP_CU), ...g.withoutClose])).err ?? null : e1;
+    return { ok: false, reason: e2 === null ? "progress-only" : "refused" };
+  }
+  const mi = await p.connection.getAccountInfo(p.market, "confirmed");
+  const m = mi ? decodeResolvedMarket(new Uint8Array(mi.data)) : null;
+  const left = m ? m.materializedPortfolioCount - BigInt(out.length) : 0n;
+  if (left > 0n) return { ok: false, reason: "others-remain", remaining: left };
+  return { ok: true, groups: out };
+}

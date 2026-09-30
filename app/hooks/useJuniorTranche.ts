@@ -13,7 +13,8 @@ import { deriveLpBackingLedger, deriveVaultAuthority } from '@percolatorct/sdk';
 import { createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { useConnectionCompat, useWalletCompat } from '@/hooks/useWalletCompat';
 import { useSlabState } from '@/components/providers/SlabProvider';
-import { sendTx } from '@/lib/tx';
+import { sendTx, SimulationRefusal } from '@/lib/tx';
+import { WRAPPER_ERR } from '@/lib/wrapper-errors';
 import { keepAppMessage, plainMessage } from '@/lib/limits/user-message';
 import { assertDepositWithinBalance, readTokenBalance } from '@/lib/deposit-guard';
 import { decodeLpVaultRegistryDomain, decodeVaultLpState } from '@/lib/limits/decode';
@@ -32,6 +33,8 @@ export function useJuniorTranche(slabAddress: string | null) {
   const { programId, config } = useSlabState();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** UX WP-9: the last withdraw was refused 75 in simulation (the wallet never opened). */
+  const [refused75, setRefused75] = useState(false);
 
   const context = useCallback(async () => {
     if (!wallet.publicKey || !slabAddress || !programId || !config) throw new Error('Wallet not connected');
@@ -71,6 +74,7 @@ export function useJuniorTranche(slabAddress: string | null) {
     async (kind: 'deposit' | 'withdraw', amount: bigint): Promise<string> => {
       setBusy(true);
       setError(null);
+      setRefused75(false);
       try {
         if (amount <= 0n) throw new Error('Enter an amount greater than zero.');
         const c = await context();
@@ -84,6 +88,7 @@ export function useJuniorTranche(slabAddress: string | null) {
               ];
         return await sendTx({ connection, wallet, instructions: ixs });
       } catch (e) {
+        if (isJuniorWithdrawRefusal(e)) setRefused75(true);
         // UX WP-1 (JR-2): the one resolver, never the raw "custom program error: 0x4b".
         setError(plainMessage(e, { surface: 'creator-stake' }, keepAppMessage));
         throw e;
@@ -122,8 +127,14 @@ export function useJuniorTranche(slabAddress: string | null) {
   return {
     busy,
     error,
+    refused75,
     deposit: (amount: bigint) => run('deposit', amount),
     withdraw: (amount: bigint) => run('withdraw', amount),
     releaseResolved,
   };
+}
+
+/** A pre-sign simulation refusal with 75 VaultLpJuniorWithdrawRefused (the wallet was not opened). */
+export function isJuniorWithdrawRefusal(e: unknown): boolean {
+  return e instanceof SimulationRefusal && e.code === WRAPPER_ERR.VaultLpJuniorWithdrawRefused;
 }

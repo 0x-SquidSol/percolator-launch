@@ -28,7 +28,7 @@ import type { CreatedMarket } from "@/hooks/useCreatedMarkets";
 import type { CreatorMarketDetail } from "./types";
 import { unitScaleToDecimals } from "./types";
 import { useWalletCompat } from "@/hooks/useWalletCompat";
-import { useClaimCreatorFees } from "@/hooks/useClaimCreatorFees";
+import { claimAllResultCopy, useClaimCreatorFees } from "@/hooks/useClaimCreatorFees";
 import {
   classifyClaimable,
   summarizeCreatorFees,
@@ -55,7 +55,7 @@ export const CreatorFeesPanel: FC<CreatorFeesPanelProps> = ({
   onClaimed,
 }) => {
   const wallet = useWalletCompat();
-  const { claim, busy, progress, outcomes } = useClaimCreatorFees();
+  const { claim, busy, outcomes } = useClaimCreatorFees();
   const connected = wallet.publicKey?.toBase58() ?? null;
 
   const entries = useMemo<(CreatorFeeEntry & { label: string })[]>(
@@ -168,7 +168,7 @@ export const CreatorFeesPanel: FC<CreatorFeesPanelProps> = ({
             className="shrink-0 border border-[var(--accent)]/50 bg-[var(--accent)]/[0.08] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-[var(--accent)] transition-colors hover:bg-[var(--accent)]/[0.15] disabled:opacity-50"
           >
             {busy
-              ? `claiming ${progress.done}/${progress.total}…`
+              ? "claiming…"
               : `claim all (${targets.length})`}
           </button>
         </div>
@@ -176,12 +176,10 @@ export const CreatorFeesPanel: FC<CreatorFeesPanelProps> = ({
 
       {outcomes.length > 0 && (
         <div className="border-t border-[var(--border)]/40 px-4 py-2.5">
-          {outcomes.filter((o) => o.signature).length > 0 && (
-            <p className="text-[10px] text-[var(--long)]">
-              claimed on {outcomes.filter((o) => o.signature).length} market
-              {outcomes.filter((o) => o.signature).length === 1 ? "" : "s"}
-            </p>
-          )}
+          {/* UX WP-9 (§3.11): one line, "Claimed {total} from {n} markets." (+ the partial clause). */}
+          <p data-testid="creator-claim-result" className={`text-[10px] ${outcomes.some((o) => o.signature) ? "text-[var(--long)]" : "text-[var(--text-secondary)]"}`}>
+            {claimAllResultCopy(outcomes, (atoms) => fmt(Number(atoms) / 10 ** (entries[0]?.decimals ?? 6)))}
+          </p>
           {/* Per-market failures are listed, not counted: a claim-all sends one
               transaction PER market precisely so a partial failure is
               survivable, which is only useful if the creator can see which

@@ -9,6 +9,7 @@ import { WizardTranchePanel } from "@/components/limits/CreatorLimits";
 import { __setLimitsFlagsForTest } from "@/lib/limits/flags";
 import { COPY } from "@/lib/limits/copy";
 import { ALL_ON } from "../lib/limits/fixtures";
+import { creatorStakeState } from "@/lib/limits/creator-stake";
 
 vi.mock("@/hooks/useResolvedExit", () => ({ useResolvedExit: () => ({}) }));
 
@@ -142,56 +143,86 @@ describe("WizardTranchePanel (P3 wizard)", () => {
   });
 });
 
-describe("JuniorTrancheActionsView (96 / 97)", () => {
-  it("top-up needs an amount; withdraw is capped at 'withdrawable now'", async () => {
+/** UX WP-9 AC1 (audit §3.10): "Your creator stake", one reason line per fork state. */
+describe("Your creator stake (96 / 97)", () => {
+  const C0 = 1_000_000_000n;
+  const stake = (o: Partial<Parameters<typeof creatorStakeState>[0]> = {}) =>
+    creatorStakeState({ vaultValue: C0 + 300_000_000n, seniorClaimEff: C0, backingCover: C0, floorBps: 2_000, lpFlat: true, drawOutstandingAtoms: 0n, impaired: false, ...o });
+  const panel = async (props: Record<string, unknown>) => {
     const { JuniorTrancheActionsView } = await import("@/components/limits/CreatorLimits");
-    const onDeposit = vi.fn();
-    const onWithdraw = vi.fn();
-    const { getByTestId } = render(
-      <JuniorTrancheActionsView withdrawableAtoms={2_000_000n} decimals={6} collateralSymbol="USDC" busy={false} error={null} onDeposit={onDeposit} onWithdraw={onWithdraw} />,
+    return render(
+      <JuniorTrancheActionsView stake={stake()} decimals={6} collateralSymbol="USDC" busy={false} error={null} onDeposit={() => undefined} onWithdraw={() => undefined} {...props} />,
     );
-    const dep = getByTestId("limits-junior-deposit") as HTMLButtonElement;
+  };
+  it("rows: stake value, protects, must keep (with %), withdrawable; Max caps the input", async () => {
+    const onWithdraw = vi.fn();
+    const onDeposit = vi.fn();
+    const { getByTestId, container } = await panel({ onWithdraw, onDeposit });
+    const t = container.textContent ?? "";
+    expect(t).toContain("Your creator stake");
+    expect(t).toContain("First-loss capital backing this market");
+    expect(t).toContain("Stake value300 USDC");
+    expect(t).toContain("Protects Earn deposits of1000 USDC");
+    expect(t).toContain("Must keep at least200 USDC (20% of Earn deposits)");
+    expect(getByTestId("limits-junior-withdrawable").textContent).toContain("100 USDC");
+    expect(t).not.toMatch(/Cushion|Junior at risk/);
     const wd = getByTestId("limits-junior-withdraw") as HTMLButtonElement;
-    expect(dep.disabled).toBe(true);
-    fireEvent.change(getByTestId("limits-junior-amount-input"), { target: { value: "3" } });
-    expect(dep.disabled).toBe(false);
-    expect(wd.disabled).toBe(true); // 3 USDC > 2 USDC withdrawable
-    fireEvent.click(dep);
-    expect(onDeposit).toHaveBeenCalledWith(3_000_000n);
-    fireEvent.change(getByTestId("limits-junior-amount-input"), { target: { value: "1.5" } });
+    fireEvent.change(getByTestId("limits-junior-amount-input"), { target: { value: "250" } });
     expect(wd.disabled).toBe(false);
     fireEvent.click(wd);
-    expect(onWithdraw).toHaveBeenCalledWith(1_500_000n);
+    expect(onWithdraw).toHaveBeenCalledWith(100_000_000n); // capped at withdrawable
+    fireEvent.click(getByTestId("limits-junior-max"));
+    expect((getByTestId("limits-junior-amount-input") as HTMLInputElement).value).toBe("100");
+    fireEvent.click(getByTestId("limits-junior-deposit"));
+    expect(onDeposit).toHaveBeenCalledWith(100_000_000n);
   });
-  it("withdraw disabled while the LP has open positions (withdrawable 0) and shows errors", async () => {
-    const { JuniorTrancheActionsView } = await import("@/components/limits/CreatorLimits");
-    const { getByTestId } = render(
-      <JuniorTrancheActionsView withdrawableAtoms={0n} decimals={6} collateralSymbol="USDC" busy={false} error="nope" onDeposit={() => undefined} onWithdraw={() => undefined} />,
-    );
-    fireEvent.change(getByTestId("limits-junior-amount-input"), { target: { value: "1" } });
-    expect((getByTestId("limits-junior-withdraw") as HTMLButtonElement).disabled).toBe(true);
-    expect(getByTestId("limits-junior-error").textContent).toBe("nope");
+  for (const [name, o, reason, line] of [
+    ["LP has open positions", { lpFlat: false }, "lp-open", "Locked while traders have open positions on your market. It unlocks as they close."],
+    ["at the floor", { vaultValue: C0 + 200_000_000n }, "at-floor", "This is the minimum you must keep while Earn deposits are in the vault."],
+    ["backing short of C", { backingCover: C0 - 1n }, "backing-short", "Locked until the market's backing covers Earn deposits again."],
+    ["draw pending", { drawOutstandingAtoms: 5n }, "draw-pending", "Paused while the market settles a loss. It reopens automatically, usually within a minute."],
+  ] as const) {
+    it(`fork state "${name}": its reason line, and Withdraw never fires`, async () => {
+      const onWithdraw = vi.fn();
+      const { getByTestId } = await panel({ stake: stake(o), onWithdraw });
+      expect(getByTestId("limits-junior-reason").dataset.reason).toBe(reason);
+      expect(getByTestId("limits-junior-reason").textContent).toBe(line);
+      fireEvent.change(getByTestId("limits-junior-amount-input"), { target: { value: "1" } });
+      const wd = getByTestId("limits-junior-withdraw") as HTMLButtonElement;
+      expect(wd.disabled).toBe(true);
+      fireEvent.click(wd);
+      expect(onWithdraw).not.toHaveBeenCalled();
+    });
+  }
+  it("a 75 refusal from the simulation shows the reason line, not a raw error", async () => {
+    const { getByTestId, queryByTestId } = await panel({ stake: stake({ drawOutstandingAtoms: 1n }), refusedReason: "draw-pending", error: "Not withdrawable yet" });
+    expect(getByTestId("limits-junior-reason").dataset.reason).toBe("draw-pending");
+    expect(queryByTestId("limits-junior-error")).toBeNull();
+  });
+  it("exhausted", async () => {
+    const { getByTestId } = await panel({ stake: stake({ impaired: true }) });
+    // One P3 §0.8 wording on every surface (the audit's line would drop the "unless" qualifier).
+    expect(getByTestId("limits-creator-impaired").textContent).toBe(COPY.juniorExhausted);
   });
 });
 
-describe("JuniorTrancheActionsView resolved mode (102)", () => {
-  it("shows physical - C and releases exactly that; hidden top-up/withdraw", async () => {
+describe("Your creator stake: resolved (102)", () => {
+  const props = { stake: null, decimals: 6, collateralSymbol: "USDC", busy: false, error: null, onDeposit: () => undefined, onWithdraw: () => undefined };
+  it("available: 'Withdraw {x}', releases exactly that; no top-up/withdraw", async () => {
     const { JuniorTrancheActionsView } = await import("@/components/limits/CreatorLimits");
     const onRelease = vi.fn();
-    const { getByTestId, queryByTestId } = render(
-      <JuniorTrancheActionsView withdrawableAtoms={0n} decimals={6} collateralSymbol="USDC" busy={false} error={null} onDeposit={() => undefined} onWithdraw={() => undefined} resolved={{ surplusAtoms: 2_500_000n, onRelease }} />,
-    );
+    const { getByTestId, queryByTestId } = render(<JuniorTrancheActionsView {...props} resolved={{ surplusAtoms: 2_500_000n, waitingUntil: null, onRelease }} />);
     expect(getByTestId("limits-junior-actions").dataset.mode).toBe("resolved");
-    expect(getByTestId("limits-junior-resolved-surplus").textContent).toContain("2.5");
+    expect(getByTestId("limits-junior-resolved-surplus").textContent).toBe("Your creator stake: 2.5 USDC available after Earn depositors are paid.");
     expect(queryByTestId("limits-junior-deposit")).toBeNull();
+    expect(getByTestId("limits-junior-release-resolved").textContent).toBe("Withdraw 2.5 USDC");
     fireEvent.click(getByTestId("limits-junior-release-resolved"));
     expect(onRelease).toHaveBeenCalledWith(2_500_000n);
   });
-  it("nothing above the seniors' claim => disabled", async () => {
+  it("before the final payouts: when, as a time; no button", async () => {
     const { JuniorTrancheActionsView } = await import("@/components/limits/CreatorLimits");
-    const { getByTestId } = render(
-      <JuniorTrancheActionsView withdrawableAtoms={0n} decimals={6} collateralSymbol="USDC" busy={false} error={null} onDeposit={() => undefined} onWithdraw={() => undefined} resolved={{ surplusAtoms: 0n, onRelease: () => undefined }} />,
-    );
-    expect((getByTestId("limits-junior-release-resolved") as HTMLButtonElement).disabled).toBe(true);
+    const { getByTestId, queryByTestId } = render(<JuniorTrancheActionsView {...props} resolved={{ surplusAtoms: null, waitingUntil: "Thu 1 Oct, 12:10, in about 24 hours", onRelease: () => undefined }} />);
+    expect(getByTestId("limits-junior-resolved-surplus").textContent).toBe("Available once the market's final payouts finish (about Thu 1 Oct, 12:10, in about 24 hours).");
+    expect(queryByTestId("limits-junior-release-resolved")).toBeNull();
   });
 });

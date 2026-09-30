@@ -9,6 +9,7 @@ import { Q_SCALE } from "@/lib/q-usd";
 import { unitScaleToDecimals, deriveMarketLiquidityAtoms, lpCollateralMateriallyDiverges } from "./types";
 import { useAdminActions } from "@/hooks/useAdminActions";
 import { useCloseMarket } from "@/hooks/useCloseMarket";
+import { CLOSE_MARKET_COPY, closeMarketChecklist, firstUnmet, type CloseCheck } from "@/lib/close-market-checklist";
 import { useWalletCompat } from "@/hooks/useWalletCompat";
 import { SlabProvider } from "@/components/providers/SlabProvider";
 import { CreatorClaimPanel } from "@/components/market/CreatorClaimPanel";
@@ -43,6 +44,28 @@ const LiveRowPrice: FC<{ slab: string; fallback: number | null }> = ({ slab, fal
   const getSnap = useCallback(() => getSnapshot(slab).priceUsd, [slab]);
   const live = useSyncExternalStore(subscribe, getSnap, () => null);
   return <>{formatUsdFromNumber(live ?? fallback)}</>;
+};
+
+/** UX WP-9 (§3.11): "Fees claimed ✓ · No open accounts ✓ · Insurance empty ✓" + the first unmet line. */
+export const CloseMarketChecklistView: FC<{ checks: readonly CloseCheck[] }> = ({ checks }) => {
+  const blocker = firstUnmet(checks);
+  return (
+    <div data-testid="close-market-checklist" className="mt-1 text-[10px] text-[var(--text-secondary)]">
+      <p>
+        {checks.map((c, i) => (
+          <span key={c.key} data-testid={`close-check-${c.key}`} data-state={c.state}>
+            {i > 0 ? " · " : ""}
+            {c.label} {CLOSE_MARKET_COPY.mark(c.state)}
+          </span>
+        ))}
+      </p>
+      {blocker && (
+        <p data-testid="close-market-blocker" className="mt-0.5 text-[var(--text)]">
+          {blocker.unmetLine}
+        </p>
+      )}
+    </div>
+  );
 };
 
 /* ── small local dialogs (only consumer is this row's drawer) ── */
@@ -268,6 +291,13 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
   // `market.label` a second later. Per field, identity only ever sharpens.
   const resolved = resolveIdentity(detail, identity);
   const symbol = resolved.symbol ?? market.label;
+  const closeChecks = closeMarketChecklist({
+    claimableFeeAtoms: claimState.kind === "claimable" ? claimState.atoms : claimState.kind === "none" ? 0n : null,
+    // The wallet's own accounts are closed inside the close itself; others are not decodable here.
+    otherOpenAccounts: null,
+    insuranceAtoms: insuranceAtoms ?? null,
+  });
+  const closeBlocker = firstUnmet(closeChecks);
   const name = resolved.name ?? undefined;
 
   const [showBurnConfirm, setShowBurnConfirm] = useState(false);
@@ -465,13 +495,16 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
               burn admin key
             </button>
             <button
+              data-testid="close-market-button"
               onClick={() => setShowCloseConfirm(true)}
-              disabled={closeMarket.loading}
+              disabled={closeMarket.loading || closeBlocker !== null}
               className="text-[10px] uppercase tracking-[0.1em] text-[var(--short)]/70 hover:text-[var(--short)] transition-colors disabled:opacity-40"
             >
               {closeMarket.loading ? "closing…" : "close market"}
             </button>
           </div>
+          {/* UX WP-9 (§3.11): the preconditions BEFORE the button, never "closeSlab will tell you". */}
+          <CloseMarketChecklistView checks={closeChecks} />
           {closeMarket.error && (
             <p className="mt-2 text-[10px] text-[var(--short)]">{closeMarket.error}</p>
           )}
@@ -543,9 +576,9 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
       {/* Close market (CloseSlab) — irreversible + rent-reclaiming. */}
       <ConfirmDialog
         open={showCloseConfirm}
-        title="close market"
-        description="This permanently closes the market and reclaims its rent. Requires an empty vault, empty insurance fund, and no open user accounts — closeSlab will tell you exactly which precondition failed if it can't proceed."
-        confirmLabel="close & reclaim rent"
+        title={CLOSE_MARKET_COPY.title(symbol)}
+        description={CLOSE_MARKET_COPY.body(symbol, null)}
+        confirmLabel={CLOSE_MARKET_COPY.confirm}
         danger
         onConfirm={handleClose}
         onCancel={() => setShowCloseConfirm(false)}
