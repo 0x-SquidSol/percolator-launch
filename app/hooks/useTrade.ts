@@ -1,5 +1,6 @@
 "use client";
 
+import { tradeCuCap } from "@/lib/compute-budget";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
@@ -685,13 +686,12 @@ export function useTrade(slabAddress: string) {
         }
         instructions.push(tradeIx);
 
-        // Each extra batch leg is another matcher CPI + fill settle — scale
-        // the budget rather than letting a 3-leg close die on compute. Legs
-        // are bounded structurally (position ≤ 4× fill cap ⇒ ≤ 5 legs), so
-        // this stays inside the 1.4M tx ceiling.
-        const computeUnits = Math.min(600_000 + 250_000 * (legs.length - 1), 1_400_000);
+        // Explicit limit sized from a simulation of THIS tx (P1: CPI trades cost ~13k more CU;
+        // a single-leg batch on asset 1 is 216k > the 200k default), capped at 400k per leg
+        // (lib/compute-budget.ts). Also used by closes (useClosePosition calls trade()).
         const sig = await sendTx({
-          connection, wallet, instructions, computeUnits,
+          connection, wallet, instructions,
+          computeUnitsFromSim: { cap: tradeCuCap(legs.length) },
           // P0b: prepend ExpireBackingBucket / FinalizeResetSide only if this
           // trade/close would otherwise revert 19/21 on them (lib/self-heal.ts).
           selfHeal: isV17Market ? { programId, market: slabPk } : undefined,

@@ -1,4 +1,5 @@
 import { Connection, Transaction, TransactionInstruction, ComputeBudgetProgram, SendTransactionError, SystemProgram, TransactionExpiredBlockheightExceededError, VersionedTransaction } from "@solana/web3.js";
+import { MAX_TX_COMPUTE_UNITS, sizeComputeUnitLimit, type CuSizing } from "@/lib/compute-budget";
 import bs58 from "bs58";
 import type { PublicKey, Signer } from "@solana/web3.js";
 import { getNetwork } from "@/lib/config";
@@ -82,7 +83,46 @@ export interface SendTxParams {
    * crank of the vault LP into THIS tx. Planned after the P0b self-heal, on every attempt.
    */
   vaultLpRepair?: { programId: PublicKey; market: PublicKey; oracleTail?: AccountMeta[] };
+  /**
+   * Size the ComputeBudget limit from a simulation of THIS instruction list (after any
+   * self-heal / vault-LP repair): consumed + margin, clamped to `cap` (lib/compute-budget.ts).
+   * When set, `computeUnits` is ignored. Trades, closes and batches use it (P1: CPI trades
+   * need ~13k more CU; a single-leg batch on asset 1 needs 216k > the 200k default).
+   */
+  computeUnitsFromSim?: CuSizing;
+  /** Test/diagnostic hook: the limit sendTx set and the consumed CU it was sized from. */
+  onComputeUnits?: (r: { limit: number; consumed: number | null }) => void;
   onVaultLpRepair?: (result: VaultLpRepairResult) => void;
+}
+
+/**
+ * Units consumed by `instructions` under the full heap frame and the maximum CU limit
+ * (sigVerify off, blockhash replaced). null when the simulation errors or the RPC fails:
+ * the caller then uses its cap, and sendTx's own simulation surfaces the real error.
+ */
+export async function simulateConsumedUnits(
+  connection: Connection,
+  feePayer: PublicKey,
+  instructions: TransactionInstruction[],
+): Promise<number | null> {
+  try {
+    const tx = new Transaction();
+    tx.add(ComputeBudgetProgram.requestHeapFrame({ bytes: 131072 }));
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: MAX_TX_COMPUTE_UNITS }));
+    for (const ix of instructions) tx.add(ix);
+    tx.feePayer = feePayer;
+    tx.recentBlockhash = "11111111111111111111111111111111"; // placeholder; replaceRecentBlockhash
+    const sim = await connection.simulateTransaction(new VersionedTransaction(tx.compileMessage()), {
+      replaceRecentBlockhash: true,
+      sigVerify: false,
+      commitment: "confirmed",
+    });
+    if (sim.value.err) return null;
+    const u = sim.value.unitsConsumed;
+    return typeof u === "number" && u > 0 ? u : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -623,6 +663,8 @@ export async function sendTx({
   onSelfHeal,
   vaultLpRepair,
   onVaultLpRepair,
+  computeUnitsFromSim,
+  onComputeUnits,
 }: SendTxParams): Promise<string> {
   if (!wallet.publicKey || (!wallet.signTransaction && !wallet.signAndSendTransaction)) {
     throw new Error("Wallet not connected");
@@ -721,6 +763,12 @@ export async function sendTx({
           healedComputeUnits = r.computeUnits;
           console.info("[vault-lp-repair] prepended the vault-LP refresh crank");
         }
+      }
+
+      if (computeUnitsFromSim) {
+        const consumed = await simulateConsumedUnits(connection, feePayer, healedInstructions);
+        healedComputeUnits = sizeComputeUnitLimit(consumed, computeUnitsFromSim);
+        onComputeUnits?.({ limit: healedComputeUnits, consumed });
       }
 
       // Get dynamic priority fee on first attempt (cached 45s)

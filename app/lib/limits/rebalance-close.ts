@@ -6,6 +6,7 @@
  * Tag 44's capacity is min(eff, oi_long, oi_short), so a close can be PARTIAL: the result is
  * measured (lib/limits/fill-check.ts), never assumed.
  */
+import { tradeCuCap } from "@/lib/compute-budget";
 import { PublicKey, Transaction, VersionedTransaction, type Connection } from "@solana/web3.js";
 import { computeBudgetPrefix, parseCustomInstructionError } from "@/lib/self-heal";
 import { adlExitCandidates, chooseAdlExit, resetPendingSides, type AdlExitDeps, type AdlExitRoute } from "./adl-exit-plan";
@@ -102,7 +103,8 @@ export async function closeViaRebalanceReduce(
       connection: p.connection,
       wallet: p.wallet,
       instructions,
-      computeUnits: REBALANCE_CU,
+      // [crank, (45...), 44]: sized from simulation, capped at one leg's 400k.
+      computeUnitsFromSim: { cap: tradeCuCap(1) },
       selfHeal: { programId: p.programId, market: p.market },
     });
   } catch (e) {
