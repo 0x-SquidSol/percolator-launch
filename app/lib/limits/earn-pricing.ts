@@ -19,6 +19,13 @@
  *  75 Live:  draw outstanding => C_price = C_eff + min(outstanding, max(0, nav + max(better,0) - C_eff))
  *            else unchanged; shares = senior_shares_for_deposit(amount, S, C_price)
  *  Resolved: unchanged.
+ *
+ * SDK: @percolatorct/sdk 8.0.0 (52b7412) ships the same rule (vaultLpEquityLagBoundsP3,
+ * boundVaultSeniorValueP3, boundVaultDepositQuoteP3, readAssetPricesP3). 8.0.0 is not on npm yet
+ * (the app pins ^7.0.0), so this port stays until it is; parity with the SDK is pinned by
+ * __tests__/fixtures/limits/sdk8-pricing-vectors.json (1,600 cases). Differences by design: the
+ * app also checks that the certificate is current (the SDK takes certifiedEquity as given) and
+ * reads the leg's side from the leg (the SDK from the basis sign; the engine keeps them equal).
  */
 import type { PortfolioLegView } from "./decode";
 import { conservativeEquity, vaultLpValueAtoms, type VaultLpValue } from "./vault-tranche";
