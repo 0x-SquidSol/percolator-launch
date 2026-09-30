@@ -766,13 +766,25 @@ function MarketsPageInner() {
             </div>
             {/* Sort tabs + market count (mobile) on same row */}
             <div className="flex items-center gap-3 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-              <div className="relative flex gap-1 rounded-sm border border-[var(--border)] bg-[var(--bg-elevated)] p-1" role="group" aria-label="Sort markets">
-                {([
-                  { key: "volume" as SortKey, label: "VOLUME" },
-                  { key: "oi" as SortKey, label: "OI" },
-                  { key: "health" as SortKey, label: "HEALTH" },
-                  { key: "recent" as SortKey, label: "RECENT" },
-                ]).map((opt) => (
+              {/* UX WP-10 (§4.8): on phones the sort is one "Sort ▾" select; tabs from md up. */}
+              <label className="md:hidden flex shrink-0 items-center gap-2 text-[11px] text-[var(--text-secondary)]">
+                <span>Sort</span>
+                <select
+                  data-testid="markets-sort-select"
+                  aria-label="Sort markets"
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value as SortKey)}
+                  className="min-h-[44px] rounded-sm border border-[var(--border)] bg-[var(--bg-elevated)] px-3 text-[12px] text-[var(--text)]"
+                >
+                  {MARKET_SORT_OPTIONS.map((opt) => (
+                    <option key={opt.key} value={opt.key}>
+                      {opt.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="relative hidden md:flex gap-1 rounded-sm border border-[var(--border)] bg-[var(--bg-elevated)] p-1" role="group" aria-label="Sort markets">
+                {MARKET_SORT_OPTIONS.map((opt) => (
                   <button
                     key={opt.key}
                     onClick={() => setSortBy(opt.key)}
@@ -791,10 +803,10 @@ function MarketsPageInner() {
               </div>
 
               {/* Separator — mobile only */}
-              <span className="sm:hidden h-6 w-px bg-[var(--border)] shrink-0" />
+              <span className="md:hidden h-6 w-px bg-[var(--border)] shrink-0" />
 
               {/* Results count — mobile only, beside sort tabs */}
-              <span className="sm:hidden ml-auto shrink-0 whitespace-nowrap text-sm font-semibold uppercase tracking-[0.08em] text-[var(--text)] tabular-nums" style={{ fontFamily: "var(--font-mono)" }}>
+              <span className="md:hidden ml-auto shrink-0 whitespace-nowrap text-sm font-semibold uppercase tracking-[0.08em] text-[var(--text)] tabular-nums" style={{ fontFamily: "var(--font-mono)" }}>
                 {loading
                   ? <>&hellip; MARKETS</>
                   : (hasSearch || hasActiveFilters) && filtered.length !== activeMarkets.length
@@ -906,7 +918,7 @@ function MarketsPageInner() {
             )}
 
             {/* Results count — desktop only, in filter row */}
-            <span className="hidden sm:inline-block ml-auto text-xs font-semibold uppercase tracking-[0.08em] text-[var(--text)] shrink-0 whitespace-nowrap tabular-nums" style={{ fontFamily: "var(--font-mono)" }}>
+            <span className="hidden md:inline-block ml-auto text-xs font-semibold uppercase tracking-[0.08em] text-[var(--text)] shrink-0 whitespace-nowrap tabular-nums" style={{ fontFamily: "var(--font-mono)" }}>
               {(hasSearch || hasActiveFilters) && filtered.length !== activeMarkets.length
                 ? `${filtered.length} / ${activeMarkets.length} MARKETS`
                 : `${activeMarkets.length} ${activeMarkets.length !== 1 ? "MARKETS" : "MARKET"}`}
@@ -1284,6 +1296,15 @@ function MarketsPageInner() {
     </div>
   );
 }
+
+
+/** Sort choices, shared by the phone select and the desktop tabs (UX WP-10 §4.8). */
+const MARKET_SORT_OPTIONS: readonly { key: SortKey; label: string; name: string }[] = [
+  { key: "volume", label: "VOLUME", name: "Volume" },
+  { key: "oi", label: "OI", name: "Open interest" },
+  { key: "health", label: "HEALTH", name: "Health" },
+  { key: "recent", label: "RECENT", name: "Newest" },
+];
 
 export default function MarketsPage() {
   return (

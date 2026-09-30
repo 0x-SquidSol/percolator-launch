@@ -15,7 +15,8 @@ export async function ticketInvariants(page: Page, state: "live" | "uf3" | "uf5"
   await expect(ticket).toBeVisible({ timeout: 60_000 });
   expect(await ticket.locator("[data-testid=status-line]").count()).toBeLessThanOrEqual(1);
   // header: the health banner + limits strip region above the grid
-  const header = page.locator("[data-testid=market-health-banner], [data-testid=limits-market-strip]");
+  // UX WP-10 (§4.3): the one header status line (legacy testid kept on it as data-legacy-testid)
+  const header = page.locator("[data-testid=market-header-status]");
   expect(await header.locator("[data-testid=status-line]").count()).toBeLessThanOrEqual(1);
   expect(await ticket.textContent()).not.toMatch(/Tx:|Confirmed!|Max per trade|capacity left|Order value|RebalanceReduce|unilateral/i);
 

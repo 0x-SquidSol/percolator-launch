@@ -25,9 +25,9 @@ describe("MarketHealthBadges", () => {
     expect(ids).toEqual(["lp-depleted", "payout-haircut", "repairable"]);
     expect(screen.getByText("LP depleted")).toBeTruthy();
   });
-  it("compact + hideInfo drops info badges and caps the count", () => {
+  it("compact + hideInfo keeps only Close-only / Paused / Settled (UX WP-10 §4.3) and caps the count", () => {
     render(<MarketHealthBadges row={row()} compact hideInfo />);
-    expect(screen.getAllByTestId("market-health-badge").map((e) => e.getAttribute("data-badge"))).toEqual(["lp-depleted", "payout-haircut"]);
+    expect(screen.getAllByTestId("market-health-badge").map((e) => e.getAttribute("data-badge"))).toEqual(["lp-depleted"]);
   });
   it("NEGATIVE CONTROL: unknown health renders nothing (not 'healthy', not 'broken')", () => {
     const { container } = render(<MarketHealthBadges row={null} />);

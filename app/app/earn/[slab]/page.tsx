@@ -1,5 +1,7 @@
 'use client';
 
+import { LoadingValue, loadingText } from '@/components/ui/LoadingValue';
+import { baseSymbol } from '@/lib/symbol-utils';
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
@@ -131,6 +133,12 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
     refreshState,
     lastDrawSummary,
   } = useInsuranceLP();
+  // UX WP-10 (UI-2): until the first read lands, figures show "—" (data-state="loading").
+  const [loadedOnce, setLoadedOnce] = useState(false);
+  useEffect(() => {
+    if (!lpVaultLoading) setLoadedOnce(true);
+  }, [lpVaultLoading]);
+  const firstLoad = !loadedOnce;
   const earnWallet = useWalletCompat();
   const earnLimits = useMarketLimits(slabAddress);
   // UX WP-5 (§3.7): a stale LP certificate is valued by a simulated crank, never "Needs refresh".
@@ -302,8 +310,8 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
                 className="text-2xl font-medium text-[var(--text)]"
                 style={{ fontFamily: 'var(--font-display)' }}
               >
-                {symbol}-PERP{' '}
-                <span className="text-[var(--text-secondary)] font-normal">Vault</span>
+                {baseSymbol(symbol)}{' '}
+                <span className="text-[var(--text-secondary)] font-normal">Earn vault</span>
               </h1>
               <p className="text-[11px] text-[var(--text-secondary)] font-mono mt-0.5">
                 {slabAddress.slice(0, 8)}...{slabAddress.slice(-8)}
@@ -316,8 +324,8 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
               <div className="text-[10px] uppercase tracking-[0.15em] text-[var(--text-secondary)]">
                 TVL
               </div>
-              <div className="text-2xl font-semibold text-[var(--text)] font-mono tabular-nums">
-                ${formatCompact(vaultUsd)}
+              <div data-testid="earn-page-tvl" className="text-2xl font-semibold text-[var(--text)] font-mono tabular-nums">
+                <LoadingValue loading={firstLoad}>${formatCompact(vaultUsd)}</LoadingValue>
               </div>
             </div>
           </div>
@@ -334,7 +342,7 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
                 className="text-sm font-semibold text-[var(--text)]"
               />
             </StatCell>
-            <StatCell label="LP Supply" loading={loading}>
+            <StatCell label="Earn shares" loading={loading}>
               <span className="text-sm font-mono tabular-nums text-[var(--text)]">
                 {formatCompact(Number(lpVaultState.lpSupply) / collDivisor)}
               </span>
@@ -453,7 +461,7 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-[12px]">
               <InfoRow
                 label="Withdrawal wait"
-                value={lpVaultState.redemptionCooldownSlots > 0n ? cooldownPhrase(lpVaultState.redemptionCooldownSlots) : 'None'}
+                value={loadingText(firstLoad, lpVaultState.redemptionCooldownSlots > 0n ? cooldownPhrase(lpVaultState.redemptionCooldownSlots) : 'None')}
               />
               {/* LP Vault Registry has no deposit-cap field (unlike the /stake pools) —
                   it's bounded indirectly via oiReservationThresholdBps, not a hard cap. */}
@@ -466,7 +474,7 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
               />
               <InfoRow
                 label="Vault status"
-                value={vaultAvailable ? 'Active' : 'Unavailable'}
+                value={loadingText(firstLoad, vaultAvailable ? 'Active' : 'Unavailable')}
               />
             </div>
             {/* UX WP-5 (§4.4): addresses live under Details. */}

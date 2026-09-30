@@ -10,6 +10,7 @@ import { useVaultLpValuation } from '@/hooks/useVaultLpValuation';
 import { ResolvedExitPanel } from '@/components/limits/ResolvedExitPanel';
 import { earnExitProps } from '@/lib/limits/resolved-finish';
 import { useWalletCompat } from '@/hooks/useWalletCompat';
+import { LoadingValue } from '@/components/ui/LoadingValue';
 import { useMarketLimits } from '@/hooks/useMarketLimits';
 import { earnDepositPause, earnGateShares, earnViewFromLimits, earnPanelPricing } from '@/lib/limits/earn';
 import { earnDepositBlock } from '@/lib/limits/vault-tranche';
@@ -168,12 +169,14 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
 
           {/* Key figures */}
           <div className="grid grid-cols-2 gap-3 border-t border-[var(--border)]/60 pt-3">
-            <Figure label="TVL" value={`$${formatCompact(vaultUsd)}`} />
+            {/* UX WP-10 (UI-2): "—" with data-state="loading" until the first read lands. */}
+            <Figure label="TVL" loading={!everLoaded} value={`$${formatCompact(vaultUsd)}`} />
             {/* E2E B5: the CHARGED fee (trade_fee_base_bps), not the matcher's tradingFeeBps. */}
-            <Figure label="Fee" value={chargedTradeFeeLabel(slabRaw ? decodeMarketEngineView(slabRaw)?.tradeFeeBaseBps : null) ?? '—'} />
-            <Figure label="Cooldown" value={slotsToLabel(state.redemptionCooldownSlots)} />
+            <Figure label="Fee" loading={!everLoaded} value={chargedTradeFeeLabel(slabRaw ? decodeMarketEngineView(slabRaw)?.tradeFeeBaseBps : null) ?? '—'} />
+            <Figure label="Cooldown" loading={!everLoaded} value={slotsToLabel(state.redemptionCooldownSlots)} />
             <Figure
               label="Your Deposit"
+              loading={!everLoaded}
               value={hasPosition ? `$${formatCompact(positionUsd)}` : '$—'}
               accent={hasPosition}
             />
@@ -224,15 +227,16 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
   );
 }
 
-function Figure({ label, value, accent = false }: { label: string; value: string; accent?: boolean }) {
+function Figure({ label, value, accent = false, loading = false }: { label: string; value: string; accent?: boolean; loading?: boolean }) {
   return (
     <div className="min-w-0">
       <div className="mb-0.5 text-[9px] uppercase tracking-[0.15em] text-[var(--text-secondary)]">{label}</div>
       <div
+        data-testid={`earn-rail-figure-${label.toLowerCase().replace(/\s+/g, '-')}`}
         className={`truncate text-[13px] tabular-nums ${accent ? 'text-[var(--accent-text)]' : 'text-[var(--text)]'}`}
         style={{ fontFamily: 'var(--font-mono)' }}
       >
-        {value}
+        <LoadingValue loading={loading}>{value}</LoadingValue>
       </div>
     </div>
   );

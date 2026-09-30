@@ -13,7 +13,7 @@ import { PositionsDock } from "@/components/trade/PositionsDock";
 import dynamic from "next/dynamic";
 import { MarketInfoBar } from "@/components/trade/MarketInfoBar";
 import { MarketLimitsStrip } from "@/components/limits/MarketLimitsStrip";
-import { TradeMarketHealthBanner } from "@/components/market/MarketHealthBadges";
+import { MarketHeaderStatus, TradeMarketHealthBanner } from "@/components/market/MarketHealthBadges";
 import { AnalyticsDock } from "@/components/trade/AnalyticsDock";
 import { useIsLargeScreen } from "@/hooks/useIsLargeScreen";
 import { useAdvanceOraclePhase } from "@/hooks/useAdvanceOraclePhase";
@@ -504,11 +504,20 @@ function TradePageInner({ slab }: { slab: string }) {
       {/* Utility row — market address + admin status. (Share, the tokens/usd
           toggle, and the Analytics link were removed; analytics now lives in
           the bottom AnalyticsDock.) */}
+
+      {/* MarketBar — always mounted, already responsive/scrollable on mobile */}
+      <MarketInfoBar slabAddress={slab} symbol={symbol} logoUrl={logoUrl} mintAddress={mintAddress} mainnetCa={chartMintAddress} />
+      {/* UX WP-10 (§4.3): ONE status line under the header, only when the market is not live. */}
+      <MarketHeaderStatus slab={slab} />
       {/* UX WP-10 (GL-1, §4.3): the market address and admin status left the page chrome; they sit
           in a collapsed "Market details" disclosure (the "ADMIN ACTIVE" chip is no longer shown by
           default above every market). */}
       <details data-testid="market-details" className="border-b border-[var(--border)]/30 px-3 py-1 text-[10px] text-[var(--text-secondary)]">
         <summary className="cursor-pointer select-none py-0.5">Market details</summary>
+      {/* The health detail lines (payout level etc.) and the limits strip (OI vs cap, liquidity,
+          band, skew) live here now, not as rows above the chart. */}
+      <TradeMarketHealthBanner slab={slab} />
+      <MarketLimitsStrip slab={slab} symbol={symbol} />
       <div className="flex items-center gap-3 py-1 overflow-x-auto whitespace-nowrap scrollbar-none">
         <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]" style={{ fontFamily: "var(--font-mono)" }}>
           {shortAddress}
@@ -533,13 +542,6 @@ function TradePageInner({ slab }: { slab: string }) {
         )}
       </div>
       </details>
-
-      {/* MarketBar — always mounted, already responsive/scrollable on mobile */}
-      <MarketInfoBar slabAddress={slab} symbol={symbol} logoUrl={logoUrl} mintAddress={mintAddress} mainnetCa={chartMintAddress} />
-      {/* P0b: v18 health — LP depleted / payout haircut / resolved / bankruptcy */}
-      <TradeMarketHealthBanner slab={slab} />
-      {/* Limits (P1/P2/P3, flag-gated; null with every flag off) */}
-      <MarketLimitsStrip slab={slab} symbol={symbol} />
 
       {/* ════════════════ DESKTOP (≥ lg) — named grid ════════════════ */}
       {isLargeScreen && (

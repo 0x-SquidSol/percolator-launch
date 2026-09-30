@@ -246,26 +246,25 @@ export function formatBpsPercent(bps: number): string {
 export function healthBadges(h: MarketHealth): HealthBadge[] {
   const out: HealthBadge[] = [];
   if (h.lockReasons.includes("resolved")) {
-    out.push({ id: "resolved", label: "Resolved", tone: "danger", detail: "This market is resolved. Only closing positions and withdrawing are possible." });
+    out.push({ id: "resolved", label: "Settled", tone: "danger", detail: "This market has settled. Close any position and withdraw; there's nothing else to do." });
   }
   if (h.lockReasons.includes("recovery")) {
-    out.push({ id: "recovery", label: "In recovery", tone: "danger", detail: "This market is in recovery mode. New positions are blocked until it recovers." });
+    out.push({ id: "recovery", label: "Close-only", tone: "danger", detail: "Closing works normally; new positions reopen on their own once the market recovers." });
   }
   if (h.lpHalted) {
     // P1: supersedes "LP depleted" (a depleted LP is halted under P1, and closes still work).
     out.push({
       id: "lp-halted",
-      label: "LP halted",
+      label: "Paused",
       tone: "danger",
-      detail:
-        "The market's liquidity provider is at its capital floor, so trades that add to its exposure are paused. Trades that reduce its exposure still work.",
+      detail: "The market has no room for new positions right now. Closing works normally.",
     });
   } else if (h.lpDepleted) {
     out.push({
       id: "lp-depleted",
-      label: "LP depleted",
+      label: "Paused",
       tone: "danger",
-      detail: "The market's liquidity provider has no capital left, so new positions can't be opened until it is re-funded.",
+      detail: "The market has no liquidity for new positions right now. Closing works normally.",
     });
   }
   if (h.payoutHaircutBps > 0) {
@@ -281,19 +280,19 @@ export function healthBadges(h: MarketHealth): HealthBadge[] {
   if (h.lockReasons.includes("adl-reduce-only")) {
     out.push({
       id: "adl-reduce-only",
-      label: "Reduce-only",
+      label: "Close-only",
       tone: "warning",
       detail: COPY.adlReduceOnly,
     });
   }
   if (h.lockReasons.includes("bankruptcy")) {
-    out.push({ id: "bankruptcy", label: "Settling bankruptcy", tone: "warning", detail: "A bankrupt account must be liquidated before new risk is accepted. The keeper does this automatically." });
+    out.push({ id: "bankruptcy", label: "Catching up", tone: "warning", detail: "A position is being settled after a large loss. New positions reopen automatically, usually within a minute." });
   }
   if (h.lockReasons.includes("drain-only")) {
-    out.push({ id: "drain-only", label: `${h.drainOnlySides.join(" & ")} reduce-only`, tone: "warning", detail: "One side of this market only accepts position-reducing trades right now." });
+    out.push({ id: "drain-only", label: `${h.drainOnlySides.join(" & ")} close-only`, tone: "warning", detail: "One side of this market only accepts trades that reduce positions right now." });
   }
   if (h.lockReasons.includes("repairable")) {
-    out.push({ id: "repairable", label: "Needs repair", tone: "info", detail: "A backing bucket expired or a side is waiting to reset. Your next transaction includes the repair automatically." });
+    out.push({ id: "repairable", label: "Catching up", tone: "info", detail: "The market is catching up. Your next transaction includes the update automatically." });
   }
   if (h.lockReasons.includes("loss-stale")) {
     out.push({ id: "loss-stale", label: "Refreshing", tone: "info", detail: "Positions are being refreshed after a price move. This clears within seconds." });
