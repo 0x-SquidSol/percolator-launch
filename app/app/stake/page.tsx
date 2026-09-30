@@ -332,8 +332,8 @@ function StakeHeader({
             C3 +5.86 USDC, U3 +7.01 USDC. The old zero-yield caption was false. */}
         <p className="mt-1.5 max-w-lg text-[11px] text-[var(--text-muted)]">
           Staking backs the insurance fund, and stakers are paid its share of every trading
-          fee: the keeper moves the insurance fee leg into the stake pool. Your stake is
-          first-loss capital, so flushes to insurance reduce staked value.
+          fee, moved into the stake pool automatically. Your stake is first-loss capital for
+          this market's insurance, so its value can fall.
         </p>
         {/* The 0% above reads as an oversight without the other shares beside
             it — "16% to insurance" is the number it gets mistaken for. #2565. */}
@@ -418,7 +418,7 @@ function PositionCard({
       <div className="space-y-3 p-3">
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <div className="text-[9px] uppercase tracking-[0.15em] text-[var(--text-secondary)]">LP Balance</div>
+            <div className="text-[9px] uppercase tracking-[0.15em] text-[var(--text-secondary)]">Your stake</div>
             <div className="text-sm font-mono tabular-nums text-[var(--text)]">
               {position.lpBalance.toLocaleString(undefined, { maximumFractionDigits: 4 })}
             </div>

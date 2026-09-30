@@ -141,7 +141,7 @@ describe("P1 / newly-mapped deployed codes", () => {
       expect(msg, `code ${code}`).not.toMatch(/^Program error|^Transaction failed/);
     }
     expect(humanizeError(presim(4, 63))).toMatch(/Earn vault can't be created/);
-    expect(humanizeError(presim(4, 69), "trade")).toMatch(/capital floor/);
+    expect(humanizeError(presim(4, 69), "trade")).toMatch(/no room for new positions/);
   });
   it("P1 69/68 on an open with a depleted LP → LP depleted; NEGATIVE CONTROL funded LP keeps the P1 text", () => {
     expect(explainMarketTxError(presim(4, 69), "open", health({ lpDepleted: true }))).toBe(MSG_LP_DEPLETED_OPEN);
@@ -149,6 +149,7 @@ describe("P1 / newly-mapped deployed codes", () => {
     expect(explainMarketTxError(presim(4, 68), "close", health({ lpDepleted: true }))).toBeNull();
   });
   it("NEGATIVE CONTROL: an unknown code still falls through to the generic text", () => {
-    expect(humanizeError(presim(4, 250))).toMatch(/^Program error/);
+    // UX WP-10 (§5.3 unmapped): the generic line, never "Program error: …".
+    expect(humanizeError(presim(4, 250))).toBe("Something went wrong and nothing was sent.");
   });
 });

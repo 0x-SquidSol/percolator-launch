@@ -36,7 +36,8 @@ describe("87 / 88 are in the one constants module with copy", () => {
     expect(C.P3_ERR.VaultLpSeniorDrawRequired).toBe(87);
     expect(C.P3_ERR.VaultLpRedeemNeedsRecall).toBe(88);
     expect(P3_ERROR_COPY_BY_NAME.VaultLpSeniorDrawRequired).toMatch(/Nothing moved/);
-    expect(P3_ERROR_COPY_BY_NAME.VaultLpRedeemNeedsRecall).toMatch(/recalls that backing/);
+    // UX WP-10 (§5.1): plain effect ("in use by open trades").
+    expect(P3_ERROR_COPY_BY_NAME.VaultLpRedeemNeedsRecall).toMatch(/in use by open trades/);
     const e = (n: number) => new Error(`{"InstructionError":[3,{"Custom":${n}}]}\nProgram ${resolveDevnetProgramIds().wrapper} failed: custom program error: 0x${n.toString(16)}`);
     // UX WP-1: the Earn panel shows the ONE resolver's line (lib/limits/user-message.ts).
     expect(earnErrorMessage(e(88), "claim", { p3Bound: true })).toMatch(/^Part of this vault's money is in use by open trades right now\./);

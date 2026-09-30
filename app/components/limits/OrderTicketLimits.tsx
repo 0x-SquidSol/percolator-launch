@@ -169,7 +169,7 @@ const QuotePanel: FC<{
           )}
         </>
       ) : (
-        <LimitsRow testId="limits-quote-row" data={{ row: "quote" }} label="Matcher quote" value={COPY.legacyQuote(`${q.maxTotalBps} bps`)} />
+        <LimitsRow testId="limits-quote-row" data={{ row: "quote" }} label="Price quote" value={COPY.legacyQuote(`${(Number(q.maxTotalBps) / 100).toFixed(2)}%`)} />
       )}
       {limits.bandBps !== null && (
         <LimitsRow testId="limits-quote-row" data={{ row: "band" }} label="Band" value={fmtBandPct(limits.bandBps)} />

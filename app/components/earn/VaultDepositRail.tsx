@@ -161,9 +161,8 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
             <div className="min-w-0">
               <div className="truncate text-[13px] font-semibold text-[var(--text)]">
                 {symbol}
-                <span className="font-normal text-[var(--text-secondary)]">-PERP</span>
               </div>
-              <div className="text-[10px] uppercase tracking-[0.12em] text-[var(--text-secondary)]">LP Vault</div>
+              <div className="text-[10px] uppercase tracking-[0.12em] text-[var(--text-secondary)]">Earn vault</div>
             </div>
           </div>
 
@@ -191,7 +190,7 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
 
           {everLoaded && !vaultAvailable && (
             <p className="mt-3 border-t border-[var(--border)]/60 pt-3 text-[11px] text-[var(--text-secondary)]">
-              This market does not have a usable on-chain Earn LP vault. Deposits and withdrawals are unavailable here.
+              This market doesn't have an Earn vault yet, so deposits and withdrawals aren't available here.
             </p>
           )}
         </div>

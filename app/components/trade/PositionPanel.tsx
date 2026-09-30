@@ -742,9 +742,9 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             {/* LP underfunded warning */}
             {lpUnderfunded && (
               <div className="mt-2 rounded-none border border-[var(--warning)]/30 bg-[var(--warning)]/5 p-2.5">
-                <p className="text-[10px] font-medium uppercase tracking-[0.15em] text-[var(--warning)]">LP Has No Capital</p>
+                <p className="text-[10px] font-medium uppercase tracking-[0.15em] text-[var(--warning)]">Market out of liquidity</p>
                 <p className="mt-1 text-[10px] text-[var(--warning)]/70">
-                  The liquidity provider has no capital to back the counterparty position. Closing trades will fail until the LP is funded.
+                  The market has no liquidity to take the other side right now, so closing can't go through until it is refilled.
                 </p>
               </div>
             )}

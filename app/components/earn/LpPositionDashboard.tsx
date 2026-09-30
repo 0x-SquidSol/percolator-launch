@@ -101,7 +101,7 @@ export function LpPositionDashboard({
           <div className="text-center py-6">
             <div className="text-2xl mb-2">📊</div>
             <p className="text-[13px] text-[var(--text-secondary)]">
-              No active LP position
+              No Earn position yet
             </p>
             <p className="text-[11px] text-[var(--text-muted)] mt-1">
               Deposit to start earning fees

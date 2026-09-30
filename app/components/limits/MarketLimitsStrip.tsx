@@ -71,7 +71,7 @@ export const MarketLimitsStripView: FC<{ limits: MarketLimits; symbol: string }>
       )}
       {limits.flags.p1 && halted !== null && (
         <span className="flex items-center gap-1" data-testid="limits-lp-health" data-halted={halted ? "true" : "false"}>
-          <span className="uppercase tracking-[0.08em] text-[var(--text-secondary)]">LP</span>
+          <span className="uppercase tracking-[0.08em] text-[var(--text-secondary)]">Liquidity</span>
           <span className={`font-mono font-bold uppercase ${halted ? "text-[var(--short)]" : "text-[var(--long)]"}`}>
             {halted ? "Halted" : "Active"}
           </span>

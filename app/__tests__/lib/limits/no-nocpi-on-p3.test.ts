@@ -37,7 +37,8 @@ describe("no NoCpi trades anywhere in the app", () => {
   });
   it("77 has clear copy that names the matcher-only rule", () => {
     expect(P3_ERR.VaultLpExclusiveCounterparty).toBe(77);
-    expect(P3_ERROR_COPY_BY_NAME.VaultLpExclusiveCounterparty).toMatch(/through the market's matcher/);
+    // UX WP-10 (§5.1/§5.3): plain words ("This trade route isn't available on this market.").
+    expect(P3_ERROR_COPY_BY_NAME.VaultLpExclusiveCounterparty).toMatch(/trade route isn't available on this market/);
     expect(P3_ERROR_COPY_BY_NAME.VaultLpExclusiveCounterparty).toMatch(/closing a position still works/);
   });
 });

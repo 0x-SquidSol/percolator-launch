@@ -9,34 +9,34 @@ export const COPY = {
   bandTooltip: "Fills must execute within this distance of the oracle mark. Outside it the trade is refused.",
   bandOutOfRange: "The quote for this size is outside the market's price band. Reduce the size.",
   reason: {
-    "lp-exposure": (k: string) => `Limited by the LP's capital: the liquidity provider can hold at most ${k}× its equity.`,
+    "lp-exposure": (k: string) => `Limited by the market's liquidity: it can take at most ${k}× its capital in open positions.`,
     "side-oi": (side: string) => `Limited by the protocol cap on total ${side} open interest.`,
     "matcher-fill": () => "Limited by the market's per-trade size.",
-    "matcher-inventory": () => "Limited by how much net exposure the LP will carry.",
-    "lp-halt": () => "The LP is at its capital floor: only trades that reduce its exposure can fill.",
-    "same-owner": () => "This wallet owns the LP or created the market, so it can only reduce or close its position.",
-    "vault-lp-exposure": (lev: string) => `Limited by the Earn vault LP's cap: at most ${lev}× the creator's first-loss capital.`,
+    "matcher-inventory": () => "Limited by how much room the market has for more positions on this side.",
+    "lp-halt": () => "The market has no room for new positions on this side right now: only trades that reduce open positions can fill.",
+    "same-owner": () => "You created this market, so this wallet can only reduce or close its position here.",
+    "vault-lp-exposure": (lev: string) => `Limited by the market's cap: at most ${lev}× the creator's stake.`,
     none: () => "",
   },
   clamped: (max: string, sym: string, reason: string) => `Size reduced to ${max} ${sym}. ${reason}`.trim(),
-  zeroFill: "The LP had no room for this trade when it landed. Your position did not change and no trading fee was charged.",
+  zeroFill: "The market had no room for this trade when it landed. Your position did not change and no trading fee was charged.",
   partialFill: (filled: string, requested: string, sym: string) => `Partially filled: ${filled} of ${requested} ${sym}.`,
   halted: (side: string) =>
-    `Opening ${side} is paused: the market's liquidity provider is at its capital floor. Trades that reduce the LP's exposure still fill.`,
+    `Opening ${side} is paused: the market has no room for more ${side} right now. Closes and trades on the other side still work.`,
   // P1 99165722 (F-7): a close that would GROW a halted / capped LP is refused (69) or clipped.
   closeHalted:
-    "The market's LP is at its capital floor and your close would add to its exposure, so the program refuses it until the LP is re-funded or the book rebalances. Closes that reduce the LP's exposure still work.",
+    "Closing this side is paused briefly: the market has no room to take the other side of your close right now. It reopens as other positions close.",
   closeCapped: (max: string, sym: string) =>
-    `The LP can only take ${max} ${sym} of this close before it reaches its exposure cap; a larger close fills partially or is refused. Close in parts, or wait for the book to rebalance.`,
+    `The market can take ${max} ${sym} of this close right now; a larger close fills partially. Close in parts, or wait for other positions to close.`,
   sameOwner:
     "This wallet owns this market's liquidity or created the market, so it can only close positions here, not open or add to them. Use a different wallet to trade.",
   limitsUnavailable: "Limits unavailable. Showing no cap.",
   quoteSettlesAtMark:
     "On this program version fills settle at the mark price. The quote above only decides how much can fill and whether your slippage limit passes.",
-  quoteCharged: "The quoted price is charged: the difference from the mark is paid to the market's LP as a fee. Your signature caps it at the maximum shown.",
+  quoteCharged: "The quoted price is charged: the difference from the mark is paid to the market as a fee. Your signature caps it at the maximum shown.",
   feeCapTooltip:
-    "The most this trade can charge you: base fee + the quote's fee + a small slippage margin, so a quote that moves slightly before landing still fills. You pay only what the matcher actually requests, never more than this. If the request exceeds it, the trade is refused and nothing is charged.",
-  feeOverProtocolMax: (bps: string) => `The quote's fee is above this market's protocol maximum (${bps} bps), so the trade would be refused. Reduce the size.`,
+    "The most this trade can charge you: base fee + the quote's fee + a small slippage margin, so a quote that moves slightly before landing still fills. You pay only what the market actually asks for, never more than this. If the request exceeds it, the trade is refused and nothing is charged.",
+  feeOverProtocolMax: (pct: string) => `The quote's fee is above this market's maximum (${pct}), so the trade would be refused. Reduce the size.`,
   feeOverMarketMax: "The quote's fee plus the base fee is above this market's maximum trading fee, so the trade would be refused. Reduce the size.",
   quoteClipped: (fill: string) => `Quote caps this trade at ${fill}.`,
   quoteSlippage: (s: string) =>
@@ -44,7 +44,7 @@ export const COPY = {
   feeEstimate: "Fee estimate; the final fee is set when the trade lands.",
   legacyQuote: (bps: string) => `Quote: within ${bps} of mark.`,
   skew: (dir: "long" | "short" | "flat", size: string, sym: string) =>
-    dir === "flat" ? "Book skew: balanced" : `Book skew: traders net ${dir} ${size} ${sym} (LP ${dir === "long" ? "short" : "long"})`,
+    dir === "flat" ? "Book skew: balanced" : `Book skew: traders net ${dir} ${size} ${sym}`,
   /** UX WP-5 / audit §5.2: "How losses work" — the P3 §0.8 rule in plain words, shown ONCE (Earn card). */
   howLossesWork:
     "The market creator's stake takes losses first. Only a loss bigger than that stake reaches Earn, and then every Earn depositor loses the same percentage. Winning traders are always paid in full unless Earn's money is used up too. Share value can go down; only deposit what you can afford to lose.",
@@ -68,20 +68,20 @@ export const COPY = {
   stepDown: (x: string, side: string, crowd: string, base: string) =>
     `Max leverage is ${x}× for new ${side} positions while the book is crowded (${crowd} of the cap). The other side keeps ${base}×.`,
   wizardRequirement: (floor: string) =>
-    `Your junior tranche is first-loss capital. The creator's junior tranche takes losses first. Only a loss bigger than the junior reaches Earn, and then every Earn depositor loses the same percentage. Winning traders are always paid in full unless Earn's backing is used up too. It can't be withdrawn while the LP holds positions, or below ${floor} of Earn deposits.`,
-  wizardAfterLaunch: "Junior deposit is added after launch.",
+    `Your creator stake is first-loss capital. The market creator's stake takes losses first. Only a loss bigger than that stake reaches Earn, and then every Earn depositor loses the same percentage. Winning traders are always paid in full unless Earn's money is used up too. It can't be withdrawn while traders have open positions on your market, or below ${floor} of Earn deposits.`,
+  wizardAfterLaunch: "Your creator stake is added after launch.",
   closeRebooked: "The market is finishing its last fee sweep. Close again in a minute.",
   closeZeroFill:
-    "Market at capacity — no fill. Your close landed but the LP had no room to take it, so your position did not change. Try a smaller percentage or again shortly.",
+    "Market at capacity — no fill. Your close landed but the market had no room to take it, so your position did not change. Try a smaller percentage or again shortly.",
   rebalanceZeroFill:
     "Nothing could be closed yet: this market is reduce-only after a bankruptcy and the other side has no open interest left to match. Try again as positions on the other side close.",
   rebalancePartial: (filled: string, requested: string) =>
     `Partially closed: ${filled} of ${requested}. The market is reduce-only after a bankruptcy; the rest can close as the other side exits.`,
   adlReduceOnlyTitle: "Reduce-only — recovering from a bankruptcy",
   adlCloseRoute:
-    "Your close is sent as a unilateral exit you sign yourself (RebalanceReduce), so it does not depend on the market's LP. It may close only part of the position if the other side has little open interest left.",
+    "Your close goes through directly, without waiting for the market's liquidity. It may close only part of the position if the other side has little open interest left.",
   adlReduceOnly:
-    "A bankrupt position was spread across this side of the market, so new positions are paused until one side has closed out. Closing works: your close is sent as a unilateral exit you sign yourself. The market reopens on its own once positions close; no admin step is needed.",
+    "A bankrupt position was spread across this side of the market, so new positions are paused until one side has closed out. Closing works: your close goes through directly. The market reopens on its own once positions close; no admin step is needed.",
   reclaimCleanup: {
     "progress-only": () =>
       "Your position on this market is still settling after resolution (its counterparty has not settled yet). Try the reclaim again in a moment.",
@@ -92,7 +92,7 @@ export const COPY = {
   juniorResolvedExplain:
     "Earn depositors are paid first: each redeems up to their claim from the vault's backing. You can take what is left above their remaining claim once the market is fully closed out.",
   adlExitTrapped:
-    "The other side of this market has fully closed, and your position cannot settle until the drained side is reset. Nothing was sent. Try again in a moment, after the next market crank.",
+    "The other side of this market has fully closed, and your position can settle once the market catches up. Nothing was sent. Try again in a moment.",
   closePartial: (filled: string, requested: string) => `Partially closed: ${filled} of ${requested}. The rest of your position is still open.`,
   /** UX WP-8 (audit §3.9): keeper-first, a time not a slot, "Finish now" as a secondary link. */
   resolvedExit: {
@@ -118,40 +118,40 @@ export const COPY = {
   } as const,
   earnAbsorbedLabel: "Earn absorbed",
   earnAbsorbedTooltip: (drawn: string, restored: string) =>
-    `A loss bigger than the creator's junior tranche, taken from Earn depositors pro rata (every share loses the same percentage). ` +
+    `A loss bigger than the creator's stake, shared by Earn depositors (every share loses the same percentage). ` +
     `${drawn} absorbed in total, ${restored} of it restored so far: if the vault recovers, Earn is restored first.`,
   /** E2E B24: 77 refused (21) on a P3 bound vault. Cause pending P3 confirmation: assert none. */
   earnClaimRefusedP3:
-    "The vault couldn't pay this redemption right now (the program refused it, code 21). Nothing moved and your LP shares stay in escrow. Try again later.",
+    "The vault can't pay this withdrawal right now. Nothing moved and your withdrawal stays pending. Try again later.",
   /** Creator panel notice when the junior is exhausted (senior-impaired flag set on chain). */
   juniorExhausted:
-    "Your junior tranche is exhausted, so further losses reach Earn: every Earn depositor loses the same percentage. Winning traders are always paid in full unless Earn's backing is used up too. New Earn deposits are paused.",
+    "Your creator stake has been used up covering trader profits, so further losses reach Earn: every Earn depositor loses the same percentage. Winning traders are always paid in full unless Earn's money is used up too. New Earn deposits are paused.",
   /** Earn risk notice on P3 markets: who bears a loss (user decision 2026-09-30, reversed; wording = P3 doc §0.8). */
   earnRiskP3:
-    "Earn deposits back each market's vault-owned LP and can lose value. The creator's junior tranche takes losses first. Only a loss bigger than the junior reaches Earn, and then every Earn depositor loses the same percentage. Winning traders are always paid in full unless Earn's backing is used up too. Only deposit what you can afford to lose.",
+    "Earn deposits back each market's liquidity and can lose value. The market creator's stake takes losses first. Only a loss bigger than that stake reaches Earn, and then every Earn depositor loses the same percentage. Winning traders are always paid in full unless Earn's money is used up too. Only deposit what you can afford to lose.",
   p3Wizard: {
-    title: "Vault-owned LP (junior tranche)",
+    title: "Your creator stake",
     explain:
-      "Your market's liquidity is provided by an LP the Earn vault owns. You fund its first-loss (junior) tranche, and trading PnL against it is yours. The creator's junior tranche takes losses first. Only a loss bigger than the junior reaches Earn, and then every Earn depositor loses the same percentage. Winning traders are always paid in full unless Earn's backing is used up too.",
-    floorLabel: "Junior floor",
+      "Your market's liquidity comes from the Earn vault. You fund its first-loss capital, your creator stake, and trading profit and loss against it is yours. The market creator's stake takes losses first. Only a loss bigger than that stake reaches Earn, and then every Earn depositor loses the same percentage. Winning traders are always paid in full unless Earn's money is used up too.",
+    floorLabel: "Keep at least",
     floorTooltip:
-      "The share of Earn deposits your tranche must cover. You cannot withdraw below it while Earn depositors are in the vault. 10% to 100%.",
-    amountLabel: "Junior deposit",
+      "The share of Earn deposits your creator stake must cover. You cannot withdraw below it while Earn depositors are in the vault. 10% to 100%.",
+    amountLabel: "Creator stake",
     minHint: (min: string, sym: string) => `At least ${min} ${sym} (the floor of the Earn seed).`,
     marketauthRotated:
-      "The market's admin authority has already moved to its staking pool, so the vault-owned LP can no longer be bound on this market (binding needs the market admin's signature). The market keeps its classic LP.",
+      "This market's admin rights have already moved to its staking pool, so the Earn vault can no longer take over its liquidity. The market keeps its current liquidity.",
     pinned:
-      "The protocol sets this LP's matcher and its limits at launch (a vAMM with a $5,000 per-trade and $25,000 net-exposure cap at the launch price); you choose only the junior tranche and its floor. Trading opens as soon as the market is created.",
+      "The protocol sets the market's pricing and limits at launch (up to $5,000 per trade and $25,000 total exposure at the launch price); you choose only your creator stake and its minimum. Trading opens as soon as the market is created.",
     issue: {
-      "floor-out-of-range": "The junior floor must be between 10% and 100%.",
-      "junior-zero": "Enter a junior tranche deposit greater than zero.",
-      "junior-below-floor": "The junior deposit must at least cover the junior floor of the Earn seed.",
-      "junior-above-liquidity": "The junior deposit cannot exceed the market's liquidity amount.",
+      "floor-out-of-range": "The minimum must be between 10% and 100%.",
+      "junior-zero": "Enter a creator stake.",
+      "junior-below-floor": "Your creator stake must at least cover the minimum of the first Earn deposit.",
+      "junior-above-liquidity": "Your creator stake cannot exceed the market's liquidity amount.",
     },
   } as const,
   earnPlanBlocked: {
-    "registry-invalid": "This Earn vault's on-chain registry has an invalid vault-LP flag, so the program refuses every Earn action. Contact the market operator.",
-    "vault-lp-unreadable": "This Earn vault is backed by a vault-owned LP whose state could not be read. Retry in a moment.",
+    "registry-invalid": "This Earn vault isn't set up correctly, so Earn deposits and withdrawals can't go through. Report this market.",
+    "vault-lp-unreadable": "This Earn vault's details couldn't be read. Retry in a moment.",
   } as const,
 } as const;
 
@@ -160,41 +160,41 @@ export const P2_ERROR_COPY: Record<number, string> = {
   [P2_ERR.ERR_STALE_MARK]: "The price feed is stale, so new positions are paused. Closing still works. Try again shortly.",
   [P2_ERR.ERR_MARK_SLOT_IN_FUTURE]: "The price feed returned an invalid timestamp. Try again in a few seconds.",
   [P2_ERR.ERR_ASSET_MISMATCH]: "This market's pricing engine is misconfigured (bound to another asset). Report this market.",
-  [P2_ERR.ERR_OWNER_PROOF_MISMATCH]: "Only the market's LP owner can change its pricing settings.",
+  [P2_ERR.ERR_OWNER_PROOF_MISMATCH]: "Only the market's owner can change its pricing settings.",
 };
 
 /** P3 wrapper error copy, keyed by NAME (ordinals are provisional — see constants.ts). */
 export const P3_ERROR_COPY_BY_NAME: Record<keyof typeof P3_ERR, string> = {
-  VaultLpAlreadyBound: "This market's Earn vault already owns its LP.",
-  VaultLpNotBound: "This market's Earn vault does not own an LP yet.",
+  VaultLpAlreadyBound: "This market's Earn vault already provides its liquidity.",
+  VaultLpNotBound: "This market's Earn vault doesn't provide its liquidity yet.",
   VaultLpSeniorImpaired: COPY.depositsPausedImpaired,
   VaultLpJuniorWithdrawRefused:
-    "Junior withdrawal refused: it would take the junior below its floor, or the vault's backing does not cover Earn deposits right now.",
-  VaultLpRecallRefused: "Nothing to recall: the vault's backing already covers Earn deposits.",
+    "Not withdrawable yet: it would take your creator stake below its minimum, or the vault doesn't cover Earn deposits right now.",
+  VaultLpRecallRefused: "Nothing to move: the vault already covers Earn deposits.",
   // 77. Next P3 FINAL: also returned by TradeNoCpi / BatchTradeNoCpi that grow either side on a
   // P3 asset (the app never sends those; __tests__/lib/limits/no-nocpi-on-p3.test.ts).
   VaultLpExclusiveCounterparty:
-    "On this market every trade that adds risk goes through the market's matcher against the Earn vault's LP. Direct account-to-account trades and trades against any other LP are refused. Reducing or closing a position still works.",
+    "This trade route isn't available on this market. Reducing or closing a position still works.",
   VaultLpLeverageStepDown:
     "Leverage too high for this side while the book is crowded. Lower leverage or trade the other side.",
-  VaultLpBoundCannotClose: "This vault owns the market's LP and can't be closed.",
+  VaultLpBoundCannotClose: "This vault provides the market's liquidity and can't be closed.",
   VaultLpExposureCapExceeded:
-    "This trade is larger than the Earn vault's LP can take: its exposure is capped at a multiple of the creator's first-loss capital. Reduce the size.",
-  VaultLpMatcherNotApproved: "The protocol has not approved this pricing engine for the market's vault LP.",
-  VaultLpUseSettleResolved: "This market is resolved: the vault's LP is settled through the vault (senior first), not closed directly.",
+    "This trade is larger than the market can take: its exposure is capped at a multiple of the creator's stake. Reduce the size.",
+  VaultLpMatcherNotApproved: "The protocol hasn't approved this pricing for the market.",
+  VaultLpUseSettleResolved: "This market has settled: its liquidity is paid out through the Earn vault (Earn deposits first), not closed directly.",
   VaultLpReleaseRefused: "Nothing to release: the vault's backing does not exceed what Earn depositors are owed.",
   VaultLpHarvestPending:
-    "This vault has LP fees waiting to be credited. They must be cranked before the first Earn deposit, so the first depositor can't buy them at 1:1. Try again shortly.",
+    "Collecting the vault's latest fees first, so the first depositor can't buy them at the old share value. Try again shortly.",
   VaultLpValuationStale:
-    "The vault's LP has open positions and needs a refresh before the vault can be priced. Try again: the refresh is permissionless and usually lands within seconds.",
+    "Updating the vault's value; we'll retry automatically, usually within seconds.",
   VaultLpSeniorDrawRequired:
-    "The vault's LP has a loss that hasn't been booked yet, so the vault can't be priced. Nothing moved. Try again: the app refreshes the LP first, and the refresh is permissionless.",
+    "The vault is booking a recent market move. Nothing moved; we'll retry automatically.",
   VaultLpRedeemNeedsRecall:
-    "Part of the backing for this redemption is currently held by the vault's LP, so this pot can't pay it out yet. The app recalls that backing into Earn and retries in the same transaction when it can; if the LP has open positions it can't be recalled right now. Nothing moved and your LP shares stay in escrow: redeem fewer shares, or try again later.",
+    "Part of this withdrawal is in use by open trades right now. Nothing moved and your withdrawal stays pending: withdraw less, or try again once those trades close.",
   VaultLpPausedForSeniorDraw:
-    "Paused while Earn covers a loss. The vault's LP took a loss bigger than the creator's junior tranche, so new positions against it and junior withdrawals are paused until the vault recovers. Closing positions and Earn deposits and withdrawals still work; nothing moved.",
+    "Paused while Earn covers a loss. The market took a loss bigger than the creator's stake, so new positions and creator-stake withdrawals are paused until the vault recovers. Closing positions and Earn deposits and withdrawals still work; nothing moved.",
   VaultLpMultiAssetMarket:
-    "An Earn vault can only own the LP of a single-asset market, and this market has more than one asset slot, so the vault can't take its LP. Create a new market to get a vault-owned LP.",
+    "An Earn vault can only provide liquidity to a single-asset market, and this market holds more than one asset. Create a new market to use the Earn vault.",
 };
 
 /** P3 copy re-keyed by the CURRENT provisional ordinals. */

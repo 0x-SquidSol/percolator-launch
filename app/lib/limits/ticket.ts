@@ -159,7 +159,7 @@ export function deriveTicketLimits(i: TicketLimitsInput): TicketLimits {
           kind: "fee-over-max",
           severity: "error",
           title: "Quote fee over the limit",
-          message: f.verdict === "over-protocol-max" ? COPY.feeOverProtocolMax(String(channel.protocolMaxBps)) : COPY.feeOverMarketMax,
+          message: f.verdict === "over-protocol-max" ? COPY.feeOverProtocolMax(`${(Number(channel.protocolMaxBps) / 100).toFixed(2)}%`) : COPY.feeOverMarketMax,
         });
       }
     }

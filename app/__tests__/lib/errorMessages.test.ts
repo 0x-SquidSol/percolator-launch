@@ -57,15 +57,17 @@ describe("humanizeError", () => {
   });
 
   it("handles timeout", () => {
-    expect(humanizeError("Transaction timeout")).toContain("timed out");
+    // UX WP-10 (§5.3): "Still confirming…", never "check your wallet".
+    expect(humanizeError("Transaction timeout")).toBe("Still confirming. We'll update this when it lands.");
   });
 
   it("handles unknown Custom() codes", () => {
-    expect(humanizeError("Custom(999)")).toContain("Custom(999)");
+    // UX WP-10 (§5.1): an unknown code is never shown raw.
+    expect(humanizeError("Custom(999)")).toBe("Something went wrong and nothing was sent.");
   });
 
   it("handles unknown custom program error", () => {
-    expect(humanizeError("custom program error: 0xff")).toContain("Program error");
+    expect(humanizeError("custom program error: 0xff")).toBe("Something went wrong and nothing was sent.");
   });
 
   it("trims long unknown messages", () => {

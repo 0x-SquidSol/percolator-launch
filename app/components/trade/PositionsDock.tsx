@@ -365,7 +365,7 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
     <div>
       {lpUnderfunded && (
         <div className="border-b border-[var(--warning)]/20 bg-[var(--warning)]/5 px-4 py-1.5 text-center">
-          <span className="text-[9px] font-medium uppercase tracking-[0.12em] text-[var(--warning)]">LP Underfunded</span>
+          <span className="text-[9px] font-medium uppercase tracking-[0.12em] text-[var(--warning)]">Low liquidity</span>
         </div>
       )}
       {/* UX WP-2 (SH-3): the engine is catching up beyond the app's own repair; calm, clears itself. */}

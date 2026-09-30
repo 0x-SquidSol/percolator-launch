@@ -48,8 +48,15 @@ describe("loss copy = P3 doc §0.8: junior first, then Earn pro rata; winners pa
   const QUALIFIER = /always paid in full unless Earn's (backing|money) is used up too/;
   const HOW_LOSSES_WORK =
     "The market creator's stake takes losses first. Only a loss bigger than that stake reaches Earn, and then every Earn depositor loses the same percentage. Winning traders are always paid in full unless Earn's money is used up too. Share value can go down; only deposit what you can afford to lose.";
-  it("the wizard requirement, wizard explainer and Earn risk notice carry §0.8 verbatim", () => {
-    for (const s of [COPY.wizardRequirement("20%"), COPY.p3Wizard.explain, COPY.earnRiskP3]) expect(s).toContain(SECTION_0_8);
+  // Audit §5.2: the §0.8 rule is binding and only the framing words change ("junior tranche" ->
+  // "the market creator's stake", "Earn's backing" -> "Earn's money"); §5.1 bans "junior"/"tranche"
+  // in user-visible copy. FLAG for the P3 owner: the three surfaces now carry the plain-words form.
+  const SECTION_0_8_PLAIN =
+    "The market creator's stake takes losses first. Only a loss bigger than that stake reaches Earn, and then every Earn depositor loses the same percentage. Winning traders are always paid in full unless Earn's money is used up too.";
+  it("the wizard requirement, wizard explainer and Earn risk notice carry §0.8 (plain-words framing, §5.2)", () => {
+    expect(HOW_LOSSES_WORK.startsWith(SECTION_0_8_PLAIN)).toBe(true);
+    void SECTION_0_8;
+    for (const s of [COPY.wizardRequirement("20%"), COPY.p3Wizard.explain, COPY.earnRiskP3]) expect(s).toContain(SECTION_0_8_PLAIN);
   });
   it("the exhausted notice and the tranche card keep the pro-rata rule and the qualifier", () => {
     expect(COPY.juniorExhausted).toMatch(/every Earn depositor loses the same percentage/);

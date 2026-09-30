@@ -154,7 +154,7 @@ function EarnInfoStrip({ totalInsurance }: { totalInsurance: number }) {
         </div>
         <ul className="space-y-1 text-[11px] text-[var(--text-secondary)]">
           <li>· Absorbs liquidation shortfalls</li>
-          <li>· Buffers socialized losses before LPs</li>
+          <li>· Covers losses before they reach Earn deposits</li>
           <li>· Backstops protocol solvency</li>
         </ul>
       </div>

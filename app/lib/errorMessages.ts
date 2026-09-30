@@ -52,12 +52,12 @@ export { LIGHTHOUSE_USER_MESSAGE };
 export const P1_ERROR_MESSAGES: Record<number, string> = {
   // p1-safety-release-2026-09-29.md §3 (append-only; feat/p1-safety-release). Harmless before
   // the P1 deploy: the deployed wrapper never returns these codes.
-  [WRAPPER_ERR.ExecPriceOutsideOracleBand]: "The fill price was too far from the market's oracle price, so the program refused it. Try again; if it keeps happening the market's price feed may be moving fast.",
+  [WRAPPER_ERR.ExecPriceOutsideOracleBand]: "The price moved too far for this trade, so it didn't go through. Try again; if it keeps happening the price is moving fast.",
   [WRAPPER_ERR.SameOwnerTrade]: "This wallet owns this market's liquidity or created the market, so it can only close positions here, not open or add to them. Use a different wallet to trade.",
-  [WRAPPER_ERR.LpExposureCapExceeded]: "This trade would give the market's liquidity provider more exposure than its capital allows. Try a smaller size.",
-  [WRAPPER_ERR.LpFloorHalt]: "The market's liquidity provider is at its capital floor, so new positions are paused. Closing positions still works.",
+  [WRAPPER_ERR.LpExposureCapExceeded]: "This trade is larger than the market has room for right now. Try a smaller size.",
+  [WRAPPER_ERR.LpFloorHalt]: "The market has no room for new positions right now, so opening is paused. Closing positions still works.",
   [WRAPPER_ERR.ProtocolSideOiCapExceeded]: "This side of the market has reached its open-interest cap. Try a smaller size or the other side.",
-  [WRAPPER_ERR.CloseSlabFeesOutstanding]: "The market still has unclaimed fees, so it can't be closed yet. Claim or crank the fees first, then close it again.",
+  [WRAPPER_ERR.CloseSlabFeesOutstanding]: "The market's last fees are being collected. Close again in a minute.",
 };
 
 const ERROR_CODE_MAP: Record<number, string> = {
@@ -500,19 +500,18 @@ export function humanizeError(rawMsg: string, context?: "trade"): string {
     return "Transfer-hook metadata account missing. This NFT was minted before a recent hook-fix upgrade; open a support ticket so we can run RepairExtraAccountMetas on it.";
   }
   if (rawMsg.includes("timeout") || rawMsg.includes("Timeout")) {
-    return "Transaction timed out. It may still confirm - check your wallet.";
+    return CONFIRMING_MESSAGE;
   }
-  // If we have a raw error code that wasn't recognized, show it
-  if (rawMsg.includes("custom program error")) {
-    return `Program error: ${rawMsg.replace(/.*custom program error:\s*/i, "").slice(0, 60)}`;
-  }
-  if (rawMsg.includes("Custom(")) {
-    return `Program error: ${rawMsg.match(/Custom\(\d+\)/)?.[0] ?? rawMsg.slice(0, 60)}`;
-  }
-  // Keep last 80 chars of the raw message for debugging
-  const trimmed = rawMsg.length > 80 ? "..." + rawMsg.slice(-80) : rawMsg;
-  return `Transaction failed: ${trimmed}`;
+  // UX WP-10 (audit §5.1 / §5.3 "unmapped"): never a raw code or "Transaction failed: …raw" in
+  // the UI; the raw text stays in the console / the Details disclosure.
+  console.warn("[humanizeError] unmapped:", rawMsg.slice(0, 300));
+  return UNMAPPED_MESSAGE;
 }
+
+/** §5.3 "unmapped": the one line for anything the maps do not know. */
+export const UNMAPPED_MESSAGE = "Something went wrong and nothing was sent.";
+/** §5.3 "confirmation timeout" (never "check your wallet"). */
+export const CONFIRMING_MESSAGE = "Still confirming. We'll update this when it lands.";
 
 // Lets a caller-recognized transient code widen withTransientRetry's own
 // retry budget beyond what the call site requested (e.g. useClosePosition.ts
