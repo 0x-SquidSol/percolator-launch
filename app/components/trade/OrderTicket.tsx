@@ -41,6 +41,8 @@ import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { computeNotionalNative } from "@/lib/notional";
 import { availableLeverage as availableLeverageFor, nextLeverageInputState, clampSliderLeverage, LEVERAGE_STEP } from "@/lib/leverage-control";
 import { useTrade, prewarmTradeSubmission } from "@/hooks/useTrade";
+import { useFirstTrade } from "@/hooks/useFirstTrade";
+import { FIRST_TRADE_COPY, FirstTradeDepositError, firstTradeDepositAtoms } from "@/lib/first-trade";
 import { useMarketFillCap } from "@/hooks/useMarketFillCap";
 import { remainingSideCapacityQ, UNLIMITED_CAPACITY } from "@/lib/marketCapacity";
 import { isBlockedSlab } from "@/lib/blocklist";
@@ -137,6 +139,12 @@ function parsePercToNative(input: string, decimalsRaw = 6): bigint {
 /* UX WP-3: the old priority-ordered validation banner is lib/limits/ticket-state.ts now — the
  * ticket's ONE status slot + a state-labelled button (audit §3.3), unit-tested there. */
 
+/** Collateral atoms at 2 dp (floored), "12.00" — the unit rule for USDC values (§4.2). */
+function usd2(atoms: bigint, decimals: number): string {
+  const cents = (atoms * 100n) / 10n ** BigInt(decimals);
+  return `${(cents / 100n).toLocaleString("en-US")}.${(cents % 100n).toString().padStart(2, "0")}`;
+}
+
 function SummaryCell({ label, value, valueClass = "text-[var(--text)]", tooltip }: { label: string; value: string; valueClass?: string; tooltip?: string }) {
   return (
     <div className="flex items-center justify-between gap-2">
@@ -220,7 +228,13 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const mockMode = isMockMode() && isMockSlab(slabAddress);
   const connected = walletConnected || mockMode;
   const userAccount = realUserAccount ?? (mockMode ? getMockUserAccountIdle(slabAddress) : null);
-  const { trade, loading, error } = useTrade(slabAddress);
+  const { trade, loading: tradeLoading, error } = useTrade(slabAddress);
+  const { fundAndTrade, loading: fundLoading } = useFirstTrade(slabAddress);
+  const loading = tradeLoading || fundLoading;
+  /** UX WP-6: the deposit that rides with the first trade (editable; empty = the suggested one). */
+  const [fundInput, setFundInput] = useState("");
+  /** UX WP-6: the portfolio-id race happened; the second prompt is labelled. */
+  const [raceNote, setRaceNote] = useState(false);
   // The market's per-trade size ceiling (immutable, resolved once).
   const fillCaps = useMarketFillCap(slabAddress);
   const { engine, params, insuranceBalance: liveInsuranceBalance, totalOI: liveTotalOI, hasData: engineHasData } = useEngineState();
@@ -599,11 +613,30 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const positionSize = rawPositionSize < 0n ? 0n : rawPositionSize;
   const exceedsBalance = marginNative > 0n && marginNative > effectiveBalance;
 
+  const needsWallet = !connected;
+  const needsAccount = connected && !userAccount;
+  const needsDeposit = connected && !!userAccount && capital === 0n;
+  const walletHasTokens = (walletAtaBalance ?? 0n) > 0n;
+  // UX WP-6 (§3.2): with sim-USDC in the wallet, "fund and trade" is ONE approval — no account
+  // yet: [InitUser] + [Deposit, Trade] signed together; account short of margin: [Deposit, Trade].
+  const fundingMode = !mockMode && connected && walletHasTokens && (needsAccount || needsDeposit || exceedsBalance);
+
   // ── Receipt (before -> after) ──
   const oracleE6 = priceUsd ? toE6(priceUsd) : 0n;
-  const hasOrder = marginNative > 0n && positionSize > 0n && !exceedsBalance;
+  const hasOrder = marginNative > 0n && positionSize > 0n && (!exceedsBalance || fundingMode);
   const estEntry = hasOrder ? computeEstimatedEntryPrice(oracleE6, tradingFeeBps, direction) : 0n;
   const fee = hasOrder ? computeTradingFee((positionSize * oracleE6) / 1_000_000n, tradingFeeBps) : 0n;
+  // The deposit this order needs (margin + fee + 10%), editable; never more than the wallet holds.
+  const marginShort = needsAccount ? marginNative : marginNative > availableBalance ? marginNative - availableBalance : 0n;
+  const fundNeededAtoms = fundingMode && hasOrder ? firstTradeDepositAtoms(marginShort, fee, decimals) : 0n;
+  const fundMinAtoms = fundingMode && hasOrder ? marginShort + fee : 0n;
+  const fundEnteredAtoms = fundInput ? parsePercToNative(fundInput, decimals) : 0n;
+  const fundAtoms = fundEnteredAtoms > 0n ? fundEnteredAtoms : fundNeededAtoms;
+  const fundOverWallet = fundingMode && fundAtoms > (walletAtaBalance ?? 0n);
+  const fundTooSmall = fundingMode && hasOrder && fundAtoms < fundMinAtoms;
+  const fundLabel = `${usd2(fundAtoms, decimals)} ${collateralSymbol}`;
+  // The liquidation preview prices the account as it will be AFTER the bundled deposit.
+  const capitalAfterFund = capital + (fundingMode && hasOrder ? fundAtoms : 0n);
   // Where that fee lands. Same split on every market (the RATE varies, the
   // division does not), so this is a constant string per fee amount. #2565.
   const feeDestinationTitle = (() => {
@@ -648,7 +681,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // case priced against only the order's margin, understating liq distance and
   // making the preview jump once the position opened on full capital.)
   const afterLiqPrice = hasOrder && combinedSignedSize !== 0n && combinedEntryPriceE6 > 0n
-    ? computeLiqPrice(combinedEntryPriceE6, capital, combinedSignedSize, maintenanceMarginBps)
+    ? computeLiqPrice(combinedEntryPriceE6, capitalAfterFund, combinedSignedSize, maintenanceMarginBps)
     : 0n;
   const beforeLiqPrice = userAccount && userAccount.account.positionSize !== 0n && existingEntryPriceE6 > 0n
     ? computeLiqPrice(existingEntryPriceE6, capital, userAccount.account.positionSize, maintenanceMarginBps)
@@ -659,7 +692,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const afterLiqDisplay = describeLiqPrice({
     liqPriceE6: afterLiqPrice,
     positionSize: hasOrder ? combinedSignedSize : 0n,
-    capital,
+    capital: capitalAfterFund,
     markPriceE6: livePriceE6 ?? 0n,
     maintenanceMarginBps,
     // The combined entry inherits the existing one unless there is none, or
@@ -784,7 +817,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     openingPaused: !mockMode && (vaultEmpty || lpDepleted || lpUnderfunded || riskGateActive),
     sameOwner: ticketLimits.sameOwner,
     exceedsBalance,
-    shortfallLabel: `${formatTokenAmount(shortfall, decimals)} ${collateralSymbol}`,
+    shortfallLabel: fundingMode ? fundLabel : `${formatTokenAmount(shortfall, decimals)} ${collateralSymbol}`,
     feeOverMax,
     feeSuggested: feeFitQ !== null ? `${fmtQ(feeFitQ)} ${baseTicker}` : null,
   });
@@ -806,22 +839,19 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // A step-down the ticket could not absorb (a cap below 1×) still blocks.
   const limitsBlocking = ticketLimits.issues.some((x) => x.kind === "step-down" && x.severity === "error") && levCapForSize < 1;
 
-  const needsWallet = !connected;
-  const needsAccount = connected && !userAccount;
-  const needsDeposit = connected && userAccount && capital === 0n;
-  // With no wallet, no account, or an unfunded account, every control below
-  // can only compose an order that cannot be submitted — the CTA at the
-  // bottom (Connect / Start Trading / Deposit to Trade) is the only real
-  // action. Lock the whole ticket so the controls read as "not yet", instead
-  // of inviting input that dead-ends.
-  const ticketLocked = needsWallet || needsAccount || !!needsDeposit;
+  // With no wallet, or no account / an unfunded one AND nothing in the wallet, every control
+  // below can only compose an order that cannot be submitted — the CTA at the bottom (Connect /
+  // Get Tokens) is the only real action. With tokens in the wallet the ticket is fully usable:
+  // the button funds and trades in one approval (UX WP-6).
+  const ticketLocked = needsWallet || ((needsAccount || needsDeposit) && !walletHasTokens);
 
   async function handleTrade(
     snapshotSize?: bigint,
     snapshotLimitPriceE6?: bigint,
   ) {
     const effectiveSize = snapshotSize ?? positionSize;
-    if (!marginInput || !userAccount || effectiveSize <= 0n || exceedsBalance) return;
+    if (!marginInput || effectiveSize <= 0n) return;
+    if ((!userAccount || exceedsBalance) && !fundingMode) return;
 
     if (mockMode) {
       setTradePhase("submitting");
@@ -839,6 +869,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     setResult(null);
     setEngineLockError(null);
     setWaitingLong(false);
+    setRaceNote(false);
     const waitAbort = new AbortController();
     waitAbortRef.current = waitAbort;
     const submitPriceE6 = getLivePriceSnapshot(slabAddress).priceE6 ?? livePriceE6 ?? 0n;
@@ -847,13 +878,26 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       const size = direction === "short" ? -effectiveSize : effectiveSize;
       // Confirmed submissions carry the exact worst-fill bound reviewed
       // in the modal. Other callers retain useTrade's live-mark fallback.
-      const sig = await withTransientRetry(
+      const sig = fundingMode
+        ? (
+            await fundAndTrade({
+              size,
+              depositAtoms: fundAtoms,
+              limitPriceE6:
+                snapshotLimitPriceE6 ??
+                computeLimitPriceE6({ markE6: getLivePriceSnapshot(slabAddress).priceE6 ?? livePriceE6 ?? 0n, size }),
+              ...(ticketLimits.fee?.channel.enabled ? { feeBps: ticketLimits.fee.signedFeeBps } : {}),
+              amountLabel: fundLabel,
+              onRace: () => setRaceNote(true),
+            })
+          ).signature
+        : await withTransientRetry(
         async () =>
           trade(
             bindConfirmedLimitPrice(
               {
                 lpIdx,
-                userIdx: userAccount!.idx,
+                userIdx: userAccount?.idx ?? 0,
                 size,
                 // P2 fee channel: sign base + the quote's fee (the taker's consent cap); only when
                 // the protocol enabled the channel for this asset — else the base fee as before.
@@ -934,6 +978,20 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       }, 1500);
     } catch (e) {
       setWaitingLong(false);
+      setRaceNote(false);
+      if (e instanceof FirstTradeDepositError) {
+        // §3.2 item 5: the account exists but the deposit didn't land — say so, offer the deposit.
+        setRefusal({
+          kind: "first-trade-deposit",
+          variant: "error",
+          title: "Deposit didn't go through",
+          body: e.message,
+          action: { id: "get-funds", label: `Deposit ${e.amountLabel}` },
+          details: { code: null, name: null, programId: null, logs: [], raw: String((e as Error & { cause?: unknown }).cause ?? e.message) },
+        });
+        setTradePhase("idle");
+        return;
+      }
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[OrderTicket] raw error:", msg);
       // PERC-onboarding-5: advisory-only wrong-network-wallet check on the
@@ -994,7 +1052,10 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     loading ||
     ticketState.blocks ||
     limitsBlocking ||
-    (ticketState.row !== "exceeds-balance" && (!marginInput || positionSize <= 0n));
+    fundTooSmall ||
+    !marginInput ||
+    positionSize <= 0n ||
+    (exceedsBalance && !fundingMode && ticketState.row !== "exceeds-balance");
 
   // ── The ONE status slot (audit §3.3 / §4.1) ──────────────────────────────
   // First match wins: a market state that blocks, a long wait, the last refusal / failure,
@@ -1002,6 +1063,10 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const onSlotAction = (a: UserMessageAction) => {
     if (a.id === "stop") {
       waitAbortRef.current?.abort();
+      return;
+    }
+    if (a.id === "get-funds") {
+      toggleInlineDeposit("deposit");
       return;
     }
     const q = a.id === "try-size" ? result?.tryQ ?? null : a.id === "use-max" ? ticketLimits.sideLimits?.[direction]?.maxQ ?? null : null;
@@ -1026,6 +1091,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
           onAction={onSlotAction}
         />
       );
+    }
+    if (raceNote && tradePhase === "submitting") {
+      return <StatusLine message={{ kind: "first-trade-race", variant: "info", title: "One more approval", body: FIRST_TRADE_COPY.race }} />;
     }
     const why = networkWarning ?? undefined;
     if (refusal) {
@@ -1295,7 +1363,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             )}
           </div>
         )}
-        {capital === 0n && (walletAtaBalance ?? 0n) > 0n && (
+        {capital === 0n && (walletAtaBalance ?? 0n) > 0n && !fundingMode && (
           <p className="mt-1 text-[11px] leading-relaxed text-[var(--text-secondary)]">
             {formatTokenAmount(walletAtaBalance ?? 0n, decimals, 2)} {collateralSymbol} in your wallet. Deposit it to start trading.
           </p>
@@ -1475,6 +1543,48 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
         </div>
       )}
 
+      {/* UX WP-6: the deposit that rides with this trade (margin + fee + 10%), editable. */}
+      {fundingMode && hasOrder && (
+        <div className="mb-2">
+          <div className="flex items-center gap-1.5 border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5">
+            <label htmlFor="first-trade-deposit" className="whitespace-nowrap text-[10px] uppercase tracking-[0.12em] text-[var(--text-secondary)]">
+              Deposit
+            </label>
+            <input
+              id="first-trade-deposit"
+              data-testid="deposit-amount-input"
+              type="text"
+              inputMode="decimal"
+              value={fundInput}
+              placeholder={formatTokenAmount(fundNeededAtoms, decimals, 2)}
+              onChange={(e) => setFundInput(sanitizeDecimalInput(e.target.value))}
+              aria-label={`Deposit amount in ${collateralSymbol} for this trade`}
+              className="w-full bg-transparent text-right text-[12px] text-[var(--text)] outline-none placeholder-[var(--text-secondary)]"
+              style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}
+            />
+            <button
+              type="button"
+              onClick={() => setFundInput(formatTokenAmount(walletAtaBalance ?? 0n, decimals))}
+              aria-label="Deposit full wallet balance"
+              className="text-[10px] font-medium uppercase tracking-[0.1em] text-[var(--accent)] hover:underline"
+            >
+              Max
+            </button>
+            <span className="text-[10px] text-[var(--text-secondary)]">{collateralSymbol}</span>
+          </div>
+          {fundOverWallet && (
+            <p role="alert" data-testid="starter-deposit-error" className="mt-1 text-[11px] text-[var(--warning)]">
+              {depositAmountMessage("exceeds", walletAtaBalance ?? 0n, decimals, collateralSymbol)}
+            </p>
+          )}
+          {fundTooSmall && !fundOverWallet && (
+            <p role="alert" data-testid="first-trade-deposit-too-small" className="mt-1 text-[11px] text-[var(--warning)]">
+              {`This order needs at least ${formatTokenAmount(fundMinAtoms, decimals, 2)} ${collateralSymbol}.`}
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Details drawer (§4.2): price band, quote breakdown, fee cap + margin, per-side limits
           with their reason, worst fill price, available before/after. Collapsed by default. */}
       <div className="mb-3">
@@ -1543,7 +1653,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             Wallet Unavailable
           </button>
         )
-      ) : needsAccount || needsDeposit ? (
+      ) : (needsAccount || needsDeposit) && !walletHasTokens ? (
         <>
           {(() => {
             const hasWalletTokens = (walletAtaBalance ?? 0n) > 0n;
@@ -1656,13 +1766,20 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
           )}
         </>
       ) : (
+        <>
+        {needsAccount && fundingMode && (
+          <p data-testid="first-trade-line" className="mb-1.5 text-[11px] leading-snug text-[var(--text-secondary)]">
+            {FIRST_TRADE_COPY.line}
+          </p>
+        )}
         <button
           data-testid="trade-submit"
           data-state={ticketState.row}
+          data-funding={fundingMode ? "true" : undefined}
           onClick={() => {
             if (submitDisabled) return;
-            // Row 10: the button says "Deposit {x} to trade" and opens the deposit.
-            if (ticketState.row === "exceeds-balance") {
+            // UX WP-6: more deposit than the wallet holds => get funds first (nothing to sign yet).
+            if (fundOverWallet || (exceedsBalance && !fundingMode)) {
               toggleInlineDeposit("deposit");
               return;
             }
@@ -1707,8 +1824,13 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             ? TICKET_COPY.confirmInWallet
             : tradePhase === "waiting"
               ? TICKET_COPY.waitingLatest
-              : ticketState.buttonLabel}
+              : fundOverWallet && !ticketState.blocks
+                ? "Get test funds"
+                : fundingMode && ticketState.row === "ok"
+                  ? FIRST_TRADE_COPY.button(fundLabel, direction === "long" ? "Long" : "Short")
+                  : ticketState.buttonLabel}
         </button>
+        </>
       )}
 
       {/* Account row: buying power / deposit link. Available balance is
@@ -1742,7 +1864,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
           </div>
         )}
       </div>
-      {connected && !needsAccount && !needsDeposit && showInlineDeposit && (
+      {connected && showInlineDeposit && !((needsAccount || needsDeposit) && !walletHasTokens) && (
         <div className="mt-1.5" data-deposit-trigger>
           <DepositWithdrawCard slabAddress={slabAddress} initialMode={inlineDepositMode} />
         </div>

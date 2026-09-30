@@ -41,7 +41,7 @@ export interface TicketStateInput {
   openingPaused: boolean;
   sameOwner: boolean;
   exceedsBalance: boolean;
-  /** Formatted shortfall for "Deposit {x} to trade", e.g. "12.50 USDC". */
+  /** The deposit that rides with the trade, "Deposit {x} & Long", e.g. "12.50 USDC" (UX WP-6). */
   shortfallLabel: string;
   /** P2: the quote's fee is over the market / protocol max for this size. */
   feeOverMax: boolean;
@@ -93,7 +93,7 @@ export function deriveTicketState(i: TicketStateInput): TicketState {
   if (bothSides) return paused("both-paused", "both-paused", T.bothPaused.title, T.bothPaused.body, T.bothPaused.button);
   if (i.sameOwner) return paused("same-owner", "same-owner", T.sameOwner.title, T.sameOwner.body, T.sameOwner.button);
   if (i.exceedsBalance) {
-    return { row: "exceeds-balance", buttonLabel: T.depositToTrade(i.shortfallLabel), blocks: false, waiting: false, status: null, autoSelect: null };
+    return { row: "exceeds-balance", buttonLabel: T.depositToTrade(i.shortfallLabel, cap(d)), blocks: false, waiting: false, status: null, autoSelect: null };
   }
   if (i.feeOverMax) return paused("fee-over-max", "fee-over-max", T.feeOverMax.title, T.feeOverMax.body(i.feeSuggested), T.feeOverMax.button, "error");
   return {

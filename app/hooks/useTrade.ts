@@ -40,6 +40,7 @@ import { invalidateMatcherCaps } from "@/lib/matcherCaps";
 import { getLivePriceSnapshot } from "@/lib/priceStore/priceStore";
 import { computeLimitPriceE6, assertFeedAgreesWithChain } from "@/lib/slippage";
 import { fetchPortfolioIdentity, fetchAssetMarketId, defaultCrankObservations } from "@/lib/v18-wire";
+import { buildTradeCpiIx } from "@/lib/trade-ix";
 
 // ---------------------------------------------------------------------------
 // v17 portfolio account layout constants
@@ -202,12 +203,12 @@ function invalidateV17TradeAccounts(programId: PublicKey, slabPk: PublicKey, tak
   v17TradeAccountsCache.delete(tradeAccountsKey(programId, slabPk, takerPk));
 }
 
-export async function resolveV17TradeAccounts(
+/** The LP side of a trade (accountB + its matcher), without the taker (UX WP-6 first trade). */
+export async function resolveLpTradeAccounts(
   connection: Connection,
   programId: PublicKey,
   slabPk: PublicKey,
-  takerPk: PublicKey,
-): Promise<V17TradeAccounts> {
+): Promise<Omit<V17TradeAccounts, "accountA">> {
   // ── accountB: the LP portfolio (the one with an enabled matcher config) ──
   // Curated markets have the LP portfolio address pinned in
   // PLAYGROUND_SLAB_META — one targeted getAccountInfo instead of a full
@@ -285,6 +286,16 @@ export async function resolveV17TradeAccounts(
   const [matcherDelegate] = deriveMatcherDelegate(
     programId, slabPk, lpPortfolioPk, lpOwner, matcherProg, matcherCtx,
   );
+  return { accountB: lpPortfolioPk, matcherProg, matcherCtx, matcherDelegate };
+}
+
+export async function resolveV17TradeAccounts(
+  connection: Connection,
+  programId: PublicKey,
+  slabPk: PublicKey,
+  takerPk: PublicKey,
+): Promise<V17TradeAccounts> {
+  const lp = await resolveLpTradeAccounts(connection, programId, slabPk);
 
   // ── accountA: the taker's own portfolio ──────────────────────────────────
   // The shared scan store (useUserAccount and friends) almost always already
@@ -306,7 +317,7 @@ export async function resolveV17TradeAccounts(
     );
   }
 
-  return { accountA, accountB: lpPortfolioPk, matcherProg, matcherCtx, matcherDelegate };
+  return { accountA, ...lp };
 }
 
 /** Cache-or-resolve with in-flight dedup (prewarm + submit share one scan). */
@@ -586,61 +597,25 @@ export function useTrade(slabAddress: string) {
           fetchAssetMarketId(connection, slabPk, 0),
         ]);
 
-        const tradeIx = buildIx({
+        // v18: TradeCpi/BatchTradeCpi bind both portfolios' identity + accountB's matcher
+        // sequence + the asset marketId (lib/trade-ix.ts; shared with the first-trade flow).
+        const tradeIx = buildTradeCpiIx({
           programId,
-          keys: buildAccountMetas(ACCOUNTS_TRADE_CPI, [
-            wallet.publicKey,   // [0] signerA
-            slabPk,             // [1] market
-            accountA,           // [2] accountA (taker portfolio)
-            accountB,           // [3] accountB (LP portfolio)
-            matcherProg,        // [4] matcherProg
-            matcherCtx,         // [5] matcherCtx
-            matcherDelegate,    // [6] matcherDelegate
-          ]),
-          // v18: TradeCpi/BatchTradeCpi bind the two portfolios' identity
-          // (portfolioId + positionEpoch) + accountB's matcher-sequence + the
-          // asset marketId. feeBps MUST be the market's configured trade fee. An
-          // earlier note claimed feeBps=0n makes the program apply the market
-          // default — that is FALSE on the deployed v18 wrapper: fee_bps=0 with a
-          // non-zero insurance share fails validation and the trade reverts
-          // InvalidInstruction (Custom 9, which the ticket then MISLABELS as a
-          // slippage rejection — see errorMessages.ts). The proven newmarkets.ts
-          // seed passes the explicit market fee, so read it from
-          // wrapperConfigV17.tradeFeeBps. >1 leg: BatchTradeCpi — same 7 accounts,
-          // several matcher fills in one instruction, so an over-cap close lands
-          // with ONE signature. (maxSlippage/maxFeeAtoms=0 = no aggregate cap; the
-          // per-leg limitPrice is the real bound — matches the gate's encodeBatchTradeCpi.)
-          data:
-            legs.length > 1
-              ? encodeBatchTradeCpi({
-                  legs: legs.map((legSize) => ({
-                    assetIndex: 0,
-                    marketId: tradeMarketId,
-                    sizeQ: legSize.toString(),
-                    feeBps: tradeFeeBpsToSign(params.feeBps, wrapperConfigV17?.tradeFeeBps),
-                    limitPrice: effectiveLimitPriceE6.toString(),
-                  })),
-                  maxSlippageAtoms: 0n,
-                  maxFeeAtoms: 0n,
-                  accountAPortfolioId: takerId.portfolioId,
-                  accountAPositionEpoch: takerId.positionEpoch,
-                  accountBPortfolioId: lpId.portfolioId,
-                  accountBPositionEpoch: lpId.positionEpoch,
-                  accountBMatcherSequence: lpId.matcherSequence,
-                })
-              : encodeTradeCpi({
-                  accountAPortfolioId: takerId.portfolioId,
-                  accountAPositionEpoch: takerId.positionEpoch,
-                  accountBPortfolioId: lpId.portfolioId,
-                  accountBPositionEpoch: lpId.positionEpoch,
-                  accountBMatcherSequence: lpId.matcherSequence,
-                  assetIndex: 0,
-                  marketId: tradeMarketId,
-                  sizeQ: params.size.toString(),
-                  feeBps: tradeFeeBpsToSign(params.feeBps, wrapperConfigV17?.tradeFeeBps),
-                  limitPrice: effectiveLimitPriceE6.toString(),
-                  backingFeeCapBps: 0,
-                }),
+          signer: wallet.publicKey,
+          market: slabPk,
+          accountA,
+          accountB,
+          matcherProg,
+          matcherCtx,
+          matcherDelegate,
+          takerId,
+          lpId,
+          marketId: tradeMarketId,
+          legs,
+          size: params.size,
+          limitPriceE6: effectiveLimitPriceE6,
+          feeBps: params.feeBps,
+          marketTradeFeeBps: wrapperConfigV17?.tradeFeeBps,
         });
         // v17 PermissionlessCrank (tag 5): [owner(s,w), market(w), portfolio(w)] + oracle tail.
         // Build after accountA is resolved — portfolio = accountA (taker's portfolio).

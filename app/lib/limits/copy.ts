@@ -231,7 +231,7 @@ export const TICKET_COPY = {
       `This size costs more than the market's maximum fee.${suggested ? ` Try ${suggested}.` : " Try a smaller size."}`,
     button: "Reduce size",
   },
-  depositToTrade: (shortfall: string) => `Deposit ${shortfall} to trade`,
+  depositToTrade: (amount: string, side: string) => `Deposit ${amount} & ${side}`,
   stepDownInline: (x: string, sides: string, y: string, others: string) =>
     `Up to ${x}× for new ${sides} right now (busy side). ${others}: up to ${y}×.`,
   clamped: (max: string, sym: string) => `Reduced to the most available now: ${max} ${sym}`,

@@ -1,8 +1,8 @@
 diff --git a/tests/p3_senior_draw.rs b/tests/p3_senior_draw.rs
-index 111f482e..3b4dc0b4 100644
+index 111f482e..9b4461df 100644
 --- a/tests/p3_senior_draw.rs
 +++ b/tests/p3_senior_draw.rs
-@@ -1916,3 +1916,416 @@ fn p3_valve_fires_only_after_senior_backing_is_exhausted() {
+@@ -1916,3 +1916,487 @@ fn p3_valve_fires_only_after_senior_backing_is_exhausted() {
      assert!(left <= 2_000, "stranded {left}");
  }
  
@@ -418,4 +418,75 @@ index 111f482e..3b4dc0b4 100644
 +    println!("LIMITS-APP WORSE-OF move: preview {pre} paid {paid2} plain {plain} (worse {})", p2["worse"]);
 +    assert_eq!(pre, paid2, "preview == the program's payout, to the atom");
 +    conserved(&w, "worse-of 77");
++}
++
++impl P3 {
++    /// UX WP-6 bridge: the app's first-trade txs (lib/first-trade.ts) for `owner` / `portfolio`.
++    fn la_first_trade(&mut self, owner: &Keypair, portfolio: &Keypair, src: Pubkey, size: i128, real: bool) -> serde_json::Value {
++        let rent = self.env.svm.minimum_balance_for_rent_exemption(state::portfolio_account_len_for_market_slots(1).unwrap().max(9_600));
++        let mut j = serde_json::json!({
++            "programId": self.env.program_id.to_string(), "market": self.env.market.to_string(),
++            "owner": owner.pubkey().to_string(), "portfolio": portfolio.pubkey().to_string(),
++            "userAta": src.to_string(), "vaultToken": self.env.vault.to_string(), "depositAtoms": "1000000",
++            "lp": self.lp.to_string(), "matcherProg": self.matcher.to_string(), "matcherCtx": self.ctx.to_string(),
++            "matcherDelegate": self.delegate.to_string(), "lpB64": self.la_b64_of(&self.lp),
++            "marketB64": self.la_b64_of(&self.env.market), "size": size.to_string(), "limitPriceE6": (PRICE * 2).to_string(),
++            "rent": rent,
++        });
++        if real {
++            j["portfolioB64"] = serde_json::json!(self.la_b64_of(&portfolio.pubkey()));
++        }
++        la_app("first-trade", j)
++    }
++}
++
++/// UX WP-6 (audit §3.2): the first trade in ONE signature. The app builds tx A [CreateAccount,
++/// InitPortfolio] and tx B [Deposit, TradeCpi] BEFORE A lands (both signed together), B bound to
++/// the PREDICTED portfolio id read from the market bytes (asset 0 AssetOracleProfileV16
++/// .next_portfolio_id @480, what handle_init_portfolio allocates). A lands, then B, and the new
++/// account holds the position. Race: another wallet initialises in between; B is refused 16
++/// EngineProvenanceMismatch (the app's classifier says "race"), and B rebuilt with the REAL id lands.
++#[test]
++fn limits_app_first_trade_one_signature_and_race() {
++    let s = Keypair::new();
++    let (mut w, _) = P3::bound(&[(&s, 10_000_000)], 1_000_000, 1_000);
++    let size: i128 = 100_000;
++
++    // 1. The happy path: A then B, both built before A landed.
++    let u = Keypair::new();
++    w.env.ensure_signer_account(u.pubkey());
++    let src = w.token(u.pubkey(), 2_000_000);
++    let pf = Keypair::new();
++    let v = w.la_first_trade(&u, &pf, src, size, false);
++    println!("LIMITS-APP FIRST-TRADE: next {} predicted {}", v["next"], v["predicted"]);
++    let (a, b) = (la_ixs(&v["a"]), la_ixs(&v["b"]));
++    w.la_send(a, &[&u, &pf]).expect("A: create + InitPortfolio");
++    let (pid, seq, ep) = w.env.portfolio_identity(pf.pubkey());
++    assert_eq!(serde_json::json!(pid.to_string()), v["predicted"], "InitPortfolio assigned the predicted id");
++    assert_eq!((seq, ep), (0, 0), "a fresh portfolio: sequence 0, position epoch 0");
++    w.la_send(b, &[&u]).expect("B: Deposit + TradeCpi at the predicted id");
++    assert_eq!(w.pos(pf.pubkey()), size, "the first trade opened the position");
++    println!("LIMITS-APP FIRST-TRADE: id {pid}, position {}, capital {}", w.pos(pf.pubkey()), w.env.portfolio_state(pf.pubkey()).capital);
++
++    // 2. The race: another wallet initialises between the build and A.
++    let u2 = Keypair::new();
++    w.env.ensure_signer_account(u2.pubkey());
++    let src2 = w.token(u2.pubkey(), 2_000_000);
++    let pf2 = Keypair::new();
++    let v2 = w.la_first_trade(&u2, &pf2, src2, size, false);
++    let (a2, b2) = (la_ixs(&v2["a"]), la_ixs(&v2["b"]));
++    let _other = w.trader(1_000_000); // takes the predicted id
++    w.la_send(a2, &[&u2, &pf2]).expect("A2 lands with the next id");
++    let (pid2, _, _) = w.env.portfolio_identity(pf2.pubkey());
++    assert_ne!(serde_json::json!(pid2.to_string()), v2["predicted"], "vacuity: the id moved");
++    let e = w.la_send(b2, &[&u2]).unwrap_err();
++    assert!(e.contains("Custom(16)"), "B at the stale id is refused EngineProvenanceMismatch: {e}");
++    let cls = la_app("first-trade-classify", serde_json::json!({ "programId": w.env.program_id.to_string(), "market": w.env.market.to_string(), "error": e, "depositIndex": 2 }));
++    assert_eq!(cls["race"], serde_json::json!(true), "the app recognises the race: {cls}");
++    assert_eq!(cls["leg"], serde_json::json!("deposit"), "the refused leg is the deposit: {cls}");
++    let v3 = w.la_first_trade(&u2, &pf2, src2, size, true);
++    assert_eq!(v3["usedId"], serde_json::json!(pid2.to_string()));
++    w.la_send(la_ixs(&v3["b"]), &[&u2]).expect("B rebuilt with the real id lands (the one extra prompt)");
++    assert_eq!(w.pos(pf2.pubkey()), size);
++    conserved(&w, "first trade");
 +}

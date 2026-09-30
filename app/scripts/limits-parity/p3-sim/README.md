@@ -2,6 +2,14 @@
 
 ## ede691b6 (Earn exit/entry at the worse of effective vs pending target, 2026-09-30): current run
 
+`limits_app_first_trade_one_signature_and_race` (UX WP-6): the app's tx A [CreateAccount,
+InitPortfolio] and tx B [Deposit, TradeCpi] are built together BEFORE A lands (one signature), B bound
+to the predicted id read from the market bytes (asset 0 AssetOracleProfileV16.next_portfolio_id,
+rustc offset 480; `handle_init_portfolio` allocates from there, not WrapperConfigV16): predicted 2 ==
+assigned 2, sequence 0 / epoch 0, and B opens the 0.1 position. Race: another wallet initialises in
+between; B is refused Custom(16) EngineProvenanceMismatch, the app's classifier says race + deposit
+leg, and B rebuilt with the real id lands. Passes on ede691b6 and 4b1a5d30.
+
 New in `p3_senior_draw.limits-app.patch`: `limits_app_worse_of_77_payout_matches_preview`. The
 app's Earn preview (bridge `earn-price` = `lib/limits/earn.ts earnPanelPricing` ->
 `lib/limits/earn-pricing.ts earnSeniorPricing`, the one port of `vault_lp_equity_lag_bounds_ro` +

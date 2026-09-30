@@ -81,9 +81,9 @@ describe("deriveTicketState: the §3.3 priority table", () => {
     expect(s.autoSelect).toBeNull();
   });
 
-  it("row 10: exceeds balance does NOT block; the button says 'Deposit {x} to trade'; no status line", () => {
+  it("row 10: exceeds balance does NOT block; the button says 'Deposit {x} & Long' (one tx, WP-6); no status line", () => {
     const s = deriveTicketState(base({ exceedsBalance: true }));
-    expect(s).toMatchObject({ row: "exceeds-balance", buttonLabel: "Deposit 12.50 USDC to trade", blocks: false, status: null });
+    expect(s).toMatchObject({ row: "exceeds-balance", buttonLabel: "Deposit 12.50 USDC & Long", blocks: false, status: null });
   });
 
   it("first match wins: settled > close-only > catching up > price > side paused > same-owner > balance > fee", () => {

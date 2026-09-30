@@ -40,6 +40,8 @@ import {
 import { earnPanelPricing, earnViewFromLimits, lagBoundsMarketFromEngine } from "../../lib/limits/earn";
 import { vaultLpEquityLagBounds } from "../../lib/limits/earn-pricing";
 import { previewDepositShares, previewWithdrawAtoms } from "../../lib/limits/earn-withdraw";
+import { buildFirstTradeInitIxs, buildFundAndTradeIxs, failedFirstTradeLeg, isPortfolioIdRace, predictPortfolioId, readNextPortfolioId } from "../../lib/first-trade";
+import { readAssetMarketId, readPortfolioIdentity } from "../../lib/v18-wire";
 import { earnAbsorbed, harvestableFeeAtoms, vaultLpValueAtoms } from "../../lib/limits/vault-tranche";
 import { find77, recallCandidates, redeemRepairVariants } from "../../lib/limits/senior-draw-repair";
 import { parseP3DrawLogs, summarizeDrawEvents } from "../../lib/limits/p3-draw-logs";
@@ -255,6 +257,36 @@ if (cmd === "init-market") {
       plainWithdrawAtoms: view?.senior != null && redeem > 0n ? previewWithdrawAtoms(redeem, shares, view.senior)?.toString() ?? null : null,
     }),
   );
+} else if (cmd === "first-trade") {
+  // UX WP-6: the first trade in ONE approval (lib/first-trade.ts, run by hooks/useFirstTrade):
+  // A = [CreateAccount, InitPortfolio]; B = [Deposit, TradeCpi] at the PREDICTED portfolio id read
+  // from the market bytes (asset 0 AssetOracleProfileV16.next_portfolio_id, rustc offset 480).
+  // With portfolioB64 (the race: someone initialised in between) B is rebuilt with the REAL id.
+  const md = b64(a.marketB64);
+  const eng = decodeMarketEngineView(md);
+  const lpId = readPortfolioIdentity(b64(a.lpB64));
+  const next = readNextPortfolioId(md);
+  if (!eng || next === null) throw new Error("first-trade: undecodable market");
+  const p = {
+    programId, owner: pk("owner"), market, portfolio: pk("portfolio"), userAta: pk("userAta"), vaultTokenAta: pk("vaultToken"),
+    depositAtoms: big("depositAtoms"),
+    lp: { accountB: pk("lp"), matcherProg: pk("matcherProg"), matcherCtx: pk("matcherCtx"), matcherDelegate: pk("matcherDelegate") },
+    lpId, marketId: readAssetMarketId(md, 0), size: big("size"), limitPriceE6: big("limitPriceE6"), marketTradeFeeBps: eng.tradeFeeBaseBps,
+  };
+  const real = a.portfolioB64 ? readPortfolioIdentity(b64(a.portfolioB64)) : null;
+  const id = real
+    ? { portfolioId: real.portfolioId, sequence: real.matcherSequence, positionEpoch: real.positionEpoch }
+    : { portfolioId: predictPortfolioId(next), sequence: 0n, positionEpoch: 0n };
+  process.stdout.write(
+    JSON.stringify({
+      next: next.toString(), predicted: predictPortfolioId(next).toString(), usedId: id.portfolioId.toString(),
+      a: buildFirstTradeInitIxs(p, Number(a.rent ?? 0)).map(enc1),
+      b: buildFundAndTradeIxs(p, id).map(enc1),
+    }),
+  );
+} else if (cmd === "first-trade-classify") {
+  const e = { message: String(a.error) };
+  process.stdout.write(JSON.stringify({ race: isPortfolioIdRace(e), leg: failedFirstTradeLeg(e, Number(a.depositIndex ?? 2)) }));
 } else if (cmd === "catch-up") {
   // UX WP-2 (SH-2): the catch-up cranks planSelfHeal prepends (lib/self-heal.ts).
   const md = b64(a.marketB64);
