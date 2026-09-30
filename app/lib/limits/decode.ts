@@ -38,6 +38,8 @@ export interface MarketEngineView {
   tradeFeeBaseBps: bigint;
   marketId: bigint;
   effectivePriceE6: bigint;
+  /** UX WP-4: the oracle target the effective price is catching up to (Earn worse-of pricing). */
+  targetPriceE6: bigint;
   aLong: bigint;
   aShort: bigint;
   oiEffLongQ: bigint;
@@ -85,6 +87,7 @@ export function decodeMarketEngineView(d: Uint8Array, assetIndex = 0): MarketEng
     tradeFeeBaseBps: u64(d, C.HEADER_LEN + C.WCFG_TRADE_FEE_BASE_BPS),
     marketId: u64(d, e + C.A_MARKET_ID),
     effectivePriceE6: u64(d, e + C.A_EFFECTIVE_PRICE),
+    targetPriceE6: u64(d, e + C.A_RAW_ORACLE_TARGET_PRICE),
     aLong: u128(d, e + C.A_A_LONG),
     aShort: u128(d, e + C.A_A_SHORT),
     oiEffLongQ: u128(d, e + C.A_OI_EFF_LONG_Q),

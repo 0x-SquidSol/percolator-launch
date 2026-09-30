@@ -10,7 +10,9 @@ import { useWalletCompat } from '@/hooks/useWalletCompat';
 import { ResolvedExitPanel } from '@/components/limits/ResolvedExitPanel';
 import { EarnTrancheCardView } from '@/components/limits/EarnTrancheCard';
 import { useMarketLimits } from '@/hooks/useMarketLimits';
-import { earnViewFromLimits } from '@/lib/limits/earn';
+import { earnViewFromLimits, earnPanelPricing } from '@/lib/limits/earn';
+import { previewWithdrawAtoms } from '@/lib/limits/earn-withdraw';
+import { formatTokenAmount } from '@/lib/format';
 import { chargedTradeFeeLabel } from '@/lib/limits/format';
 import { decodeMarketEngineView } from '@/lib/limits/decode';
 import { useEngineState } from '@/hooks/useEngineState';
@@ -379,6 +381,14 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
               collateralSymbol={collateralSymbol}
               redemptionRateE6={lpVaultState.vaultSharePriceE6}
               loading={loading}
+              pendingWithdrawalLabel={(() => {
+                if (!lpVaultState.hasPendingRedemption) return null;
+                const pr = earnPanelPricing(earnLimits, lpVaultState.vaultTotalAtoms);
+                const atoms = pr ? previewWithdrawAtoms(lpVaultState.pendingRedemptionShares, pr.totalShares, pr.withdrawSeniorValue) : null;
+                return atoms !== null
+                  ? `${formatTokenAmount(atoms, collateralDecimals)} ${collateralSymbol}`
+                  : `${formatTokenAmount(lpVaultState.pendingRedemptionShares, collateralDecimals)} shares`;
+              })()}
             />
           </ScrollReveal>
 
@@ -417,6 +427,8 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
               onWithdraw={handleWithdraw}
               p3Bound={earnLimits.vaultLp?.bound === true}
               drawSummary={lastDrawSummary}
+              pricing={earnPanelPricing(earnLimits, lpVaultState.vaultTotalAtoms)}
+              onRefresh={refreshState}
             />
           </ScrollReveal>
         </div>

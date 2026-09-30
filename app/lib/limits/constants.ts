@@ -75,6 +75,8 @@ export const H_FUNDING_EPOCH = 597; // u64
 
 /** AssetStateV16Account (relative to the engine slot base). */
 export const A_MARKET_ID = 0;
+/** `raw_oracle_target_price` (u64): the price the engine is catching up TO (engine v16.rs AssetStateV16Account, packed). */
+export const A_RAW_ORACLE_TARGET_PRICE = 17;
 export const A_EFFECTIVE_PRICE = 25;
 /** ADL side factors (u128; dump_layout AssetStateV16Account a_long @49, a_short @65). */
 export const A_A_LONG = 49;

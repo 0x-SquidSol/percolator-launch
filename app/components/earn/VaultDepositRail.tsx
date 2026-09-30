@@ -9,7 +9,7 @@ import { EarnTrancheCardView } from '@/components/limits/EarnTrancheCard';
 import { ResolvedExitPanel } from '@/components/limits/ResolvedExitPanel';
 import { useWalletCompat } from '@/hooks/useWalletCompat';
 import { useMarketLimits } from '@/hooks/useMarketLimits';
-import { earnGateShares, earnViewFromLimits } from '@/lib/limits/earn';
+import { earnGateShares, earnViewFromLimits, earnPanelPricing } from '@/lib/limits/earn';
 import { earnDepositBlock } from '@/lib/limits/vault-tranche';
 import { COPY } from '@/lib/limits/copy';
 import { chargedTradeFeeLabel } from '@/lib/limits/format';
@@ -214,6 +214,8 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
         onWithdraw={handleWithdraw}
         p3Bound={marketLimits.vaultLp?.bound === true}
         drawSummary={lastDrawSummary}
+        pricing={earnPanelPricing(marketLimits, state.vaultTotalAtoms)}
+        onRefresh={refreshState}
       />
     </div>
   );

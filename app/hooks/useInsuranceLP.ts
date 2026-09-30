@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useWalletCompat, useConnectionCompat } from '@/hooks/useWalletCompat';
-import { PublicKey } from '@solana/web3.js';
+import { PublicKey, type TransactionInstruction } from '@solana/web3.js';
 import {
   createAssociatedTokenAccountInstruction,
   getAssociatedTokenAddress,
@@ -36,6 +36,7 @@ import { earnVaultLpRepairOption } from "@/lib/limits/vault-lp-repair";
 import { buildEarnDepositIxs, buildEarnExecuteIxs, earnTxPlan, type EarnTxPlan } from "@/lib/limits/earn-ixs";
 import { readEarnP3Context } from "@/lib/limits/earn-p3-read";
 import { readTxDrawSummary, type DrawSummary } from "@/lib/limits/p3-draw-logs";
+import { withdrawFlow } from "@/lib/limits/earn-withdraw";
 import { TAG_DEPOSIT_TO_LP_VAULT, TAG_EXECUTE_REDEMPTION } from "@/lib/limits/constants";
 import { COPY as LIMITS_COPY } from "@/lib/limits/copy";
 import { sanitizeOnChainValue } from '@/lib/health';
@@ -737,69 +738,64 @@ export function useInsuranceLP() {
       let step: RedemptionStep;
       let signature: string;
 
-      // Check if a redemption request already exists
-      const redemptionInfo = await connection.getAccountInfo(redemptionPda);
-      if (!redemptionInfo) {
-        // Step 1: RequestRedeemLpShares (tag 76)
-        // BUG FIX (devnet flow-test 2026-07-01): this account list was missing lpMint,
-        // redeemerLpAta and the per-vault LP escrow PDA — and wrongly included `market`,
-        // which handle_request_redeem_lp_shares never reads — causing on-chain
-        // NotEnoughAccountKeys. Real account list per percolator-prog
-        // src/v16_program.rs handle_request_redeem_lp_shares (L12016-12028):
-        //   [redeemer(signer,w), registry(w), lpMint, redeemerLpAta(w), escrow(w),
-        //    redemption(w), tokenProgram, systemProgram]
-        const redeemerLpAta = await getAssociatedTokenAddress(lpMintPda, wallet.publicKey);
-        const requestKeys = [
-          { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
-          { pubkey: registryPda, isSigner: false, isWritable: true },
-          { pubkey: lpMintPda, isSigner: false, isWritable: false },
-          { pubkey: redeemerLpAta, isSigner: false, isWritable: true },
-          { pubkey: escrowPda, isSigner: false, isWritable: true },
-          { pubkey: redemptionPda, isSigner: false, isWritable: true },
-          { pubkey: WELL_KNOWN.tokenProgram, isSigner: false, isWritable: false },
-          { pubkey: WELL_KNOWN.systemProgram, isSigner: false, isWritable: false },
-        ];
-        const requestIx = buildIx({
+      // RequestRedeemLpShares (tag 76).
+      // BUG FIX (devnet flow-test 2026-07-01): this account list was missing lpMint,
+      // redeemerLpAta and the per-vault LP escrow PDA — and wrongly included `market`,
+      // which handle_request_redeem_lp_shares never reads — causing on-chain
+      // NotEnoughAccountKeys. Real account list per percolator-prog
+      // src/v16_program.rs handle_request_redeem_lp_shares (L12016-12028):
+      //   [redeemer(signer,w), registry(w), lpMint, redeemerLpAta(w), escrow(w),
+      //    redemption(w), tokenProgram, systemProgram]
+      const buildRequestIx = async () => {
+        const redeemerLpAta = await getAssociatedTokenAddress(lpMintPda, wallet.publicKey!);
+        return buildIx({
           programId: progPk,
-          keys: requestKeys,
+          keys: [
+            { pubkey: wallet.publicKey!, isSigner: true, isWritable: true },
+            { pubkey: registryPda, isSigner: false, isWritable: true },
+            { pubkey: lpMintPda, isSigner: false, isWritable: false },
+            { pubkey: redeemerLpAta, isSigner: false, isWritable: true },
+            { pubkey: escrowPda, isSigner: false, isWritable: true },
+            { pubkey: redemptionPda, isSigner: false, isWritable: true },
+            { pubkey: WELL_KNOWN.tokenProgram, isSigner: false, isWritable: false },
+            { pubkey: WELL_KNOWN.systemProgram, isSigner: false, isWritable: false },
+          ],
           data: encodeRequestRedeemLpShares({ shares: lpAmount.toString() }),
         });
-        signature = await sendTx({ connection, wallet, instructions: [requestIx], selfHeal: { programId: progPk, market: marketPk }, vaultLpRepair: earnRepairFor(progPk, marketPk) });
-        step = 'requested';
-      } else {
-        // Step 2: ExecuteRedemption (tag 77) — collect collateral after cooldown.
-        // BUG FIX (devnet flow-test 2026-07-01): this account list was missing the LP
-        // escrow PDA and the per-domain backing ledger PDA, and had the remaining
-        // accounts in the wrong order — causing on-chain NotEnoughAccountKeys. Real
-        // account list per percolator-prog src/v16_program.rs handle_execute_redemption
-        // (L12153-12163): [cranker(signer,w), market(w), registry(w), redemption(w),
-        // lpMint(w), escrow(w), vaultToken(w), vaultAuthority, ledger(w), redeemerDest(w),
-        // tokenProgram, siblingLedger(w), redeemerRentDest(w)]. `cranker` is permissionless (anyone may execute post-cooldown,
-        // and is directly credited the redemption PDA's reclaimed rent) — the UI always
-        // calls it as the redeemer themselves.
+      };
+      // ExecuteRedemption (tag 77) — collect collateral after cooldown.
+      // BUG FIX (devnet flow-test 2026-07-01): this account list was missing the LP
+      // escrow PDA and the per-domain backing ledger PDA, and had the remaining
+      // accounts in the wrong order — causing on-chain NotEnoughAccountKeys. Real
+      // account list per percolator-prog src/v16_program.rs handle_execute_redemption
+      // (L12153-12163): [cranker(signer,w), market(w), registry(w), redemption(w),
+      // lpMint(w), escrow(w), vaultToken(w), vaultAuthority, ledger(w), redeemerDest(w),
+      // tokenProgram, siblingLedger(w), redeemerRentDest(w)]. `cranker` is permissionless (anyone may execute post-cooldown,
+      // and is directly credited the redemption PDA's reclaimed rent) — the UI always
+      // calls it as the redeemer themselves.
+      const buildExecuteIxs = async () => {
         const [vaultPda] = deriveVaultAuthority(progPk, marketPk);
         // v17 DUAL-DOMAIN: [11] is the sibling pot's ledger. NAV and
         // available-principal are summed across both pots, so it is required
         // even when uninitialised, or the redeemer is underpaid by whatever sits
         // in the sibling. The `domain` argument says which pot the payout is
-        // DRAWN from — the vault's own. A redemption draws from ONE pot and
-        // fails closed if that pot cannot cover it (rebalance, tag 91, first).
+        // DRAWN from — the vault's own. (221cf006: on a BOUND vault both pot ledgers are
+        // writable — buildEarnExecuteIxs; a senior larger than one pot redeems across both.)
         const domain = state.lpVaultDomain;
         const [ledgerPda] = deriveLpBackingLedger(progPk, marketPk, domain);
         const [siblingLedgerPda] = deriveLpBackingLedger(progPk, marketPk, domain ^ 1);
-        const collateralMint = slabState.config.collateralMint;
+        const collateralMint = slabState.config!.collateralMint;
         const vaultTokenAta = await getAssociatedTokenAddress(collateralMint, vaultPda, true);
-        const redeemerAta = await getAssociatedTokenAddress(collateralMint, wallet.publicKey);
-
+        const redeemerAta = await getAssociatedTokenAddress(collateralMint, wallet.publicKey!);
         // P3 (vault-owned LP): a BOUND vault requires [13] vault_lp_state + [14] vault LP, and
         // refuses 84 while LP fees are harvestable - bundle tag 78 in front (P3-K1).
         // [12] redeemerRentDest (#461 / GH#412, live in v18.2): the consumed redemption PDA's
         // rent is returned to the RECORDED redeemer - the UI only claims its own redemption.
         const p3 = earnTxPlan(TAG_EXECUTE_REDEMPTION, await readEarnP3Context(connection, progPk, marketPk));
         assertEarnPlan(p3);
-        const executeIxs = buildEarnExecuteIxs({
+        return buildEarnExecuteIxs({
           programId: progPk,
-          redeemer: wallet.publicKey,
+          redeemer: wallet.publicKey!,
           market: marketPk,
           registry: registryPda,
           redemption: redemptionPda,
@@ -813,9 +809,28 @@ export function useInsuranceLP() {
           domain,
           plan: p3,
         });
-        signature = await sendTx({ connection, wallet, instructions: executeIxs, selfHeal: { programId: progPk, market: marketPk }, vaultLpRepair: earnRepairFor(progPk, marketPk) });
+      };
+      const send = (instructions: TransactionInstruction[]) =>
+        sendTx({ connection, wallet, instructions, selfHeal: { programId: progPk, market: marketPk }, vaultLpRepair: earnRepairFor(progPk, marketPk) });
+
+      // Check if a redemption request already exists
+      const redemptionInfo = await connection.getAccountInfo(redemptionPda);
+      if (redemptionInfo) {
+        // Step 2 of 2: the payout. sendTx pre-simulates it and bundles the repairs (78 harvest,
+        // 85/87 crank, 88 recall / other pot) before the wallet opens.
+        signature = await send(await buildExecuteIxs());
         step = 'executed';
         void readTxDrawSummary(connection, signature).then(setLastDrawSummary);
+      } else if (state.registryExists && withdrawFlow(state.redemptionCooldownSlots) === 'one-tx') {
+        // UX WP-4: only a vault whose cooldown is 0 requests AND pays out in one tx.
+        signature = await send([await buildRequestIx(), ...(await buildExecuteIxs())]);
+        step = 'executed';
+        void readTxDrawSummary(connection, signature).then(setLastDrawSummary);
+      } else {
+        // Step 1 of 2: the request. The cooldown protects the seniors who stay; the page counts
+        // it down and opens the payout by itself (components/earn/EarnPendingWithdrawal).
+        signature = await send([await buildRequestIx()]);
+        step = 'requested';
       }
       await refreshState();
       return { step, signature };
@@ -826,7 +841,7 @@ export function useInsuranceLP() {
     } finally {
       setLoading(false);
     }
-  }, [wallet, connection, slabAddress, programId, slabState, state.lpVaultDomain, refreshState, earnRepairFor]);
+  }, [wallet, connection, slabAddress, programId, slabState, state.lpVaultDomain, state.redemptionCooldownSlots, state.registryExists, refreshState, earnRepairFor]);
 
   return {
     state,

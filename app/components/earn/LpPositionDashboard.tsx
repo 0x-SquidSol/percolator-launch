@@ -22,6 +22,11 @@ interface LpPositionDashboardProps {
   redemptionRateE6: bigint;
   /** Loading */
   loading: boolean;
+  /**
+   * UX WP-4 (§3.6 item 4): a pending withdrawal counts as an active position — never "No active
+   * LP position" while shares sit in the redemption ticket. The label is "12.50 USDC".
+   */
+  pendingWithdrawalLabel?: string | null;
 }
 
 export function LpPositionDashboard({
@@ -33,9 +38,11 @@ export function LpPositionDashboard({
   collateralSymbol,
   redemptionRateE6,
   loading,
+  pendingWithdrawalLabel = null,
 }: LpPositionDashboardProps) {
   const divisor = 10n ** BigInt(decimals);
   const hasPosition = userLpBalance > 0n;
+  const pending = !!pendingWithdrawalLabel;
 
   // Calculate user's share
   const userSharePct =
@@ -78,14 +85,19 @@ export function LpPositionDashboard({
           >
             Your LP Position
           </h3>
-          {hasPosition && (
+          {(hasPosition || pending) && (
             <span className="text-[10px] px-2 py-0.5 rounded-sm bg-[var(--cyan)]/10 border border-[var(--cyan)]/20 text-[var(--cyan)]">
               Active
             </span>
           )}
         </div>
 
-        {!hasPosition ? (
+        {!hasPosition && pending ? (
+          <div data-testid="earn-position-pending" className="py-6 text-center">
+            <p className="text-[13px] text-[var(--text)]">Withdrawal in progress: {pendingWithdrawalLabel}</p>
+            <p className="mt-1 text-[11px] text-[var(--text-secondary)]">It arrives in your wallet when the payout is approved.</p>
+          </div>
+        ) : !hasPosition ? (
           <div className="text-center py-6">
             <div className="text-2xl mb-2">📊</div>
             <p className="text-[13px] text-[var(--text-secondary)]">
