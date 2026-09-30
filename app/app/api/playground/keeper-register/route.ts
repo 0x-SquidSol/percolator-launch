@@ -97,13 +97,14 @@ import {
   buildKeeperRegisterProofMessage,
   type KeeperRegisterProofParams,
 } from "@/lib/keeper-register-proof";
-import { Connection, PublicKey } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 import nacl from "tweetnacl";
 import * as Sentry from "@sentry/nextjs";
 import { isV17Account, parseWrapperConfigV17, parseHeader, V17_HEADER_LEN } from "@percolatorct/sdk";
 import type { RegisteredMarket } from "@/lib/playground-registered-markets";
 import { upsertRegisteredMarket } from "@/lib/playground-registered-markets";
-import { normalizeDexType, KEEPER_DEX_TYPES, type KeeperDexType } from "@/lib/dex-type";
+import { KEEPER_DEX_TYPES, type KeeperDexType } from "@/lib/dex-type";
+import { classifyPoolsByOwner, type PoolClass } from "@/lib/dex-pool-owner";
 import { getConfig, getAllProgramIds } from "@/lib/config";
 import { getServerConnection } from "@/lib/server-rpc";
 import { getServiceClient, getServerNetwork } from "@/lib/supabase";
@@ -163,45 +164,15 @@ function verifyStatelessDeployerProof(
   return false;
 }
 
-/** Mainnet DEX program → keeper dexType. The AUTHORITATIVE classification:
- *  the keeper parses the pool with the layout this type names, so the binding
- *  must come from the pool account's owner program, not from a client string.
- *  (DexScreener reports "meteora" for both DLMM and DAMM pools and "raydium"
- *  for CLMM and CPMM — trusting it risks handing the keeper a pool whose byte
- *  layout doesn't match its parser.) Verified against the curated playground
- *  pools: SOL→CAMM (CLMM), JUP/TRUMP/PENGU→LBUZ (DLMM).
- *
- *  PumpSwap (pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA) re-enabled
- *  (percolator-sdk@3.1.0+): the parser's byte offsets, decimal handling, and
- *  SOL→USD conversion were all fixed and verified against live mainnet pools
- *  — see dex-type.ts's KEEPER_DEX_TYPES doc and the SDK CHANGELOG [3.1.0].
- */
-const DEX_PROGRAM_TO_TYPE: Record<string, KeeperDexType> = {
-  CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK: "raydium-clmm", // Raydium Concentrated Liquidity
-  LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo: "meteora-dlmm", // Meteora DLMM
-  pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA: "pumpswap", // pump.fun AMM (PumpSwap)
-};
-
-const MAINNET_RPC_URL = process.env.MAINNET_RPC_URL?.trim() || "https://api.mainnet-beta.solana.com";
-
-/** Classify a mainnet pool by its owner program.
- *  Returns a dexType, "unsupported" (account exists under an unknown program),
- *  "missing" (no such account on mainnet), or "rpc-failed" (couldn't check —
- *  callers fall back to the client-supplied string). One getAccountInfo call. */
+/** Classify a mainnet pool by its owner program (lib/dex-pool-owner.ts — the ONE
+ *  authoritative classifier, shared with /api/oracle/resolve and the wizard's pool
+ *  search). "rpc-failed" when mainnet could not be reached. */
 async function classifyPoolByOwner(
   poolAddress: string,
-): Promise<KeeperDexType | "unsupported" | "missing" | "rpc-failed"> {
-  try {
-    const conn = new Connection(MAINNET_RPC_URL, "confirmed");
-    const info = await Promise.race([
-      conn.getAccountInfo(new PublicKey(poolAddress)),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("mainnet RPC timeout")), 8_000)),
-    ]);
-    if (!info) return "missing";
-    return DEX_PROGRAM_TO_TYPE[info.owner.toBase58()] ?? "unsupported";
-  } catch {
-    return "rpc-failed";
-  }
+): Promise<PoolClass | "rpc-failed"> {
+  const r = await classifyPoolsByOwner([poolAddress]);
+  if (!r) return "rpc-failed";
+  return r[poolAddress] ?? "missing";
 }
 
 const NETWORK = process.env.NEXT_PUBLIC_DEFAULT_NETWORK?.trim() ?? process.env.NEXT_PUBLIC_SOLANA_NETWORK?.trim();
@@ -396,12 +367,9 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Resolve the dexType. Authoritative: classify the pool by its mainnet owner
-  // program. Fallback (mainnet RPC unreachable): normalize the client string —
-  // alias-tolerant, since the wizard passes DexScreener dexIds ("meteora",
-  // "raydium") that previously 400'd here and silently orphaned the market
-  // (wizard treats registration as non-fatal → market live on-chain, but no
-  // keeper price, no name, invisible on /markets).
+  // Resolve the dexType from the pool's mainnet owner program ONLY. The client
+  // dexType string is a hint and is ignored: it cannot tell Meteora DLMM from
+  // DAMM (E2E B21). An unreachable RPC is a retryable 503, never a guess.
   let normalizedDexType: KeeperDexType;
   const classified = await classifyPoolByOwner(dexPoolAddress);
   if (classified === "missing") {
@@ -412,22 +380,25 @@ export async function POST(req: NextRequest) {
   }
   if (classified === "unsupported") {
     return NextResponse.json(
-      { error: `dexPoolAddress is owned by an unsupported DEX program — the keeper can only price ${KEEPER_DEX_TYPES.join(", ")} pools` },
+      {
+        error:
+          "This pool is on a DEX type the price feed can't read (for example Meteora DAMM). " +
+          `Only ${KEEPER_DEX_TYPES.filter((t) => t !== "raydium-clmm").join(", ")} pools can be priced, so retrying won't help: ` +
+          "start a new market on a supported pool.",
+      },
       { status: 400 },
     );
   }
   if (classified === "rpc-failed") {
-    const fromString = normalizeDexType(dexType);
-    if (!fromString) {
-      return NextResponse.json(
-        { error: `Could not verify the pool on mainnet, and dexType "${dexType ?? ""}" does not map to any of: ${KEEPER_DEX_TYPES.join(", ")}` },
-        { status: 502 },
-      );
-    }
-    normalizedDexType = fromString;
-  } else {
-    normalizedDexType = classified;
+    // E2E B21: never register a pool whose owner we could not verify. The
+    // DexScreener string cannot tell DLMM from DAMM ("meteora" for both), and a
+    // wrongly-typed pool leaves the market with no price. Retryable.
+    return NextResponse.json(
+      { error: "Could not verify the pool on mainnet right now. Try again in a moment." },
+      { status: 503, headers: { "Retry-After": "5" } },
+    );
   }
+  normalizedDexType = classified;
 
   // Raydium CLMM is withheld from new markets. THIS is the real gate: the
   // client-side filter (SUPPORTED_DEX_IDS / BLOCKED_DEX_IDS) only shapes the

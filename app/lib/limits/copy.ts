@@ -104,6 +104,9 @@ export const COPY = {
     result: (sent: number, refused: number) =>
       `Sent ${sent} transaction${sent === 1 ? "" : "s"}.${refused > 0 ? ` ${refused} step${refused === 1 ? " was" : "s were"} refused by the program and left as is.` : ""}`,
   } as const,
+  /** E2E B24: 77 refused (21) on a P3 bound vault. Cause pending P3 confirmation: assert none. */
+  earnClaimRefusedP3:
+    "The vault couldn't pay this redemption right now (the program refused it, code 21). Nothing moved and your LP shares stay in escrow. Try again later.",
   /** Creator panel notice when the junior is exhausted (senior-impaired flag set on chain). */
   juniorExhausted:
     "Your junior tranche is exhausted, so further losses reach Earn: every Earn depositor loses the same percentage. Winning traders are always paid in full unless Earn's backing is used up too. New Earn deposits are paused.",

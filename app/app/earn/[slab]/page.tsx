@@ -414,6 +414,7 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
               cooldownRemainingSlots={lpVaultState.cooldownRemainingSlots}
               onDeposit={handleDeposit}
               onWithdraw={handleWithdraw}
+              p3Bound={earnLimits.vaultLp?.bound === true}
             />
           </ScrollReveal>
         </div>

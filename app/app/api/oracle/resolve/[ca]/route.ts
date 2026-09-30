@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PublicKey } from "@solana/web3.js";
 import { SUPPORTED_DEX_IDS } from "@/lib/dex-constants";
+import { classifyPoolsByOwner, isOfferable, MAX_CLASSIFY_POOLS } from "@/lib/dex-pool-owner";
+import type { KeeperDexType } from "@/lib/dex-type";
 import { BoundedTtlCache } from "@/lib/bounded-ttl-cache";
 
 export const dynamic = "force-dynamic";
@@ -102,7 +104,7 @@ interface OracleResolveResult {
   source: "pyth" | "jupiter" | "dexscreener" | "unknown";
   /** PERC-470: DEX pool address for hyperp oracle mode (when no Pyth feed) */
   dexPoolAddress?: string | null;
-  /** PERC-470: DEX type (pumpswap, raydium, meteora) */
+  /** Keeper dexType of `dexPoolAddress`, classified by mainnet owner ("meteora-dlmm" | "pumpswap"). */
   dexType?: string | null;
   /** PERC-470: Recommended oracle mode */
   oracleMode?: "pyth" | "hyperp" | "admin";
@@ -151,7 +153,7 @@ async function fetchJupiterPrice(
 
 async function fetchDexScreenerInfo(
   ca: string,
-): Promise<{ price: number; symbol: string | null; poolAddress: string | null; dexId: string | null } | null> {
+): Promise<{ price: number; symbol: string | null; candidates: string[] } | null> {
   try {
     const resp = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${ca}`, {
       signal: AbortSignal.timeout(6000),
@@ -179,21 +181,19 @@ async function fetchDexScreenerInfo(
     const price = parseFloat(best.priceUsd ?? "0");
     if (!isFinite(price) || price <= 0) return null;
 
-    // PERC-470/#811: For hyperp pool address, find the highest-liquidity pair on a
-    // *supported* DEX — not just the most liquid pair overall. The best overall pair
-    // may be on Orca/other unsupported venues, causing poolAddress to be incorrectly
-    // null even when a valid PumpSwap/Raydium/Meteora pool exists lower in the list.
-    const bestSupported = solPairs.find(
-      (p) => SUPPORTED_DEX_IDS.has(p.dexId?.toLowerCase() ?? "") && p.pairAddress
-    ) ?? null;
-    const dexId = bestSupported?.dexId?.toLowerCase() ?? null;
-    let poolAddress: string | null = bestSupported?.pairAddress ?? null;
-    // Security: validate pool address is a valid Solana pubkey before returning
-    if (poolAddress) {
-      try { new PublicKey(poolAddress); } catch { poolAddress = null; }
+    // PERC-470/#811 + E2E B21: every supported-dexId pair, most liquid first, is a
+    // CANDIDATE. DexScreener's dexId cannot tell Meteora DLMM from DAMM v1, so the
+    // GET handler classifies the candidates by their mainnet owner program and
+    // picks the first one the keeper can price.
+    const candidates: string[] = [];
+    for (const p of solPairs) {
+      if (!SUPPORTED_DEX_IDS.has(p.dexId?.toLowerCase() ?? "") || !p.pairAddress) continue;
+      // Security: validate pool address is a valid Solana pubkey before returning
+      try { new PublicKey(p.pairAddress); } catch { continue; }
+      if (!candidates.includes(p.pairAddress)) candidates.push(p.pairAddress);
+      if (candidates.length >= MAX_CLASSIFY_POOLS) break;
     }
-
-    return { price, symbol: best.baseToken?.symbol ?? null, poolAddress, dexId };
+    return { price, symbol: best.baseToken?.symbol ?? null, candidates };
   } catch {
     return null;
   }
@@ -280,8 +280,25 @@ export async function GET(
   let result: OracleResolveResult;
 
   // PERC-470: Determine best DEX pool for hyperp mode
-  const bestPool = dexResult?.poolAddress ?? null;
-  const bestDexType = dexResult?.dexId ?? null;
+  // E2E B21: the pool must be one the keeper can price, by mainnet OWNER.
+  let bestPool: string | null = null;
+  let bestDexType: string | null = null;
+  const candidates = dexResult?.candidates ?? [];
+  if (candidates.length > 0) {
+    const classes = await classifyPoolsByOwner(candidates);
+    if (!classes) {
+      // Not cached: a transient RPC failure must not pin "no pool" for the TTL.
+      return NextResponse.json(
+        { error: "Couldn't verify this token's DEX pools right now. Try again in a moment." },
+        { status: 503, headers: { "Retry-After": "5" } },
+      );
+    }
+    const pick = candidates.find((c) => isOfferable(classes[c]));
+    if (pick) {
+      bestPool = pick;
+      bestDexType = classes[pick] as KeeperDexType;
+    }
+  }
 
   if (pythEntry) {
     result = {

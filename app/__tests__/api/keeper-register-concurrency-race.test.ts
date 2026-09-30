@@ -95,14 +95,20 @@ vi.mock('@solana/web3.js', () => {
         };
       }
 
-      /*
-       * Force classifyPoolByOwner() into its documented dexType
-       * fallback path. The body supplies dexType: "meteora-dlmm".
-       * (Any SUPPORTED type works — this test is about the concurrency
-       * race, not the DEX. It used "raydium-clmm" until that type was
-       * blocked for new markets, which made the route 400 here.)
-       */
       throw new Error('mock mainnet RPC unavailable');
+    }
+
+    /*
+     * Mainnet pool classification (lib/dex-pool-owner.ts): the pool is a
+     * Meteora DLMM pool by OWNER. The route no longer falls back to the client
+     * dexType string when mainnet is unreachable (E2E B21), so this test, which
+     * is about the concurrency race and not the DEX, supplies a real owner.
+     */
+    async getMultipleAccountsInfo(keys: PublicKey[]): Promise<unknown[]> {
+      return keys.map(() => ({
+        owner: { toBase58: () => 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo' },
+        data: new Uint8Array(0),
+      }));
     }
   }
 

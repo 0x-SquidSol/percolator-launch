@@ -420,6 +420,13 @@ export interface CreateMarketState {
   /** True while a manual "Retry registration" call (see retryKeeperRegistration) is in flight. */
   keeperRegistering: boolean;
   /**
+   * E2E B21: this market's price comes from a keeper-read DEX pool, so it is NOT launched
+   * until keeper-register succeeds (`keeperDelegated`). LaunchSuccess shows "launched" only
+   * when this is false or the registration landed; otherwise it shows the failed
+   * price-feed step with Retry. See `launchPriceFeedStatus`.
+   */
+  priceFeedRequired: boolean;
+  /**
    * Batch-launch UI phase (fresh-launch fast path only — see
    * `attemptFreshBatchedLaunch` below). Sequential/resume flows never set this
    * away from "idle", so `LaunchProgress` falls back to its original
@@ -467,6 +474,8 @@ export interface KeeperRegisterRetryParams {
    *  re-registers an already-listed market and only needs the pool binding. */
   payload?: MarketRegistrationPayload | null;
 }
+
+export { launchPriceFeedStatus, type LaunchPriceFeedStatus } from "@/lib/launch-outcome";
 
 interface KeeperRegisterOutcome {
   registered: boolean;
@@ -527,8 +536,8 @@ async function registerMarketWithKeeper(
       registered: false,
       message:
         "Your connected wallet can't sign messages, so it can't prove it administers this " +
-        "market. The market is live on-chain but won't be priced until it's registered — " +
-        "try reconnecting your wallet, then click Retry registration.",
+        "market. The market is on-chain but has no price until this step succeeds: " +
+        "reconnect your wallet, then retry it below.",
     };
   }
 
@@ -570,8 +579,8 @@ async function registerMarketWithKeeper(
     return {
       registered: false,
       message:
-        "Signature request was cancelled or failed — the market is live on-chain but won't " +
-        "be priced until it's registered. Click Retry registration to try again.",
+        "Signature request was cancelled or failed — the market is on-chain but has no price " +
+        "until this step succeeds. Retry it below.",
     };
   }
   } // end precomputedProof ? ... : sign-here
@@ -614,10 +623,10 @@ async function registerMarketWithKeeper(
     const message =
       keeperRegData.message ??
       (keeperRegData.error
-        ? `Keeper registration failed: ${keeperRegData.error} — the market is live on-chain but won't be priced or listed until it's registered.`
+        ? `Price-feed registration failed: ${keeperRegData.error}`
         : registered
           ? "Registered — the keeper will pick this up on its next poll."
-          : "Keeper registration failed — the market is live on-chain but won't be priced or listed until it's registered.");
+          : "Price-feed registration failed. The market is on-chain but has no price until this step succeeds.");
     console.log("[useCreateMarket] Keeper registration:", keeperRegData);
     return { registered, message };
   } catch (keeperErr) {
@@ -625,7 +634,7 @@ async function registerMarketWithKeeper(
     return {
       registered: false,
       message:
-        "Keeper registration failed — the market is live on-chain but won't be priced or listed until it's registered. Click Retry registration to try again.",
+        "Price-feed registration failed (network error). The market is on-chain but has no price until this step succeeds. Retry it below.",
     };
   }
 }
@@ -1775,7 +1784,15 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
             },
             { deployer: walletPk.toBase58(), signature: keeperProofSignature },
           )
-        : Promise.resolve<KeeperRegisterOutcome>({ registered: false, message: "" });
+        : Promise.resolve<KeeperRegisterOutcome>(
+          isKeeperOracle && params.dexPoolAddress
+            ? {
+                registered: false,
+                message:
+                  "The price-feed registration wasn't signed, so the keeper has no price for this market yet. Click Retry registration to sign it.",
+              }
+            : { registered: false, message: "" },
+        );
 
     // M3b carries the insurance seed, which is NOT optional: it is the layer
     // that absorbs losses before the LP does. This used to swallow every
@@ -1882,6 +1899,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       stepLabel: "Market created!",
       keeperDelegated: keeperOutcome.registered,
       keeperMessage: keeperOutcome.message || s.keeperMessage,
+      priceFeedRequired: !!(isKeeperOracle && params.dexPoolAddress),
       slabAddress: slabPk.toBase58(),
     }));
 
@@ -1947,6 +1965,7 @@ export function useCreateMarket() {
     keeperDelegated: false,
     keeperMessage: null,
     keeperRegistering: false,
+    priceFeedRequired: false,
     phase: "idle",
     landingIndex: 0,
     landingTotal: 0,
@@ -3912,6 +3931,7 @@ export function useCreateMarket() {
           stepLabel: "Market created!",
           keeperDelegated,
           keeperMessage,
+          priceFeedRequired: !!(isKeeperOracle && params.dexPoolAddress),
           // GH#1266: Defensively re-set slabAddress from slabPk at completion to guard
           // against any state-update race where a prior step's address is stale.
           slabAddress: slabPk.toBase58(),
@@ -3952,6 +3972,7 @@ export function useCreateMarket() {
       keeperDelegated: false,
       keeperMessage: null,
       keeperRegistering: false,
+      priceFeedRequired: false,
       phase: "idle",
       landingIndex: 0,
       landingTotal: 0,

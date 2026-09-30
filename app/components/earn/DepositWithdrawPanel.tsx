@@ -70,6 +70,8 @@ interface DepositWithdrawPanelProps {
   depositBlockKind?: string | null;
   /** Withdraw callback — see `WithdrawStepResult` (S2 fix). */
   onWithdraw: (lpAmount: bigint) => Promise<WithdrawStepResult | void>;
+  /** P3: the vault owns its market's LP, which changes what a claim-side 21 means (E2E B24). */
+  p3Bound?: boolean;
 }
 
 export function DepositWithdrawPanel({
@@ -90,6 +92,7 @@ export function DepositWithdrawPanel({
   onWithdraw,
   depositBlockedReason = null,
   depositBlockKind = null,
+  p3Bound = false,
 }: DepositWithdrawPanelProps) {
   const { connected } = useWalletCompat();
   const [tab, setTab] = useState<Tab>('deposit');
@@ -194,12 +197,12 @@ export function DepositWithdrawPanel({
     } catch (e) {
       // Decode the program error into Earn-specific copy (a locked vault used to
       // surface as a raw "custom program error: 0x15").
-      setTxError(earnErrorMessage(e, tab === 'deposit' ? 'deposit' : 'claim'));
+      setTxError(earnErrorMessage(e, tab === 'deposit' ? 'deposit' : 'claim', { p3Bound }));
       setWithdrawConfirming(false);
     } finally {
       setSubmitting(false);
     }
-  }, [vaultAvailable, rawAmount, tab, withdrawConfirming, onDeposit, onWithdraw]);
+  }, [vaultAvailable, rawAmount, tab, withdrawConfirming, onDeposit, onWithdraw, p3Bound]);
 
   // S1 fix: claim an already-requested redemption. Deliberately bypasses the
   // rawAmount/userLpBalance gate below — a full ("Max") redemption request
@@ -218,11 +221,11 @@ export function DepositWithdrawPanel({
           : 'Redemption claimed — funds sent to your wallet!',
       );
     } catch (e) {
-      setClaimError(earnErrorMessage(e, 'claim'));
+      setClaimError(earnErrorMessage(e, 'claim', { p3Bound }));
     } finally {
       setClaimSubmitting(false);
     }
-  }, [claimSubmitting, loading, vaultAvailable, cooldownElapsed, onWithdraw, pendingRedemptionShares]);
+  }, [claimSubmitting, loading, vaultAvailable, cooldownElapsed, onWithdraw, pendingRedemptionShares, p3Bound]);
 
   // Validation
   const isValid = useMemo(() => {

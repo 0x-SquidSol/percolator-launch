@@ -17,7 +17,7 @@ import {
 import { useStuckSlabs } from "@/hooks/useStuckSlabs";
 import { clearInFlightMarket } from "@/lib/inFlightMarket";
 import { useQuickLaunch } from "@/hooks/useQuickLaunch";
-import { type DexPoolResult } from "@/hooks/useDexPoolSearch";
+import { type DexPoolResult, isVerifiedPool } from "@/hooks/useDexPoolSearch";
 import { parseHumanAmount } from "@/lib/parseAmount";
 import { MAX_FUNDABLE_REQUIREMENT } from "@/lib/prefund-requirement";
 import { backingSeedPerDomain } from "@/lib/market-params";
@@ -163,8 +163,10 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
           step: safeStep,
           // bigint fields can't survive JSON — restore as bigint or null
           walletBalance: parsed.walletBalance != null ? BigInt(parsed.walletBalance) : null,
-          // DexPoolResult is a plain object, survives JSON
-          dexPool: parsed.dexPool ?? null,
+          // DexPoolResult is a plain object, survives JSON. E2E B21: a pool persisted
+          // before owner verification (no dexType) may be a DAMM pool the keeper can't
+          // price, so it is dropped and re-picked from the verified search.
+          dexPool: isVerifiedPool(parsed.dexPool) ? parsed.dexPool : null,
           pythFeed: parsed.pythFeed ?? null,
           tokenMeta: parsed.tokenMeta ?? null,
           // initialMint prop overrides persisted mint
@@ -882,7 +884,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
       ...(oracleMode === "keeper" ? {
         dexPoolAddress: wizard.dexPool?.poolAddress ??
           (isValidBase58Pubkey(wizard.oracleFeed) ? wizard.oracleFeed : undefined),
-        dexType: wizard.dexPool?.dexId ?? "raydium-clmm",
+        dexType: wizard.dexPool?.dexType,
       } : {}),
     };
     // PERC-513: If resuming from a stuck slab, skip slab creation (step 0).
@@ -947,7 +949,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
       ...(oracleMode === "keeper" ? {
         dexPoolAddress: wizard.dexPool?.poolAddress ??
           (isValidBase58Pubkey(wizard.oracleFeed) ? wizard.oracleFeed : undefined),
-        dexType: wizard.dexPool?.dexId ?? "raydium-clmm",
+        dexType: wizard.dexPool?.dexType,
       } : {}),
     };
     create(params, createState.step);
@@ -968,7 +970,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
       slabAddress: createState.slabAddress,
       mainnetCA: wizard.mintAddress,
       dexPoolAddress,
-      dexType: wizard.dexPool?.dexId ?? "raydium-clmm",
+      dexType: wizard.dexPool?.dexType ?? null,
       symbol: wizard.tokenMeta?.symbol ?? "UNKNOWN",
     });
   }, [createState.slabAddress, wizard.dexPool, wizard.oracleFeed, wizard.mintAddress, wizard.tokenMeta, retryKeeperRegistration]);
@@ -1032,6 +1034,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
         keeperMessage={createState.keeperMessage}
         keeperRegistering={createState.keeperRegistering}
         onRetryKeeperRegistration={handleRetryKeeperRegistration}
+        priceFeedRequired={createState.priceFeedRequired}
       />
     );
   }
@@ -1073,9 +1076,9 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
     : wizard.oracleType === "pyth" && wizard.pythFeed
       ? wizard.pythFeed.name
       : wizard.oracleType === "hyperp_ema" && wizard.dexPool
-        ? `${wizard.dexPool.pairLabel} (${wizard.dexPool.dexId})`
+        ? `${wizard.dexPool.pairLabel} (${wizard.dexPool.dexLabel ?? wizard.dexPool.dexId})`
         : wizard.oracleType === "keeper" && wizard.dexPool
-          ? `Keeper: ${wizard.dexPool.pairLabel} (${wizard.dexPool.dexId})`
+          ? `Keeper: ${wizard.dexPool.pairLabel} (${wizard.dexPool.dexLabel ?? wizard.dexPool.dexId})`
           : wizard.oracleType === "keeper" && wizard.oracleFeed
             ? `Keeper: ${wizard.oracleFeed.slice(0, 12)}...`
             : wizard.oracleType === "admin"

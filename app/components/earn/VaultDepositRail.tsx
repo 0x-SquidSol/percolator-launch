@@ -212,6 +212,7 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
         depositBlockedReason={depositBlockedReason}
         depositBlockKind={depositBlock}
         onWithdraw={handleWithdraw}
+        p3Bound={marketLimits.vaultLp?.bound === true}
       />
     </div>
   );

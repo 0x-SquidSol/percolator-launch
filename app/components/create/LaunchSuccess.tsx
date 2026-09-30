@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { LogoUpload } from "./LogoUpload";
 import { getNetwork } from "@/lib/config";
 import { useWalletCompat } from "@/hooks/useWalletCompat";
+import { launchPriceFeedStatus } from "@/lib/launch-outcome";
 
 interface LaunchSuccessProps {
   tokenSymbol: string;
@@ -40,7 +41,16 @@ interface LaunchSuccessProps {
    * retryKeeperRegistration.
    */
   onRetryKeeperRegistration?: () => void | Promise<void>;
+  /** E2E B21: the market's price comes from a keeper-read DEX pool, so it is not launched
+   *  until the keeper registration succeeds. */
+  priceFeedRequired?: boolean;
 }
+
+/** E2E B21 copy: the price-feed step failed, so the launch is NOT finished. */
+export const PRICE_FEED_MISSING_TITLE = "PRICE FEED NOT REGISTERED";
+export const priceFeedMissingBody = (symbol: string) =>
+  `${symbol}-PERP was created on-chain, but its price feed isn't registered, so it has no price and can't be traded yet. ` +
+  "The launch isn't finished: retry the price-feed step below.";
 
 /**
  * Success state after market launch.
@@ -61,7 +71,9 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
   keeperMessage,
   keeperRegistering,
   onRetryKeeperRegistration,
+  priceFeedRequired = false,
 }) => {
+  const feed = launchPriceFeedStatus({ priceFeedRequired, keeperDelegated: !!keeperDelegated });
   const [copied, setCopied] = useState(false);
   const [copiedDevnet, setCopiedDevnet] = useState(false);
   const [mintLoading, setMintLoading] = useState(false);
@@ -151,8 +163,50 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
     }
   };
 
+  if (feed === "missing") {
+    return (
+      <div data-testid="launch-price-feed-missing" className="border border-[var(--warning)]/40 bg-[var(--warning)]/[0.05] p-6 text-center">
+        <div className="mb-4">
+          <div className="inline-flex h-12 w-12 items-center justify-center border-2 border-[var(--warning)]/50 bg-[var(--warning)]/[0.1] text-[24px] text-[var(--warning)]">
+            !
+          </div>
+        </div>
+        <h2 className="text-[18px] font-bold text-[var(--warning)] mb-2">{PRICE_FEED_MISSING_TITLE}</h2>
+        <p className="text-[13px] text-[var(--text-secondary)] mb-4">{priceFeedMissingBody(tokenSymbol)}</p>
+        <code className="mb-4 inline-block font-mono text-[10px] text-[var(--accent)]/80 bg-[var(--bg)] border border-[var(--border)] px-3 py-1.5 break-all">
+          {marketAddress}
+        </code>
+        <div className="mx-auto mb-4 max-w-sm border border-[var(--warning)]/30 bg-[var(--warning)]/[0.04] px-4 py-2.5 text-left text-[11px] text-[var(--text-secondary)]">
+          <p data-testid="launch-price-feed-reason">
+            {keeperMessage || "The keeper didn't accept this market's price-feed registration."}
+          </p>
+        </div>
+        {onRetryKeeperRegistration && (
+          <button
+            type="button"
+            data-testid="launch-price-feed-retry"
+            onClick={() => void onRetryKeeperRegistration()}
+            disabled={keeperRegistering}
+            className="border border-[var(--warning)]/50 bg-[var(--warning)]/[0.1] px-4 py-2 text-[11px] font-bold uppercase tracking-[0.1em] text-[var(--warning)] transition-colors hover:bg-[var(--warning)]/[0.16] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {keeperRegistering ? "RETRYING…" : "RETRY PRICE-FEED REGISTRATION"}
+          </button>
+        )}
+        <div className="mt-4">
+          <button
+            type="button"
+            onClick={onDeployAnother}
+            className="text-[10px] text-[var(--text-secondary)] underline hover:text-[var(--text)]"
+          >
+            Start a new market instead
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="border border-[var(--long)]/30 bg-[var(--long)]/[0.06] p-6 text-center">
+    <div data-testid="launch-success" className="border border-[var(--long)]/30 bg-[var(--long)]/[0.06] p-6 text-center">
       {/* Success icon */}
       <div className="mb-4">
         <div className="inline-flex h-12 w-12 items-center justify-center border-2 border-[var(--long)]/40 bg-[var(--long)]/[0.1] text-[24px] text-[var(--long)]">
