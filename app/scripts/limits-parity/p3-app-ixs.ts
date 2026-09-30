@@ -6,12 +6,18 @@
  *   deposit   -> lib/limits/earn-ixs.ts earnTxPlan + buildEarnDepositIxs  (useInsuranceLP.deposit)
  *   execute   -> lib/limits/earn-ixs.ts earnTxPlan + buildEarnExecuteIxs  (useInsuranceLP.withdraw)
  *   exit      -> lib/limits/resolved-exit-ixs.ts exitStepIxs      (useResolvedExit)
+ *   junior-release -> lib/limits/junior-resolved-release.ts (useJuniorTranche.releaseResolved):
+ *                ATA-idempotent + [78 if pending] + 102 resolved, amount = physical - C from raw bytes
+ *   init-market -> lib/create-market-args.ts slabSizeFor + buildV17InitMarketArgs (create() M1:
+ *                createAccount(slab) + InitMarket [admin, slab, mint]); p3 => 1 slot, else 14
  *   plan      -> lib/limits/resolved-exit.ts planResolvedExit on RAW account bytes (base64),
  *                decoded by lib/limits/decode.ts exactly as the hook does
  * argv: <cmd> <json>. Keys are base58; bigints are decimal strings.
  */
-import { PublicKey, type TransactionInstruction } from "@solana/web3.js";
-import { deriveLpBackingLedger } from "@percolatorct/sdk";
+import { PublicKey, SystemProgram, type TransactionInstruction } from "@solana/web3.js";
+import { ACCOUNTS_INIT_MARKET, buildAccountMetas, buildIx, deriveLpBackingLedger, encodeInitMarket } from "@percolatorct/sdk";
+import { buildV17InitMarketArgs, marketAssetSlotsFor, slabSizeFor } from "../../lib/create-market-args";
+import { deriveMarketParams, MIN_LEVERAGE_X } from "../../lib/market-params";
 import { buildP3BindIxs, canonicalVaultLpMatcher } from "../../lib/limits/p3-wizard";
 import { buildEarnDepositIxs, buildEarnExecuteIxs, earnTxPlan } from "../../lib/limits/earn-ixs";
 import { CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET, TAG_DEPOSIT_TO_LP_VAULT, TAG_EXECUTE_REDEMPTION, KIND_PORTFOLIO } from "../../lib/limits/constants";
@@ -30,6 +36,8 @@ import {
 } from "../../lib/limits/decode";
 import { harvestableFeeAtoms } from "../../lib/limits/vault-tranche";
 import { planOwnPortfolioCleanup } from "../../lib/limits/own-portfolio-cleanup";
+import { buildJuniorResolvedReleaseIxs, juniorReleaseNeedsHarvest, juniorResolvedReleasableAtoms } from "../../lib/limits/junior-resolved-release";
+import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 
 interface J { [k: string]: unknown }
 const [cmd, raw] = process.argv.slice(2);
@@ -88,7 +96,55 @@ const ledger = deriveLpBackingLedger(programId, market, domain)[0];
 const siblingLedger = deriveLpBackingLedger(programId, market, domain ^ 1)[0];
 const registry = deriveLpVaultRegistryPda(programId, market);
 
-if (cmd === "bind") {
+if (cmd === "init-market") {
+  // Exactly create()'s M1 shape: the slab sized by slabSizeFor(params), InitMarket args from
+  // buildV17InitMarketArgs(params, derived) with derived = deriveMarketParams(leverage, lp, price).
+  const params = {
+    p3: a.p3 === true ? { juniorFloorBps: 1_000, juniorAtoms: big("lpCollateral") } : undefined,
+    initialPriceE6: big("initialPriceE6"),
+    tradingFeeBps: Number(a.tradingFeeBps),
+    initialMarginBps: Number(a.initialMarginBps),
+    lpCollateral: big("lpCollateral"),
+  };
+  const derived = deriveMarketParams(
+    params.initialMarginBps > 0 ? 10_000 / params.initialMarginBps : MIN_LEVERAGE_X,
+    params.lpCollateral,
+    params.initialPriceE6,
+  );
+  const space = slabSizeFor(params);
+  out(
+    [
+      SystemProgram.createAccount({
+        fromPubkey: pk("funder"), newAccountPubkey: market, lamports: Number(a.lamports), space, programId,
+      }),
+      buildIx({
+        programId,
+        keys: buildAccountMetas(ACCOUNTS_INIT_MARKET, { admin: pk("admin"), slab: market, mint: pk("mint") }),
+        data: encodeInitMarket(buildV17InitMarketArgs(params, derived)),
+      }),
+    ],
+    { space, maxPortfolioAssets: marketAssetSlotsFor(params) },
+  );
+} else if (cmd === "junior-release") {
+  const md = b64(a.marketB64);
+  const st = decodeVaultLpState(b64(a.vaultLpStateB64));
+  if (!st) throw new Error("no vault LP state");
+  const owner = pk("owner");
+  const mint = pk("mint");
+  const releasable = juniorResolvedReleasableAtoms(md, domain, st.seniorClaimAtoms);
+  if (releasable === null) throw new Error("terminal backing unreadable");
+  // `amount` overrides the planned amount (negative controls only; the UI caps at releasable).
+  const amount = a.amount !== undefined ? big("amount") : releasable;
+  const needHarvest = juniorReleaseNeedsHarvest(md, domain);
+  const vm = { programId, market, registry, vaultLpState: deriveVaultLpState(programId, market), lpPortfolio: new PublicKey(st.lpPortfolio), ledger, siblingLedger };
+  const ownerAta = getAssociatedTokenAddressSync(mint, owner);
+  out(
+    amount > 0n
+      ? buildJuniorResolvedReleaseIxs({ vm, domain, owner, ownerAta, mint, vaultToken: pk("vaultToken"), vaultAuthority: pk("vaultAuthority") }, amount, needHarvest)
+      : [],
+    { amount: amount.toString(), releasable: releasable.toString(), needHarvest, ownerAta: ownerAta.toBase58() },
+  );
+} else if (cmd === "bind") {
   out(
     buildP3BindIxs({
       market: { programId, market, registry, vaultLpState: deriveVaultLpState(programId, market), lpPortfolio: pk("vaultLpPortfolio"), ledger, siblingLedger },

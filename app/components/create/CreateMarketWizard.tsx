@@ -10,6 +10,7 @@ import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
 import {
   useCreateMarket,
   DEFAULT_SLAB_SIZE,
+  wizardSlabBytes,
   flooredInitialMarginBps,
   type CreateMarketParams,
 } from "@/hooks/useCreateMarket";
@@ -404,7 +405,10 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
   // lamports." Delegates to computeCreateMarketSolCost() (CostEstimate.tsx), the SAME formula
   // the Control Room's rent readout uses, so the gate and the displayed number can't drift
   // apart.
-  const solCostBreakdown = useMemo(() => computeCreateMarketSolCost(), []);
+  const solCostBreakdown = useMemo(
+    () => computeCreateMarketSolCost({ p3: p3WizardEnabled() }),
+    [],
+  );
   const requiredSol = solCostBreakdown.totalSolCost;
   const hasSufficientSol = solBalance !== null && solBalance >= requiredSol;
   const isDevnet = getNetwork() === "devnet";
@@ -1205,7 +1209,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
             symbol={symbol}
             oracleLabel={oracleLabel}
             startPrice={startPrice}
-            slabBytes={DEFAULT_SLAB_SIZE}
+            slabBytes={wizardSlabBytes(p3WizardEnabled())}
             rentSol={solCostBreakdown.slabRentSol}
             initialMarginBps={wizard.initialMarginBps}
             tradingFeeBps={wizard.tradingFeeBps}

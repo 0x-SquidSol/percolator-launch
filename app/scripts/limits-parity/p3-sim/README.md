@@ -1,5 +1,26 @@
 # P3 sim: the vault-owned-LP journey executing APP-BUILT instructions
 
+## 58e379f1 (P3 FINAL, 2026-09-30): current run
+
+Patch now over `feat/p3-vault-owned-lp@58e379f1` (engine `35ddd692` unchanged). Added on top of
+the tests below (all APP-BUILT through `p3-app-ixs.ts`):
+
+| test | what it proves (real wrapper + matcher BPF, LiteSVM) |
+|---|---|
+| `limits_app_p3_single_asset_market_binds_and_trades` | the market is created by the APP's M1 (`init-market`: `createAccount(slab, slabSizeFor)` + InitMarket from `buildV17InitMarketArgs`), 1 slot, 3675 B = `market_account_len_for_capacity(1)`; the app bind (94 auto-pin + 96) lands and a trade follows; conservation holds |
+| `limits_app_legacy_14_slot_market_is_refused_by_94_negative_control` | same, with the LEGACY args (14 slots, 33900 B): tag 94 refuses `VaultLpMultiAssetMarket` (86), no vault-LP state |
+| `limits_app_p3_f14_terminal_order_101_78_77_102` | F-14 order: sweep `settle-vault-lp` (101 moves no SPL, asserted) -> close-empty -> close-resolved -> close-empty -> `harvest` (78) -> ready; both seniors' app 77 pay >= principal (5,033,600 / 10,066,193), C left = 1,007 (dead-share dust); the junior's app 102 Resolved (`junior-release`, `lib/limits/junior-resolved-release.ts`) pays exactly `physical - C` = 60,000,000; one atom more is refused 83; afterwards the app plans nothing; conservation holds |
+
+Results, 8/8 `limits_` and 50/50 for the whole `p3_vault_lp` (with `P2_MATCHER_SO`), on BOTH builds:
+- mine: `cargo build-sbf --features devnet` in this worktree, sha256 `731138c1b26a34ecb6cb002973d4a98983c01f79e363ca2bb1c74aa17aa51406`;
+- RELAUNCH (P3 lane, `~/wt-p3-wrapper/percolator-prog`, src identical to 58e379f1): `f1a1dfc3ff7e86ffea53394295c8e587f3309e9bda6dd3d9ce6bfcc68e07b21e`, copied into `target/deploy/` for the run and restored.
+
+App-side negative controls on real BPF: `P3_MARKET_ASSET_SLOTS = 14` -> the single-asset test fails
+(app slot count 14); `juniorResolvedReleasableAtoms` returning `physical` (ignoring C) -> 102 refused
+`Custom(83)`. Each restored byte-identical and green after.
+
+The sections below are the earlier heads' record (kept as-is).
+
 Patch over `dcccrypto/percolator-prog` `feat/p3-vault-owned-lp@07a1d0eb` — the FINAL combined head
 (P1 `3acb34ae`; tag 94 marketauth-only with AUTO-PIN; 78 on terminal-flat Resolved; C-4(b)) — with engine `35ddd692` as the
 sibling `../percolator` and the matcher `.so` from `percolator-match@12bd671` at

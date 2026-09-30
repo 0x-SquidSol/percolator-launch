@@ -7,6 +7,8 @@ import { ShimmerSkeleton } from '@/components/ui/ShimmerSkeleton';
 import { VaultGrid } from '@/components/earn/VaultGrid';
 import { VaultDepositRail } from '@/components/earn/VaultDepositRail';
 import { formatCompact } from '@/lib/formatters';
+import { limitsFlags } from '@/lib/limits/flags';
+import { COPY } from '@/lib/limits/copy';
 
 const EarnHeader = dynamic(
   () => import('@/components/earn/EarnHeader').then((m) => m.EarnHeader),
@@ -161,8 +163,9 @@ function EarnInfoStrip({ totalInsurance }: { totalInsurance: number }) {
       <div className="border border-[var(--border)] bg-[var(--panel-bg)] p-4 hud-corners">
         <div className="mb-2 text-[10px] uppercase tracking-[0.15em] text-[var(--warning)]">⚠ Risk Notice</div>
         <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">
-          LP deposits are exposed to trader PnL — when traders win, LPs may see drawdowns. The
-          insurance fund provides a buffer. Only deposit what you can afford to lose.
+          {limitsFlags().p3
+            ? COPY.earnRiskP3
+            : "LP deposits are exposed to trader PnL — when traders win, LPs may see drawdowns. The insurance fund provides a buffer. Only deposit what you can afford to lose."}
         </p>
       </div>
     </div>

@@ -1,5 +1,5 @@
 //! Round-4 oracle: the app's P3 end-to-end surface against the REAL P3 crate
-//! (percolator-prog feat/p3-vault-owned-lp@424fe7e4 + engine 35ddd692), path deps only —
+//! (percolator-prog feat/p3-vault-owned-lp@58e379f1 FINAL + engine 35ddd692), path deps only —
 //! nothing is copied. Build it OUTSIDE both repos (see Cargo.toml.example) and run:
 //!   cargo run --quiet -- vectors.txt > app/__tests__/fixtures/limits/rust-p3-final.json
 //! Emits: every app encoder's hex decoded by `ix::Instruction::decode` (with __short/__long
@@ -26,6 +26,7 @@ fn decoded(ix: &I) -> Option<String> {
         I::WithdrawJuniorTranche { amount } => format!("{{\"tag\":97,\"amount\":\"{amount}\"}}"),
         I::VaultLpRecall { amount, target_domain } => format!("{{\"tag\":98,\"amount\":\"{amount}\",\"targetDomain\":\"{target_domain}\"}}"),
         I::VaultLpSettleResolved { topup } => format!("{{\"tag\":101,\"topup\":\"{topup}\"}}"),
+        I::VaultLpReleaseSurplus { amount, source_domain } => format!("{{\"tag\":102,\"amount\":\"{amount}\",\"sourceDomain\":\"{source_domain}\"}}"),
         I::ClosePortfolio { portfolio_id, expected_sequence, position_epoch } => format!(
             "{{\"tag\":8,\"portfolioId\":\"{portfolio_id}\",\"expectedSequence\":\"{expected_sequence}\",\"positionEpoch\":\"{position_epoch}\"}}"),
         I::CloseResolved { fee_rate_per_slot } => format!("{{\"tag\":30,\"feeRatePerSlot\":\"{fee_rate_per_slot}\"}}"),
@@ -68,6 +69,7 @@ fn main() {
         ("VaultLpExposureCapExceeded", E::VaultLpExposureCapExceeded as u32), ("VaultLpMatcherNotApproved", E::VaultLpMatcherNotApproved as u32),
         ("VaultLpUseSettleResolved", E::VaultLpUseSettleResolved as u32), ("VaultLpReleaseRefused", E::VaultLpReleaseRefused as u32),
         ("VaultLpHarvestPending", E::VaultLpHarvestPending as u32), ("VaultLpValuationStale", E::VaultLpValuationStale as u32),
+        ("VaultLpMultiAssetMarket", E::VaultLpMultiAssetMarket as u32),
     ];
     out.push(format!("\"errors\":{{{}}}", errs.iter().map(|(n, v)| format!("\"{n}\":{v}")).collect::<Vec<_>>().join(",")));
 
@@ -76,6 +78,10 @@ fn main() {
     let layout = vec![
         // absolute account offsets
         o("marketGroupOff", c::MARKET_GROUP_OFF),
+        // F14-Q2: a P3 market is single-asset; the wizard sizes the slab for ONE slot.
+        o("marketAccountLen1", state::market_account_len_for_capacity(1).unwrap()),
+        o("marketAccountLen14", state::market_account_len_for_capacity(14).unwrap()),
+        o("portfolioAccountLen", state::portfolio_account_len_for_market_slots(1).unwrap()),
         o("wcfg.marketauth", h + offset_of!(WrapperConfigV16, marketauth)),
         o("wcfg.force_close_delay_slots", h + offset_of!(WrapperConfigV16, force_close_delay_slots)),
         // engine header, RELATIVE to MARKET_GROUP_OFF (the app's H_* convention)
@@ -168,5 +174,5 @@ fn main() {
     }
     out.push(format!("\"registryBound\":[{}]", bound.join(",")));
 
-    println!("{{\"p3Sha\":\"07a1d0ebec92d3a363b5d7f535cee1321c96d10d\",\"p1Sha\":\"3acb34ae83b4038a88a02731d1aa023142ef6c11\",\"engineSha\":\"35ddd692\",{}}}", out.join(","));
+    println!("{{\"p3Sha\":\"58e379f1aa24f99de3b6625ef7e150ce80c93687\",\"p1Sha\":\"3acb34ae83b4038a88a02731d1aa023142ef6c11\",\"engineSha\":\"35ddd692\",{}}}", out.join(","));
 }

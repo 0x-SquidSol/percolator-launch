@@ -23,8 +23,8 @@ import { DEFAULT_JUNIOR_FLOOR_BPS, juniorFloorAtoms, maxWizardFloorBps, validate
 import { backingSeedPerDomain } from "@/lib/market-params";
 import { COPY } from "@/lib/limits/copy";
 import { defaultLpExposureKBps, lpEquityInitRaw, lpExposureCapQ, maxTradeSizePerSide, nonnegEquity, effectiveLpExposureKBps } from "@/lib/limits/risk-limits";
-import { juniorResolvedSurplusAtoms, juniorWithdrawableAtoms, projectCreatorCaps } from "@/lib/limits/vault-tranche";
-import { decodeTerminalBacking } from "@/lib/limits/decode";
+import { juniorWithdrawableAtoms, projectCreatorCaps } from "@/lib/limits/vault-tranche";
+import { juniorResolvedReleasableAtoms } from "@/lib/limits/junior-resolved-release";
 import { earnViewFromLimits } from "@/lib/limits/earn";
 import { formatTokenAmount } from "@/lib/format";
 import { LimitsNotice, LimitsRow } from "./LimitsRow";
@@ -192,10 +192,8 @@ export const JuniorTrancheActionsView: FC<{
 };
 
 function juniorResolvedSurplus(raw: Uint8Array | null | undefined, assetIndex: number, seniorClaim: bigint): bigint | null {
-  if (!raw) return null;
-  // own + sibling domain = both domains of the vault's asset
-  const tb = decodeTerminalBacking(raw, assetIndex * 2);
-  return tb ? juniorResolvedSurplusAtoms(tb.physical, seniorClaim) : null;
+  // own + sibling domain = both domains of the vault's asset (same helper the sim bridge runs)
+  return juniorResolvedReleasableAtoms(raw ?? null, assetIndex * 2, seniorClaim);
 }
 
 /** Floors the wizard offers (the program accepts 1000..=10000). */
@@ -319,8 +317,8 @@ export const CreatorTranchePanelView: FC<{
         />
       )}
       {view?.impaired === true && (
-        <LimitsNotice tone="error" title="Senior impaired" testId="limits-creator-impaired">
-          Your junior tranche is exhausted: further trader profits are paid by Earn depositors, and new Earn deposits are paused.
+        <LimitsNotice tone="error" title="Junior tranche exhausted" testId="limits-creator-impaired">
+          {COPY.juniorExhausted}
         </LimitsNotice>
       )}
     </div>

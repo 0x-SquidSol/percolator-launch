@@ -2,7 +2,7 @@
 /**
  * P3 end-to-end surface (round 4) against TWO independent oracles:
  *   1. rust-p3-final.json — app/scripts/limits-parity/p3-final/main.rs on the REAL P3 crate
- *      (feat/p3-vault-owned-lp@07a1d0eb FINAL, P1 3acb34ae, engine 35ddd692): this module's bytes decoded by
+ *      (feat/p3-vault-owned-lp@58e379f1 FINAL, P1 3acb34ae, engine 35ddd692): this module's bytes decoded by
  *      `ix::Instruction::decode`, rustc offset_of!, error ordinals by name, the program's own
  *      `read_asset_vault_lp` at the app's offsets and `registry_vault_lp_bound`;
  *   2. sdk-p3-parity.json — SDK 8.0.0 (9e843e5)'s fixture from its own Rust oracle (at 424fe7e4,
@@ -13,6 +13,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as ix from "@/lib/limits/p3-ix";
 import * as C from "@/lib/limits/constants";
+import { DEFAULT_SLAB_SIZE, slabSizeFor, wizardSlabBytes } from "@/lib/create-market-args";
+import { V17_PORTFOLIO_ACCOUNT_LEN, v17MarketAccountLen } from "@percolatorct/sdk";
 import { decodeLpVaultRegistryBound } from "@/lib/limits/decode";
 
 const F = join(__dirname, "../../fixtures/limits");
@@ -46,6 +48,8 @@ const INPUTS: Record<string, () => Uint8Array> = {
   claim_topup: () => ix.encodeClaimResolvedPayoutTopup(),
   crank_fees_d0: () => ix.encodeLpVaultCrankFees(0),
   crank_fees_d1: () => ix.encodeLpVaultCrankFees(1),
+  release_surplus: () => ix.encodeVaultLpReleaseSurplus(60_000_000n, 0),
+  release_surplus_max: () => ix.encodeVaultLpReleaseSurplus(U128, 1),
 };
 const EXPECT_DECODED: Record<string, Record<string, string | number>> = {
   init_vault_lp_min: { tag: C.P3_TAG.InitVaultLp, juniorFloorBps: "1000" },
@@ -62,11 +66,13 @@ const EXPECT_DECODED: Record<string, Record<string, string | number>> = {
   claim_topup: { tag: C.TAG_CLAIM_RESOLVED_PAYOUT_TOPUP },
   crank_fees_d0: { tag: C.TAG_LP_VAULT_CRANK_FEES, domain: "0" },
   crank_fees_d1: { tag: C.TAG_LP_VAULT_CRANK_FEES, domain: "1" },
+  release_surplus: { tag: C.P3_TAG.VaultLpReleaseSurplus, amount: "60000000", sourceDomain: "0" },
+  release_surplus_max: { tag: C.P3_TAG.VaultLpReleaseSurplus, amount: U128.toString(), sourceDomain: "1" },
 };
 
 describe("P3 final head: app encoders vs the real ix::Instruction::decode", () => {
-  it("fixture is from the FINAL P3 combined head (07a1d0eb on P1 3acb34ae; auto-pin at tag 94)", () => {
-    expect(rust.p3Sha).toBe("07a1d0ebec92d3a363b5d7f535cee1321c96d10d");
+  it("fixture is from the FINAL P3 combined head (58e379f1 on P1 3acb34ae; F-14 + F14-Q2 single-asset)", () => {
+    expect(rust.p3Sha).toBe("58e379f1aa24f99de3b6625ef7e150ce80c93687");
     expect((rust as unknown as { p1Sha: string }).p1Sha).toBe("3acb34ae83b4038a88a02731d1aa023142ef6c11");
     // SDK 8's fixture was generated at 424fe7e4. Since then tag 94's ACCOUNT list changed twice
     // (path B removed; auto-pin tail [8] matcher / [9] ctx / [10] delegate added in 07a1d0eb) but
@@ -128,6 +134,21 @@ describe("P3 final head: layout (rustc offset_of!) and errors (by name)", () => 
     expect(C.H_RESOLVED_SLOT).toBe(L["hdr.resolved_slot"]);
     expect(C.HEADER_LEN + C.WCFG_FORCE_CLOSE_DELAY_SLOTS).toBe(L["wcfg.force_close_delay_slots"]);
     expect(C.HEADER_LEN).toBe(L["wcfg.marketauth"]);
+  });
+  it("F-14 terminal backing fields (residual + physical idle backing the junior's 102 reads)", () => {
+    expect(C.H_BACKING_PROVIDER_EARNINGS_TOTAL).toBe(L["hdr.backing_provider_earnings_total"]);
+    expect(C.H_SOURCE_FRESH_BACKING_TOTAL_NUM).toBe(L["hdr.source_fresh_backing_total_num"]);
+    expect(C.SLOT_BACKING_LONG).toBe(L["slot.backing_long"]);
+    expect(C.SLOT_BACKING_SHORT).toBe(L["slot.backing_short"]);
+    expect(C.BUCKET_FRESH_UNLIENED_BACKING_NUM).toBe(L["bucket.fresh_unliened_backing_num"]);
+    expect(C.BOUND_SCALE).toBe(10n ** BigInt(L.boundScaleLog10));
+  });
+  it("F14-Q2: the wizard's P3 slab is the program's ONE-slot length; legacy is its 14-slot length", () => {
+    expect(slabSizeFor({ p3: {} })).toBe(L.marketAccountLen1);
+    expect(wizardSlabBytes(true)).toBe(L.marketAccountLen1);
+    expect(v17MarketAccountLen(1)).toBe(L.marketAccountLen1);
+    expect(DEFAULT_SLAB_SIZE).toBe(L.marketAccountLen14);
+    expect(V17_PORTFOLIO_ACCOUNT_LEN).toBe(L.portfolioAccountLen);
   });
   it("portfolio fields (emptiness subset + payout receipt)", () => {
     const h = C.HEADER_LEN;

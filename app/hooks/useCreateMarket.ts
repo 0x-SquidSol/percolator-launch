@@ -20,7 +20,6 @@ import {
 } from "@solana/spl-token";
 import {
   encodeInitMarket,
-  type InitMarketV17Args,
   encodeDepositCollateral,
   encodeTopUpInsurance,
   encodePermissionlessCrank,
@@ -59,7 +58,6 @@ import {
   initPoolAccounts,
   parseHeader,
   isV17Account,
-  v17MarketAccountLen,
   V17_PORTFOLIO_ACCOUNT_LEN,
   MATCHER_CONTEXT_LEN,
   // W2/W3 fix (2026-07-08): parsePortfolioV17 reads the LP portfolio's on-chain
@@ -141,14 +139,22 @@ import {
 import {
   type MarketRegistrationPayload,
 } from "@/lib/market-registration-auth";
-// v17: max assets per portfolio (= the market's asset-slot capacity); program cap = 14.
-// The slab MUST be sized to exactly match this capacity or InitMarket reverts (dynamic-len validation).
-export const V17_MAX_PORTFOLIO_ASSETS = 14;
-// BUG 1 fix (2026-07-06): exported so callers (CreateMarketWizard, CostEstimate) size the
-// slab + rent estimate against the actual v17 requirement instead of the stale v12.19
-// tier.dataSize concept (96784/376432/1495024 bytes), which never equals this value for any
-// tier and made every InitMarket revert with InvalidSlabLen while over-charging ~0.67 SOL rent.
-export const DEFAULT_SLAB_SIZE = v17MarketAccountLen(V17_MAX_PORTFOLIO_ASSETS); // 26_364 bytes (cap-14)
+// Market sizing + InitMarket args live in lib/create-market-args.ts (plain module, so the
+// P3 BPF sim bridge can build the market from the same code). Re-exported for existing callers.
+export {
+  V17_MAX_PORTFOLIO_ASSETS,
+  DEFAULT_SLAB_SIZE,
+  P3_MARKET_ASSET_SLOTS,
+  marketAssetSlotsFor,
+  buildV17InitMarketArgs,
+  wizardSlabBytes,
+  slabSizeFor,
+} from "@/lib/create-market-args";
+import {
+  marketAssetSlotsFor,
+  buildV17InitMarketArgs,
+  slabSizeFor,
+} from "@/lib/create-market-args";
 const ALL_ZEROS_FEED = "0".repeat(64);
 
 /**
@@ -951,7 +957,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     prewarmTxLanding(connection);
 
     const rentPromise = Promise.all([
-      getCachedRentExemption(connection, params.slabDataSize ?? DEFAULT_SLAB_SIZE),
+      getCachedRentExemption(connection, slabSizeFor(params)),
       getCachedRentExemption(connection, V17_PORTFOLIO_ACCOUNT_LEN),
       getCachedRentExemption(connection, MATCHER_CONTEXT_LEN),
       getCachedRentExemption(connection, MINT_SIZE),
@@ -1029,7 +1035,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
 
     const [slabRent, portfolioRent, matcherCtxRent, mintRent, tokenAcctRent] = await rentPromise;
     const solBalance = await balancePromise;
-    const effectiveSlabSize = params.slabDataSize ?? DEFAULT_SLAB_SIZE;
+    const effectiveSlabSize = slabSizeFor(params);
     const totalRent = slabRent + portfolioRent + matcherCtxRent + mintRent + tokenAcctRent;
     const minSolRequired = totalRent + 20_000_000; // rent + ~0.02 SOL for 5-6 tx fees/priority fees
     if (solBalance < minSolRequired) {
@@ -1059,7 +1065,6 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
 
     // Margin comes from the SAME derivation as the price-move budget below, so
     // the two can never disagree (see lib/market-params.ts).
-    const initialMarginBps = BigInt(derived.initialMarginBps);
     // WRITE-ONCE PARAMETERS.
     //
     // Everything below is fixed for the life of the market — InitMarket runs
@@ -1086,33 +1091,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     // Verified 2026-07-28: with these EXACT args, every leverage the wizard
     // offers (2..10x) simulates ACCEPTED against the deployed program, so no
     // creator choice can produce a config InitMarket rejects.
-    const v17InitArgs: InitMarketV17Args = {
-      maxPortfolioAssets: V17_MAX_PORTFOLIO_ASSETS,
-      hMin: "1000",
-      hMax: "100000",
-      initialPrice: params.initialPriceE6.toString(),
-      minNonzeroMmReq: "1000000",
-      minNonzeroImReq: "2000000",
-      maintenanceMarginBps: String(derived.maintenanceMarginBps),
-      initialMarginBps: initialMarginBps.toString(),
-      maxTradingFeeBps: BigInt(params.tradingFeeBps).toString(),
-      tradeFeeBaseBps: BigInt(params.tradingFeeBps).toString(),
-      liquidationFeeBps: "50",
-      liquidationFeeCap: "10000000000",
-      minLiquidationAbs: "0",
-      // Auto-derived from the creator's leverage — see lib/market-params.ts.
-      // Was hardcoded 1 / 500, which froze new positions for ~17 min after a
-      // 26% move (verified causally on devnet 2026-07-27).
-      maxPriceMoveBpsPerSlot: String(derived.maxPriceMoveBpsPerSlot),
-      maxAccrualDtSlots: String(derived.maxAccrualDtSlots),
-      maxAbsFundingE9PerSlot: "0",
-      minFundingLifetimeSlots: "500",
-      maxAccountBSettlementChunks: "10",
-      maxBankruptCloseChunks: "10",
-      maxBankruptCloseLifetimeSlots: "500",
-      publicBChunkAtoms: "1000000000000",
-      maintenanceFeePerSlot: "0",
-    };
+    const v17InitArgs = buildV17InitMarketArgs(params, derived);
 
     // M1: createAccount(slab) + createATA + InitMarket + SetNftProgramId
     const createSlabIx = SystemProgram.createAccount({
@@ -1182,7 +1161,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       data: encodeSetMatcherConfig({
         portfolioId: 1n,
         expectedSequence: 0n,
-        assetGenerationFrontier: BigInt(V17_MAX_PORTFOLIO_ASSETS) + 1n,
+        assetGenerationFrontier: BigInt(marketAssetSlotsFor(params)) + 1n,
         enabled: 1,
         tradeFeeCapBps: 10_000,
         expirySlot: MAX_BACKING_BUCKET_EXPIRY_SLOT,
@@ -2313,7 +2292,7 @@ export function useCreateMarket() {
           // orphan from old SDK — e.g. 65352-byte account created before ENGINE_OFF fix).
           // Without this check, retries always call InitMarket on the wrong-sized slab and
           // fail with InvalidSlabLen (error 0x4) even after the SDK size was corrected.
-          const expectedSlabSize = params.slabDataSize ?? DEFAULT_SLAB_SIZE;
+          const expectedSlabSize = slabSizeFor(params);
           let existingAccount = await connection.getAccountInfo(slabKp.publicKey);
           if (existingAccount && existingAccount.data.length !== expectedSlabSize) {
             console.warn(
@@ -2371,32 +2350,7 @@ export function useCreateMarket() {
               // very first step of every market creation / recovery attempt.
               // Margin and the price-move budget share one derivation — see
               // lib/market-params.ts.
-              const initialMarginBps = BigInt(derived.initialMarginBps);
-              const v17InitArgs: InitMarketV17Args = {
-                maxPortfolioAssets: V17_MAX_PORTFOLIO_ASSETS,
-                hMin: "1000",
-                hMax: "100000",
-                initialPrice: params.initialPriceE6.toString(),
-                minNonzeroMmReq: "1000000",
-                minNonzeroImReq: "2000000",
-                maintenanceMarginBps: String(derived.maintenanceMarginBps),
-                initialMarginBps: initialMarginBps.toString(),
-                maxTradingFeeBps: BigInt(params.tradingFeeBps).toString(),
-                tradeFeeBaseBps: BigInt(params.tradingFeeBps).toString(),
-                liquidationFeeBps: "50",
-                liquidationFeeCap: "10000000000",
-                minLiquidationAbs: "0",
-                // Auto-derived — see lib/market-params.ts (mirrors the merged path).
-                maxPriceMoveBpsPerSlot: String(derived.maxPriceMoveBpsPerSlot),
-                maxAccrualDtSlots: String(derived.maxAccrualDtSlots),
-                maxAbsFundingE9PerSlot: "0",
-                minFundingLifetimeSlots: "500",
-                maxAccountBSettlementChunks: "10",
-                maxBankruptCloseChunks: "10",
-                maxBankruptCloseLifetimeSlots: "500",
-                publicBChunkAtoms: "1000000000000",
-                maintenanceFeePerSlot: "0",
-              };
+              const v17InitArgs = buildV17InitMarketArgs(params, derived);
               const initMarketData = encodeInitMarket(v17InitArgs);
 
               // v18 InitMarket takes exactly 3 accounts [admin, slab, mint] — see the
@@ -2435,7 +2389,7 @@ export function useCreateMarket() {
             // was pure unnecessary friction (an extra token requirement + a devnet-pre-fund
             // round-trip) on the very first step of every market creation attempt; removed.
 
-            const effectiveSlabSize = params.slabDataSize ?? DEFAULT_SLAB_SIZE;
+            const effectiveSlabSize = slabSizeFor(params);
             const slabRent = await connection.getMinimumBalanceForRentExemption(effectiveSlabSize);
 
             // PERC-509: Pre-check SOL balance before attempting createAccount.
@@ -2487,32 +2441,7 @@ export function useCreateMarket() {
 
             // Margin and the price-move budget share one derivation — see
             // lib/market-params.ts.
-            const initialMarginBps = BigInt(derived.initialMarginBps);
-            const v17InitArgs: InitMarketV17Args = {
-              maxPortfolioAssets: 14,
-              hMin: "1000",
-              hMax: "100000",
-              initialPrice: params.initialPriceE6.toString(),
-              minNonzeroMmReq: "1000000",
-              minNonzeroImReq: "2000000",
-              maintenanceMarginBps: String(derived.maintenanceMarginBps),
-              initialMarginBps: initialMarginBps.toString(),
-              maxTradingFeeBps: BigInt(params.tradingFeeBps).toString(),
-              tradeFeeBaseBps: BigInt(params.tradingFeeBps).toString(),
-              liquidationFeeBps: "50",
-              liquidationFeeCap: "10000000000",
-              minLiquidationAbs: "0",
-              // Auto-derived — see lib/market-params.ts (mirrors the other paths).
-              maxPriceMoveBpsPerSlot: String(derived.maxPriceMoveBpsPerSlot),
-              maxAccrualDtSlots: String(derived.maxAccrualDtSlots),
-              maxAbsFundingE9PerSlot: "0",
-              minFundingLifetimeSlots: "500",
-              maxAccountBSettlementChunks: "10",
-              maxBankruptCloseChunks: "10",
-              maxBankruptCloseLifetimeSlots: "500",
-              publicBChunkAtoms: "1000000000000",
-              maintenanceFeePerSlot: "0",
-            };
+            const v17InitArgs = buildV17InitMarketArgs(params, derived);
             const initMarketData = encodeInitMarket(v17InitArgs);
 
             // v18 InitMarket takes exactly 3 accounts [admin, slab, mint] — see the
@@ -3086,7 +3015,7 @@ export function useCreateMarket() {
                 data: encodeSetMatcherConfig({
                   portfolioId: smId.portfolioId,
                   expectedSequence: smId.matcherSequence,
-                  assetGenerationFrontier: BigInt(V17_MAX_PORTFOLIO_ASSETS) + 1n,
+                  assetGenerationFrontier: BigInt(marketAssetSlotsFor(params)) + 1n,
                   enabled: 1,
                   tradeFeeCapBps: 10_000,
                   expirySlot: MAX_BACKING_BUCKET_EXPIRY_SLOT,

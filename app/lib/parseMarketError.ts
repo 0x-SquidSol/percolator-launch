@@ -59,6 +59,8 @@ const STEP_ERROR_OVERRIDES: Partial<Record<CreateStepKind, Record<number, string
   "vault-lp": {
     [P3_ERR.VaultLpAlreadyBound]:
       "This market's Earn vault is already bound to a vault-owned LP (an earlier attempt completed this step). Retry continues from the next step.",
+    [P3_ERR.VaultLpMultiAssetMarket]:
+      "This market was created with more than one asset slot, and a vault-owned LP needs a single-asset market, so the bind was refused. Retrying this market won't help: start a new market (the wizard now creates single-asset markets).",
     8:
       "Only the market's admin can bind the vault-owned LP, and admin authority has already moved to the staking pool, so this market can no longer be bound. It keeps its classic LP.",
   },

@@ -276,6 +276,8 @@ export const P3_ERR = {
   VaultLpReleaseRefused: 83,
   VaultLpHarvestPending: 84,
   VaultLpValuationStale: 85,
+  /** F14-Q2 (58e379f1): tag 94 refuses a market whose configured asset slots != 1. */
+  VaultLpMultiAssetMarket: 86,
 } as const;
 
 // ── P3 end-to-end (round 4; FINAL feat/p3-vault-owned-lp@07a1d0eb + engine 35ddd692) ────────

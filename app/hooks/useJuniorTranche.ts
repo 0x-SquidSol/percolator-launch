@@ -15,12 +15,10 @@ import { useConnectionCompat, useWalletCompat } from '@/hooks/useWalletCompat';
 import { useSlabState } from '@/components/providers/SlabProvider';
 import { sendTx } from '@/lib/tx';
 import { assertDepositWithinBalance, readTokenBalance } from '@/lib/deposit-guard';
-import { decodeLpVaultRegistryDomain, decodeMarketEngineView, decodeTerminalBacking, decodeVaultLpState } from '@/lib/limits/decode';
-import { harvestableFeeAtoms } from '@/lib/limits/vault-tranche';
+import { decodeLpVaultRegistryDomain, decodeVaultLpState } from '@/lib/limits/decode';
+import { buildJuniorResolvedReleaseIxs, juniorReleaseNeedsHarvest } from '@/lib/limits/junior-resolved-release';
 import {
   buildDepositJuniorTrancheIx,
-  buildLpVaultCrankFeesIx,
-  buildVaultLpReleaseSurplusIx,
   buildWithdrawJuniorTrancheIx,
   deriveLpVaultRegistryPda,
   deriveVaultLpState,
@@ -107,16 +105,7 @@ export function useJuniorTranche(slabAddress: string | null) {
       try {
         if (amount <= 0n) throw new Error('Enter an amount greater than zero.');
         const c = await context();
-        const engine = c.marketData ? decodeMarketEngineView(c.marketData) : null;
-        const tb = c.marketData ? decodeTerminalBacking(c.marketData, c.domain) : null;
-        const needHarvest = (engine ? harvestableFeeAtoms(engine) ?? 0n : 0n) > 0n || (tb ? tb.residual : 0n) > 0n;
-        const ixs = [
-          createAssociatedTokenAccountIdempotentInstruction(c.owner, c.ownerAta, c.owner, c.mint),
-          ...(needHarvest
-            ? [buildLpVaultCrankFeesIx({ programId: c.vm.programId, cranker: c.owner, market: c.vm.market, registry: c.vm.registry, ledger: c.vm.ledger, siblingLedger: c.vm.siblingLedger, domain: c.domain, bound: { vaultLpState: c.vm.vaultLpState } })]
-            : []),
-          buildVaultLpReleaseSurplusIx(c.vm, c.owner, amount, c.domain, { destToken: c.ownerAta, vaultToken: c.vaultToken, vaultAuthority: c.vaultAuthority }),
-        ];
+        const ixs = buildJuniorResolvedReleaseIxs(c, amount, juniorReleaseNeedsHarvest(c.marketData, c.domain));
         return await sendTx({ connection, wallet, instructions: ixs });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
