@@ -30,6 +30,7 @@ import { COPY } from "@/lib/limits/copy";
 import { cleanupOwnPortfoliosBeforeReclaim } from "@/lib/limits/own-portfolio-cleanup";
 import { sendTx } from "@/lib/tx";
 
+import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 /** Slab state after `sig`, read at (at least) the tx's slot so a cached pre-close read can't answer. */
 export async function readCloseSlabStateAfter(
   connection: { getSignatureStatuses: Connection["getSignatureStatuses"]; getAccountInfo: Connection["getAccountInfo"] },
@@ -321,7 +322,7 @@ export function useCloseMarket() {
           setError("Cannot close: there are still open user accounts on this market.");
         } else if (msg.includes("User rejected") || msg.includes("WalletSign")) {
           setError("Transaction cancelled.");
-        } else if (/custom program error:\s*0x15\b/i.test(msg) || msg.includes("EngineLockActive")) {
+        } else if (new RegExp(`custom program error:\\s*0x${WRAPPER_ERR.EngineLockActive.toString(16)}\\b`, "i").test(msg) || msg.includes("EngineLockActive")) {
           // 0x15 = Custom(21) = EngineLockActive: CloseSlab's preconditions aren't met.
           // It is not a transient lock — waiting never helps. The Live-market case is
           // handled above (ResolveMarket is prepended), and capital/portfolios are

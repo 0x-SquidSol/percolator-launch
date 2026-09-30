@@ -5,6 +5,7 @@
  */
 
 import { P3_ERR } from "@/lib/limits/constants";
+import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 import { decodeError } from "@percolatorct/sdk";
 import type { CreateStepKind } from "@/lib/create-market-v18";
 
@@ -40,20 +41,20 @@ import { EARN_VAULT_BUCKET_NOT_EMPTY_MESSAGE } from "@/lib/earn-vault-seed";
 /** Per-step meanings that differ from the generic code table. */
 const STEP_ERROR_OVERRIDES: Partial<Record<CreateStepKind, Record<number, string>>> = {
   "oracle-delegation": {
-    8:
+    [WRAPPER_ERR.Unauthorized]:
       "The price feed was already handed to the keeper in an earlier attempt, so your wallet is no longer " +
       "the oracle authority and re-sending the hand-off is refused (Unauthorized). This step is already " +
       "complete — Retry continues from the next step.",
   },
   funding: {
-    9:
+    [WRAPPER_ERR.InvalidInstruction]:
       "The program rejected the liquidity-backing seed's arguments (InvalidInstruction). This is an app bug, " +
       "not a problem with your wallet or funds — nothing from this step was applied.",
   },
   "earn-vault": {
     // LpVaultBackingBucketNotEmpty. Only reachable on a market whose backing was
     // seeded by the pre-fix launcher (direct top-up): retrying can never succeed.
-    63: EARN_VAULT_BUCKET_NOT_EMPTY_MESSAGE,
+    [WRAPPER_ERR.LpVaultBackingBucketNotEmpty]: EARN_VAULT_BUCKET_NOT_EMPTY_MESSAGE,
   },
   // P3 InitVaultLp (94) + DepositJuniorTranche (96): codes from the one constants module.
   "vault-lp": {
@@ -61,11 +62,11 @@ const STEP_ERROR_OVERRIDES: Partial<Record<CreateStepKind, Record<number, string
       "This market's Earn vault is already bound to a vault-owned LP (an earlier attempt completed this step). Retry continues from the next step.",
     [P3_ERR.VaultLpMultiAssetMarket]:
       "This market was created with more than one asset slot, and a vault-owned LP needs a single-asset market, so the bind was refused. Retrying this market won't help: start a new market (the wizard now creates single-asset markets).",
-    8:
+    [WRAPPER_ERR.Unauthorized]:
       "Only the market's admin can bind the vault-owned LP, and admin authority has already moved to the staking pool, so this market can no longer be bound. It keeps its classic LP.",
   },
   "stake-pool": {
-    8:
+    [WRAPPER_ERR.Unauthorized]:
       "Market admin authority has already moved to the staking pool (an earlier attempt completed this step), " +
       "so your wallet can no longer sign it (Unauthorized). The market is set up — reload to see it.",
   },
@@ -87,26 +88,26 @@ export function extractCustomCode(msg: string): number | null {
 // All other codes fall through to decodeError() for the SDK hint.
 const LAUNCH_ERROR_OVERRIDES: Record<number, string> = {
   // 0: InvalidMagic
-  0: "Invalid magic number. The market account data is corrupted. Check the market address.",
+  [WRAPPER_ERR.InvalidMagic]: "Invalid magic number. The market account data is corrupted. Check the market address.",
   // 1: InvalidVersion
-  1: "Account version mismatch (expected v17). The program may need upgrading or the market was created with an older program.",
+  [WRAPPER_ERR.InvalidVersion]: "Account version mismatch (expected v17). The program may need upgrading or the market was created with an older program.",
   // 2: AlreadyInitialized
-  2: "Market is already initialized. Cannot re-initialize.",
+  [WRAPPER_ERR.AlreadyInitialized]: "Market is already initialized. Cannot re-initialize.",
   // 3: NotInitialized
-  3: "Market is not initialized. The slab account may not have been set up correctly.",
+  [WRAPPER_ERR.NotInitialized]: "Market is not initialized. The slab account may not have been set up correctly.",
   // 4: InvalidAccountKind
-  4: "Wrong account kind. A market group, portfolio, or insurance-ledger address was used in the wrong position.",
+  [WRAPPER_ERR.InvalidAccountKind]: "Wrong account kind. A market group, portfolio, or insurance-ledger address was used in the wrong position.",
   // 5: InvalidAccountLen — include slab-tier guidance
-  5: "Invalid account length. This market uses an incompatible account size — it may have been created with an older program version. " +
+  [WRAPPER_ERR.InvalidAccountLen]: "Invalid account length. This market uses an incompatible account size — it may have been created with an older program version. " +
      "The market may need re-initialization by the market creator, or try a different slab tier.",
   // 8: Unauthorized
-  8: "Not authorized for this operation. Ensure the correct authority wallet (marketauth or asset_admin) is connected.",
+  [WRAPPER_ERR.Unauthorized]: "Not authorized for this operation. Ensure the correct authority wallet (marketauth or asset_admin) is connected.",
   // 15: EngineArithmeticOverflow
-  15: "Math overflow — values are too large for safe computation. Try a smaller amount or position size.",
+  [WRAPPER_ERR.EngineArithmeticOverflow]: "Math overflow — values are too large for safe computation. Try a smaller amount or position size.",
   // 16: EngineProvenanceMismatch
-  16: "Portfolio provenance mismatch. This portfolio was not created for this market group.",
+  [WRAPPER_ERR.EngineProvenanceMismatch]: "Portfolio provenance mismatch. This portfolio was not created for this market group.",
   // 18: EngineInvalidLeg
-  18: "Invalid trade leg. Check asset_index and size parameters.",
+  [WRAPPER_ERR.EngineInvalidLeg]: "Invalid trade leg. Check asset_index and size parameters.",
   // 19: EngineStale. LF1 (2026-07-08): this used to promise a bare retry
   // would fix it ("a permissionless crank was prepended... retry"), which is
   // true for a brand-new market awaiting its first crank but NOT for the
@@ -114,11 +115,11 @@ const LAUNCH_ERROR_OVERRIDES: Record<number, string> = {
   // found markets sitting hundreds of thousands of slots past it, where
   // EngineStale is permanent until a maintainer re-seeds the market. Hedge
   // the copy instead of promising a fix a retry can't deliver.
-  19: "Market engine is stale — a crank is needed before this step can proceed. If this keeps happening after a retry or two, the crank isn't clearing it and the market's engine may need a full re-seed rather than a simple crank — contact a maintainer.",
+  [WRAPPER_ERR.EngineStale]: "Market engine is stale — a crank is needed before this step can proceed. If this keeps happening after a retry or two, the crank isn't clearing it and the market's engine may need a full re-seed rather than a simple crank — contact a maintainer.",
   // 21: EngineLockActive. Same LF1 fix — the SDK's default hint ("wait for
   // it to complete") over-promises self-resolution the same way 19's old
   // copy did.
-  21: "Engine lock is active on this market (a close or recovery hasn't finished). If this doesn't clear after a retry or two, the market may need a full re-seed rather than simply waiting — contact a maintainer.",
+  [WRAPPER_ERR.EngineLockActive]: "Engine lock is active on this market (a close or recovery hasn't finished). If this doesn't clear after a retry or two, the market may need a full re-seed rather than simply waiting — contact a maintainer.",
 };
 
 const SPL_TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
@@ -187,7 +188,7 @@ function parseMarketCreationErrorBase(error: unknown, context?: MarketCreationEr
     if (code !== null && !isTokenProgramInsufficientFunds(msg)) {
       const stepOverride = STEP_ERROR_OVERRIDES[context.step]?.[code];
       if (stepOverride) return stepOverride;
-      if (code === 19) return CREATE_ENGINE_STALE;
+      if (code === WRAPPER_ERR.EngineStale) return CREATE_ENGINE_STALE;
     }
   }
 

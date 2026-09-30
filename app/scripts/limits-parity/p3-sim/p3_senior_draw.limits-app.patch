@@ -1,8 +1,8 @@
 diff --git a/tests/p3_senior_draw.rs b/tests/p3_senior_draw.rs
-index 2ae92b2f..52b5a2a8 100644
+index 2ae92b2f..07075408 100644
 --- a/tests/p3_senior_draw.rs
 +++ b/tests/p3_senior_draw.rs
-@@ -1894,3 +1894,169 @@ fn p3_valve_fires_only_after_senior_backing_is_exhausted() {
+@@ -1894,3 +1894,229 @@ fn p3_valve_fires_only_after_senior_backing_is_exhausted() {
      assert!(left <= 2_000, "stranded {left}");
  }
  
@@ -171,4 +171,64 @@ index 2ae92b2f..52b5a2a8 100644
 +    println!("LIMITS-APP 88: fair pro-rata claim {fair} (C {c_before}, shares {shares} / {s_before})");
 +    assert!(got as u128 + 2 >= fair, "senior paid its full pro-rata claim: {got} < {fair}");
 +    conserved(&w, "limits app 88");
++}
++
++/// 39b138c8 gate-100: a large live redeem through a pot whose ledger principal is too small is
++/// refused 25 (EngineCounterUnderflow) BEFORE the 88 check. The app's repair
++/// (redeemRepairVariants, the lists sendTx simulates) tries: the other pot, a recall, then the
++/// other pot + a recall into it. Seniors split across pots (1M in d0, 9M in d1), four states:
++/// draw outstanding / restored x the d0 / d1 senior. Every one ends paid its pro-rata claim.
++#[test]
++fn limits_app_redeem_repair_25_pot_mismatch_and_88() {
++    let mut seen_25 = false;
++    for scen in 0..4 {
++        let (mut w, seniors, _t) = q1_world(1_000_000, 9_000_000, 1_000_000, 6);
++        let first = Keypair::new();
++        w.env.ensure_signer_account(first.pubkey());
++        let f_ata = w.lp_share_ata(first.pubkey());
++        let f_src = w.token(first.pubkey(), 1_000);
++        let v = la_app("deposit", w.la_earn_json(&first, serde_json::json!({ "lpAta": f_ata.to_string(), "source": f_src.to_string(), "amount": "1000" })));
++        w.la_send(la_ixs(&v["ixs"]), &[&first]).expect("75 books the draw");
++        if scen >= 2 {
++            let admin = w.env.admin.insecure_clone();
++            w.junior_deposit(&admin, 2_000_000).unwrap();
++            let lp = w.lp;
++            let _ = w.crank(lp);
++            let d2 = Keypair::new();
++            w.env.ensure_signer_account(d2.pubkey());
++            let a2 = w.lp_share_ata(d2.pubkey());
++            let s2 = w.token(d2.pubkey(), 1_000);
++            let v = la_app("deposit", w.la_earn_json(&d2, serde_json::json!({ "lpAta": a2.to_string(), "source": s2.to_string(), "amount": "1000" })));
++            w.la_send(la_ixs(&v["ixs"]), &[&d2]).expect("75 books the restore");
++        }
++        let (k, ata) = (&seniors[scen % 2].0.insecure_clone(), seniors[scen % 2].1);
++        let shares = w.tok(&ata) as u128;
++        let fair = w.c() * shares / w.registry_shares();
++        w.request_redeem(k, ata, shares).unwrap();
++        let red = state::derive_lp_redemption(&w.env.program_id, &w.registry, &k.pubkey()).0;
++        let dest = w.token(k.pubkey(), 0);
++        let rv = la_app("recall-variants", w.la_earn_json(k, serde_json::json!({ "redemption": red.to_string(), "dest": dest.to_string() })));
++        let plain = w.la_send(la_ixs(&rv["plain"]), &[k]);
++        if scen == 0 {
++            plain.expect("control: the small d0 senior redeems from its own pot, no repair");
++            assert!(w.tok(&dest) as u128 + 2 >= fair);
++            continue;
++        }
++        let e = plain.unwrap_err();
++        assert!(e.contains("Custom(25)") || e.contains("Custom(88)"), "scen {scen}: plain 77 refused 25/88: {e}");
++        seen_25 |= e.contains("Custom(25)");
++        let mut landed = None;
++        for var in rv["variants"].as_array().unwrap() {
++            if w.la_send(la_ixs(&var["ixs"]), &[k]).is_ok() {
++                landed = Some(var["kind"].as_str().unwrap().to_string());
++                break;
++            }
++        }
++        let kind = landed.unwrap_or_else(|| panic!("scen {scen}: no repair variant landed"));
++        let paid = w.tok(&dest) as u128;
++        println!("LIMITS-APP REPAIR scen {scen}: plain {} -> {kind}, paid {paid} (fair {fair})", if e.contains("Custom(25)") { 25 } else { 88 });
++        assert!(paid + 2 >= fair, "scen {scen}: paid {paid} < fair {fair}");
++        conserved(&w, "redeem repair");
++    }
++    assert!(seen_25, "vacuity: the 39b138c8 25-before-88 ordering was exercised");
 +}

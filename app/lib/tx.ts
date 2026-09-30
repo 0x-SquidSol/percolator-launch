@@ -784,7 +784,7 @@ export async function sendTx({
           connectionSeniorDrawRepairDeps(connection, feePayer),
         );
         onSeniorDrawRepair?.(d);
-        if (d.outcome === "cranked" || d.outcome === "recalled") {
+        if (d.outcome === "cranked" || d.outcome === "recalled" || d.outcome === "other-pot") {
           healedInstructions = d.instructions;
           healedComputeUnits = d.computeUnits;
           console.info(`[senior-draw-repair] ${d.outcome}${d.recallAtoms !== undefined ? ` ${d.recallAtoms}` : ""}`);

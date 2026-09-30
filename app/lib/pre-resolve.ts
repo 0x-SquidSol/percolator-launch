@@ -48,6 +48,7 @@ import { deriveVaultLpState, withBoundVaultLpTail } from "@/lib/limits/p3-ix";
 import { TAG_LP_VAULT_CRANK_FEES } from "@/lib/limits/constants";
 import { computeBudgetPrefix, connectionSelfHealDeps, parseCustomInstructionError } from "@/lib/self-heal";
 
+import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 /** percolator-stake `state::MINIMUM_LIQUIDITY` (dead shares), e62aa4a state.rs:25. */
 export const STAKE_MINIMUM_LIQUIDITY = 1_000n;
 /** Keeper K-1 gate: dead shares may take at most this share of a push. */
@@ -287,7 +288,7 @@ export async function readAndPlanPreResolve(
     if (sim.err) {
       const code = ie?.code;
       const why =
-        code === 56 || code === 54
+        code === WRAPPER_ERR.StakePoolAuthorityMismatch || code === WRAPPER_ERR.StakePoolNotBound
           ? "the market's insurance is not bound to its stake pool (an operator must run stake Bind first)"
           : `the fee crank was refused (${code !== undefined ? `Custom(${code})` : JSON.stringify(sim.err)})`;
       return { ...plan, cranks: [], blockers: [...plan.blockers, `Outstanding fees can't be paid out before resolving: ${why}. Resolving now would burn them.`] };

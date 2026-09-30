@@ -25,6 +25,8 @@
  * crate — `app/scripts/limits-parity/p3-final` (errors by name, offset_of!, the program's
  * own readers) and the layout / parity emitters, all byte-identical to the fixtures.
  */
+import { WRAPPER_ERR } from "../wrapper-errors";
+
 
 // ── Shared layout ────────────────────────────────────────────────────────────
 export const HEADER_LEN = 16;
@@ -143,12 +145,12 @@ export const TAG_SET_ASSET_RISK_LIMITS = 93;
 
 /** P1 wrapper errors (append-only after AssetGenerationMismatch = 65). */
 export const P1_ERR = {
-  ExecPriceOutsideOracleBand: 66,
-  SameOwnerTrade: 67,
-  LpExposureCapExceeded: 68,
-  LpFloorHalt: 69,
-  ProtocolSideOiCapExceeded: 70,
-  CloseSlabFeesOutstanding: 71,
+  ExecPriceOutsideOracleBand: WRAPPER_ERR.ExecPriceOutsideOracleBand,
+  SameOwnerTrade: WRAPPER_ERR.SameOwnerTrade,
+  LpExposureCapExceeded: WRAPPER_ERR.LpExposureCapExceeded,
+  LpFloorHalt: WRAPPER_ERR.LpFloorHalt,
+  ProtocolSideOiCapExceeded: WRAPPER_ERR.ProtocolSideOiCapExceeded,
+  CloseSlabFeesOutstanding: WRAPPER_ERR.CloseSlabFeesOutstanding,
 } as const;
 
 // ── P2: matcher context (vAMM ctx starts at 64 = MATCHER_RETURN_LEN) ────────
@@ -266,26 +268,26 @@ export const P3_TAG = {
 
 /** P3 wrapper errors: ordinals parsed from the enum at 8d651c45 (appended after P1's 71). Map BY NAME. */
 export const P3_ERR = {
-  VaultLpAlreadyBound: 72,
-  VaultLpNotBound: 73,
-  VaultLpSeniorImpaired: 74,
-  VaultLpJuniorWithdrawRefused: 75,
-  VaultLpRecallRefused: 76,
-  VaultLpExclusiveCounterparty: 77,
-  VaultLpLeverageStepDown: 78,
-  VaultLpBoundCannotClose: 79,
-  VaultLpExposureCapExceeded: 80,
-  VaultLpMatcherNotApproved: 81,
-  VaultLpUseSettleResolved: 82,
-  VaultLpReleaseRefused: 83,
-  VaultLpHarvestPending: 84,
-  VaultLpValuationStale: 85,
+  VaultLpAlreadyBound: WRAPPER_ERR.VaultLpAlreadyBound,
+  VaultLpNotBound: WRAPPER_ERR.VaultLpNotBound,
+  VaultLpSeniorImpaired: WRAPPER_ERR.VaultLpSeniorImpaired,
+  VaultLpJuniorWithdrawRefused: WRAPPER_ERR.VaultLpJuniorWithdrawRefused,
+  VaultLpRecallRefused: WRAPPER_ERR.VaultLpRecallRefused,
+  VaultLpExclusiveCounterparty: WRAPPER_ERR.VaultLpExclusiveCounterparty,
+  VaultLpLeverageStepDown: WRAPPER_ERR.VaultLpLeverageStepDown,
+  VaultLpBoundCannotClose: WRAPPER_ERR.VaultLpBoundCannotClose,
+  VaultLpExposureCapExceeded: WRAPPER_ERR.VaultLpExposureCapExceeded,
+  VaultLpMatcherNotApproved: WRAPPER_ERR.VaultLpMatcherNotApproved,
+  VaultLpUseSettleResolved: WRAPPER_ERR.VaultLpUseSettleResolved,
+  VaultLpReleaseRefused: WRAPPER_ERR.VaultLpReleaseRefused,
+  VaultLpHarvestPending: WRAPPER_ERR.VaultLpHarvestPending,
+  VaultLpValuationStale: WRAPPER_ERR.VaultLpValuationStale,
   /** F14-Q2 (58e379f1): tag 94 refuses a market whose configured asset slots != 1. */
-  VaultLpMultiAssetMarket: 86,
+  VaultLpMultiAssetMarket: WRAPPER_ERR.VaultLpMultiAssetMarket,
   /** d119eebd: 75/77 found an undrawn deficit on the vault LP (the draw must run first: crank, retry). */
-  VaultLpSeniorDrawRequired: 87,
+  VaultLpSeniorDrawRequired: WRAPPER_ERR.VaultLpSeniorDrawRequired,
   /** d119eebd (B24): the redemption's pot can't fund the payout; recall (98) first, or redeem fewer shares. */
-  VaultLpRedeemNeedsRecall: 88,
+  VaultLpRedeemNeedsRecall: WRAPPER_ERR.VaultLpRedeemNeedsRecall,
 } as const;
 
 // ── P3 end-to-end (round 4; FINAL feat/p3-vault-owned-lp@07a1d0eb + engine 35ddd692) ────────

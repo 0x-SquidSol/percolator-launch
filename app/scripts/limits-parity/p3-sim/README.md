@@ -20,6 +20,13 @@ P3 lane's relaunch `~/wt-p3-wrapper/out/p3-senior-draw-39b138c8.so` (`e92e204bâ€
 `p3_vault_lp` 50/50 (8/8 `limits_`), `p3_senior_draw` 13/13 (+1 upstream `#[ignore]`).
 Run: `INDEP_WRAPPER_SO=<.so> LIMITS_APP_DIR=... TSX_BIN=... cargo test --release --test p3_senior_draw -- limits_app`.
 
+gate-100 follow-up (still 39b138c8): `limits_app_redeem_repair_25_pot_mismatch_and_88`. Seniors split
+1M d0 / 9M d1; a large redeem through the registry pot is refused **25** (ledger principal, before the
+88 check) or 88. The app's repair variants (`redeemRepairVariants`: other pot, recall, other pot +
+recall into it) each land and pay the exact pro-rata claim: draw outstanding, d1 senior: 25 ->
+other-pot 7,528,308; restored, d0: 88 -> recall 998,980; restored, d1: 88 -> other-pot + recall
+8,999,824; control d0 with the draw outstanding: no repair needed.
+
 
 ## 58e379f1 (P3 FINAL, 2026-09-30): current run
 

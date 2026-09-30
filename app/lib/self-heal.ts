@@ -70,6 +70,7 @@ import {
 } from "@solana/web3.js";
 import type { Connection } from "@solana/web3.js";
 
+import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 // ── Wire tags (deployed wrapper decode arms) ─────────────────────────────────
 export const EXPIRE_BACKING_BUCKET_TAG = 89;
 export const FINALIZE_RESET_SIDE_TAG = 45;
@@ -96,8 +97,8 @@ const BK_STATUS = 96;
 export const BUCKET_STATUS_FRESH = 1;
 export const SIDE_MODE_RESET_PENDING = 2;
 /** Wrapper error codes the repairs can clear (PercolatorError discriminants). */
-export const ENGINE_STALE_CODE = 19;
-export const ENGINE_LOCK_ACTIVE_CODE = 21;
+export const ENGINE_STALE_CODE = WRAPPER_ERR.EngineStale;
+export const ENGINE_LOCK_ACTIVE_CODE = WRAPPER_ERR.EngineLockActive;
 /** One market-only state transition each (keeper REPAIR_CU). */
 export const REPAIR_CU = 40_000;
 const MAX_TX_CU = 1_400_000;

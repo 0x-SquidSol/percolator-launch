@@ -1,6 +1,7 @@
 import { extractErrorCode, humanizeError } from "@/lib/errorMessages";
 import { COPY, P3_ERROR_COPY_BY_NAME } from "@/lib/limits/copy";
 
+import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 /**
  * User-facing copy for a failed Earn (LP vault) action.
  *
@@ -44,7 +45,7 @@ export function earnErrorMessage(err: unknown, action: EarnAction, ctx: EarnErro
   }
   const code = extractErrorCode(raw);
   switch (code) {
-    case 21:
+    case WRAPPER_ERR.EngineLockActive:
       return action === "deposit"
         ? "This market's Earn vault is temporarily locked: its backing pot can't accept new deposits right now (the market is recovering from a realized loss or its backing window has lapsed). Nothing was deposited. It clears once the market is repaired by the keeper — try again later."
         : ctx.p3Bound
@@ -54,15 +55,15 @@ export function earnErrorMessage(err: unknown, action: EarnAction, ctx: EarnErro
             COPY.earnClaimRefusedP3
           : "Can't pay this redemption out yet: part of the vault's backing is securing traders' open unrealized PnL, and paying the full amount would leave it under-backed. It becomes claimable as those positions close. Your LP shares stay safe in escrow until then.";
     // d119eebd senior draw (P3 only; no other program in an Earn tx uses these codes).
-    case 87:
+    case WRAPPER_ERR.VaultLpSeniorDrawRequired:
       return P3_ERROR_COPY_BY_NAME.VaultLpSeniorDrawRequired;
-    case 88:
+    case WRAPPER_ERR.VaultLpRedeemNeedsRecall:
       return action === "claim" ? P3_ERROR_COPY_BY_NAME.VaultLpRedeemNeedsRecall : humanizeError(raw);
-    case 19:
+    case WRAPPER_ERR.EngineStale:
       return "The market's engine is behind (it hasn't been cranked recently), so the vault can't be priced safely. Nothing moved. It clears once the market is cranked — try again in a moment.";
-    case 36:
+    case WRAPPER_ERR.LpVaultCooldownActive:
       return "Your redemption cooldown hasn't finished yet — claim it once the countdown reaches zero.";
-    case 37:
+    case WRAPPER_ERR.LpVaultOiReservationViolated:
       return action === "claim"
         ? "Claiming this much now would leave too little backing covering the market's open interest. Try a smaller redemption, or wait for open interest to fall."
         : humanizeError(raw);

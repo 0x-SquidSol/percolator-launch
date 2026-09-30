@@ -19,6 +19,8 @@ import {
   find77,
   planSeniorDrawRepair,
   recallIxFor77,
+  redeemRepairVariants,
+  with77FromOtherPot,
   withRecallBefore77,
 } from "@/lib/limits/senior-draw-repair";
 import { P3_ERROR_COPY_BY_NAME } from "@/lib/limits/copy";
@@ -112,11 +114,30 @@ describe("88 repair: 98 recall inserted before the 77, simulation-verified", () 
     expect(find77([harvest, ix77], PROG)).toBe(1);
   });
 
-  it("drawRepairFailure only for a WRAPPER 87/88", () => {
+  it("other-pot variant flips only the 77's domain; variant order is other-pot, recall, other-pot + recall", () => {
+    const moved = with77FromOtherPot([harvest, ix77], 1);
+    expect(Array.from(moved[1].data)).toEqual([77, 1, 0]);
+    expect(moved[1].keys).toBe(ix77.keys);
+    const v = redeemRepairVariants([harvest, ix77], 1, cranker, [10n, 5n]);
+    expect(v.map((x) => x.kind)).toEqual(["other-pot", "recall", "recall", "other-pot-recall", "other-pot-recall"]);
+    // the recall follows the 77's pot: target domain 1 on the other-pot + recall variant
+    const r = v[3].ixs[1];
+    expect(r.data[0]).toBe(98);
+    expect(Buffer.from(r.data).readUInt16LE(17)).toBe(1);
+    expect(Buffer.from(v[1].ixs[1].data).readUInt16LE(17)).toBe(0);
+  });
+
+  it("drawRepairFailure: WRAPPER 87 / 88, and 25 only on a bound-vault 77 (39b138c8 ordering)", () => {
     const list = [harvest, ix77];
-    expect(drawRepairFailure({ InstructionError: [1, { Custom: 88 }] }, list, PROG)).toEqual({ code: 88, index: 1 });
+    expect(drawRepairFailure({ InstructionError: [1, { Custom: 88 }] }, list, PROG)).toEqual({ code: "needs-recall", index: 1 });
+    expect(drawRepairFailure({ InstructionError: [1, { Custom: 87 }] }, list, PROG)).toEqual({ code: "draw-required", index: 1 });
     expect(drawRepairFailure({ InstructionError: [1, { Custom: 88 }] }, list, k())).toBeNull();
     expect(drawRepairFailure({ InstructionError: [1, { Custom: 21 }] }, list, PROG)).toBeNull();
+    // 25 EngineCounterUnderflow: a bound 77 (15 accounts) -> try the recall; anything else -> no.
+    expect(drawRepairFailure({ InstructionError: [1, { Custom: 25 }] }, list, PROG)).toEqual({ code: "needs-recall", index: 1 });
+    expect(drawRepairFailure({ InstructionError: [0, { Custom: 25 }] }, list, PROG)).toBeNull(); // the 78
+    const unbound77 = new TransactionInstruction({ programId: PROG, keys: keys.slice(0, 13), data: Buffer.from([77, 0, 0]) });
+    expect(drawRepairFailure({ InstructionError: [0, { Custom: 25 }] }, [unbound77], PROG)).toBeNull();
   });
 
   it("planSeniorDrawRepair: ok tx untouched; 88 keeps the first candidate that simulates clean", async () => {
@@ -143,7 +164,7 @@ describe("88 repair: 98 recall inserted before the 77, simulation-verified", () 
     const p = { programId: PROG, market: mk, cranker, instructions: [harvest, ix77], computeUnits: 200_000 };
     const r = await planSeniorDrawRepair(p, { read, simulate });
     expect(r.outcome).toBe("recalled");
-    expect(tried.length).toBe(2);
+    expect(tried.length).toBe(2); // the other-pot variant (no 98) failed 88 first
     expect(tried[1] < tried[0]).toBe(true);
     expect(r.recallAtoms).toBe(tried[1]);
     expect(r.instructions.map((i) => i.data[0])).toEqual([78, 98, 77]);
@@ -152,6 +173,15 @@ describe("88 repair: 98 recall inserted before the 77, simulation-verified", () 
     const never = vi.fn(async (ixs: TransactionInstruction[]) =>
       ({ err: ixs.some((i) => i.data[0] === 98) ? { InstructionError: [3, { Custom: 76 }] } : { InstructionError: [ixs.length - 1, { Custom: 88 }] } }));
     expect((await planSeniorDrawRepair(p, { read, simulate: never })).outcome).toBe("repair-did-not-help");
+    // 39b138c8: the plain 77 fails 25 (ledger underflow before the 88 check): same repair.
+    const via25 = vi.fn(async (ixs: TransactionInstruction[]) =>
+      ({ err: ixs.some((i) => i.data[0] === 98) ? null : { InstructionError: [ixs.length - 1, { Custom: 25 }] } }));
+    const r25 = await planSeniorDrawRepair(p, { read, simulate: via25 });
+    expect(r25.outcome).toBe("recalled");
+    expect(r25.instructions.map((i) => i.data[0])).toEqual([78, 98, 77]);
+    // ...and a 25 the recall does NOT fix leaves the tx unchanged (the user sees the real error).
+    const stuck25 = vi.fn(async (ixs: TransactionInstruction[]) => ({ err: { InstructionError: [ixs.length - 1, { Custom: 25 }] } }));
+    expect((await planSeniorDrawRepair(p, { read, simulate: stuck25 })).outcome).toBe("repair-did-not-help");
     // Nothing to repair.
     expect((await planSeniorDrawRepair(p, { read, simulate: vi.fn(async () => ({ err: null })) })).outcome).toBe("user-tx-ok");
     // No readable state -> not repairable.

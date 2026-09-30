@@ -36,6 +36,8 @@ fn decoded(ix: &I) -> Option<String> {
     })
 }
 
+include!("all_errors.rs");
+
 fn main() {
     let path = std::env::args().nth(1).expect("vectors.txt");
     let mut out: Vec<String> = Vec::new();
@@ -74,6 +76,9 @@ fn main() {
         ("VaultLpRedeemNeedsRecall", E::VaultLpRedeemNeedsRecall as u32),
     ];
     out.push(format!("\"errors\":{{{}}}", errs.iter().map(|(n, v)| format!("\"{n}\":{v}")).collect::<Vec<_>>().join(",")));
+    // EVERY PercolatorError variant, by name (all_errors.rs, generated from the enum source by
+    // gen-all-errors.py; ordinals by rustc). The app's WRAPPER_ERR is pinned to this map.
+    out.push(format!("\"allErrors\":{{{}}}", all_errors().iter().map(|(n, v)| format!("\"{n}\":{v}")).collect::<Vec<_>>().join(",")));
 
     let h = c::HEADER_LEN;
     let o = |n: &str, v: usize| format!("\"{n}\":{v}");

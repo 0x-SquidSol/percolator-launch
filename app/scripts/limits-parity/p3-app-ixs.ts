@@ -36,7 +36,7 @@ import {
   decodePortfolioRisk,
 } from "../../lib/limits/decode";
 import { earnAbsorbed, harvestableFeeAtoms, vaultLpValueAtoms } from "../../lib/limits/vault-tranche";
-import { find77, recallCandidates, withRecallBefore77 } from "../../lib/limits/senior-draw-repair";
+import { find77, recallCandidates, redeemRepairVariants } from "../../lib/limits/senior-draw-repair";
 import { parseP3DrawLogs, summarizeDrawEvents } from "../../lib/limits/p3-draw-logs";
 import { planOwnPortfolioCleanup } from "../../lib/limits/own-portfolio-cleanup";
 import { buildJuniorResolvedReleaseIxs, juniorReleaseNeedsHarvest, juniorResolvedReleasableAtoms } from "../../lib/limits/junior-resolved-release";
@@ -209,7 +209,7 @@ if (cmd === "init-market") {
     JSON.stringify({
       candidates: cands.map(String),
       plain: exec.map(enc1),
-      variants: cands.map((amount) => ({ amount: amount.toString(), ixs: withRecallBefore77(exec, at, pk("user"), amount).map(enc1) })),
+      variants: redeemRepairVariants(exec, at, pk("user"), cands).map((v) => ({ kind: v.kind, amount: v.amount?.toString() ?? null, ixs: v.ixs.map(enc1) })),
     }),
   );
 } else if (cmd === "draw-logs") {

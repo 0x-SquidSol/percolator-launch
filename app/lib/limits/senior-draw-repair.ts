@@ -15,9 +15,10 @@
  *
  * Never throws. Any RPC failure => unchanged.
  */
-import { PublicKey, Transaction, VersionedTransaction, type AccountMeta, type Connection, type TransactionInstruction } from "@solana/web3.js";
+import { PublicKey, Transaction, TransactionInstruction, VersionedTransaction, type AccountMeta, type Connection } from "@solana/web3.js";
 import { computeBudgetPrefix, parseCustomInstructionError, REPAIR_CU, type SimResult } from "@/lib/self-heal";
 import { P3_ERR, TAG_EXECUTE_REDEMPTION } from "./constants";
+import { WRAPPER_ERR } from "../wrapper-errors";
 import { decodeAssetVaultLp, decodeMarketEngineView, decodePortfolioRisk, decodeTerminalBacking, decodeVaultLpState, type VaultLpStateView } from "./decode";
 import { buildVaultLpRecallIx, type VaultLpMarket } from "./p3-ix";
 import { effectiveSeniorClaim, harvestableFeeAtoms, recallLimit, vaultLpValueAtoms } from "./vault-tranche";
@@ -27,17 +28,26 @@ const MAX_TX_CU = 1_400_000;
 /** 98 costs ~62k CU on BPF (d119eebd sim); margin on top of the caller's limit. */
 export const RECALL_CU = 120_000;
 
+/**
+ * Which repair a failed simulation calls for. 87 / 88 by their codes. ALSO 25
+ * EngineCounterUnderflow when it comes from a BOUND-vault 77 (15 accounts): on 39b138c8 a large
+ * live redeem hits the ledger-principal underflow before the 88 check (gate-100 sweep; P3 is
+ * reordering it), so the recall is tried there too and kept only if the simulation lands.
+ */
 export function drawRepairFailure(
   err: unknown,
   txInstructions: readonly TransactionInstruction[],
   wrapperProgramId: PublicKey,
-): { code: 87 | 88; index: number } | null {
+): { code: "draw-required" | "needs-recall"; index: number } | null {
   const p = parseCustomInstructionError(err);
   if (!p) return null;
-  if (p.code !== P3_ERR.VaultLpSeniorDrawRequired && p.code !== P3_ERR.VaultLpRedeemNeedsRecall) return null;
   const ix = txInstructions[p.index];
   if (!ix || !ix.programId.equals(wrapperProgramId)) return null;
-  return { code: p.code as 87 | 88, index: p.index };
+  if (p.code === P3_ERR.VaultLpSeniorDrawRequired) return { code: "draw-required", index: p.index };
+  if (p.code === P3_ERR.VaultLpRedeemNeedsRecall) return { code: "needs-recall", index: p.index };
+  const bound77 = ix.data[0] === TAG_EXECUTE_REDEMPTION && ix.keys.length >= 15;
+  if (p.code === WRAPPER_ERR.EngineCounterUnderflow && bound77) return { code: "needs-recall", index: p.index };
+  return null;
 }
 
 /**
@@ -83,6 +93,40 @@ export function recallIxFor77(ix77: TransactionInstruction, cranker: PublicKey, 
   return buildVaultLpRecallIx(vm, cranker, amount, domain);
 }
 
+/**
+ * The same 77 paying out of the OTHER pot: ExecuteRedemption's `domain` argument picks the
+ * source pot; the account list (own + sibling ledgers) is unchanged. On 39b138c8 a redemption
+ * larger than the chosen pot's ledger principal fails 25 even when the sibling pot holds it.
+ */
+export function with77FromOtherPot(ixs: readonly TransactionInstruction[], at: number): TransactionInstruction[] {
+  const ix = ixs[at];
+  if (!ix || ix.data[0] !== TAG_EXECUTE_REDEMPTION || ix.data.length < 3) throw new Error("no 77 at index");
+  const data = Buffer.from(ix.data);
+  const d = data[1] | (data[2] << 8);
+  data.writeUInt16LE(d ^ 1, 1);
+  const moved = new TransactionInstruction({ programId: ix.programId, keys: ix.keys, data });
+  return [...ixs.slice(0, at), moved, ...ixs.slice(at + 1)];
+}
+
+/**
+ * Every repair variant for a 77 refused 88 (or 25 on a bound vault), in the order sendTx tries
+ * them: pay from the other pot (no state change), then recall candidates into the chosen pot,
+ * then the other pot with a recall into IT (98's target follows the 77's domain).
+ */
+export function redeemRepairVariants(
+  ixs: readonly TransactionInstruction[],
+  at: number,
+  cranker: PublicKey,
+  recallAmounts: readonly bigint[],
+): { kind: "other-pot" | "recall" | "other-pot-recall"; amount?: bigint; ixs: TransactionInstruction[] }[] {
+  const other = with77FromOtherPot(ixs, at);
+  return [
+    { kind: "other-pot" as const, ixs: other },
+    ...recallAmounts.map((amount) => ({ kind: "recall" as const, amount, ixs: withRecallBefore77(ixs, at, cranker, amount) })),
+    ...recallAmounts.map((amount) => ({ kind: "other-pot-recall" as const, amount, ixs: withRecallBefore77(other, at, cranker, amount) })),
+  ];
+}
+
 /** `ixs` with a 98 recall of `amount` inserted right before the 77 at index `at`. */
 export function withRecallBefore77(ixs: readonly TransactionInstruction[], at: number, cranker: PublicKey, amount: bigint): TransactionInstruction[] {
   const ix77 = ixs[at];
@@ -115,6 +159,7 @@ export type SeniorDrawRepairOutcome =
   | "not-repairable"
   | "cranked"
   | "recalled"
+  | "other-pot"
   | "repair-did-not-help"
   | "rpc-error";
 
@@ -142,7 +187,7 @@ export async function planSeniorDrawRepair(p: SeniorDrawRepairParams, deps: Seni
     const prefix = origList.length - p.instructions.length;
     const at = f.index - prefix; // index into p.instructions
 
-    if (f.code === P3_ERR.VaultLpSeniorDrawRequired) {
+    if (f.code === "draw-required") {
       const m = await deps.read(p.market);
       const rec = m ? decodeAssetVaultLp(m, 0) : null;
       if (!rec?.bound) return unchanged("not-repairable");
@@ -151,11 +196,12 @@ export async function planSeniorDrawRepair(p: SeniorDrawRepairParams, deps: Seni
       const ixs = [crank, ...p.instructions];
       const list = [...computeBudgetPrefix(cu), ...ixs];
       const r = await deps.simulate(list);
-      if (r.err && drawRepairFailure(r.err, list, p.programId)?.code === P3_ERR.VaultLpSeniorDrawRequired) return unchanged("repair-did-not-help");
+      if (r.err && drawRepairFailure(r.err, list, p.programId)?.code === "draw-required") return unchanged("repair-did-not-help");
       return { instructions: ixs, computeUnits: cu, outcome: "cranked" };
     }
 
-    // 88: recall into the redeemer's pot right before the 77.
+    // 88 (or 25 on a bound 77, see drawRepairFailure): recall into the redeemer's pot right
+    // before the 77; kept only if the whole tx then simulates clean.
     const ix77 = p.instructions[at];
     if (!ix77 || ix77.data[0] !== TAG_EXECUTE_REDEMPTION || ix77.keys.length < 15) return unchanged("not-repairable");
     const [m, sd, lpd] = await Promise.all([deps.read(p.market), deps.read(ix77.keys[13].pubkey), deps.read(ix77.keys[14].pubkey)]);
@@ -167,10 +213,12 @@ export async function planSeniorDrawRepair(p: SeniorDrawRepairParams, deps: Seni
     const lpVal = eng && risk ? vaultLpValueAtoms(risk, eng) : null;
     const lpValueAtoms = lpVal && lpVal.kind !== "stale" ? lpVal.atoms : null;
     const cu = Math.min(MAX_TX_CU, p.computeUnits + RECALL_CU);
-    for (const amount of recallCandidates(m, vs, domain, lpValueAtoms)) {
-      const ixs = withRecallBefore77(p.instructions, at, p.cranker, amount);
-      const r = await deps.simulate([...computeBudgetPrefix(cu), ...ixs]);
-      if (!r.err) return { instructions: ixs, computeUnits: cu, outcome: "recalled", recallAtoms: amount };
+    for (const v of redeemRepairVariants(p.instructions, at, p.cranker, recallCandidates(m, vs, domain, lpValueAtoms))) {
+      const r = await deps.simulate([...computeBudgetPrefix(cu), ...v.ixs]);
+      if (r.err) continue;
+      return v.kind === "other-pot"
+        ? { instructions: v.ixs, computeUnits: cu, outcome: "other-pot" }
+        : { instructions: v.ixs, computeUnits: cu, outcome: "recalled", recallAtoms: v.amount };
     }
     return unchanged("repair-did-not-help");
   } catch (e) {
