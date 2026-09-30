@@ -1,5 +1,6 @@
 "use client";
 
+import { bpsPct } from "@/lib/format";
 import { FC, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -218,7 +219,7 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
         Ready to trade
       </h2>
       <p className="text-[13px] text-[var(--text-secondary)] mb-4">
-        {tokenSymbol}-PERP is live on Percolator devnet
+        {tokenSymbol} is live on Percolator devnet
       </p>
 
       {/* Market address */}
@@ -253,7 +254,7 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
       )}
       {!keeperDelegated && keeperMessage && (
         <div className="mb-4 border border-[var(--warning)]/30 bg-[var(--warning)]/[0.04] px-4 py-2.5 text-left text-[11px] text-[var(--text-secondary)]">
-          <p>Keeper registration: {keeperMessage}</p>
+          <p>Live price: {keeperMessage}</p>
           {onRetryKeeperRegistration && (
             <button
               type="button"
@@ -280,15 +281,15 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
             {tokenSymbol.slice(0, 2).toUpperCase()}
           </div>
           <div>
-            <p className="text-[13px] font-bold text-[var(--text)]">{tokenSymbol}-PERP</p>
+            <p className="text-[13px] font-bold text-[var(--text)]">{tokenSymbol}</p>
             <div className="flex items-center gap-1.5 mt-0.5">
-              <span className="text-[9px] text-[var(--text-secondary)]">Fee: {tradingFeeBps} bps</span>
+              <span className="text-[9px] text-[var(--text-secondary)]">Fee: {bpsPct(tradingFeeBps)}</span>
               <span className="text-[9px] text-[var(--text-secondary)]">·</span>
               <span className="text-[9px] text-[var(--text-secondary)]">Leverage: {maxLeverage}x</span>
               <span className="text-[9px] text-[var(--text-secondary)]">·</span>
               {/* v17 slabs are always sized to max capacity — there is no tier to
                   report here anymore (see StepControlRoom's "Slab" pre-flight readout). */}
-              <span className="text-[9px] text-[var(--text-secondary)]">Slab: Max capacity</span>
+              <span className="text-[9px] text-[var(--text-secondary)]">Market size: max capacity</span>
             </div>
           </div>
         </div>
@@ -311,7 +312,7 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
       {insuranceMintFailed && (
         <div className="border border-[var(--warning)]/20 bg-[var(--warning)]/[0.04] px-4 py-2 mb-4 text-left w-full max-w-sm mx-auto">
           <p className="text-[11px] text-[var(--text-secondary)]">
-            Market is <strong className="text-[var(--text)]">live and tradeable</strong>. LP-vault deposits are pending (mint timed out) — retry later from market settings.
+            Market is <strong className="text-[var(--text)]">live and tradeable</strong>. Earn deposits aren't open yet (the setup step timed out). Retry later from My Markets.
           </p>
         </div>
       )}

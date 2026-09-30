@@ -374,7 +374,7 @@ export const CreatorTranchePanelView: FC<{
     <div data-testid="limits-creator-tranche" data-market={slab} data-state={limits.state} className="mb-4 space-y-0.5">
       <p className="mb-1 text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--text-muted)]">Risk &amp; caps</p>
       {creatorFeesAtoms !== null && <LimitsRow label="Creator fees (claimable)" value={fmt(creatorFeesAtoms)} />}
-      {capQ !== null && <LimitsRow label="LP exposure cap" value={`${fmtQ(capQ)} units`} />}
+      {capQ !== null && <LimitsRow label="Exposure cap" value={`${fmtQ(capQ)} units`} />}
       {sides && (
         <LimitsRow
           label="Max trade long / short"

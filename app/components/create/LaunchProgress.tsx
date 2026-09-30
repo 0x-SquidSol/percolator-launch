@@ -353,7 +353,7 @@ export const LaunchProgress: FC<LaunchProgressProps> = ({ state, onReset, onRetr
             Recovery
           </p>
           <p className="text-[11px] text-[var(--text-secondary)] mb-3">
-            The slab is on chain. If anything stalls, you can recover via the
+            The market account is on chain. If anything stalls, you can recover via the
             in-UI banner on the next /create visit, or download this JSON to
             run the close-market script offline.
           </p>

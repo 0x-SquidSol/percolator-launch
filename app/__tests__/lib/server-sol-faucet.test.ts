@@ -192,3 +192,14 @@ describe("I-1: key parse failures never log the input", () => {
     expect(logged).not.toMatch(/SECRET|abc|\[12/);
   });
 });
+
+describe("re-review I-D: a failed balance read falls back quietly", () => {
+  it("getBalance throws -> skipped (the caller uses the public airdrop), nothing reserved or sent", async () => {
+    const { db, rows } = fakeDb();
+    const c = conn();
+    c.getBalance.mockRejectedValue(new Error("429"));
+    expect(await grantServerSol({ connection: c as never, db, to: to(), ip: ip(), env: env() })).toEqual({ status: "skipped", reason: "failed" });
+    expect(c.sendRawTransaction).not.toHaveBeenCalled();
+    expect(rows).toHaveLength(0);
+  });
+});

@@ -394,7 +394,7 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
             {oiUsd != null ? formatStatValue(oiUsd, "currency") : "—"}
           </p>
         </div>
-        <Tooltip text="Liquidity backing this market — the LP counterparty's capital, not a personal balance.">
+        <Tooltip text="Liquidity backing this market: the market's own capital, not a personal balance.">
           <div className="min-w-[90px]">
             <p className="text-[9px] uppercase tracking-[0.15em] text-[var(--text-dim)]">liquidity</p>
             <p className="text-[12px] text-[var(--text)]" style={{ fontFamily: "var(--font-mono)" }}>
@@ -415,7 +415,7 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
         </div>
         <div className="flex items-center gap-1.5">
           <HealthBadge level={health.level} />
-          <Tooltip text={crankFresh == null ? "Crank freshness unknown" : crankFresh ? "Crank fresh — accrue is up to date" : "Crank stale — no accrue in a while (accrue cliff)"}>
+          <Tooltip text={crankFresh == null ? "Update status unknown" : crankFresh ? "Up to date" : "Catching up: no update in a while"}>
             <span
               className={`inline-block h-1.5 w-1.5 rounded-full ${
                 crankFresh == null ? "bg-[var(--text-dim)]" : crankFresh ? "bg-[var(--long)]" : "bg-[var(--warning)] animate-pulse"
@@ -437,7 +437,7 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
         <div className="border-t border-[var(--border)]/30 px-4 py-4">
           <div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
             <div>
-              <p className="text-[9px] uppercase tracking-[0.15em] text-[var(--text-dim)]">last crank</p>
+              <p className="text-[9px] uppercase tracking-[0.15em] text-[var(--text-dim)]">last update</p>
               <p className="text-[11px] text-[var(--text)]" style={{ fontFamily: "var(--font-mono)" }}>
                 {isV17
                   ? (v17Stats?.assetSlotLast != null && chainCurrentSlot != null ? formatSlotAge(chainCurrentSlot, v17Stats.assetSlotLast) + " ago" : "—")

@@ -252,8 +252,14 @@ export async function POST(req: NextRequest) {
         ? await grantServerSol({ connection: getServerConnection("confirmed"), db: supabase, to: walletPk, ip: getClientIp(req) })
         : { status: "skipped", reason: "disabled" };
       if (grant.status === "sent" || grant.status === "funded") {
+        if (grant.status === "funded") {
+          // Re-review I-C: nothing was sent, so the wallet's claim is not spent: give it back
+          // and record nothing.
+          await releaseGateClaimOnExit?.();
+        } else {
+          _faucetRecord(rateKey);
+        }
         releaseGateClaimOnExit = null;
-        _faucetRecord(rateKey);
         return NextResponse.json({
           funded: true,
           sol_airdropped: grant.status === "sent",

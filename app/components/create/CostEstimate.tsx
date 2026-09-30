@@ -170,7 +170,7 @@ export const CostEstimate: FC<CostEstimateProps> = ({
           {/* v17 slabs are always sized to max capacity — there is no tier to
               display here (see DEFAULT_SLAB_SIZE doc comment above). */}
           <span className="text-[var(--text-secondary)]">
-            Slab account rent (max capacity)
+            Market account rent (max capacity)
           </span>
           <span className="font-mono text-[var(--text)]">{estimate.slabRentSol} SOL</span>
         </div>
@@ -179,7 +179,7 @@ export const CostEstimate: FC<CostEstimateProps> = ({
           <span className="font-mono text-[var(--text)]">{estimate.tokenAccountRentSol} SOL</span>
         </div>
         <div className="flex items-center justify-between text-[11px]">
-          <span className="text-[var(--text-secondary)]">LP portfolio & matcher ctx</span>
+          <span className="text-[var(--text-secondary)]">Liquidity account rent</span>
           <span className="font-mono text-[var(--text)]">{estimate.lpPortfolioMatcherRentSol} SOL</span>
         </div>
         <div className="flex items-center justify-between text-[11px]">
@@ -201,7 +201,7 @@ export const CostEstimate: FC<CostEstimateProps> = ({
       {/* Token Costs */}
       <div className="px-4 py-3 space-y-2">
         <div className="flex items-center justify-between text-[11px]">
-          <span className="text-[var(--text-secondary)]">LP Collateral</span>
+          <span className="text-[var(--text-secondary)]">Starting liquidity</span>
           <span className="font-mono text-[var(--text)]">
             {estimate.lpTokens > 0 ? estimate.lpTokens.toLocaleString() : "—"} Sim-USDC
           </span>

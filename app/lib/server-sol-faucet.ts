@@ -178,10 +178,22 @@ export async function grantServerSol(p: { connection: Connection; db: Db | null;
   const signer = getSolFaucetSigner(p.env);
   if (!signer) return { status: "skipped", reason: "disabled" };
   if (!p.db) return { status: "skipped", reason: "no-db" };
-  const balance = await p.connection.getBalance(p.to, "confirmed");
+  // Re-review I-D: a failed read never throws out of here (the playground route calls this
+  // after the USDC has landed); the caller falls back to the public airdrop.
+  let balance: number;
+  try {
+    balance = await p.connection.getBalance(p.to, "confirmed");
+  } catch {
+    return { status: "skipped", reason: "failed" };
+  }
   if (balance >= SERVER_SOL_TARGET_LAMPORTS) return { status: "funded", lamports: 0 };
-  const ipOk = await serverSolIpLimiter.check(p.ip);
-  if (!ipOk.allowed) return { status: "skipped", reason: "ip-limit" };
+  let ipAllowed = false;
+  try {
+    ipAllowed = (await serverSolIpLimiter.check(p.ip)).allowed;
+  } catch {
+    ipAllowed = false;
+  }
+  if (!ipAllowed) return { status: "skipped", reason: "ip-limit" };
   const r = await reserveServerSol(p.db, p.to.toBase58(), Date.now(), p.env);
   if (!("id" in r)) return { status: "skipped", reason: r.reason };
   const lamports = SERVER_SOL_TARGET_LAMPORTS - balance;

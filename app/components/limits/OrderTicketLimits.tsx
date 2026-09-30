@@ -82,7 +82,7 @@ export const OrderTicketLimits: FC<OrderTicketLimitsProps> = ({
                 testId="limits-max-size"
                 data={{ side, "max-q": lim ? lim.maxQ.toString() : "", state: loading ? "loading" : lim ? "ready" : "error" }}
                 label={`Max ${side}`}
-                tooltip="Largest size that fills in full right now: the LP's capital cap, the protocol open-interest cap and the market's per-trade limit, whichever is tightest. Updates live."
+                tooltip="Largest size that fills in full right now: the market's liquidity cap, the protocol open-interest cap and the market's per-trade limit, whichever is tightest. Updates live."
                 value={loading || !lim ? "—" : lim.halted ? "Paused" : `${fmtQ(lim.maxQ)} ${symbol}`}
                 valueClass={lim?.halted ? "text-[var(--short)]" : side === direction ? "text-[var(--text)]" : "text-[var(--text-secondary)]"}
               />
@@ -145,7 +145,7 @@ const QuotePanel: FC<{
           <LimitsRow
             testId="limits-quote-row"
             data={{ row: "quote" }}
-            label="Matcher quote"
+            label="Price quote"
             value={q.quotePriceE6 === null ? "No fill" : `${formatUsdPriceE6(q.quotePriceE6)} (${fmtBps(q.totalBps ?? 0n)})`}
           />
           <LimitsRow testId="limits-quote-row" data={{ row: "base" }} label="Base spread" value={fmtBps(q.baseSpreadBps)} />
@@ -205,7 +205,7 @@ const QuotePanel: FC<{
                   onChange={(e) => onFeeMarginChange(clampFeeCapMarginBps(Number(e.target.value)))}
                   className="w-12 rounded-none border border-[var(--border)] bg-[var(--bg)] px-1 py-0.5 text-right font-mono text-[10px] text-[var(--text)]"
                 />
-                <span className="font-mono text-[var(--text-secondary)]">bps</span>
+                <span className="font-mono text-[var(--text-secondary)]">× 0.01%</span>
               </span>
             </label>
           )}

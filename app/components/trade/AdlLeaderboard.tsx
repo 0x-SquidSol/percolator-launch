@@ -240,7 +240,7 @@ export const AdlLeaderboard: FC<Props> = ({ slabAddress }) => {
                 <thead>
                   <tr className="border-b border-[var(--border)]/40">
                     <th className="pb-1 text-left font-semibold uppercase tracking-[0.08em] text-[var(--text-secondary)] pr-2">#</th>
-                    <th className="pb-1 text-left font-semibold uppercase tracking-[0.08em] text-[var(--text-secondary)] pr-2">Slot</th>
+                    <th className="pb-1 text-left font-semibold uppercase tracking-[0.08em] text-[var(--text-secondary)] pr-2">Rank</th>
                     <th className="pb-1 text-right font-semibold uppercase tracking-[0.08em] text-[var(--text-secondary)] pr-2">PnL%</th>
                     <th className="pb-1 text-right font-semibold uppercase tracking-[0.08em] text-[var(--text-secondary)] pr-2">Unr. PnL</th>
                     <th className="pb-1 text-right font-semibold uppercase tracking-[0.08em] text-[var(--text-secondary)]">Capital</th>

@@ -1,5 +1,6 @@
 "use client";
 
+import { bpsPct } from "@/lib/format";
 import { FC, useMemo } from "react";
 import { RotaryDial } from "./RotaryDial";
 import { HoldToLaunch } from "./HoldToLaunch";
@@ -212,10 +213,10 @@ export const StepControlRoom: FC<StepControlRoomProps> = ({
           <div className="mb-2 text-[10px] uppercase tracking-[0.16em] text-[var(--text-secondary)]">
             Pre-flight
           </div>
-          <Readout k="Market" v={`${symbol}-PERP`} />
+          <Readout k="Market" v={symbol} />
           <Readout k="Price feed" v={oracleLabel} tone="good" />
           <Readout k="Start price" v={startPrice} />
-          <Readout k="Slab" v={`${slabBytes.toLocaleString()} B · max capacity`} />
+          <Readout k="Market size" v={`${slabBytes.toLocaleString()} B · max capacity`} />
           <Readout k="Rent" v={rentSol === null ? "—" : `${rentSol.toFixed(3)} SOL`} />
           {/* GH#2622: set expectations UP FRONT, before launch — not only after
               a creator gets stuck (RecoverSolBanner's gated RECLAIM handles that
@@ -237,7 +238,7 @@ export const StepControlRoom: FC<StepControlRoomProps> = ({
               creator cannot change it either — FeeSlider is never rendered and
               setTradingFeeBps has no consumers — so "set by liquidity" is the
               honest description of both facts. See #2563. */}
-          <Readout k="Trading fee" v={`${tradingFeeBps} bps · set by token liquidity`} />
+          <Readout k="Trading fee" v={`${bpsPct(tradingFeeBps)} · set by token liquidity`} />
           {/* A creator is never told they earn a share of this anywhere. #2565. */}
           <div className="col-span-full pt-1">
             <FeeBreakdown highlight="creator" feeBps={tradingFeeBps} />

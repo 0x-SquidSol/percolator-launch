@@ -312,7 +312,7 @@ function StakeHeader({
 
       <div className="relative mx-auto max-w-6xl px-4 pt-10 pb-6">
         <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.25em] text-[var(--accent)]/60">
-          // insurance lp
+          // insurance stake
         </div>
 
         <h1
@@ -863,7 +863,7 @@ function DepositWidget({
               <div className="text-[12px] text-[var(--text-secondary)]">
                 You will receive ≈{" "}
                 <span className="font-medium text-[var(--text)] tabular-nums" style={{ fontFamily: "var(--font-mono)" }}>
-                  {lpEstimate.toLocaleString(undefined, { maximumFractionDigits: 4 })} LP
+                  {lpEstimate.toLocaleString(undefined, { maximumFractionDigits: 4 })} shares
                 </span>
               </div>
             )}
@@ -934,7 +934,7 @@ function DepositWidget({
                     style={{ fontFamily: "var(--font-mono)" }}
                     title="Click to use full staked balance"
                   >
-                    Staked: {withdrawPosition.lpBalance.toLocaleString(undefined, { maximumFractionDigits: 4 })} LP
+                    Staked: {withdrawPosition.lpBalance.toLocaleString(undefined, { maximumFractionDigits: 4 })} shares
                   </button>
                 )}
               </div>
@@ -1304,7 +1304,7 @@ function StakeSidebar() {
         </div>
         <div className="space-y-2">
           <CoverageItem icon="⚡" label="Liquidation Shortfall" description="First-loss capital when liquidations don't fully cover a position" />
-          <CoverageItem icon="🔄" label="Socialized Loss Buffer" description="Absorbs bad debt before it cascades to LPs and depositors" />
+          <CoverageItem icon="🔄" label="Socialized Loss Buffer" description="Absorbs bad debt before it reaches the market's liquidity and Earn deposits" />
           <CoverageItem icon="🏗️" label="Protocol Solvency" description="Pre-funds the market's insurance fund via an admin flush" />
         </div>
       </div>

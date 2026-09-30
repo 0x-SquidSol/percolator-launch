@@ -1149,7 +1149,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
                   past Step 1 (e.g. resuming after LP init or deposit already landed). */}
               {resumeFromStep === 0
                 ? "Re-enter your parameters to retry market initialization."
-                : `Slab is initialized (through step ${resumeFromStep} of 6). Re-enter your parameters to resume from where you left off.`}
+                : `The market is set up through step ${resumeFromStep} of 6. Re-enter your parameters to resume from where you left off.`}
             </span>
           </div>
           <button

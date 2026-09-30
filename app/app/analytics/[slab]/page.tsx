@@ -134,7 +134,7 @@ function AnalyticsPageInner({ slab }: { slab: string }) {
           <Section title="Engine health"><EngineHealthCard /></Section>
         </ErrorBoundary>
         <ErrorBoundary label="CrankHealthCard">
-          <Section title="Crank health"><CrankHealthCard /></Section>
+          <Section title="Market updates"><CrankHealthCard /></Section>
         </ErrorBoundary>
         <ErrorBoundary label="OpenInterestCard">
           <Section title="Open interest"><OpenInterestCard slabAddress={slab} /></Section>

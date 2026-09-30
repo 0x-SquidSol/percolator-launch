@@ -214,7 +214,7 @@ export const InsuranceDashboard: FC<{ slabAddress: string }> = ({
             <span className="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--text-secondary)]">
               Insurance Fund
             </span>
-            <InfoIcon tooltip="Safety net that protects LPs from bankruptcy during extreme market events." />
+            <InfoIcon tooltip="Safety net that protects the market's liquidity from bankruptcy during extreme market events." />
             <button
               onClick={() => setShowExplainer(true)}
               className="text-[8px] text-[var(--accent)] hover:underline"

@@ -357,7 +357,7 @@ export const FundingRateCard: FC<{ slabAddress: string }> = ({ slabAddress }) =>
             <span className="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--text)]">
               Funding Rate
             </span>
-            <InfoIcon tooltip="Funding rates balance long/short positions. Percolator uses inventory-based funding to protect LPs." />
+            <InfoIcon tooltip="Funding rates balance long/short positions. Percolator uses inventory-based funding to protect the market's liquidity." />
             <button
               onClick={() => setShowExplainer(true)}
               className="text-[8px] text-[var(--accent)] hover:underline"

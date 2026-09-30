@@ -136,8 +136,8 @@ function EarnInfoStrip({ totalInsurance }: { totalInsurance: number }) {
         </h3>
         <ol className="space-y-2">
           <MiniStep num={1} title="Deposit" desc="Provide sim-USDC as counterparty backing" />
-          <MiniStep num={2} title="Earn fees" desc="Every trade on that market generates LP fees" />
-          <MiniStep num={3} title="Withdraw" desc="Redeem LP tokens for your share after cooldown" />
+          <MiniStep num={2} title="Earn fees" desc="Every trade on that market pays a fee share into the vault" />
+          <MiniStep num={3} title="Withdraw" desc="Request a withdrawal; it pays out after a short wait" />
         </ol>
       </div>
 
@@ -165,7 +165,7 @@ function EarnInfoStrip({ totalInsurance }: { totalInsurance: number }) {
         <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">
           {limitsFlags().p3
             ? COPY.howLossesWork
-            : "LP deposits are exposed to trader PnL — when traders win, LPs may see drawdowns. The insurance fund provides a buffer. Only deposit what you can afford to lose."}
+            : "Earn deposits are exposed to trader profit and loss: when traders win, the vault can go down. The insurance fund provides a buffer. Only deposit what you can afford to lose."}
         </p>
       </div>
     </div>

@@ -270,7 +270,7 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
             ← Earn
           </Link>
           <span className="text-[var(--text-muted)]">/</span>
-          <span className="text-[var(--text)]">{symbol}-PERP Vault</span>
+          <span className="text-[var(--text)]">{baseSymbol(symbol)} Earn vault</span>
         </div>
 
         {/* Earn-stats fetch error — stats (volume/insurance/APY) may be stale or
@@ -294,7 +294,7 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
               Earn Vault Unavailable
             </p>
             <p className="text-[11px] text-[var(--text-secondary)] mt-1">
-              This market does not have a usable on-chain Earn LP vault. Deposits and withdrawals are unavailable here.
+              This market doesn't have an Earn vault yet, so deposits and withdrawals aren't available here.
             </p>
           </div>
         )}

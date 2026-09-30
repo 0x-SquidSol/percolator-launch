@@ -54,11 +54,12 @@ describe("/api/faucet server SOL path", () => {
     expect(m.release).not.toHaveBeenCalled();
     expect(m.requestAirdrop).not.toHaveBeenCalled();
   });
-  it("funded: nothing sent, sol_amount 0", async () => {
+  it("funded: nothing sent, sol_amount 0, and (re-review I-C) the wallet's claim is given back", async () => {
     m.grant.mockResolvedValue({ status: "funded", lamports: 0 });
     const body = await (await POST(req())).json();
     expect(body).toMatchObject({ funded: true, sol_airdropped: false, sol_amount: 0 });
     expect(m.requestAirdrop).not.toHaveBeenCalled();
+    expect(m.release).toHaveBeenCalledWith(expect.anything(), 9);
   });
   it("L-1 pending: 503 pending, the claim is KEPT, no second send from the public airdrop", async () => {
     m.grant.mockResolvedValue({ status: "pending", signature: "p" });
