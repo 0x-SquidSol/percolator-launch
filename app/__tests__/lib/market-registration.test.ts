@@ -20,8 +20,11 @@ function fakeSupabase(opts: {
   readError?: boolean;
   insertError?: { code?: string } | null;
   updateError?: boolean;
+  /** The row's metadata_source at WRITE time (a concurrent maintainer edit), if it changed. */
+  existingAtWrite?: string;
 }) {
   let captured: Captured = null;
+  const updateFilters: Array<Array<[string, unknown]>> = [];
   const client = {
     from() {
       return {
@@ -47,18 +50,32 @@ function fakeSupabase(opts: {
         },
         update(payload: Record<string, unknown>) {
           captured = { op: "update", payload };
-          return {
-            eq() {
-              return {
-                eq: async () => ({ error: opts.updateError ? { message: "boom" } : null }),
-              };
+          const filters: Array<[string, unknown]> = [];
+          const result = () => ({ error: opts.updateError ? { message: "boom" } : null });
+          // A chainable, awaitable filter builder (PostgREST shape): .eq(...)* [.select()].
+          const q: Record<string, unknown> = {
+            eq(col: string, v: unknown) {
+              filters.push([col, v]);
+              return q;
+            },
+            select: async () => {
+              updateFilters.push(filters);
+              const guard = filters.find(([c]) => c === "metadata_source");
+              const rowSource = opts.existingAtWrite ?? opts.existing?.metadata_source;
+              const hit = !guard || guard[1] === rowSource;
+              return { ...result(), data: hit ? [{ id: "1" }] : [] };
+            },
+            then: (res: (v: unknown) => void) => {
+              updateFilters.push(filters);
+              res(result());
             },
           };
+          return q;
         },
       };
     },
   };
-  return { client, get captured() { return captured; } };
+  return { client, updateFilters, get captured() { return captured; } };
 }
 
 const row = (over: Partial<RegistrationRow> = {}): RegistrationRow => ({
@@ -225,7 +242,7 @@ describe("upsertRegisteredMarketRow (proof path)", () => {
     expect(await upsertRegisteredMarketRow(f.client as never, row(), "proof")).toEqual({ ok: true, action: "unchanged", keeperActive: false });
     expect(f.captured).toBeNull();
   });
-  it("refuses to change an existing pool or CA (409), on manual and auto rows", async () => {
+  it("refuses to change an existing pool or CA (422, final), on manual and auto rows", async () => {
     for (const existing of [
       { id: "1", metadata_source: "manual", dex_pool_address: "OTHER", mainnet_ca: "CA1" },
       { id: "1", metadata_source: "manual", dex_pool_address: "POOL1", mainnet_ca: "OTHERCA" },
@@ -234,9 +251,21 @@ describe("upsertRegisteredMarketRow (proof path)", () => {
       const f = fakeSupabase({ existing });
       const r = await upsertRegisteredMarketRow(f.client as never, row(), "proof");
       expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.status).toBe(409);
+      if (!r.ok) expect(r.status).toBe(422);
       expect(f.captured).toBeNull();
     }
+  });
+  it("re-review I-R1: the auto-row update carries metadata_source='auto' in the write itself", async () => {
+    const f = fakeSupabase({ existing: { id: "1", metadata_source: "auto" } });
+    await upsertRegisteredMarketRow(f.client as never, row(), "proof");
+    expect(f.updateFilters[0]).toContainEqual(["metadata_source", "auto"]);
+  });
+  it("re-review I-R1: a maintainer edit between read and write (row now 'manual') is not overwritten", async () => {
+    const f = fakeSupabase({ existing: { id: "1", metadata_source: "auto" }, existingAtWrite: "manual" });
+    const r = await upsertRegisteredMarketRow(f.client as never, row(), "proof");
+    // zero rows updated -> re-applied once -> the fake still reads 'auto' -> second guarded write also misses
+    expect(r).toEqual({ ok: false, status: 503, error: "The market row changed while registering. Try again." });
+    expect(f.updateFilters.every((fs) => fs.some(([c, v]) => c === "metadata_source" && v === "auto"))).toBe(true);
   });
   it("NEGATIVE CONTROL: the admin path may still update a manual row / change its pool", async () => {
     const f = fakeSupabase({ existing: { id: "1", metadata_source: "manual", dex_pool_address: "OTHER", mainnet_ca: "CA1" } });

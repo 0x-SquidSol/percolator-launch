@@ -98,3 +98,11 @@ describe("memo v2: the bound payload survives a reload (security review 2026-09-
     }
   });
 });
+
+describe("re-review I-R2: 'locked to another price source' is final", () => {
+  it("422 -> not retryable, the reason is the message", async () => {
+    const f = vi.fn(async () => res(422, { error: "This market is already registered with a different price source." }));
+    const a = await postKeeperRegistration(REQ, f as unknown as typeof fetch);
+    expect(a).toEqual({ registered: false, retryable: false, message: "This market is already registered with a different price source." });
+  });
+});

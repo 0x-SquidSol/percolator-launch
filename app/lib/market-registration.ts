@@ -68,6 +68,8 @@ export type RegistrationMode = "proof" | "admin";
 
 /** Refused on the proof path: the row already has another price source. */
 export const PRICE_SOURCE_LOCKED = "This market is already registered with a different price source.";
+/** Final, not retryable (the client's backoff retries 409): the binding only changes via the admin path. */
+export const PRICE_SOURCE_LOCKED_STATUS = 422;
 
 interface ExistingRow {
   id: string;
@@ -101,7 +103,8 @@ function describe(err: { code?: string; message?: string; details?: string; hint
  *                                        "proof": NO write ('unchanged'); the row stays as the
  *                                        creator first registered it (and as a maintainer may
  *                                        have retired it)
- *   "proof" and the row already names a different pool / CA -> 409, no write
+ *   "proof" and the row already names a different pool / CA -> 422 (final), no write
+ *   "proof" replaces an 'auto' row only with `metadata_source='auto'` in the UPDATE itself
  *
  * `keeper_status='active'` is set only by an insert or an update here. The
  * indexer's inserts take the column default ('retired'), so auto-discovery can
@@ -163,7 +166,7 @@ async function upsertOnce(
     const pool = existing.dex_pool_address ?? null;
     const ca = existing.mainnet_ca ?? null;
     if ((pool !== null && pool !== row.dex_pool_address) || (ca !== null && ca !== (row.mainnet_ca ?? null))) {
-      return { ok: false, status: 409, error: PRICE_SOURCE_LOCKED };
+      return { ok: false, status: PRICE_SOURCE_LOCKED_STATUS, error: PRICE_SOURCE_LOCKED };
     }
     if (existing.metadata_source === "manual") {
       return { ok: true, action: "unchanged", keeperActive: existing.keeper_status === "active" };
@@ -210,6 +213,28 @@ async function upsertOnce(
       return { ok: false, status: 500, error: "Failed to register market", detail: describe(error) };
     }
     return { ok: true, action: "inserted", keeperActive: true };
+  }
+
+  if (mode === "proof") {
+    // Re-review I-R1: only an 'auto' row may be replaced on the proof path, checked IN the write,
+    // so a maintainer edit landing between the read and this update is never overwritten. Zero
+    // rows updated = the row changed underneath: re-apply the rules once against what is there.
+    const { data: updated, error: pErr } = await supabase
+      .from("markets")
+      .update(payload as never)
+      .eq("slab_address", row.slab_address)
+      .eq("network", row.network)
+      .eq("metadata_source", "auto")
+      .select("id");
+    if (pErr) {
+      console.error("[market-registration] update failed:", describe(pErr));
+      return { ok: false, status: 500, error: "Failed to update market registration", detail: describe(pErr) };
+    }
+    if (!Array.isArray(updated) || updated.length === 0) {
+      if (!raced) return upsertOnce(supabase, row, mode, true);
+      return { ok: false, status: 503, error: "The market row changed while registering. Try again." };
+    }
+    return { ok: true, action: "updated", keeperActive: true };
   }
 
   const { error: updErr } = await supabase

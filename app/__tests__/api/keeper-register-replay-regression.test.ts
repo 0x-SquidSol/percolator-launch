@@ -8,7 +8,7 @@
  *  2. an exact replay (the creator's own payload) over the creator-registered ('manual') row ->
  *     200 but NO database write: the row stays as registered, keeper_status is not touched;
  *  3. an exact replay over a row a maintainer RETIRED -> 403, no database write, no blob write;
- *  4. an exact replay whose pool differs from the row's existing pool -> 409, no write
+ *  4. an exact replay whose pool differs from the row's existing pool -> 422 (final), no write
  *     (first proof-registered binding wins);
  *  5. the indexer's 'auto' row IS replaced by the creator's registration (the reason this route
  *     writes at all), with every value from the memo-bound payload.
@@ -23,7 +23,7 @@ const h = vi.hoisted(() => ({
   tx: null as unknown,
   programId: "",
   existing: null as null | Record<string, unknown>,
-  writes: [] as Array<{ op: string; payload: Record<string, unknown> }>,
+  writes: [] as Array<{ op: string; payload: Record<string, unknown>; guard?: string }>,
 }));
 const blobUpsert = vi.fn(async () => undefined);
 vi.mock("@/lib/playground-registered-markets", () => ({ upsertRegisteredMarket: blobUpsert }));
@@ -35,7 +35,15 @@ vi.mock("@/lib/supabase", () => ({
       select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: h.existing, error: null }) }) }) }),
       update: (p: Record<string, unknown>) => {
         h.writes.push({ op: "update", payload: p });
-        return { eq: () => ({ eq: async () => ({ error: null }) }) };
+        const q: Record<string, unknown> = {
+          eq: (col: string, v: unknown) => {
+            if (col === "metadata_source") h.writes[h.writes.length - 1]!.guard = String(v);
+            return q;
+          },
+          select: async () => ({ data: [{ id: 1 }], error: null }),
+          then: (res: (v: unknown) => void) => res({ error: null }),
+        };
+        return q;
       },
       insert: async (p: Record<string, unknown>) => {
         h.writes.push({ op: "insert", payload: p });
@@ -155,10 +163,11 @@ describe("REGRESSION WP-7 M-1/M-2: a replayed public creation tx cannot rewrite 
     expect(blobUpsert).not.toHaveBeenCalled();
   });
 
-  it("4. a row that already has another pool keeps it (409, no write)", async () => {
+  it("4. a row that already has another pool keeps it (422, final: the client shows the reason, no retry loop)", async () => {
     h.existing = { id: 1, metadata_source: "manual", dex_pool_address: Keypair.generate().publicKey.toBase58(), mainnet_ca: null, keeper_status: "active" };
     const r = await replay(CREATOR_PAYLOAD);
-    expect(r.status).toBe(409);
+    expect(r.status).toBe(422);
+    expect(((await r.json()) as { error: string }).error).toMatch(/different price source/);
     expect(h.writes).toEqual([]);
     expect(blobUpsert).not.toHaveBeenCalled();
   });
@@ -168,6 +177,7 @@ describe("REGRESSION WP-7 M-1/M-2: a replayed public creation tx cannot rewrite 
     const r = await replay(CREATOR_PAYLOAD);
     expect(r.status).toBe(200);
     expect(h.writes).toHaveLength(1);
+    expect(h.writes[0]!.guard).toBe("auto");
     expect(h.writes[0]).toMatchObject({
       op: "update",
       payload: { name: "Test Token", symbol: "TEST", max_leverage: 5, trading_fee_bps: 30, oracle_authority: CREATOR_PAYLOAD.oracle_authority, deployer: CREATOR.publicKey.toBase58(), dex_pool_address: POOL, metadata_source: "manual", keeper_status: "active" },
