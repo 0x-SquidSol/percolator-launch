@@ -3,11 +3,12 @@
  * planned, simulate the repair instructions (sigVerify=false). Signs nothing.
  *   npx tsx scripts/p0b/live-liveness-check.ts
  */
+import { DEVNET_PROGRAM_IDS } from "../../lib/program-ids";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { decodeMarketLiveness, planLivenessRepairs, describeRepair, buildLivenessRepairIx, connectionSelfHealDeps, computeBudgetPrefix } from "../../lib/self-heal";
 
 const RPC = process.env.DEVNET_RPC ?? "https://api.devnet.solana.com";
-const PROGRAM = new PublicKey("GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ");
+const PROGRAM = new PublicKey(DEVNET_PROGRAM_IDS.wrapper);
 // any existing devnet system account works as a sim fee payer with sigVerify=false
 const PAYER = new PublicKey(process.env.SIM_PAYER ?? "FbTbDeGWQpjrEqJdqoBHX3sTWHoAmU2xywD7wyxH6WC7");
 const MARKETS: Record<string, string> = {

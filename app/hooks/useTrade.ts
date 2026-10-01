@@ -1,5 +1,6 @@
 "use client";
 
+import { tradeCuCap } from "@/lib/compute-budget";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
@@ -25,9 +26,13 @@ import {
   encodePushOraclePrice,
   ACCOUNTS_PUSH_ORACLE_PRICE,
 } from "@/lib/sdk-compat";
-import { sendTx, prewarmTxLanding } from "@/lib/tx";
+import { sendTx, sendTxWaiting, prewarmTxLanding } from "@/lib/tx";
 import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
 import { applyConfirmedFill, getPortfolioRawSnapshot, isLpPortfolio, makePortfolioScanKey } from "@/lib/userAccountScan";
+import { limitsFlags } from "@/lib/limits/flags";
+import { decodeMarketEngineView, signedPositionForAsset } from "@/lib/limits/decode";
+import { measureFill, recordFillResult } from "@/lib/limits/fill-check";
+import { tradeFeeBpsToSign } from "@/lib/limits/fee-channel";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { detectOracleMode, resolveMarketPriceE6 } from "@/lib/oraclePrice";
 import { assertKnownProgram, assertCanonicalMatcher } from "@/lib/programAllowlist";
@@ -35,6 +40,7 @@ import { invalidateMatcherCaps } from "@/lib/matcherCaps";
 import { getLivePriceSnapshot } from "@/lib/priceStore/priceStore";
 import { computeLimitPriceE6, assertFeedAgreesWithChain } from "@/lib/slippage";
 import { fetchPortfolioIdentity, fetchAssetMarketId, defaultCrankObservations } from "@/lib/v18-wire";
+import { buildTradeCpiIx } from "@/lib/trade-ix";
 
 // ---------------------------------------------------------------------------
 // v17 portfolio account layout constants
@@ -116,7 +122,7 @@ function readPortfolioOwner(data: Buffer): PublicKey {
  *
  * Shared with useDeposit — kept co-located here to avoid a cross-hook import.
  */
-async function findV17Portfolio(
+export async function findV17Portfolio(
   connection: Connection,
   programId: PublicKey,
   marketPk: PublicKey,
@@ -197,12 +203,12 @@ function invalidateV17TradeAccounts(programId: PublicKey, slabPk: PublicKey, tak
   v17TradeAccountsCache.delete(tradeAccountsKey(programId, slabPk, takerPk));
 }
 
-async function resolveV17TradeAccounts(
+/** The LP side of a trade (accountB + its matcher), without the taker (UX WP-6 first trade). */
+export async function resolveLpTradeAccounts(
   connection: Connection,
   programId: PublicKey,
   slabPk: PublicKey,
-  takerPk: PublicKey,
-): Promise<V17TradeAccounts> {
+): Promise<Omit<V17TradeAccounts, "accountA">> {
   // ── accountB: the LP portfolio (the one with an enabled matcher config) ──
   // Curated markets have the LP portfolio address pinned in
   // PLAYGROUND_SLAB_META — one targeted getAccountInfo instead of a full
@@ -280,6 +286,16 @@ async function resolveV17TradeAccounts(
   const [matcherDelegate] = deriveMatcherDelegate(
     programId, slabPk, lpPortfolioPk, lpOwner, matcherProg, matcherCtx,
   );
+  return { accountB: lpPortfolioPk, matcherProg, matcherCtx, matcherDelegate };
+}
+
+export async function resolveV17TradeAccounts(
+  connection: Connection,
+  programId: PublicKey,
+  slabPk: PublicKey,
+  takerPk: PublicKey,
+): Promise<V17TradeAccounts> {
+  const lp = await resolveLpTradeAccounts(connection, programId, slabPk);
 
   // ── accountA: the taker's own portfolio ──────────────────────────────────
   // The shared scan store (useUserAccount and friends) almost always already
@@ -301,7 +317,7 @@ async function resolveV17TradeAccounts(
     );
   }
 
-  return { accountA, accountB: lpPortfolioPk, matcherProg, matcherCtx, matcherDelegate };
+  return { accountA, ...lp };
 }
 
 /** Cache-or-resolve with in-flight dedup (prewarm + submit share one scan). */
@@ -386,6 +402,19 @@ export function useTrade(slabAddress: string) {
        */
       sizes?: bigint[];
       limitPriceE6?: bigint;
+      /**
+       * P2 fee channel (lib/limits/fee-channel.ts): the taker-SIGNED fee cap, base +
+       * the quote's requested fee, when the protocol enabled the channel for this asset.
+       * Omitted => the market's base trade fee (the only value accepted without it).
+       */
+      feeBps?: bigint;
+      /** UX WP-2: called while the app waits for the market (no prompt yet): true / false. */
+      onWaiting?: (waiting: boolean) => void;
+      /** UX WP-3: the ticket's "Stop" ends the wait loop (no prompt was opened). */
+      abortSignal?: AbortSignal;
+      /** UX WP-3: keep waiting past the schedule (with Stop) and say so after ~30 s. */
+      keepWaiting?: boolean;
+      onWaitingLong?: () => void;
     }) => {
       if (inflightRef.current) throw new Error("Trade already in progress");
       inflightRef.current = true;
@@ -568,61 +597,25 @@ export function useTrade(slabAddress: string) {
           fetchAssetMarketId(connection, slabPk, 0),
         ]);
 
-        const tradeIx = buildIx({
+        // v18: TradeCpi/BatchTradeCpi bind both portfolios' identity + accountB's matcher
+        // sequence + the asset marketId (lib/trade-ix.ts; shared with the first-trade flow).
+        const tradeIx = buildTradeCpiIx({
           programId,
-          keys: buildAccountMetas(ACCOUNTS_TRADE_CPI, [
-            wallet.publicKey,   // [0] signerA
-            slabPk,             // [1] market
-            accountA,           // [2] accountA (taker portfolio)
-            accountB,           // [3] accountB (LP portfolio)
-            matcherProg,        // [4] matcherProg
-            matcherCtx,         // [5] matcherCtx
-            matcherDelegate,    // [6] matcherDelegate
-          ]),
-          // v18: TradeCpi/BatchTradeCpi bind the two portfolios' identity
-          // (portfolioId + positionEpoch) + accountB's matcher-sequence + the
-          // asset marketId. feeBps MUST be the market's configured trade fee. An
-          // earlier note claimed feeBps=0n makes the program apply the market
-          // default — that is FALSE on the deployed v18 wrapper: fee_bps=0 with a
-          // non-zero insurance share fails validation and the trade reverts
-          // InvalidInstruction (Custom 9, which the ticket then MISLABELS as a
-          // slippage rejection — see errorMessages.ts). The proven newmarkets.ts
-          // seed passes the explicit market fee, so read it from
-          // wrapperConfigV17.tradeFeeBps. >1 leg: BatchTradeCpi — same 7 accounts,
-          // several matcher fills in one instruction, so an over-cap close lands
-          // with ONE signature. (maxSlippage/maxFeeAtoms=0 = no aggregate cap; the
-          // per-leg limitPrice is the real bound — matches the gate's encodeBatchTradeCpi.)
-          data:
-            legs.length > 1
-              ? encodeBatchTradeCpi({
-                  legs: legs.map((legSize) => ({
-                    assetIndex: 0,
-                    marketId: tradeMarketId,
-                    sizeQ: legSize.toString(),
-                    feeBps: wrapperConfigV17?.tradeFeeBps ?? 30n,
-                    limitPrice: effectiveLimitPriceE6.toString(),
-                  })),
-                  maxSlippageAtoms: 0n,
-                  maxFeeAtoms: 0n,
-                  accountAPortfolioId: takerId.portfolioId,
-                  accountAPositionEpoch: takerId.positionEpoch,
-                  accountBPortfolioId: lpId.portfolioId,
-                  accountBPositionEpoch: lpId.positionEpoch,
-                  accountBMatcherSequence: lpId.matcherSequence,
-                })
-              : encodeTradeCpi({
-                  accountAPortfolioId: takerId.portfolioId,
-                  accountAPositionEpoch: takerId.positionEpoch,
-                  accountBPortfolioId: lpId.portfolioId,
-                  accountBPositionEpoch: lpId.positionEpoch,
-                  accountBMatcherSequence: lpId.matcherSequence,
-                  assetIndex: 0,
-                  marketId: tradeMarketId,
-                  sizeQ: params.size.toString(),
-                  feeBps: wrapperConfigV17?.tradeFeeBps ?? 30n,
-                  limitPrice: effectiveLimitPriceE6.toString(),
-                  backingFeeCapBps: 0,
-                }),
+          signer: wallet.publicKey,
+          market: slabPk,
+          accountA,
+          accountB,
+          matcherProg,
+          matcherCtx,
+          matcherDelegate,
+          takerId,
+          lpId,
+          marketId: tradeMarketId,
+          legs,
+          size: params.size,
+          limitPriceE6: effectiveLimitPriceE6,
+          feeBps: params.feeBps,
+          marketTradeFeeBps: wrapperConfigV17?.tradeFeeBps,
         });
         // v17 PermissionlessCrank (tag 5): [owner(s,w), market(w), portfolio(w)] + oracle tail.
         // Build after accountA is resolved — portfolio = accountA (taker's portfolio).
@@ -630,12 +623,20 @@ export function useTrade(slabAddress: string) {
         // Cranking an empty portfolio returns EngineNonProgress (0x16) and aborts the tx.
         // Bug fix: do NOT unconditionally prepend the crank instruction.
         let hasActiveLegs = false;
+        // P1 (flag-gated): a confirmed TradeCpi can be a partial or ZERO fill.
+        const limitsMarketId =
+          isV17Market && limitsFlags().p1 && raw ? decodeMarketEngineView(raw)?.marketId ?? null : null;
+        let beforePosQ: bigint | null = null;
         if (isV17Market) {
           try {
             const portInfo = await connection.getAccountInfo(accountA, "confirmed");
             if (portInfo) {
               const pf = parsePortfolioV17(new Uint8Array(portInfo.data));
               hasActiveLegs = pf.legs.some((l) => l.active);
+              // P1 zero-fill check: the taker's position BEFORE the trade (same read).
+              if (limitsMarketId !== null) {
+                beforePosQ = signedPositionForAsset(new Uint8Array(portInfo.data), 0, limitsMarketId);
+              }
             }
           } catch {
             // If portfolio read fails, skip the crank rather than aborting the trade
@@ -667,16 +668,30 @@ export function useTrade(slabAddress: string) {
         }
         instructions.push(tradeIx);
 
-        // Each extra batch leg is another matcher CPI + fill settle — scale
-        // the budget rather than letting a 3-leg close die on compute. Legs
-        // are bounded structurally (position ≤ 4× fill cap ⇒ ≤ 5 legs), so
-        // this stays inside the 1.4M tx ceiling.
-        const computeUnits = Math.min(600_000 + 250_000 * (legs.length - 1), 1_400_000);
-        const sig = await sendTx({
-          connection, wallet, instructions, computeUnits,
+        // Explicit limit sized from a simulation of THIS tx (P1: CPI trades cost ~13k more CU;
+        // a single-leg batch on asset 1 is 216k > the 200k default), capped at 400k per leg
+        // (lib/compute-budget.ts). Also used by closes (useClosePosition calls trade()).
+        const sig = await sendTxWaiting({
+          connection, wallet, instructions,
+          onWaiting: params.onWaiting,
+          abortSignal: params.abortSignal,
+          keepWaiting: params.keepWaiting,
+          onWaitingLong: params.onWaitingLong,
+          computeUnitsFromSim: { cap: tradeCuCap(legs.length) },
           // P0b: prepend ExpireBackingBucket / FinalizeResetSide only if this
           // trade/close would otherwise revert 19/21 on them (lib/self-heal.ts).
-          selfHeal: isV17Market ? { programId, market: slabPk } : undefined,
+          // UX WP-2 (SH-2): a lagging engine clock is caught up by cranking the market's LP
+          // (accountB; the vault LP on P3) inside THIS tx — never "ask a maintainer".
+          selfHeal: isV17Market
+            ? {
+                programId,
+                market: slabPk,
+                catchUp: {
+                  portfolio: accountB,
+                  oracleTail: useAdminOracle ? [] : [{ pubkey: oracleAccount, isSigner: false, isWritable: false }],
+                },
+              }
+            : undefined,
         });
 
         // Immediate local application of the confirmed fill: sendTx's
@@ -690,7 +705,15 @@ export function useTrade(slabAddress: string) {
         // the burst. Capital/pnl/fees are intentionally left untouched (not
         // deterministic client-side) — those fields still wait on the
         // refresh burst exactly as before. See applyConfirmedFill's doc.
-        if (isV17Market) {
+        if (isV17Market && limitsMarketId !== null) {
+          // P1: patch only by the MEASURED delta. A zero fill changes nothing; an
+          // unknown result waits for the refresh burst (never assumes params.size).
+          const fill = await measureFill(connection, accountA, sig, beforePosQ, params.size, limitsMarketId);
+          recordFillResult(sig, fill);
+          if ((fill.kind === "full" || fill.kind === "partial") && fill.filledQ !== null) {
+            applyConfirmedFill(makePortfolioScanKey(programId, slabAddress, wallet.publicKey), fill.filledQ);
+          }
+        } else if (isV17Market) {
           applyConfirmedFill(makePortfolioScanKey(programId, slabAddress, wallet.publicKey), params.size);
         }
 

@@ -1,11 +1,13 @@
 "use client";
 
+import { bpsPct } from "@/lib/format";
 import { FC, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { LogoUpload } from "./LogoUpload";
 import { getNetwork } from "@/lib/config";
 import { useWalletCompat } from "@/hooks/useWalletCompat";
+import { launchPriceFeedStatus } from "@/lib/launch-outcome";
 
 interface LaunchSuccessProps {
   tokenSymbol: string;
@@ -40,7 +42,19 @@ interface LaunchSuccessProps {
    * retryKeeperRegistration.
    */
   onRetryKeeperRegistration?: () => void | Promise<void>;
+  /** E2E B21: the market's price comes from a keeper-read DEX pool, so it is not launched
+   *  until the keeper registration succeeds. */
+  priceFeedRequired?: boolean;
+  /** UX WP-7: the background registration loop's phase (connecting / slow / ready / failed). */
+  keeperPhase?: "connecting" | "slow" | "ready" | "failed" | null;
 }
+
+/**
+ * UX WP-7 (§3.15): until the live price is connected the launch is NOT finished — the title is
+ * "Almost ready", never a green "launched". The app connects it in the background, no signature.
+ */
+export const PRICE_FEED_MISSING_TITLE = "Almost ready";
+export const priceFeedMissingBody = (symbol: string) => `${symbol} is created. Connecting its live price is the last step.`;
 
 /**
  * Success state after market launch.
@@ -61,7 +75,10 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
   keeperMessage,
   keeperRegistering,
   onRetryKeeperRegistration,
+  priceFeedRequired = false,
+  keeperPhase = null,
 }) => {
+  const feed = launchPriceFeedStatus({ priceFeedRequired, keeperDelegated: !!keeperDelegated });
   const [copied, setCopied] = useState(false);
   const [copiedDevnet, setCopiedDevnet] = useState(false);
   const [mintLoading, setMintLoading] = useState(false);
@@ -151,8 +168,46 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
     }
   };
 
+  if (feed === "missing") {
+    return (
+      <div data-testid="launch-price-feed-missing" className="border border-[var(--border)] bg-[var(--panel-bg)] p-6 text-center">
+        <h2 className="text-[18px] font-bold text-[var(--text)] mb-2">{PRICE_FEED_MISSING_TITLE}</h2>
+        <p className="text-[13px] text-[var(--text-secondary)] mb-4">{priceFeedMissingBody(tokenSymbol)}</p>
+        <code className="mb-4 inline-block font-mono text-[10px] text-[var(--accent)]/80 bg-[var(--bg)] border border-[var(--border)] px-3 py-1.5 break-all">
+          {marketAddress}
+        </code>
+        <p data-testid="launch-price-feed-reason" data-phase={keeperPhase ?? "connecting"} className="mx-auto mb-4 flex max-w-sm items-center justify-center gap-1.5 text-[13px] text-[var(--text)]">
+          {keeperPhase !== "slow" && keeperPhase !== "failed" && (
+            <span aria-hidden="true" className="inline-block h-[6px] w-[6px] animate-pulse rounded-full bg-[var(--text-muted)]" />
+          )}
+          {keeperMessage || "Connecting the live price… usually under a minute."}
+        </p>
+        {onRetryKeeperRegistration && (keeperPhase === "slow" || keeperPhase === "failed") && (
+          <button
+            type="button"
+            data-testid="launch-price-feed-retry"
+            onClick={() => void onRetryKeeperRegistration()}
+            disabled={keeperRegistering}
+            className="border border-[var(--border)] px-4 py-2 text-[12px] font-medium text-[var(--text)] transition-colors hover:border-[var(--accent)]/40 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {keeperRegistering ? "Trying…" : "Try now"}
+          </button>
+        )}
+        <div className="mt-4">
+          <button
+            type="button"
+            onClick={onDeployAnother}
+            className="text-[10px] text-[var(--text-secondary)] underline hover:text-[var(--text)]"
+          >
+            Start a new market instead
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="border border-[var(--long)]/30 bg-[var(--long)]/[0.06] p-6 text-center">
+    <div data-testid="launch-success" className="border border-[var(--long)]/30 bg-[var(--long)]/[0.06] p-6 text-center">
       {/* Success icon */}
       <div className="mb-4">
         <div className="inline-flex h-12 w-12 items-center justify-center border-2 border-[var(--long)]/40 bg-[var(--long)]/[0.1] text-[24px] text-[var(--long)]">
@@ -161,10 +216,10 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
       </div>
 
       <h2 className="text-[18px] font-bold text-[var(--long)] mb-2">
-        MARKET LAUNCHED
+        Ready to trade
       </h2>
       <p className="text-[13px] text-[var(--text-secondary)] mb-4">
-        {tokenSymbol}-PERP is live on Percolator devnet
+        {tokenSymbol} is live on Percolator devnet
       </p>
 
       {/* Market address */}
@@ -199,7 +254,7 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
       )}
       {!keeperDelegated && keeperMessage && (
         <div className="mb-4 border border-[var(--warning)]/30 bg-[var(--warning)]/[0.04] px-4 py-2.5 text-left text-[11px] text-[var(--text-secondary)]">
-          <p>Keeper registration: {keeperMessage}</p>
+          <p>Live price: {keeperMessage}</p>
           {onRetryKeeperRegistration && (
             <button
               type="button"
@@ -226,15 +281,15 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
             {tokenSymbol.slice(0, 2).toUpperCase()}
           </div>
           <div>
-            <p className="text-[13px] font-bold text-[var(--text)]">{tokenSymbol}-PERP</p>
+            <p className="text-[13px] font-bold text-[var(--text)]">{tokenSymbol}</p>
             <div className="flex items-center gap-1.5 mt-0.5">
-              <span className="text-[9px] text-[var(--text-secondary)]">Fee: {tradingFeeBps} bps</span>
+              <span className="text-[9px] text-[var(--text-secondary)]">Fee: {bpsPct(tradingFeeBps)}</span>
               <span className="text-[9px] text-[var(--text-secondary)]">·</span>
               <span className="text-[9px] text-[var(--text-secondary)]">Leverage: {maxLeverage}x</span>
               <span className="text-[9px] text-[var(--text-secondary)]">·</span>
               {/* v17 slabs are always sized to max capacity — there is no tier to
                   report here anymore (see StepControlRoom's "Slab" pre-flight readout). */}
-              <span className="text-[9px] text-[var(--text-secondary)]">Slab: Max capacity</span>
+              <span className="text-[9px] text-[var(--text-secondary)]">Market size: max capacity</span>
             </div>
           </div>
         </div>
@@ -257,7 +312,7 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
       {insuranceMintFailed && (
         <div className="border border-[var(--warning)]/20 bg-[var(--warning)]/[0.04] px-4 py-2 mb-4 text-left w-full max-w-sm mx-auto">
           <p className="text-[11px] text-[var(--text-secondary)]">
-            Market is <strong className="text-[var(--text)]">live and tradeable</strong>. LP-vault deposits are pending (mint timed out) — retry later from market settings.
+            Market is <strong className="text-[var(--text)]">live and tradeable</strong>. Earn deposits aren't open yet (the setup step timed out). Retry later from My Markets.
           </p>
         </div>
       )}

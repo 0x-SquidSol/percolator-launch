@@ -20,9 +20,21 @@ import { isMockSlab } from "@/lib/mock-trade-data";
 import { useWalletCompat } from "@/hooks/useWalletCompat";
 import { invalidatePortfolio } from "@/lib/portfolio-invalidation";
 import { diagnoseTradeRejection } from "@/lib/tradeRejectDiagnosis";
+import { takeFillResult } from "@/lib/limits/fill-check";
+import { ZeroFillError, closeOutcome, isZeroFillError, type FillResult } from "@/lib/limits/fill-result";
+import { COPY } from "@/lib/limits/copy";
+import { fmtQ } from "@/lib/limits/format";
+import { decodeMarketEngineView } from "@/lib/limits/decode";
+import { closeRouteFor, isAdlReduceOnly, rebalanceReduceQ } from "@/lib/limits/adl-reduce-only";
+import { closeViaRebalanceReduce } from "@/lib/limits/rebalance-close";
+import { isReduceOnlyLock21 } from "@/lib/limits/reduce-only-fallback";
+import { pythCrankAccount } from "@/lib/limits/oracle-tail";
+import { findV17Portfolio } from "@/hooks/useTrade";
 
 export interface ClosePositionResult {
   signature: string | null;
+  /** P1: measured fill of the confirmed close (null = not measured: flag off / unpinned read). */
+  fill?: FillResult | null;
 }
 
 export interface UseClosePositionReturn {
@@ -138,10 +150,11 @@ function getFreshPortfolioData(
 
 export function useClosePosition(slabAddress: string): UseClosePositionReturn {
   const { connection } = useConnectionCompat();
-  const { publicKey } = useWalletCompat();
+  const wallet = useWalletCompat();
+  const { publicKey } = wallet;
   const userAccount = useUserAccount();
   const { trade } = useTrade(slabAddress);
-  const { accounts, raw, programId } = useSlabState();
+  const { accounts, raw, programId, config: slabConfig, wrapperConfigV17 } = useSlabState();
   const mockMode = isMockMode() && isMockSlab(slabAddress);
   // P0b: live v18 health refines 19/21 on a failed close (lib/market-error.ts).
   const marketHealth = useSingleMarketHealth(slabAddress);
@@ -336,7 +349,9 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
         // signature). A caps read failure degrades to the single-leg path —
         // exactly the pre-existing behavior — rather than blocking the close.
         let closeLegs: bigint[] | undefined;
-        if (programId) {
+        // F-3: tag 44 does not go through the matcher, so its caps/inventory do not apply.
+        const reduceOnlyNow = isV17Market && raw ? isAdlReduceOnly(decodeMarketEngineView(raw)) : false;
+        if (programId && !reduceOnlyNow) {
           try {
             const slabPk = new PublicKey(slabAddress);
             const caps = await getMatcherCaps(connection, programId, slabPk);
@@ -378,12 +393,74 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
         // v17: pass lpIdx=0, userIdx=0 — useTrade v17 path ignores both and
         // resolves accountA via findV17Portfolio + accountB via GPA scan.
         // v12: pass the real lpIdx and userAccount.idx as before.
-        const sig = await withTransientRetry(
-          async () => trade({ lpIdx, userIdx: userAccount.idx, size: closeSize, sizes: closeLegs }),
-          { maxRetries: 2, delayMs: 3000 },
-        );
+        // F-3 / R1: while the asset is ADL reduce-only (a_long or a_short != ADL_ONE), a
+        // matcher close can revert Custom(21) (the LP's leg would grow). Route those closes to
+        // the owner-signed unilateral exit, RebalanceReduce (tag 44). Also fall back to it when
+        // the matcher close fails 21 and a FRESH read shows the state (the slab poll lagged).
+        const rebalanceClose = async () => {
+          if (!programId || !publicKey) throw new Error("Wallet or market program is unavailable.");
+          const slabPk = new PublicKey(slabAddress);
+          const marketBytes = new Uint8Array((await connection.getAccountInfo(slabPk, "confirmed"))?.data ?? []);
+          const eng = decodeMarketEngineView(marketBytes);
+          if (!eng) throw new Error("Could not read the market to route the close.");
+          const portfolio =
+            getPortfolioRawSnapshot(makePortfolioScanKey(programId, slabAddress, publicKey))?.pubkey ??
+            (await findV17Portfolio(connection, programId, slabPk, publicKey));
+          if (!portfolio) throw new Error("Could not find your portfolio on this market.");
+          return closeViaRebalanceReduce({
+            connection,
+            wallet,
+            programId,
+            market: slabPk,
+            owner: publicKey,
+            portfolio,
+            beforeQ: freshPositionSize as bigint,
+            reduceQ: rebalanceReduceQ(freshPositionSize as bigint, closePercent),
+            marketId: eng.marketId,
+            pythCrankAccount: pythCrankAccount(slabConfig, wrapperConfigV17?.oracleMode),
+          });
+        };
+        let sig: string | null | undefined;
+        let fill: FillResult | null = null;
+        let routedRebalance = false;
+        if (closeRouteFor(reduceOnlyNow) === "rebalance-reduce") {
+          const r = await rebalanceClose();
+          sig = r.signature;
+          fill = r.fill;
+          routedRebalance = true;
+        } else {
+          try {
+            sig = await withTransientRetry(
+              async () => trade({ lpIdx, userIdx: userAccount.idx, size: closeSize, sizes: closeLegs }),
+              { maxRetries: 2, delayMs: 3000 },
+            );
+          } catch (tradeErr) {
+            const m = tradeErr instanceof Error ? tradeErr.message : String(tradeErr);
+            if (isV17Market && programId && (await isReduceOnlyLock21(m, connection, new PublicKey(slabAddress), programId))) {
+              const r = await rebalanceClose();
+              sig = r.signature;
+              fill = r.fill;
+              routedRebalance = true;
+            } else {
+              throw tradeErr;
+            }
+          }
+        }
 
         setLastSig(sig ?? null);
+        // P1: a confirmed TradeCpi can be a ZERO fill (the wrapper clipped the close to
+        // LP headroom 0). useTrade measured it (lib/limits/fill-check.ts); a zero fill is
+        // NOT a close — throw so every caller keeps its modal open and shows the reason.
+        if (!routedRebalance) fill = takeFillResult(sig);
+        const outcome = closeOutcome(fill);
+        if (outcome === "no-fill") {
+          throw new ZeroFillError(routedRebalance ? COPY.rebalanceZeroFill : COPY.closeZeroFill);
+        }
+        if (outcome === "partial" && fill?.filledQ != null) {
+          const f = fill.filledQ < 0n ? -fill.filledQ : fill.filledQ;
+          const r = closeSize < 0n ? -closeSize : closeSize;
+          setError(routedRebalance ? COPY.rebalancePartial(fmtQ(f), fmtQ(r)) : COPY.closePartial(fmtQ(f), fmtQ(r)));
+        }
         setPhase("confirming");
         setTimeout(() => setPhase("idle"), 2000);
         // The site-wide PositionsBar reads its OWN usePortfolio instance, which
@@ -395,9 +472,15 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
         // all and can't drift. usePortfolio subscribes and runs its reconcile
         // burst (PORTFOLIO_RECONCILE_MS). See lib/portfolio-invalidation.ts.
         invalidatePortfolio();
-        return { signature: sig ?? null };
+        return { signature: sig ?? null, fill };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
+        if (isZeroFillError(e)) {
+          // Not a tx failure: the close landed and filled nothing. Plain copy, no diagnosis.
+          setError(msg);
+          setPhase("idle");
+          throw e;
+        }
         console.error("[useClosePosition] error:", msg);
         setError(safeExplainMarketTxError(msg, "close", marketHealth) ?? humanizeError(msg, "trade"));
         // #2643: refine an ambiguous Custom(9) from pre-trade state (no-op for
@@ -427,7 +510,7 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
         setLoading(false);
       }
     },
-    [connection, publicKey, userAccount, trade, lpIdx, slabAddress, mockMode, isV17Market, programId, marketHealth],
+    [connection, publicKey, wallet, userAccount, trade, lpIdx, slabAddress, mockMode, isV17Market, programId, marketHealth, raw, slabConfig, wrapperConfigV17],
   );
 
   const prewarmClose = useCallback(() => {

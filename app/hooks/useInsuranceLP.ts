@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useWalletCompat, useConnectionCompat } from '@/hooks/useWalletCompat';
-import { PublicKey } from '@solana/web3.js';
+import { PublicKey, type TransactionInstruction } from '@solana/web3.js';
 import {
   createAssociatedTokenAccountInstruction,
   getAssociatedTokenAddress,
@@ -15,11 +15,8 @@ import {
   deriveLpRedemption,
   deriveLpEscrow,
   encodeCreateLpVaultV17,
-  encodeDepositToLpVault,
   encodeRequestRedeemLpShares,
-  encodeExecuteRedemption,
   ACCOUNTS_CREATE_LP_VAULT,
-  ACCOUNTS_LP_VAULT_DEPOSIT,
   buildAccountMetas,
   buildIx,
   WELL_KNOWN,
@@ -33,6 +30,21 @@ import { useSlabState } from '../components/providers/SlabProvider';
 import { assertKnownProgram } from '@/lib/programAllowlist';
 import { assertDepositWithinBalance, readTokenBalance } from '@/lib/deposit-guard';
 import { useParams } from 'next/navigation';
+import { pythCrankAccount } from "@/lib/limits/oracle-tail";
+import { limitsFlags } from "@/lib/limits/flags";
+import { earnVaultLpRepairOption } from "@/lib/limits/vault-lp-repair";
+import { buildEarnDepositIxs, buildEarnExecuteIxs, buildRequestRedeemIx, earnTxPlan, sendWithHarvestOn84, withForcedHarvest, type EarnTxPlan } from "@/lib/limits/earn-ixs";
+import { SimulationRefusal } from "@/lib/tx";
+import { WRAPPER_ERR } from "@/lib/wrapper-errors";
+import { resolveDevnetProgramIds } from "@/lib/program-ids";
+import { readEarnP3Context } from "@/lib/limits/earn-p3-read";
+import { readViewerTopupIxs } from "@/lib/limits/resolved-exit-load";
+import { sendWithTopup } from "@/lib/limits/resolved-topup";
+import { computeBudgetPrefix, connectionSelfHealDeps } from "@/lib/self-heal";
+import { readTxDrawSummary, type DrawSummary } from "@/lib/limits/p3-draw-logs";
+import { withdrawFlow } from "@/lib/limits/earn-withdraw";
+import { TAG_DEPOSIT_TO_LP_VAULT, TAG_EXECUTE_REDEMPTION } from "@/lib/limits/constants";
+import { COPY as LIMITS_COPY } from "@/lib/limits/copy";
 import { sanitizeOnChainValue } from '@/lib/health';
 import { pollWhenVisible } from '@/lib/pollWhenVisible';
 import {
@@ -117,10 +129,27 @@ export interface InsuranceLPState {
   cooldownElapsed: boolean;
 }
 
+/** P3: refuse (with the reason) before signing when the program would refuse the Earn op. */
+function assertEarnPlan(plan: EarnTxPlan): asserts plan is Extract<EarnTxPlan, { ok: true }> {
+  if (!plan.ok) throw new Error(LIMITS_COPY.earnPlanBlocked[plan.reason]);
+}
+
 export function useInsuranceLP() {
   const { connection } = useConnectionCompat();
   const wallet = useWalletCompat();
   const slabState = useSlabState();
+  // P3-L2 (flag P3): prepend the vault-LP refresh crank to Earn 75/76/77 only when the
+  // unmodified tx would revert VaultLpValuationStale (lib/limits/vault-lp-repair.ts).
+  const slabOracleCfg = slabState.config;
+  const slabOracleMode = slabState.wrapperConfigV17?.oracleMode;
+  const earnRepairFor = useCallback(
+    (progPk: PublicKey, marketPk: PublicKey) =>
+      // Flag off => undefined with no work at all (no oracle-mode derivation).
+      limitsFlags().p3
+        ? earnVaultLpRepairOption(true, progPk, marketPk, pythCrankAccount(slabOracleCfg, slabOracleMode))
+        : undefined,
+    [slabOracleCfg, slabOracleMode],
+  );
   const params = useParams();
   // Prefer the SlabProvider's resolved slab (set from its `slabAddress` prop) so
   // this hook works BOTH on the /earn/[slab] route AND when mounted inside a
@@ -130,6 +159,7 @@ export function useInsuranceLP() {
   const slabAddress = slabState.slabAddress || (params?.slab as string | undefined);
   const programId = slabState.programId;
 
+  const [lastDrawSummary, setLastDrawSummary] = useState<DrawSummary | null>(null);
   const [state, setState] = useState<InsuranceLPState>({
     insuranceBalance: 0n,
     lpSupply: 0n,
@@ -645,25 +675,28 @@ export function useInsuranceLP() {
         ));
       }
 
-      const keys = buildAccountMetas(ACCOUNTS_LP_VAULT_DEPOSIT, [
-        wallet.publicKey,
-        marketPk,
-        registryPda,
-        lpMintPda,
-        depositorLpAta,
-        sourceTokenAta,
-        vaultTokenAta,
-        ledgerPda,
-        WELL_KNOWN.tokenProgram,
-        WELL_KNOWN.systemProgram,
-        siblingLedgerPda,
-      ]);
-      ixs.push(buildIx({
+      // P3 (vault-owned LP): a BOUND vault requires [11] vault_lp_state + [12] vault LP, and a
+      // genesis deposit with harvestable LP fees needs tag 78 first (P3-L1). Assembly is shared
+      // with the LiteSVM bridge (lib/limits/earn-ixs.ts), so the sim runs this exact code.
+      const p3 = earnTxPlan(TAG_DEPOSIT_TO_LP_VAULT, await readEarnP3Context(connection, progPk, marketPk));
+      assertEarnPlan(p3);
+      ixs.push(...buildEarnDepositIxs({
         programId: progPk,
-        keys,
-        data: encodeDepositToLpVault({ amount: amount.toString(), domain }),
+        depositor: wallet.publicKey,
+        market: marketPk,
+        registry: registryPda,
+        lpMint: lpMintPda,
+        depositorLpAta,
+        sourceToken: sourceTokenAta,
+        vaultToken: vaultTokenAta,
+        ledger: ledgerPda,
+        siblingLedger: siblingLedgerPda,
+        domain,
+        amount,
+        plan: p3,
       }));
-      const sig = await sendTx({ connection, wallet, instructions: ixs, selfHeal: { programId: progPk, market: marketPk } });
+      const sig = await sendTx({ connection, wallet, instructions: ixs, selfHeal: { programId: progPk, market: marketPk }, vaultLpRepair: earnRepairFor(progPk, marketPk) });
+      void readTxDrawSummary(connection, sig).then(setLastDrawSummary);
       await refreshState();
       return sig;
     } catch (err) {
@@ -673,7 +706,7 @@ export function useInsuranceLP() {
     } finally {
       setLoading(false);
     }
-  }, [wallet, connection, slabAddress, programId, slabState, state.lpVaultDomain, refreshState]);
+  }, [wallet, connection, slabAddress, programId, slabState, state.lpVaultDomain, refreshState, earnRepairFor]);
 
   /**
    * RequestRedeemLpShares (tag 76) — begin LP share redemption (starts cooldown).
@@ -711,89 +744,119 @@ export function useInsuranceLP() {
       let step: RedemptionStep;
       let signature: string;
 
-      // Check if a redemption request already exists
-      const redemptionInfo = await connection.getAccountInfo(redemptionPda);
-      if (!redemptionInfo) {
-        // Step 1: RequestRedeemLpShares (tag 76)
-        // BUG FIX (devnet flow-test 2026-07-01): this account list was missing lpMint,
-        // redeemerLpAta and the per-vault LP escrow PDA — and wrongly included `market`,
-        // which handle_request_redeem_lp_shares never reads — causing on-chain
-        // NotEnoughAccountKeys. Real account list per percolator-prog
-        // src/v16_program.rs handle_request_redeem_lp_shares (L12016-12028):
-        //   [redeemer(signer,w), registry(w), lpMint, redeemerLpAta(w), escrow(w),
-        //    redemption(w), tokenProgram, systemProgram]
-        const redeemerLpAta = await getAssociatedTokenAddress(lpMintPda, wallet.publicKey);
-        const requestKeys = [
-          { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
-          { pubkey: registryPda, isSigner: false, isWritable: true },
-          { pubkey: lpMintPda, isSigner: false, isWritable: false },
-          { pubkey: redeemerLpAta, isSigner: false, isWritable: true },
-          { pubkey: escrowPda, isSigner: false, isWritable: true },
-          { pubkey: redemptionPda, isSigner: false, isWritable: true },
-          { pubkey: WELL_KNOWN.tokenProgram, isSigner: false, isWritable: false },
-          { pubkey: WELL_KNOWN.systemProgram, isSigner: false, isWritable: false },
-        ];
-        const requestIx = buildIx({
-          programId: progPk,
-          keys: requestKeys,
-          data: encodeRequestRedeemLpShares({ shares: lpAmount.toString() }),
+      // RequestRedeemLpShares (tag 76).
+      // BUG FIX (devnet flow-test 2026-07-01): this account list was missing lpMint,
+      // redeemerLpAta and the per-vault LP escrow PDA — and wrongly included `market`,
+      // which handle_request_redeem_lp_shares never reads — causing on-chain
+      // NotEnoughAccountKeys. Real account list per percolator-prog
+      // src/v16_program.rs handle_request_redeem_lp_shares (L12016-12028):
+      //   [redeemer(signer,w), registry(w), lpMint, redeemerLpAta(w), escrow(w),
+      //    redemption(w), tokenProgram, systemProgram]
+      const buildRequestIx = async () =>
+        buildRequestRedeemIx({
+          programId: progPk, redeemer: wallet.publicKey!, registry: registryPda, lpMint: lpMintPda,
+          redeemerLpAta: await getAssociatedTokenAddress(lpMintPda, wallet.publicKey!), escrow: escrowPda,
+          redemption: redemptionPda, shares: lpAmount,
         });
-        signature = await sendTx({ connection, wallet, instructions: [requestIx], selfHeal: { programId: progPk, market: marketPk } });
-        step = 'requested';
-      } else {
-        // Step 2: ExecuteRedemption (tag 77) — collect collateral after cooldown.
-        // BUG FIX (devnet flow-test 2026-07-01): this account list was missing the LP
-        // escrow PDA and the per-domain backing ledger PDA, and had the remaining
-        // accounts in the wrong order — causing on-chain NotEnoughAccountKeys. Real
-        // account list per percolator-prog src/v16_program.rs handle_execute_redemption
-        // (L12153-12163): [cranker(signer,w), market(w), registry(w), redemption(w),
-        // lpMint(w), escrow(w), vaultToken(w), vaultAuthority, ledger(w), redeemerDest(w),
-        // tokenProgram, siblingLedger(w), redeemerRentDest(w)]. `cranker` is permissionless (anyone may execute post-cooldown,
-        // and is directly credited the redemption PDA's reclaimed rent) — the UI always
-        // calls it as the redeemer themselves.
+      // ExecuteRedemption (tag 77) — collect collateral after cooldown.
+      // BUG FIX (devnet flow-test 2026-07-01): this account list was missing the LP
+      // escrow PDA and the per-domain backing ledger PDA, and had the remaining
+      // accounts in the wrong order — causing on-chain NotEnoughAccountKeys. Real
+      // account list per percolator-prog src/v16_program.rs handle_execute_redemption
+      // (L12153-12163): [cranker(signer,w), market(w), registry(w), redemption(w),
+      // lpMint(w), escrow(w), vaultToken(w), vaultAuthority, ledger(w), redeemerDest(w),
+      // tokenProgram, siblingLedger(w), redeemerRentDest(w)]. `cranker` is permissionless (anyone may execute post-cooldown,
+      // and is directly credited the redemption PDA's reclaimed rent) — the UI always
+      // calls it as the redeemer themselves.
+      const buildExecuteIxs = async (forceHarvest = false) => {
         const [vaultPda] = deriveVaultAuthority(progPk, marketPk);
         // v17 DUAL-DOMAIN: [11] is the sibling pot's ledger. NAV and
         // available-principal are summed across both pots, so it is required
         // even when uninitialised, or the redeemer is underpaid by whatever sits
         // in the sibling. The `domain` argument says which pot the payout is
-        // DRAWN from — the vault's own. A redemption draws from ONE pot and
-        // fails closed if that pot cannot cover it (rebalance, tag 91, first).
+        // DRAWN from — the vault's own. (221cf006: on a BOUND vault both pot ledgers are
+        // writable — buildEarnExecuteIxs; a senior larger than one pot redeems across both.)
         const domain = state.lpVaultDomain;
         const [ledgerPda] = deriveLpBackingLedger(progPk, marketPk, domain);
         const [siblingLedgerPda] = deriveLpBackingLedger(progPk, marketPk, domain ^ 1);
-        const collateralMint = slabState.config.collateralMint;
+        const collateralMint = slabState.config!.collateralMint;
         const vaultTokenAta = await getAssociatedTokenAddress(collateralMint, vaultPda, true);
-        const redeemerAta = await getAssociatedTokenAddress(collateralMint, wallet.publicKey);
-
-        const executeKeys = [
-          { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
-          { pubkey: marketPk, isSigner: false, isWritable: true },
-          { pubkey: registryPda, isSigner: false, isWritable: true },
-          { pubkey: redemptionPda, isSigner: false, isWritable: true },
-          { pubkey: lpMintPda, isSigner: false, isWritable: true },
-          { pubkey: escrowPda, isSigner: false, isWritable: true },
-          { pubkey: vaultTokenAta, isSigner: false, isWritable: true },
-          { pubkey: vaultPda, isSigner: false, isWritable: false },
-          { pubkey: ledgerPda, isSigner: false, isWritable: true },
-          { pubkey: redeemerAta, isSigner: false, isWritable: true },
-          { pubkey: WELL_KNOWN.tokenProgram, isSigner: false, isWritable: false },
-          { pubkey: siblingLedgerPda, isSigner: false, isWritable: true },
-          // [12] redeemerRentDest (w) — REQUIRED since percolator-prog #461 (GH#412,
-          // live in v18.2 `6377376a`): the consumed redemption PDA's rent is returned
-          // to the RECORDED redeemer, and handle_execute_redemption reads
-          // `account(accounts, 12)?` and rejects any key != redemption.redeemer.
-          // Without it every claim failed NotEnoughAccountKeys before touching state
-          // (live user report 2026-09-29, ANSEM). The UI only claims its own
-          // redemption, so the redeemer is the connected wallet.
-          { pubkey: wallet.publicKey, isSigner: false, isWritable: true },
-        ];
-        const executeIx = buildIx({
+        const redeemerAta = await getAssociatedTokenAddress(collateralMint, wallet.publicKey!);
+        // P3 (vault-owned LP): a BOUND vault requires [13] vault_lp_state + [14] vault LP, and
+        // refuses 84 while LP fees are harvestable - bundle tag 78 in front (P3-K1).
+        // [12] redeemerRentDest (#461 / GH#412, live in v18.2): the consumed redemption PDA's
+        // rent is returned to the RECORDED redeemer - the UI only claims its own redemption.
+        const p3 = withForcedHarvest(earnTxPlan(TAG_EXECUTE_REDEMPTION, await readEarnP3Context(connection, progPk, marketPk)), forceHarvest);
+        assertEarnPlan(p3);
+        return buildEarnExecuteIxs({
           programId: progPk,
-          keys: executeKeys,
-          data: encodeExecuteRedemption({ domain }),
+          redeemer: wallet.publicKey!,
+          market: marketPk,
+          registry: registryPda,
+          redemption: redemptionPda,
+          lpMint: lpMintPda,
+          escrow: escrowPda,
+          vaultToken: vaultTokenAta,
+          vaultAuthority: vaultPda,
+          ledger: ledgerPda,
+          redeemerDest: redeemerAta,
+          siblingLedger: siblingLedgerPda,
+          domain,
+          plan: p3,
         });
-        signature = await sendTx({ connection, wallet, instructions: [executeIx], selfHeal: { programId: progPk, market: marketPk } });
+      };
+      // P3 ordering: a resolved close that ran before the vault LP settled left the viewer a
+      // PARTIAL payout receipt. Once 101 has closed, its tag-46 top-up rides in front of this tx
+      // (sim-gated; dropped if it would refuse, so the withdrawal itself never pays for it).
+      const topup = await readViewerTopupIxs({
+        connection,
+        programId: progPk,
+        market: marketPk,
+        collateralMint: slabState.config.collateralMint,
+        viewer: wallet.publicKey,
+        simulate: async (ixs) =>
+          (await connectionSelfHealDeps(connection, marketPk, wallet.publicKey!).simulate([...computeBudgetPrefix(TOPUP_SIM_CU), ...ixs])).err ?? null,
+      });
+      const send = (instructions: TransactionInstruction[]) =>
+        sendWithTopup({
+          topup,
+          base: instructions,
+          isPreSignRefusal: (e) => e instanceof SimulationRefusal,
+          send: (ixs, bundled) =>
+            sendTx({
+              connection,
+              wallet,
+              instructions: ixs,
+              selfHeal: { programId: progPk, market: marketPk },
+              vaultLpRepair: earnRepairFor(progPk, marketPk),
+              ...(bundled ? { computeUnitsFromSim: { cap: TOPUP_BUNDLE_CU_CAP } } : {}),
+            }),
+        });
+
+      // Check if a redemption request already exists
+      const redemptionInfo = await connection.getAccountInfo(redemptionPda);
+      if (redemptionInfo) {
+        // Step 2 of 2: the payout. sendTx pre-simulates it and bundles the repairs (78 harvest,
+        // 85/87 crank, 88 recall / other pot) before the wallet opens.
+        // 5544302a: a Resolved terminal-flat 77 can need 78 first (stray pot backing); a pre-sign 84
+        // rebuilds the same payout with 78 in front (lib/limits/earn-ixs.ts sendWithHarvestOn84).
+        signature = await sendWithHarvestOn84({ build: buildExecuteIxs, send, isHarvestPendingRefusal });
         step = 'executed';
+        void readTxDrawSummary(connection, signature).then(setLastDrawSummary);
+      } else if (state.registryExists && withdrawFlow(state.redemptionCooldownSlots) === 'one-tx') {
+        // UX WP-4: only a vault whose cooldown is 0 requests AND pays out in one tx.
+        signature = await sendWithHarvestOn84({
+          build: async (force) => [await buildRequestIx(), ...(await buildExecuteIxs(force))],
+          send,
+          isHarvestPendingRefusal,
+        });
+        step = 'executed';
+        void readTxDrawSummary(connection, signature).then(setLastDrawSummary);
+      } else {
+        // Step 1 of 2: the request. The cooldown protects the seniors who stay; the page counts
+        // it down and opens the payout by itself (components/earn/EarnPendingWithdrawal).
+        signature = await send([await buildRequestIx()]);
+        step = 'requested';
       }
       await refreshState();
       return { step, signature };
@@ -804,7 +867,7 @@ export function useInsuranceLP() {
     } finally {
       setLoading(false);
     }
-  }, [wallet, connection, slabAddress, programId, slabState, state.lpVaultDomain, refreshState]);
+  }, [wallet, connection, slabAddress, programId, slabState, state.lpVaultDomain, state.redemptionCooldownSlots, state.registryExists, refreshState, earnRepairFor]);
 
   return {
     state,
@@ -814,5 +877,18 @@ export function useInsuranceLP() {
     deposit,
     withdraw,
     refreshState,
+    /** d119eebd: the senior draw booked / restored by the user's LAST Earn tx (its logs), or null. */
+    lastDrawSummary,
   };
+}
+
+/** Simulation budget for the viewer's tag-46 top-up alone (budgeted like a CloseResolved payout). */
+export const TOPUP_SIM_CU = 400_000;
+/** A bundled top-up + Earn payout is sized from its own simulation, up to this cap. */
+export const TOPUP_BUNDLE_CU_CAP = 1_200_000;
+
+/** A pre-sign refusal with 84 VaultLpHarvestPending raised by the wrapper (the wallet was not opened). */
+export function isHarvestPendingRefusal(e: unknown): boolean {
+  // Only the wrapper's own 84 (CPI callees reuse numbers; error-codes table: decode by the raiser).
+  return e instanceof SimulationRefusal && e.code === WRAPPER_ERR.VaultLpHarvestPending && (e.programId === null || e.programId === resolveDevnetProgramIds().wrapper);
 }

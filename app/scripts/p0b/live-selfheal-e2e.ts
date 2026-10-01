@@ -4,13 +4,14 @@
  * positioned portfolio). sigVerify=false simulations only; nothing is signed.
  *   npx tsx scripts/p0b/live-selfheal-e2e.ts
  */
+import { DEVNET_PROGRAM_IDS } from "../../lib/program-ids";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { ACCOUNTS_PERMISSIONLESS_CRANK_BASE, buildAccountMetas, buildIx, encodePermissionlessCrank } from "@percolatorct/sdk";
 import { defaultCrankObservations } from "../../lib/v18-wire";
 import { planSelfHeal, connectionSelfHealDeps, describeRepair, buildLivenessRepairIx, computeBudgetPrefix } from "../../lib/self-heal";
 
 const RPC = process.env.DEVNET_RPC ?? "https://api.devnet.solana.com";
-const PROGRAM = new PublicKey("GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ");
+const PROGRAM = new PublicKey(DEVNET_PROGRAM_IDS.wrapper);
 const PAYER = new PublicKey("FbTbDeGWQpjrEqJdqoBHX3sTWHoAmU2xywD7wyxH6WC7");
 const CASES = [
   { sym: "PAID-lp", market: "BPLPf1XT7HE9qKwAbf4cSqcDrV6VHJDS3FPeQ3GL7JPY", portfolio: "AZXj9a8gxzFuRYvdUxFERvvkzLMkVXPQtDn9hpFsGqp7" },

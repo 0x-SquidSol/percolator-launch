@@ -20,7 +20,10 @@
 import { detectWalletError, extractErrorCode, failingProgramId } from "@/lib/errorMessages";
 import { resolveDevnetProgramIds } from "@/lib/program-ids";
 import type { LockReason, MarketHealthRow } from "@/lib/market-health";
+import { p3LimitsErrorCopy } from "@/lib/limits/errors";
+import { limitsFlags } from "@/lib/limits/flags";
 
+import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 export type MarketTxAction = "open" | "close" | "deposit" | "withdraw" | "earn-deposit" | "earn-withdraw";
 
 export const MSG_LP_DEPLETED_OPEN =
@@ -37,6 +40,10 @@ export const MSG_REPAIRABLE =
   "Try again: your next transaction includes the repair automatically.";
 export const MSG_LOSS_STALE =
   "Positions on this market are being refreshed after a price move. Try again in a few seconds.";
+export const MSG_ADL_REDUCE_ONLY_OPEN =
+  "This market is reduce-only while it recovers from a bankruptcy, so new positions are paused. Closing positions still works, and the market reopens on its own once one side has closed out.";
+export const MSG_ADL_REDUCE_ONLY_CLOSE =
+  "This market is reduce-only while it recovers from a bankruptcy. Closing still works: try the close again and it is sent as a unilateral exit you sign yourself.";
 export const MSG_DRAIN_ONLY = "This side of the market only accepts position-reducing trades right now.";
 
 const OPENING: readonly MarketTxAction[] = ["open"];
@@ -45,11 +52,18 @@ function has(h: MarketHealthRow, r: LockReason): boolean {
   return h.lockReasons.includes(r);
 }
 
-/** Hook for P1 codes (band, halt, exposure cap). Returns null = no refinement. */
+/**
+ * Hook for P1 codes (band, halt, exposure cap) and P3 (provisional ordinals,
+ * flag-gated, read from lib/limits/constants.ts). P1 66..71 already have copy
+ * in errorMessages.P1_ERROR_MESSAGES; this only refines by live health, and
+ * adds P3 copy (P3 ordinals are not in ERROR_CODE_MAP because they will move).
+ * Returns null = no refinement.
+ */
 export function refineP1(code: number, action: MarketTxAction, health: MarketHealthRow | null): string | null {
   // 69 LpFloorHalt / 68 LpExposureCapExceeded on an open with a depleted LP: the
   // honest message is "LP depleted", same as the pre-P1 Custom(49) state.
-  if ((code === 69 || code === 68) && action === "open" && health?.lpDepleted) return MSG_LP_DEPLETED_OPEN;
+  if ((code === WRAPPER_ERR.LpFloorHalt || code === WRAPPER_ERR.LpExposureCapExceeded) && action === "open" && health?.lpDepleted) return MSG_LP_DEPLETED_OPEN;
+  if (limitsFlags().p3) return p3LimitsErrorCopy(code);
   return null;
 }
 
@@ -67,23 +81,24 @@ export function explainMarketTxError(
   if (code === null) return null;
   const origin = failingProgramId(raw);
   if (origin && origin !== resolveDevnetProgramIds().wrapper) return null; // matcher/stake/SPL codes are not ours
-  if (code === 8) return null; // genuine program Unauthorized — never refined into "locked"
+  if (code === WRAPPER_ERR.Unauthorized) return null; // genuine program Unauthorized — never refined into "locked"
   const p1 = refineP1(code, action, health ?? null);
   if (p1) return p1;
   if (!health) return null;
 
   const opening = OPENING.includes(action);
-  if (code === 21 || code === 19) {
+  if (code === WRAPPER_ERR.EngineLockActive || code === WRAPPER_ERR.EngineStale) {
     if (has(health, "resolved")) return opening ? MSG_RESOLVED : null;
     if (has(health, "recovery")) return MSG_RECOVERY;
     if (has(health, "repairable")) return MSG_REPAIRABLE;
-    if (code === 21 && opening && health.lpDepleted) return MSG_LP_DEPLETED_OPEN;
-    if (code === 21 && has(health, "bankruptcy")) return MSG_BANKRUPTCY;
-    if (code === 21 && has(health, "loss-stale")) return MSG_LOSS_STALE;
-    if (code === 21 && opening && has(health, "drain-only")) return MSG_DRAIN_ONLY;
+    if (code === WRAPPER_ERR.EngineLockActive && has(health, "adl-reduce-only")) return opening ? MSG_ADL_REDUCE_ONLY_OPEN : MSG_ADL_REDUCE_ONLY_CLOSE;
+    if (code === WRAPPER_ERR.EngineLockActive && opening && health.lpDepleted) return MSG_LP_DEPLETED_OPEN;
+    if (code === WRAPPER_ERR.EngineLockActive && has(health, "bankruptcy")) return MSG_BANKRUPTCY;
+    if (code === WRAPPER_ERR.EngineLockActive && has(health, "loss-stale")) return MSG_LOSS_STALE;
+    if (code === WRAPPER_ERR.EngineLockActive && opening && has(health, "drain-only")) return MSG_DRAIN_ONLY;
     return null;
   }
-  if (code === 49 && opening && health.lpDepleted) return MSG_LP_DEPLETED_OPEN;
+  if (code === WRAPPER_ERR.EngineInsufficientInitialMargin && opening && health.lpDepleted) return MSG_LP_DEPLETED_OPEN;
   return null;
 }
 

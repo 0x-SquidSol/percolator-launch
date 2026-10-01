@@ -1,4 +1,5 @@
 import "@/lib/polyfills";
+import { ConnectionBar } from "@/components/layout/ConnectionBar";
 import type { Metadata } from "next";
 import { JetBrains_Mono, Outfit } from "next/font/google";
 import "./globals.css";
@@ -124,6 +125,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <MainnetBetaBanner />
             </ChromeGate>
             <Header />
+            <ConnectionBar />
             <ChromeGate>
               <PositionsBar />
             </ChromeGate>

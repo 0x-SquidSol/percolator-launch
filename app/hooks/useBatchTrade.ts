@@ -22,6 +22,7 @@
  * limitPrice=0n disables per-leg slippage checking for that leg.
  */
 
+import { tradeCuCap } from "@/lib/compute-budget";
 import { useCallback, useRef, useState } from "react";
 import { PublicKey, AccountMeta } from "@solana/web3.js";
 import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
@@ -132,7 +133,9 @@ export function useBatchTrade() {
         });
         const ix = buildIx({ programId: params.programId, keys, data });
         return await sendTx({
-          connection, wallet, instructions: [ix], computeUnits: 800_000,
+          connection, wallet, instructions: [ix],
+          // Sized from simulation (+15% +5k), capped 400k per leg (lib/compute-budget.ts).
+          computeUnitsFromSim: { cap: tradeCuCap(params.legs.length) },
           selfHeal: { programId: params.programId, market: slabPk },
         });
       } catch (e) {

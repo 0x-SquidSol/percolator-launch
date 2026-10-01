@@ -47,6 +47,7 @@ import { sanitizeSymbol } from "@/lib/symbol-utils";
 import { sanitizeFundingRateBps, isSentinelValue } from "@/lib/health";
 import { useOracleFreshness } from "@/hooks/useOracleFreshness";
 import { useEngineFreshness } from "@/hooks/useEngineFreshness";
+import { StatusLine } from "@/components/ui/StatusLine";
 import { getEntryPrice, getEntryLeverage, clearEntryPrice } from "@/lib/entry-price";
 import { applyInvert, sanitizePriceE6 } from "@/lib/oraclePrice";
 import { getBackendUrl } from "@/lib/config";
@@ -274,7 +275,7 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // H6: engine accrue-staleness — distinct from the oracle-push freshness
   // above. A market can look perfectly fresh here (keeper still pushing
   // prices) while the ENGINE hasn't accrued in ~500 slots, cliff-dead and
-  // permanently reverting every close until a maintainer re-seeds it. See
+  // permanently reverting every close (UX WP-2: only beyond the app's own catch-up). See
   // useEngineFreshness's file header.
   const { engineStale } = useEngineFreshness();
   const closeBlockedByStaleness = !mockMode && (oracleStale || engineStale);
@@ -593,7 +594,7 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             <button
               onClick={() => { prewarmClose(); setShowCloseModal(true); }}
               disabled={closeLoading || lpUnderfunded || !hasValidMark || engineStale}
-              title={!hasValidMark ? "Waiting for price data…" : engineStale ? "Market crank behind — trading paused. This market needs a re-seed before closing works." : "Close position"}
+              title={!hasValidMark ? "Waiting for price data…" : engineStale ? "Prices are catching up. Closing resumes automatically, usually within a minute." : "Close position"}
               aria-label="Close position"
               className="text-[11px] text-[var(--short)]/70 transition-colors hover:text-[var(--short)] disabled:cursor-not-allowed disabled:opacity-40"
             >
@@ -741,21 +742,20 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             {/* LP underfunded warning */}
             {lpUnderfunded && (
               <div className="mt-2 rounded-none border border-[var(--warning)]/30 bg-[var(--warning)]/5 p-2.5">
-                <p className="text-[10px] font-medium uppercase tracking-[0.15em] text-[var(--warning)]">LP Has No Capital</p>
+                <p className="text-[10px] font-medium uppercase tracking-[0.15em] text-[var(--warning)]">Market out of liquidity</p>
                 <p className="mt-1 text-[10px] text-[var(--warning)]/70">
-                  The liquidity provider has no capital to back the counterparty position. Closing trades will fail until the LP is funded.
+                  The market has no liquidity to take the other side right now, so closing can't go through until it is refilled.
                 </p>
               </div>
             )}
 
-            {/* H6: engine crank-behind warning — see useEngineFreshness */}
+            {/* UX WP-2 (SH-3): only a lag beyond the app's own catch-up; clears itself. */}
             {engineStale && !oracleStale && (
-              <div className="mt-2 rounded-none border border-[var(--warning)]/30 bg-[var(--warning)]/5 p-2.5">
-                <p className="text-[10px] font-medium uppercase tracking-[0.15em] text-[var(--warning)]">Market Crank Behind — Trading Paused</p>
-                <p className="mt-1 text-[10px] text-[var(--warning)]/70">
-                  This market's engine hasn't been cranked recently enough to close safely. Check back later or ask a maintainer to re-seed the market.
-                </p>
-              </div>
+              <StatusLine
+                className="mt-2"
+                legacyTestId="engine-stale-warning"
+                message={{ kind: "engine-catching-up", variant: "wait", title: "Catching up", body: "Prices are catching up. Closing resumes automatically, usually within a minute." }}
+              />
             )}
 
             {/* 5.9: Add Margin + Close buttons */}
@@ -769,10 +769,10 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
               <button
                 onClick={() => { prewarmClose(); setShowCloseModal(true); }}
                 disabled={closeLoading || lpUnderfunded || !hasValidMark || engineStale}
-                title={!hasValidMark ? "Waiting for price data…" : engineStale ? "Market crank behind — trading paused. This market needs a re-seed before closing works." : undefined}
+                title={!hasValidMark ? "Waiting for price data…" : engineStale ? "Prices are catching up. Closing resumes automatically, usually within a minute." : undefined}
                 className="flex-1 rounded-none border border-[var(--short)]/30 py-2 text-[10px] font-medium uppercase tracking-[0.1em] text-[var(--short)] transition-colors duration-150 hover:bg-[var(--short)]/8 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {!hasValidMark ? "Awaiting Price…" : engineStale ? "Crank Behind" : "Close Position"}
+                {!hasValidMark ? "Awaiting Price…" : engineStale ? "Waiting for prices…" : "Close Position"}
               </button>
             </div>
 

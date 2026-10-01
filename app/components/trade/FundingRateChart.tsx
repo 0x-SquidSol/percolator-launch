@@ -268,7 +268,7 @@ export const FundingRateChart: FC<{ slabAddress: string }> = ({ slabAddress }) =
       <div className="flex h-[300px] items-center justify-center rounded-none border border-[var(--border)]/50 bg-[var(--bg)]/80">
         <div className="text-center">
           <div className="text-sm text-[var(--text-secondary)]">No funding history yet</div>
-          <div className="mt-1 text-xs text-[var(--text-dim)]">Data will appear after cranks</div>
+          <div className="mt-1 text-xs text-[var(--text-dim)]">Data appears as the market updates</div>
         </div>
       </div>
     );

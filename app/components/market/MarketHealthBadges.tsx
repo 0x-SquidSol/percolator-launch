@@ -4,6 +4,8 @@ import type { FC } from "react";
 import { Tooltip } from "@/components/ui/Tooltip";
 import type { HealthBadge, HealthBadgeTone, MarketHealthRow } from "@/lib/market-health";
 import { useSingleMarketHealth } from "@/hooks/useMarketHealth";
+import { LIST_BADGE_IDS, marketHeaderStatus } from "@/lib/market-header-status";
+import { StatusLine } from "@/components/ui/StatusLine";
 
 /**
  * v18 market-health badges ("LP depleted", "Payout haircut x%", "Resolved", …)
@@ -27,7 +29,9 @@ export const MarketHealthBadges: FC<{
 }> = ({ row, compact = false, hideInfo = false }) => {
   if (!row) return null;
   let badges: HealthBadge[] = row.badges;
-  if (hideInfo) badges = badges.filter((b) => b.tone !== "info");
+  // UX WP-10 (§4.3): lists show only the states that change what a user can do
+  // (Close-only / Paused / Settled); the rest lives in the trade page's Market details.
+  if (hideInfo) badges = badges.filter((b) => LIST_BADGE_IDS.has(b.id));
   if (compact) badges = badges.slice(0, COMPACT_MAX);
   if (badges.length === 0) return null;
   return (
@@ -73,8 +77,27 @@ export const MarketHealthBanner: FC<{ row: MarketHealthRow | null | undefined }>
   );
 };
 
-/** Trade page: live health banner for one market (shares the hook's cache). */
+/** Trade page: live health banner for one market (shares the hook's cache). Kept for Details. */
 export const TradeMarketHealthBanner: FC<{ slab: string }> = ({ slab }) => {
   const row = useSingleMarketHealth(slab);
   return <MarketHealthBanner row={row} />;
+};
+
+/**
+ * UX WP-10 (audit §4.3): the ONE header status line, only when the market is not simply live
+ * (lib/market-header-status.ts). Replaces the health-banner stack and the limits strip row.
+ */
+export const MarketHeaderStatusView: FC<{ row: MarketHealthRow | null | undefined }> = ({ row }) => {
+  const st = marketHeaderStatus(row);
+  if (!st) return null;
+  return (
+    <div data-testid="market-header-status" className="border-b border-[var(--border)]">
+      <StatusLine message={st} legacyTestId="market-health-banner" />
+    </div>
+  );
+};
+
+export const MarketHeaderStatus: FC<{ slab: string }> = ({ slab }) => {
+  const row = useSingleMarketHealth(slab);
+  return <MarketHeaderStatusView row={row} />;
 };

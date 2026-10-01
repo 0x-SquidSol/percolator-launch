@@ -1,10 +1,11 @@
 /** Read-only: run the app's pre-resolve gate on live devnet markets; simulate planned cranks (sigVerify=false). */
+import { DEVNET_PROGRAM_IDS } from "../../lib/program-ids";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { readAndPlanPreResolve } from "../../lib/pre-resolve";
 import { connectionSelfHealDeps, computeBudgetPrefix } from "../../lib/self-heal";
 const conn = new Connection(process.env.DEVNET_RPC ?? "https://api.devnet.solana.com", "confirmed");
-const W = new PublicKey("GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ");
-const S = new PublicKey("GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3");
+const W = new PublicKey(DEVNET_PROGRAM_IDS.wrapper);
+const S = new PublicKey(DEVNET_PROGRAM_IDS.stake);
 const PAYER = new PublicKey("FbTbDeGWQpjrEqJdqoBHX3sTWHoAmU2xywD7wyxH6WC7");
 const M: Record<string, string> = {
   TEXTIT: "DnFhDdWzcWkBDxN9JJcmFmtiqqKo56w9JwQEtRKNdjcG", Murphy: "7h3wNxjzPo6pTfWQ7uiTjDSsprGEeMNh696efmYrpAX2",

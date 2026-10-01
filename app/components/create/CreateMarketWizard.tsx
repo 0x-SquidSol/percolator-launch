@@ -1,5 +1,9 @@
 "use client";
+import { UNSUPPORTED_POOL_COPY } from "@/lib/wizard-copy";
 
+import { DEFAULT_JUNIOR_FLOOR_BPS, validateP3Wizard, wizardP3Params } from "@/lib/limits/p3-wizard";
+import { COPY as LIMITS_COPY } from "@/lib/limits/copy";
+import { p3WizardEnabled } from "@/lib/limits/flags";
 import { FC, useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { PublicKey } from "@solana/web3.js";
@@ -7,13 +11,14 @@ import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
 import {
   useCreateMarket,
   DEFAULT_SLAB_SIZE,
+  wizardSlabBytes,
   flooredInitialMarginBps,
   type CreateMarketParams,
 } from "@/hooks/useCreateMarket";
 import { useStuckSlabs } from "@/hooks/useStuckSlabs";
 import { clearInFlightMarket } from "@/lib/inFlightMarket";
 import { useQuickLaunch } from "@/hooks/useQuickLaunch";
-import { type DexPoolResult } from "@/hooks/useDexPoolSearch";
+import { type DexPoolResult, isVerifiedPool } from "@/hooks/useDexPoolSearch";
 import { parseHumanAmount } from "@/lib/parseAmount";
 import { MAX_FUNDABLE_REQUIREMENT } from "@/lib/prefund-requirement";
 import { backingSeedPerDomain } from "@/lib/market-params";
@@ -52,6 +57,8 @@ interface WizardState {
   tradingFeeBps: number;
   initialMarginBps: number;
   lpCollateral: string;
+  /** P3 wizard: junior floor, bps of the senior claim (10%..100%). */
+  juniorFloorBps?: number;
   insuranceAmount: string;
   adminPrice: string | null;
   // #2588: set only by the user turning the dial. Detection that lands on step 2
@@ -157,8 +164,10 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
           step: safeStep,
           // bigint fields can't survive JSON — restore as bigint or null
           walletBalance: parsed.walletBalance != null ? BigInt(parsed.walletBalance) : null,
-          // DexPoolResult is a plain object, survives JSON
-          dexPool: parsed.dexPool ?? null,
+          // DexPoolResult is a plain object, survives JSON. E2E B21: a pool persisted
+          // before owner verification (no dexType) may be a DAMM pool the keeper can't
+          // price, so it is dropped and re-picked from the verified search.
+          dexPool: isVerifiedPool(parsed.dexPool) ? parsed.dexPool : null,
           pythFeed: parsed.pythFeed ?? null,
           tokenMeta: parsed.tokenMeta ?? null,
           // initialMint prop overrides persisted mint
@@ -399,7 +408,10 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
   // lamports." Delegates to computeCreateMarketSolCost() (CostEstimate.tsx), the SAME formula
   // the Control Room's rent readout uses, so the gate and the displayed number can't drift
   // apart.
-  const solCostBreakdown = useMemo(() => computeCreateMarketSolCost(), []);
+  const solCostBreakdown = useMemo(
+    () => computeCreateMarketSolCost({ p3: p3WizardEnabled() }),
+    [],
+  );
   const requiredSol = solCostBreakdown.totalSolCost;
   const hasSufficientSol = solBalance !== null && solBalance >= requiredSol;
   const isDevnet = getNetwork() === "devnet";
@@ -524,10 +536,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
   const registrable = !isDevnet || resolvedOracleType === "keeper";
   const notRegistrableReason = registrable
     ? null
-    : (quickLaunch.error ??
-      "This token has no supported DEX pool (Pump.fun or Meteora), so the keeper " +
-        "cannot price it. A market launched now would never be listed or priced. " +
-        "Pick a token that trades on a supported pool.");
+    : (quickLaunch.error ?? UNSUPPORTED_POOL_COPY);
 
   /**
    * The oracle fields the wizard must hold for the detected oracle. Written by
@@ -587,9 +596,22 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
     !devnetFaucetCeilingExceeded &&
     (mockBypass || hasSufficientSol);
 
-  const launchDisabled = !allValid || !oracleSettled || !publicKey;
+  // P3 wizard: the junior tranche requirement (floor range, junior >= floor of the Earn seed).
+  const p3Issue = useMemo(() => {
+    if (!p3WizardEnabled()) return null;
+    // Same decimals handleLaunch parses the Liquidity amount with.
+    const j = parseHumanAmount(wizard.lpCollateral || "0", wizard.tokenMeta?.decimals ?? 6);
+    return validateP3Wizard({
+      juniorFloorBps: wizard.juniorFloorBps ?? DEFAULT_JUNIOR_FLOOR_BPS,
+      juniorAtoms: j,
+      seedNavAtoms: 2n * backingSeedPerDomain(j),
+    });
+  }, [wizard.lpCollateral, wizard.juniorFloorBps, wizard.tokenMeta?.decimals]);
+  const launchDisabled = !allValid || !oracleSettled || !publicKey || p3Issue !== null;
   const launchDisabledReason: string | undefined = !publicKey
     ? "Connect wallet"
+    : p3Issue
+      ? LIMITS_COPY.p3Wizard.issue[p3Issue]
     : !oracleSettled
       ? "Resolving price feed"
     : !registrable
@@ -831,6 +853,12 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
       // with InvalidSlabLen (and over-charges rent in the process). v17 has no slab tiers —
       // maxAccounts is deliberately omitted here (create() defaults it).
       slabDataSize: DEFAULT_SLAB_SIZE,
+      // P3: vault-owned LP + the creator's junior tranche (= the Liquidity amount).
+      p3: wizardP3Params(
+        p3WizardEnabled(),
+        parseHumanAmount(wizard.lpCollateral || "0", decimals),
+        wizard.juniorFloorBps ?? DEFAULT_JUNIOR_FLOOR_BPS,
+      ),
       symbol: marketSymbol,
       name: marketName,
       decimals,
@@ -854,7 +882,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
       ...(oracleMode === "keeper" ? {
         dexPoolAddress: wizard.dexPool?.poolAddress ??
           (isValidBase58Pubkey(wizard.oracleFeed) ? wizard.oracleFeed : undefined),
-        dexType: wizard.dexPool?.dexId ?? "raydium-clmm",
+        dexType: wizard.dexPool?.dexType,
       } : {}),
     };
     // PERC-513: If resuming from a stuck slab, skip slab creation (step 0).
@@ -897,6 +925,12 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
       initialMarginBps: wizard.initialMarginBps,
       // BUG 1 fix: same rationale as handleLaunch above — always the real v17 slab size.
       slabDataSize: DEFAULT_SLAB_SIZE,
+      // P3: vault-owned LP + the creator's junior tranche (= the Liquidity amount).
+      p3: wizardP3Params(
+        p3WizardEnabled(),
+        parseHumanAmount(wizard.lpCollateral || "0", decimals),
+        wizard.juniorFloorBps ?? DEFAULT_JUNIOR_FLOOR_BPS,
+      ),
       symbol: retryMarketSymbol,
       name: retryMarketName,
       decimals,
@@ -913,7 +947,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
       ...(oracleMode === "keeper" ? {
         dexPoolAddress: wizard.dexPool?.poolAddress ??
           (isValidBase58Pubkey(wizard.oracleFeed) ? wizard.oracleFeed : undefined),
-        dexType: wizard.dexPool?.dexId ?? "raydium-clmm",
+        dexType: wizard.dexPool?.dexType,
       } : {}),
     };
     create(params, createState.step);
@@ -934,7 +968,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
       slabAddress: createState.slabAddress,
       mainnetCA: wizard.mintAddress,
       dexPoolAddress,
-      dexType: wizard.dexPool?.dexId ?? "raydium-clmm",
+      dexType: wizard.dexPool?.dexType ?? null,
       symbol: wizard.tokenMeta?.symbol ?? "UNKNOWN",
     });
   }, [createState.slabAddress, wizard.dexPool, wizard.oracleFeed, wizard.mintAddress, wizard.tokenMeta, retryKeeperRegistration]);
@@ -998,6 +1032,8 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
         keeperMessage={createState.keeperMessage}
         keeperRegistering={createState.keeperRegistering}
         onRetryKeeperRegistration={handleRetryKeeperRegistration}
+        priceFeedRequired={createState.priceFeedRequired}
+        keeperPhase={createState.keeperPhase ?? null}
       />
     );
   }
@@ -1039,9 +1075,9 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
     : wizard.oracleType === "pyth" && wizard.pythFeed
       ? wizard.pythFeed.name
       : wizard.oracleType === "hyperp_ema" && wizard.dexPool
-        ? `${wizard.dexPool.pairLabel} (${wizard.dexPool.dexId})`
+        ? `${wizard.dexPool.pairLabel} (${wizard.dexPool.dexLabel ?? wizard.dexPool.dexId})`
         : wizard.oracleType === "keeper" && wizard.dexPool
-          ? `Keeper: ${wizard.dexPool.pairLabel} (${wizard.dexPool.dexId})`
+          ? `Keeper: ${wizard.dexPool.pairLabel} (${wizard.dexPool.dexLabel ?? wizard.dexPool.dexId})`
           : wizard.oracleType === "keeper" && wizard.oracleFeed
             ? `Keeper: ${wizard.oracleFeed.slice(0, 12)}...`
             : wizard.oracleType === "admin"
@@ -1113,7 +1149,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
                   past Step 1 (e.g. resuming after LP init or deposit already landed). */}
               {resumeFromStep === 0
                 ? "Re-enter your parameters to retry market initialization."
-                : `Slab is initialized (through step ${resumeFromStep} of 6). Re-enter your parameters to resume from where you left off.`}
+                : `The market is set up through step ${resumeFromStep} of 6. Re-enter your parameters to resume from where you left off.`}
             </span>
           </div>
           <button
@@ -1175,7 +1211,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
             symbol={symbol}
             oracleLabel={oracleLabel}
             startPrice={startPrice}
-            slabBytes={DEFAULT_SLAB_SIZE}
+            slabBytes={wizardSlabBytes(p3WizardEnabled())}
             rentSol={solCostBreakdown.slabRentSol}
             initialMarginBps={wizard.initialMarginBps}
             tradingFeeBps={wizard.tradingFeeBps}
@@ -1185,6 +1221,8 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
             onMarginBpsChange={setInitialMarginBps}
             onLpCollateralChange={setLpCollateral}
             onInsuranceChange={setInsuranceAmount}
+            juniorFloorBps={wizard.juniorFloorBps ?? DEFAULT_JUNIOR_FLOOR_BPS}
+            onJuniorFloorChange={(bps) => setWizard((prev) => ({ ...prev, juniorFloorBps: bps }))}
             onLaunch={handleLaunch}
             launchDisabled={launchDisabled}
             launchDisabledReason={launchDisabledReason}

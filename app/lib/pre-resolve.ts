@@ -43,8 +43,12 @@ import {
   parseWrapperConfigV17,
 } from "@percolatorct/sdk";
 import { readCreatorFeeClaimable } from "@/lib/v17-creator-fee";
+import { decodeLpVaultRegistryBound } from "@/lib/limits/decode";
+import { deriveVaultLpState, withBoundVaultLpTail } from "@/lib/limits/p3-ix";
+import { TAG_LP_VAULT_CRANK_FEES } from "@/lib/limits/constants";
 import { computeBudgetPrefix, connectionSelfHealDeps, parseCustomInstructionError } from "@/lib/self-heal";
 
+import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 /** percolator-stake `state::MINIMUM_LIQUIDITY` (dead shares), e62aa4a state.rs:25. */
 export const STAKE_MINIMUM_LIQUIDITY = 1_000n;
 /** Keeper K-1 gate: dead shares may take at most this share of a push. */
@@ -102,29 +106,43 @@ export function decideStakeLeg(owed: bigint, market: PublicKey, wrapper: PublicK
   return { action: "push" };
 }
 
-export function decideLpLeg(owed: bigint, registry: { domain: number; sharesOutstanding: bigint } | null): LpLegPlan {
+export interface PreResolveRegistry {
+  domain: number;
+  sharesOutstanding: bigint;
+  /** P3: a vault-owned LP is bound (registry `_reserved[0] == 1`). */
+  bound?: boolean;
+}
+
+export function decideLpLeg(owed: bigint, registry: PreResolveRegistry | null): LpLegPlan {
   if (owed <= 0n) return { action: "none" };
   if (!registry) return { action: "stuck", reason: "the market has no Earn vault" };
-  if (registry.sharesOutstanding === 0n) return { action: "stuck", reason: "the Earn vault has no depositors" };
+  // P3-L1: on a BOUND vault with no real senior shares the crank credits the junior tranche, so
+  // it still moves the leg; only an unbound vault with no depositors has nowhere to put it.
+  if (registry.sharesOutstanding === 0n && !registry.bound) return { action: "stuck", reason: "the Earn vault has no depositors" };
   return { action: "crank", domain: registry.domain };
 }
 
-export function buildLpCrankIx(programId: PublicKey, cranker: PublicKey, market: PublicKey, domain: number): TransactionInstruction {
+/**
+ * Tag 78 before ResolveMarket. On a P3 BOUND vault the handler REQUIRES the vault-LP state at
+ * [6] (fail closed), so without the tail the crank - and with it the whole reclaim tx - fails.
+ * It matters more on P3: 78 is Live-only, and a bound vault's ExecuteRedemption refuses
+ * VaultLpHarvestPending (84) while fees are harvestable, so fees left at resolution lock every
+ * Earn senior (reproduced on P3 424fe7e4 BPF; see plan section 9).
+ */
+export function buildLpCrankIx(programId: PublicKey, cranker: PublicKey, market: PublicKey, domain: number, bound = false): TransactionInstruction {
   const [registry] = deriveLpVaultRegistry(programId, market);
   const [ledger] = deriveLpBackingLedger(programId, market, domain);
   const [siblingLedger] = deriveLpBackingLedger(programId, market, domain ^ 1);
-  return new TransactionInstruction({
-    programId,
-    keys: buildAccountMetas(ACCOUNTS_LP_VAULT_CRANK_FEES, {
-      cranker,
-      market,
-      registry,
-      ledger,
-      siblingLedger,
-      systemProgram: SystemProgram.programId,
-    }),
-    data: Buffer.from(encodeLpVaultCrankFees({ domain })),
+  const base = buildAccountMetas(ACCOUNTS_LP_VAULT_CRANK_FEES, {
+    cranker,
+    market,
+    registry,
+    ledger,
+    siblingLedger,
+    systemProgram: SystemProgram.programId,
   });
+  const keys = bound ? withBoundVaultLpTail(TAG_LP_VAULT_CRANK_FEES, base, deriveVaultLpState(programId, market)) : base;
+  return new TransactionInstruction({ programId, keys, data: Buffer.from(encodeLpVaultCrankFees({ domain })) });
 }
 
 export function buildStakePushIxs(p: {
@@ -186,7 +204,7 @@ export function planPreResolve(p: {
   cranker: PublicKey;
   market: PublicKey;
   marketData: Uint8Array;
-  registry: { domain: number; sharesOutstanding: bigint } | null;
+  registry: PreResolveRegistry | null;
   pool: PoolState | null;
   poolAddress: PublicKey;
 }): PreResolvePlan {
@@ -196,7 +214,7 @@ export function planPreResolve(p: {
   const blockers: string[] = [];
   const warnings: string[] = [];
   const lp = decideLpLeg(legs.lpOwed, p.registry);
-  if (lp.action === "crank") cranks.push(buildLpCrankIx(p.programId, p.cranker, p.market, lp.domain));
+  if (lp.action === "crank") cranks.push(buildLpCrankIx(p.programId, p.cranker, p.market, lp.domain, p.registry?.bound === true));
   if (lp.action === "stuck") blockers.push(`${atoms(legs.lpOwed)} of LP fees can only be paid out while the market is live, and ${lp.reason}. Resolving now would burn them.`);
   const st = decideStakeLeg(legs.stakeOwed, p.market, p.programId, p.pool);
   if (st.action === "push" && p.pool) {
@@ -229,11 +247,12 @@ export async function readAndPlanPreResolve(
   const [registryPk] = deriveLpVaultRegistry(p.programId, p.market);
   const [poolPk] = deriveStakePool(p.market, p.stakeProgramId);
   const [ri, pi] = await connection.getMultipleAccountsInfo([registryPk, poolPk], "confirmed");
-  let registry: { domain: number; sharesOutstanding: bigint } | null = null;
+  let registry: PreResolveRegistry | null = null;
   if (ri && ri.owner.equals(p.programId)) {
     try {
-      const r = parseLpVaultRegistry(new Uint8Array(ri.data));
-      registry = { domain: Number(r.domain), sharesOutstanding: r.totalLpSharesOutstanding };
+      const raw = new Uint8Array(ri.data);
+      const r = parseLpVaultRegistry(raw);
+      registry = { domain: Number(r.domain), sharesOutstanding: r.totalLpSharesOutstanding, bound: decodeLpVaultRegistryBound(raw) === true };
     } catch {
       registry = null;
     }
@@ -269,7 +288,7 @@ export async function readAndPlanPreResolve(
     if (sim.err) {
       const code = ie?.code;
       const why =
-        code === 56 || code === 54
+        code === WRAPPER_ERR.StakePoolAuthorityMismatch || code === WRAPPER_ERR.StakePoolNotBound
           ? "the market's insurance is not bound to its stake pool (an operator must run stake Bind first)"
           : `the fee crank was refused (${code !== undefined ? `Custom(${code})` : JSON.stringify(sim.err)})`;
       return { ...plan, cranks: [], blockers: [...plan.blockers, `Outstanding fees can't be paid out before resolving: ${why}. Resolving now would burn them.`] };

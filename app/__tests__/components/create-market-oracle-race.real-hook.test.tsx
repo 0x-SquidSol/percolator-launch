@@ -21,7 +21,7 @@ const POOL = "HC7ArykAUSamJSAJ1aYLrS8aAamvBb1JvqMf1woUtnKo";
 
 const RESOLVE_BODY = {
   feedId: null, symbol: "e/acc", price: 0.0124, source: "dexscreener",
-  dexPoolAddress: POOL, dexType: "meteora", oracleMode: "hyperp", cached: true,
+  dexPoolAddress: POOL, dexType: "meteora-dlmm", oracleMode: "hyperp", cached: true,
 };
 const DEXSCREENER_BODY = {
   schemaVersion: "1.0.0",
@@ -48,7 +48,7 @@ const fetchLog: string[] = [];
 const json = (b: unknown, status = 200) =>
   new Response(JSON.stringify(b), { status, headers: { "content-type": "application/json" } });
 
-globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = String(input instanceof Request ? input.url : input);
   fetchLog.push(url);
   if (url.startsWith("https://api.dexscreener.com/latest/dex/tokens/")) {
@@ -59,6 +59,11 @@ globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     await gateResolve.p;
     const g = globalThis as { __resolveReply?: () => Response };
     return g.__resolveReply ? g.__resolveReply() : json(RESOLVE_BODY);
+  }
+  // E2E B21: the pool search classifies candidates by mainnet owner; this pool is DLMM.
+  if (url === "/api/dex/classify-pools") {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { addresses?: string[] };
+    return json({ classes: Object.fromEntries((body.addresses ?? []).map((a) => [a, "meteora-dlmm"])) });
   }
   return json({ error: "not mocked" }, 404);
 }) as typeof fetch;
@@ -231,7 +236,7 @@ describe("oracle resolve lands after the advance: edge cases", () => {
     gateResolve.release(); await flush();
     const s = snapshot("failed");
     expect(s.disabled).toBe(true);
-    expect(s.ariaLabel).toMatch(/no supported DEX pool/);
+    expect(s.ariaLabel).toMatch(/pool type we can't price yet/);
     await pressLaunch();
     expect(create).not.toHaveBeenCalled();
   });
@@ -242,7 +247,7 @@ describe("oracle resolve lands after the advance: edge cases", () => {
     gateResolve.release(); await flush();
     const s = snapshot("no pool");
     expect(s.disabled).toBe(true);
-    expect(s.ariaLabel).toMatch(/no supported DEX pool/);
+    expect(s.ariaLabel).toMatch(/pool type we can't price yet/);
     await pressLaunch();
     expect(create).not.toHaveBeenCalled();
   });
@@ -269,13 +274,13 @@ describe("oracle resolve lands after the advance: edge cases", () => {
     expect(create).toHaveBeenCalledTimes(1);
     createState = { ...IDLE, step: 1, error: "Block height exceeded", slabAddress: SystemProgram.programId.toBase58() };
     view.rerender(<CreateMarketWizard />); await flush();
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /retry step 2/i })); });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: /^Continue$/i })); });
     await flush();
     expect(create).toHaveBeenCalledTimes(2);
     for (const [p] of create.mock.calls) {
       expect(p.oracleMode).toBe("keeper");
       expect(p.dexPoolAddress).toBe(POOL);
-      expect(p.dexType).toBe("meteora");
+      expect(p.dexType).toBe("meteora-dlmm");
     }
   });
 
@@ -294,7 +299,7 @@ describe("oracle resolve lands after the advance: edge cases", () => {
     const p = create.mock.calls[0]?.[0];
     expect(p?.oracleMode).toBe("keeper");
     expect(p?.dexPoolAddress).toBe(POOL);
-    expect(p?.dexType).toBe("meteora");
+    expect(p?.dexType).toBe("meteora-dlmm");
   });
 
   it("a failed token-meta fetch in useQuickLaunch shows the error, not a permanent 'Resolving'", async () => {

@@ -60,7 +60,7 @@ const BatchFallbackNote: FC<{ reason: string }> = ({ reason }) => (
     title={reason}
     role="status"
   >
-    One-approval launch unavailable, so each step is signed separately — {reason}
+    Your wallet signs each step separately. <span className="sr-only">Why: </span>{reason}
   </p>
 );
 
@@ -328,7 +328,7 @@ export const LaunchProgress: FC<LaunchProgressProps> = ({ state, onReset, onRetr
                 data-testid="wizard-retry"
                 className="border border-[var(--short)]/30 bg-[var(--short)]/[0.08] px-4 py-2.5 text-[11px] font-medium uppercase tracking-[0.1em] text-[var(--short)] hover:bg-[var(--short)]/[0.15] transition-colors min-h-[44px]"
               >
-                Retry Step {state.step + 1}
+                Continue
               </button>
             )}
             <button
@@ -353,7 +353,7 @@ export const LaunchProgress: FC<LaunchProgressProps> = ({ state, onReset, onRetr
             Recovery
           </p>
           <p className="text-[11px] text-[var(--text-secondary)] mb-3">
-            The slab is on chain. If anything stalls, you can recover via the
+            The market account is on chain. If anything stalls, you can recover via the
             in-UI banner on the next /create visit, or download this JSON to
             run the close-market script offline.
           </p>
