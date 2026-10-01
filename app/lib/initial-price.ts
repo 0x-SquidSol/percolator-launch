@@ -45,7 +45,12 @@ export type InitialPriceE6 =
   /** A real price arrived, but it is below what an E6 market can express. */
   | { ok: false; reason: "below-minimum"; price: number }
   /** A real price arrived, but it is above what the protocol will accept. */
-  | { ok: false; reason: "above-maximum"; price: number };
+  | { ok: false; reason: "above-maximum"; price: number }
+  /**
+   * Representable, but so small that the mark could not move once positions
+   * are open (see `minTrackablePriceE6`). `minPrice` is the floor in USD.
+   */
+  | { ok: false; reason: "below-trackable"; price: number; minPrice: number };
 
 /**
  * Merge the available price sources without ever losing a known price.
@@ -106,4 +111,48 @@ export function toInitialPriceE6(price: string | null | undefined): InitialPrice
 export function formatResolvedPrice(price: number): string | null {
   if (!Number.isFinite(price) || price <= 0) return null;
   return String(price);
+}
+
+/**
+ * The smallest opening price (E6) whose mark can still move once the market
+ * has open interest.
+ *
+ * Deployed rule (wrapper 553d76f0 `oracle_v16::clamp_toward_engine_dt`, and
+ * the engine's `canonical_accrual_price_step_v16`, whose bps remainder resets
+ * whenever the target changes, i.e. on every keeper push): while OI exists,
+ * each accrual moves the effective price by at most
+ *
+ *     floor(p_last * max_price_move_bps_per_slot * dt_slots / 10_000)
+ *
+ * Accruals can land one slot apart (any crank or trade accrues), so with
+ * dt = 1 the step is 0 whenever p_last * cap < 10_000: the mark freezes, the
+ * position marks stop following the market, and nothing can be liquidated.
+ * The smallest price that always moves is therefore ceil(10_000 / cap), e.g.
+ * 2,500 ($0.0025) at the 4 bps cap a 10x market gets, 667 at 15 bps (2.5x).
+ */
+export function minTrackablePriceE6(maxPriceMoveBpsPerSlot: number): bigint {
+  if (!Number.isFinite(maxPriceMoveBpsPerSlot) || maxPriceMoveBpsPerSlot <= 0) return 0n;
+  const cap = BigInt(Math.floor(maxPriceMoveBpsPerSlot));
+  if (cap <= 0n) return 0n;
+  return (10_000n + cap - 1n) / cap;
+}
+
+/**
+ * Apply the trackable floor to a resolved price. Pass the
+ * `maxPriceMoveBpsPerSlot` the market will actually be created with (it
+ * depends on the chosen leverage), so the floor matches what InitMarket sets.
+ */
+export function withTrackableFloor(
+  resolved: InitialPriceE6,
+  maxPriceMoveBpsPerSlot: number,
+): InitialPriceE6 {
+  if (!resolved.ok) return resolved;
+  const min = minTrackablePriceE6(maxPriceMoveBpsPerSlot);
+  if (resolved.e6 >= min) return resolved;
+  return {
+    ok: false,
+    reason: "below-trackable",
+    price: Number(resolved.e6) / 1_000_000,
+    minPrice: Number(min) / 1_000_000,
+  };
 }

@@ -84,11 +84,18 @@ describe("useWithdraw v17 portfolio fast path", () => {
   let mockWallet: any;
   let mockSlabState: any;
 
+  // portfolioId / matcherSequence / matcherPositionEpoch: since 0d975d00 (v18
+  // anti-replay wire) the withdraw ix binds the portfolio's identity, read via
+  // parsePortfolioV17 (lib/v18-wire.ts readPortfolioIdentity). The mocked parse
+  // must carry them or encodeWithdrawCollateral rejects `undefined`.
   const walletOwnedPortfolio = () => ({
     owner: mockWalletPubkey,
     legs: [],
     pnl: 0n,
     capital: 10_000_000n,
+    portfolioId: 42n,
+    matcherSequence: 7n,
+    matcherPositionEpoch: 0n,
   });
 
   beforeEach(() => {
@@ -146,6 +153,10 @@ describe("useWithdraw v17 portfolio fast path", () => {
     const { instructions } = vi.mocked(sendTx).mock.calls[0][0];
     const withdrawIx = instructions[instructions.length - 1];
     expect(withdrawIx.keys[2].pubkey.equals(fastPathPortfolioPk)).toBe(true);
+    // v18 wire: [tag u8][portfolioId u64][expectedSequence u64][amount u128].
+    const data = Buffer.from(withdrawIx.data);
+    expect(data.readBigUInt64LE(1)).toBe(42n);
+    expect(data.readBigUInt64LE(9)).toBe(7n);
   });
 
   it("falls back to the GPA scan when the fast-path fetch throws", async () => {

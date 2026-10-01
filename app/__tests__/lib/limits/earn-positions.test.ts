@@ -10,7 +10,7 @@ vi.mock("@percolatorct/sdk", async (orig) => ({
 }));
 vi.mock("@/lib/limits/earn-split-pot", () => ({
   readSplitPotState: async () => ({ own: {}, sib: {}, totalShares: 2_000_000_000n, feeShareBps: 1000 }),
-  combinedVault: () => ({ nav: 2_002_000_000n, available: 2_002_000_000n }),
+  vaultValue: () => ({ nav: 2_002_000_000n, available: 2_002_000_000n }),
 }));
 import { readEarnPositions, valueShares } from "@/lib/limits/earn-positions";
 

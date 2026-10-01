@@ -11,7 +11,7 @@
 import { PublicKey, type Connection } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync, unpackAccount } from "@solana/spl-token";
 import { deriveInsuranceLpMint, deriveLpRedemption, deriveLpVaultRegistry, parseLpRedemption, parseLpVaultRegistry } from "@percolatorct/sdk";
-import { combinedVault, readSplitPotState } from "./earn-split-pot";
+import { readSplitPotState, vaultValue } from "./earn-split-pot";
 
 export interface EarnPosition {
   /** LP shares in the wallet + shares escrowed in a pending withdrawal. */
@@ -63,7 +63,7 @@ export async function readEarnPositions(
       const total = BigInt(reg.totalLpSharesOutstanding);
       let valueAtoms = valueShares(shares, total + BigInt(reg.feeDistributionTotalAtoms), total);
       const sp = await readSplitPotState(connection, programId, r.market);
-      const v = sp ? combinedVault(sp.own, sp.sib, sp.feeShareBps) : null;
+      const v = sp ? vaultValue(sp) : null;
       if (sp && v) valueAtoms = valueShares(shares, v.nav, sp.totalShares);
       out.set(r.slab, { shares, valueAtoms });
     }),

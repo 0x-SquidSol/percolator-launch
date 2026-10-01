@@ -17,6 +17,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
+import { readySlabFor } from "../fixtures/relaunch/m7-slabs";
 
 process.env.NEXT_PUBLIC_DEFAULT_NETWORK = "devnet";
 const h = vi.hoisted(() => ({
@@ -26,13 +27,23 @@ const h = vi.hoisted(() => ({
   writes: [] as Array<{ op: string; payload: Record<string, unknown>; guard?: string }>,
 }));
 const blobUpsert = vi.fn(async () => undefined);
+// Review M-7: the route checks the slab's oracle authority against the playground keeper.
+vi.mock("@/lib/playground-keeper-signer", async () => {
+  const { M7_KEEPER } = await import("../fixtures/relaunch/m7-slabs");
+  return { getPlaygroundKeeperSigner: () => ({ publicKey: () => M7_KEEPER }) };
+});
+
 vi.mock("@/lib/playground-registered-markets", () => ({ upsertRegisteredMarket: blobUpsert }));
 vi.mock("@/lib/token-logo", () => ({ resolveTokenLogo: async () => null }));
 vi.mock("@/lib/supabase", () => ({
   getServerNetwork: () => "devnet",
   getServiceClient: () => ({
     from: () => ({
-      select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: h.existing, error: null }) }) }) }),
+select: (_c?: string, o?: { head?: boolean }) =>
+        // Review M-7 enrollment-cap counts (select(..., { count, head })): nothing else is active.
+        o?.head
+          ? (() => { const q: Record<string, unknown> = { eq: () => q, neq: () => q, then: (res: (v: unknown) => void) => res({ count: 0, error: null }) }; return q; })()
+          : ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: h.existing, error: null }) }) }) }),
       update: (p: Record<string, unknown>) => {
         h.writes.push({ op: "update", payload: p });
         const q: Record<string, unknown> = {
@@ -57,16 +68,9 @@ vi.mock("@/lib/config", async (orig) => {
   const m = await orig<{ getConfig: () => Record<string, unknown> }>();
   return { ...m, getConfig: () => ({ ...m.getConfig(), programId: h.programId }) };
 });
-const HEADER = (() => {
-  const b = Buffer.alloc(64);
-  b.writeBigUInt64LE(0x5045_5243_5631_3600n, 0);
-  b.writeUInt16LE(18, 8);
-  b[10] = 1;
-  return b;
-})();
 vi.mock("@/lib/server-rpc", () => ({
   getServerConnection: () => ({
-    getAccountInfo: async (pk: PublicKey) => (pk.toBase58() === SLAB_KP.publicKey.toBase58() ? { owner: new PublicKey(h.programId), data: HEADER } : null),
+    getAccountInfo: async (pk: PublicKey) => (pk.toBase58() === SLAB_KP.publicKey.toBase58() ? { owner: new PublicKey(h.programId), data: readySlabFor(pk) } : null),
     getTransaction: async () => h.tx,
   }),
 }));

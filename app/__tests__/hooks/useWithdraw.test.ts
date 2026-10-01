@@ -154,21 +154,24 @@ describe("useWithdraw", () => {
       expect(txCall.instructions.length).toBeGreaterThanOrEqual(2); // crank + withdraw
     });
 
-    it("rejects explicit inline oracle pushes for admin oracle markets until server-side migration lands", async () => {
+    // 5c33e236 (2026-09-23) removed the dead v12 "inline oracle push removed"
+    // guard: in v18 AUTH_MARK markets are priced by the off-chain keeper, so the
+    // oracle-authority wallet (the one a creator tests with) withdraws like any
+    // other wallet. The old tests asserted the throw that commit deliberately removed.
+    it("lets the oracle-authority wallet withdraw on an admin-oracle market (no inline push)", async () => {
       mockSlabState.config.oracleAuthority = mockWalletPubkey;
 
       const { result } = renderHook(() => useWithdraw(mockSlabAddress));
 
       await act(async () => {
-        await expect(
-          result.current.withdraw({
-            userIdx: 1,
-            amount: 1000000n,
-          })
-        ).rejects.toThrow(/server-side oracle publisher/i);
+        await result.current.withdraw({
+          userIdx: 1,
+          amount: 1000000n,
+        });
       });
 
-      expect(sendTx).not.toHaveBeenCalled();
+      expect(sendTx).toHaveBeenCalledTimes(1);
+      expect(result.current.error).toBeNull();
     });
   });
 
@@ -320,21 +323,19 @@ describe("useWithdraw", () => {
   });
 
   describe("Oracle Mode Detection", () => {
-    it("rejects inline oracle pushes when the connected wallet is the admin-oracle publisher", async () => {
+    it("does not block the admin-oracle publisher wallet (5c33e236)", async () => {
       mockSlabState.config.oracleAuthority = mockWalletPubkey;
 
       const { result } = renderHook(() => useWithdraw(mockSlabAddress));
 
       await act(async () => {
-        await expect(
-          result.current.withdraw({
-            userIdx: 1,
-            amount: 1000000n,
-          })
-        ).rejects.toThrow(/server-side oracle publisher/i);
+        await result.current.withdraw({
+          userIdx: 1,
+          amount: 1000000n,
+        });
       });
 
-      expect(sendTx).not.toHaveBeenCalled();
+      expect(sendTx).toHaveBeenCalledTimes(1);
     });
 
     it("should detect admin oracle when feed is all zeros", async () => {
@@ -358,33 +359,46 @@ describe("useWithdraw", () => {
       const { result } = renderHook(() => useWithdraw(mockSlabAddress));
 
       await act(async () => {
-        await expect(
-          result.current.withdraw({
-            userIdx: 1,
-            amount: 1000000n,
-          })
-        ).rejects.toThrow(/server-side oracle publisher/i);
+        await result.current.withdraw({
+          userIdx: 1,
+          amount: 1000000n,
+        });
       });
 
+      // No backend price fetch, and no PushOraclePrice (old tag 16) ix in the tx.
       expect(global.fetch).not.toHaveBeenCalled();
+      const txCall = vi.mocked(sendTx).mock.calls[0][0];
+      for (const ix of txCall.instructions) {
+        expect(ix.data[0]).not.toBe(16);
+      }
     });
 
-    it("surfaces a migration error instead of trying backend price fallback", async () => {
+    it("never fabricates a price: the withdraw tx carries no oracle push for the authority wallet", async () => {
       mockSlabState.config.oracleAuthority = mockWalletPubkey;
 
       const { result } = renderHook(() => useWithdraw(mockSlabAddress));
 
       await act(async () => {
-        await expect(
-          result.current.withdraw({
-            userIdx: 1,
-            amount: 1000000n,
-          })
-        ).rejects.toThrow(/server-side oracle publisher/i);
+        await result.current.withdraw({
+          userIdx: 1,
+          amount: 1000000n,
+        });
       });
 
-      expect(sendTx).not.toHaveBeenCalled();
-      expect(result.current.error).toMatch(/server-side oracle publisher/i);
+      const asAuthority = vi.mocked(sendTx).mock.calls[0][0].instructions.map((ix: any) => ix.data[0]);
+
+      // Same wallet, not the authority: the instruction tags must be identical —
+      // being the oracle authority adds nothing to (and removes nothing from) the tx.
+      vi.mocked(sendTx).mockClear();
+      mockSlabState.config.oracleAuthority = PublicKey.default;
+      const { result: r2 } = renderHook(() => useWithdraw(mockSlabAddress));
+      await act(async () => {
+        await r2.current.withdraw({ userIdx: 1, amount: 1000000n });
+      });
+      const asOther = vi.mocked(sendTx).mock.calls[0][0].instructions.map((ix: any) => ix.data[0]);
+
+      expect(asAuthority).toEqual(asOther);
+      expect(result.current.error).toBeNull();
     });
 
   });

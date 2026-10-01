@@ -20,12 +20,22 @@ const guarded = (pnl: bigint, denom: bigint): number => {
 };
 
 describe("usePortfolio computePnlPercent guard", () => {
-  it("computePnlPercent throws on dust-margin + large PnL (the hazard)", () => {
-    expect(() => computePnlPercent(10n ** 30n, 1n)).toThrow();
+  // The pinned @percolatorct/sdk 8.0.0 (391be368 / 45abff9a) no longer throws on
+  // overflow: computePnlPercent clamps to ±MAX_SAFE_INTEGER/100. The original
+  // hazard (a throw dropping the position) is therefore gone at the source; the
+  // usePortfolio try/catch stays as defence in depth. These two cases used to
+  // assert the SDK-7 throw and the guard's 0 fallback for it.
+  it("computePnlPercent clamps on dust-margin + large PnL instead of throwing (SDK 8)", () => {
+    expect(() => computePnlPercent(10n ** 30n, 1n)).not.toThrow();
+    expect(computePnlPercent(10n ** 30n, 1n)).toBe(Number.MAX_SAFE_INTEGER / 100);
+    expect(computePnlPercent(-(10n ** 30n), 1n)).toBe(-(Number.MAX_SAFE_INTEGER / 100));
   });
 
-  it("the guard returns 0 instead of throwing (so the position isn't dropped)", () => {
-    expect(guarded(10n ** 30n, 1n)).toBe(0);
+  it("the guarded call yields a finite number for the outlier (so the position isn't dropped)", () => {
+    const pct = guarded(10n ** 30n, 1n);
+    expect(Number.isFinite(pct)).toBe(true);
+    expect(pct).toBe(Number.MAX_SAFE_INTEGER / 100);
+    expect(guarded(10n ** 30n, 0n)).toBe(0);
   });
 
   it("legitimate values still compute a finite percent", () => {

@@ -77,6 +77,30 @@ describe("every price path goes through the representability check", () => {
   });
 });
 
+describe("M-8: an opening price too small to track is refused at launch", () => {
+  it("both launch branches apply the trackable floor at the leverage's cap", () => {
+    const body = code(slice(WIZARD, "const getOracleFeedAndPrice", "const { priceE6:"));
+    // hyperp (DEX) branch and admin/keeper branch — two call sites.
+    expect(body.match(/withTrackableFloor\(\s*toInitialPriceE6\(/g)?.length).toBe(2);
+    expect(body.match(/launchPriceMoveBps,?\s*\)/g)?.length).toBe(2);
+  });
+
+  it("the cap is the one create() will set (deriveLaunchMarketParams of the dial)", () => {
+    const body = code(slice(WIZARD, "const launchPriceMoveBps", "const feeConflict"));
+    expect(body).toMatch(/deriveLaunchMarketParams\(\{\s*initialMarginBps:\s*wizard\.initialMarginBps/);
+    expect(body).toContain(".maxPriceMoveBpsPerSlot");
+  });
+
+  it("the disabled-reason explains it instead of 'Waiting on price feed'", () => {
+    const problem = code(slice(WIZARD, "const priceProblem", "const priceBelowMinimum"));
+    expect(problem).toMatch(/withTrackableFloor\(/);
+    const cascade = code(slice(WIZARD, "const priceBelowMinimum", "Waiting on price feed"));
+    expect(cascade).toMatch(/reason === "below-trackable"/);
+    expect(cascade).toMatch(/priceBelowTrackable\s*\?/);
+    expect(cascade).toContain("market needs to track its price");
+  });
+});
+
 describe("a late-arriving price reaches the wizard", () => {
   it("the defaults effect depends on quickLaunch.adminPrice, not config alone", () => {
     // config lands as soon as tokenMeta does; /api/oracle/resolve takes up to

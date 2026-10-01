@@ -25,7 +25,7 @@ vi.mock("@percolatorct/sdk", async (orig) => ({
 vi.mock("@/lib/limits/earn-split-pot", () => ({
   splitPotLedgerKeys: mocks.ledgerKeys,
   splitPotStateFromAccounts: mocks.fromAccounts,
-  combinedVault: (own: { nav: bigint }, sib: { nav: bigint }) => ({ nav: own.nav + sib.nav, available: 0n }),
+  vaultValue: (sp: { own: { nav: bigint }; sib: { nav: bigint } }) => ({ nav: sp.own.nav + sp.sib.nav, available: 0n }),
 }));
 
 import { fetchCuratedVaultsOnChain } from "@/hooks/useEarnStats";

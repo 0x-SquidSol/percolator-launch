@@ -167,6 +167,10 @@ describe('useCreateMarket v17 matcher recovery', () => {
 
     v17Magic.copy(emptyPortfolioData, 0);
     emptyPortfolioData.writeUInt16LE(V17_EXPECTED_VERSION, 8);
+    // Standalone account kind byte (V17_KIND_PORTFOLIO = 2 at offset 10). Since
+    // 0d975d00 TX C (SetMatcherConfig) live-reads the portfolio identity through
+    // parsePortfolioV17, which asserts this header — a real InitUser portfolio has it.
+    emptyPortfolioData[10] = 2;
 
     slabKeypair.publicKey.toBuffer().copy(emptyPortfolioData, 16);
 
@@ -219,7 +223,10 @@ describe('useCreateMarket v17 matcher recovery', () => {
 
         const recoveredPortfolioData = Buffer.from(emptyPortfolioData);
 
-        const configOffset = recoveredPortfolioData.length - 104;
+        // v18 (24d5d19d): the 104-byte matcher config is followed by the
+        // identity trailer, so it is no longer the final 104 bytes.
+        const configOffset =
+          recoveredPortfolioData.length - 104 - actualSdk.V17_PORTFOLIO_IDENTITY_TRAILER_LEN;
 
         matcherProgramId.toBuffer().copy(recoveredPortfolioData, configOffset);
 
@@ -337,12 +344,15 @@ describe('useCreateMarket v17 matcher recovery', () => {
 
     v17Magic.copy(portfolioData, 0);
     portfolioData.writeUInt16LE(V17_EXPECTED_VERSION, 8);
+    portfolioData[10] = 2; // V17_KIND_PORTFOLIO, as on a real InitUser portfolio
 
     slabKeypair.publicKey.toBuffer().copy(portfolioData, 16);
 
     walletPublicKey.toBuffer().copy(portfolioData, 80);
 
-    const configOffset = portfolioData.length - 104;
+    // v18 (24d5d19d): matcher config sits before the identity trailer.
+    const configOffset =
+      portfolioData.length - 104 - actualSdk.V17_PORTFOLIO_IDENTITY_TRAILER_LEN;
 
     matcherProgramId.toBuffer().copy(portfolioData, configOffset);
 

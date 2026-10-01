@@ -22,7 +22,7 @@ import { useQuickLaunch } from "@/hooks/useQuickLaunch";
 import { type DexPoolResult, isVerifiedPool } from "@/hooks/useDexPoolSearch";
 import { parseHumanAmount } from "@/lib/parseAmount";
 import { MAX_FUNDABLE_REQUIREMENT } from "@/lib/prefund-requirement";
-import { backingSeedPerDomain } from "@/lib/market-params";
+import { backingSeedPerDomain, deriveLaunchMarketParams, MIN_LEVERAGE_X } from "@/lib/market-params";
 import { LP_EXPOSURE_DEFAULT_BPS, clampLpExposureBps } from "@/lib/matcher-params";
 import { getConfig, getNetwork } from "@/lib/config";
 import { toE6, formatMarkPrice } from "@/lib/format";
@@ -40,7 +40,7 @@ import { RecoverSolBanner } from "./RecoverSolBanner";
 import { computeCreateMarketSolCost } from "./CostEstimate";
 import { isValidBase58Pubkey } from "@/lib/createWizardUtils";
 import { isMockMode } from "@/lib/mock-mode";
-import { pickInitialPrice, toInitialPriceE6 } from "@/lib/initial-price";
+import { pickInitialPrice, toInitialPriceE6, withTrackableFloor, minTrackablePriceE6 } from "@/lib/initial-price";
 
 type WizardStep = 1 | 2;
 
@@ -321,6 +321,15 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
   // MIN_SAFE_INITIAL_MARGIN_BPS itself is superseded, see GH#2621) so the success
   // screen advertises real leverage, not the raw requested value the dial produced.
   const maxLeverage = Math.floor(10000 / flooredInitialMarginBps(wizard.initialMarginBps));
+  // The per-slot price-move cap InitMarket will set for this leverage — the
+  // same derivation create() uses (deriveLaunchMarketParams). It sets how small
+  // an opening price can be before the mark stops moving under open interest
+  // (lib/initial-price.ts minTrackablePriceE6), so the floor follows the dial.
+  const launchPriceMoveBps = deriveLaunchMarketParams({
+    initialMarginBps: wizard.initialMarginBps,
+    lpCollateral: 0n,
+    initialPriceE6: 1_000_000n,
+  }).maxPriceMoveBpsPerSlot;
   const feeConflict = wizard.tradingFeeBps >= wizard.initialMarginBps;
   const hasTokens = wizard.walletBalance !== null && wizard.walletBalance > 0n;
   // Collateral is ALWAYS the universal Sim-USDC mint on devnet (6 decimals) — never the
@@ -459,8 +468,9 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
       // launched at $0.000001 (+25%), while 4e-7 rounded to 0n and blocked —
       // reporting a feed problem for a price the feed had delivered.
       const dexPrice = wizard.dexPool?.priceUsd;
-      const resolvedHyperp = toInitialPriceE6(
-        dexPrice != null ? String(dexPrice) : null,
+      const resolvedHyperp = withTrackableFloor(
+        toInitialPriceE6(dexPrice != null ? String(dexPrice) : null),
+        launchPriceMoveBps,
       );
       return {
         oracleFeed: "0".repeat(64),
@@ -477,7 +487,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
     // InvalidAccountData. A $1 fallback here also silently DEFEATED the
     // oraclePriceValid gate below (1 -> 1e6 is non-zero), so the launch was
     // never actually blocked. Missing or unparseable price => 0n => blocked.
-    const resolved = toInitialPriceE6(wizard.adminPrice);
+    const resolved = withTrackableFloor(toInitialPriceE6(wizard.adminPrice), launchPriceMoveBps);
     return { oracleFeed: "0".repeat(64), priceE6: resolved.ok ? resolved.e6 : 0n };
   };
 
@@ -491,13 +501,16 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
   const priceProblem =
     wizard.oracleType === "pyth"
       ? null
-      : toInitialPriceE6(
-          // Read whichever field the active branch actually prices from,
-          // otherwise the hyperp path blocks on dexPool.priceUsd and then
-          // explains itself using an unrelated (often null) adminPrice.
-          wizard.oracleType === "hyperp_ema"
-            ? (wizard.dexPool?.priceUsd != null ? String(wizard.dexPool.priceUsd) : null)
-            : wizard.adminPrice,
+      : withTrackableFloor(
+          toInitialPriceE6(
+            // Read whichever field the active branch actually prices from,
+            // otherwise the hyperp path blocks on dexPool.priceUsd and then
+            // explains itself using an unrelated (often null) adminPrice.
+            wizard.oracleType === "hyperp_ema"
+              ? (wizard.dexPool?.priceUsd != null ? String(wizard.dexPool.priceUsd) : null)
+              : wizard.adminPrice,
+          ),
+          launchPriceMoveBps,
         );
   const priceBelowMinimum =
     priceProblem != null && !priceProblem.ok && priceProblem.reason === "below-minimum"
@@ -511,6 +524,24 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
     priceProblem != null && !priceProblem.ok && priceProblem.reason === "above-maximum"
       ? priceProblem
       : null;
+  // Representable, but too small for the mark to move once positions open
+  // (M-8). Lower leverage raises the per-slot cap and so lowers this floor.
+  const priceBelowTrackable =
+    priceProblem != null && !priceProblem.ok && priceProblem.reason === "below-trackable"
+      ? priceProblem
+      : null;
+  // The floor at the lowest leverage the dial offers: only suggest lowering
+  // leverage when doing so would actually clear the block.
+  const lowestLeverageMinPrice =
+    Number(
+      minTrackablePriceE6(
+        deriveLaunchMarketParams({
+          initialMarginBps: Math.ceil(10_000 / MIN_LEVERAGE_X),
+          lpCollateral: 0n,
+          initialPriceE6: 1_000_000n,
+        }).maxPriceMoveBpsPerSlot,
+      ),
+    ) / 1_000_000;
 
   /**
    * Can the keeper actually PRICE this market once it exists?
@@ -633,7 +664,9 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
                   ? `${wizard.tokenMeta?.symbol ?? "This token"} trades at ${formatMarkPrice(priceBelowMinimum.price)}, below the $0.000001 minimum a market can price`
                   : priceAboveMaximum
                     ? `${wizard.tokenMeta?.symbol ?? "This token"} trades at ${formatMarkPrice(priceAboveMaximum.price)}, above the $1,000,000 maximum a market can price`
-                    : "Waiting on price feed")
+                    : priceBelowTrackable
+                      ? `${wizard.tokenMeta?.symbol ?? "This token"} trades at ${formatMarkPrice(priceBelowTrackable.price)}, below the ${formatMarkPrice(priceBelowTrackable.minPrice)} a ${maxLeverage}x market needs to track its price${priceBelowTrackable.price >= lowestLeverageMinPrice ? " — try lower leverage" : ""}`
+                      : "Waiting on price feed")
               : !mockBypass && !hasSufficientSol
                 ? `Need ~${requiredSol.toFixed(3)} SOL`
                 : devnetFaucetCeilingExceeded

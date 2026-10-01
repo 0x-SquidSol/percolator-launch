@@ -1,19 +1,21 @@
 // @vitest-environment node
 /**
- * The first relaunch market (slab 9EPm..., token "Percolator", pumpswap pool Ebs3m...), replayed
- * through the REAL keeper-register handler with its REAL creation transaction (devnet M1, captured
- * read-only) and the exact request its launch page sent. That request was recovered from the memo:
- * the memo text is sha256 of the canonical params + payload digest, and exactly one candidate
- * (below) reproduces it, so the test proves the memo, the signer, the InitMarket index and the
- * slab header all verify. What failed in production was the markets write: max_leverage 5.4 into
- * an integer column (Postgres 22P02), answered 500 six times, so the keeper never enrolled it.
+ * REGRESSION review M-7 (2026-10-01): keeper-register enrolled ANY wrapper-owned market whose
+ * creation tx carried the memo, with no completeness check and no ceiling, so a script could
+ * fill the keeper's push batch with bare markets and drain its SOL. Driven through the REAL
+ * handler with 9EPm's REAL creation tx and its REAL slab bytes; each case changes one thing:
+ *  - the slab as it is on chain (finished, keeper-priced) -> 200, enrolled;
+ *  - marketauth still the creator (the launch stopped before the stake pool, like A9u1KkM9) -> 409;
+ *  - no insurance / no LP collateral -> 409; another oracle authority -> 403;
+ *  - the creator already at the per-wallet ceiling, or the deployment full -> 403;
+ * and in every refused case NOTHING is written (no markets row, no keeper blob).
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { NextRequest } from "next/server";
 import { PublicKey, VersionedTransaction } from "@solana/web3.js";
-import { liveSlab } from "../fixtures/relaunch/m7-slabs";
+import { C_TOT_OFF, INSURANCE_OFF, liveSlab, MARKETAUTH_OFF, ORACLE_AUTHORITY_OFF } from "../fixtures/relaunch/m7-slabs";
 
 const prevNetwork = process.env.NEXT_PUBLIC_DEFAULT_NETWORK;
 process.env.NEXT_PUBLIC_DEFAULT_NETWORK = "devnet";
@@ -56,7 +58,7 @@ const realTx = () => {
   return { meta: { err: fixture.err }, transaction: { message: vtx.message, signatures: vtx.signatures } };
 };
 
-const h = vi.hoisted(() => ({ existing: null as Record<string, unknown> | null, written: null as Record<string, unknown> | null, op: "" }));
+const h = vi.hoisted(() => ({ existing: null as Record<string, unknown> | null, written: null as Record<string, unknown> | null, op: "", slab: null as Buffer | null, activeMine: 0, activeAll: 0 }));
 const blobPut = vi.fn(async () => ({ url: "https://blob.invalid/x" }));
 
 vi.mock("@vercel/blob", () => ({ put: blobPut, list: vi.fn(async () => ({ blobs: [] })), head: vi.fn(async () => null), del: vi.fn(async () => undefined) }));
@@ -69,7 +71,7 @@ vi.mock("@/lib/token-logo", () => ({ resolveTokenLogo: async () => null }));
 vi.mock("@/lib/dex-pool-owner", async (orig) => ({ ...(await orig<object>()), classifyPoolsByOwner: vi.fn(async () => ({ [POOL]: "pumpswap" })) }));
 vi.mock("@/lib/server-rpc", () => ({
   getServerConnection: () => ({
-    getAccountInfo: async (pk: PublicKey) => (pk.toBase58() === SLAB ? { owner: new PublicKey(WRAPPER), data: liveSlab(SLAB) } : null),
+    getAccountInfo: async (pk: PublicKey) => (pk.toBase58() === SLAB ? { owner: new PublicKey(WRAPPER), data: h.slab ?? liveSlab(SLAB) } : null),
     getTransaction: async () => realTx(),
   }),
 }));
@@ -84,9 +86,17 @@ vi.mock("@/lib/supabase", () => {
     getServiceClient: () => ({
       from: () => ({
         select: (_c?: string, o?: { head?: boolean }) =>
-          // Review M-7 enrollment-cap counts (select(..., { count, head })): nothing else is active.
+          // Review M-7 enrollment-cap counts (select(..., { count, head })).
           o?.head
-            ? (() => { const q: Record<string, unknown> = { eq: () => q, neq: () => q, then: (res: (v: unknown) => void) => res({ count: 0, error: null }) }; return q; })()
+            ? (() => {
+                let byDeployer = false;
+                const q: Record<string, unknown> = {
+                  eq: (c: string) => ((byDeployer ||= c === "deployer"), q),
+                  neq: () => q,
+                  then: (res: (v: unknown) => void) => res({ count: byDeployer ? h.activeMine : h.activeAll, error: null }),
+                };
+                return q;
+              })()
             : ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: h.existing, error: null }) }) }) }),
         insert: async (p: Record<string, unknown>) => {
           const e = reject(p);
@@ -116,7 +126,7 @@ vi.mock("@/lib/supabase", () => {
 });
 
 const { POST } = await import("@/app/api/playground/keeper-register/route");
-const { keeperMemoParams, keeperRegisterMemoText, verifyKeeperRegisterProofTx } = await import("@/lib/keeper-register-memo");
+const { PER_CREATOR_CAP_COPY, GLOBAL_CAP_COPY, DEFAULT_MAX_ACTIVE_PER_CREATOR, DEFAULT_MAX_ACTIVE_MARKETS } = await import("@/lib/keeper-enrollment-guard");
 
 const post = (body: Record<string, unknown>) =>
   POST(new NextRequest("https://percolator-playground.vercel.app/api/playground/keeper-register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }));
@@ -125,49 +135,68 @@ beforeEach(() => {
   h.existing = null;
   h.written = null;
   h.op = "";
+  h.slab = null;
+  h.activeMine = 0;
+  h.activeAll = 0;
   blobPut.mockClear();
 });
 
-describe("9EPm: the real creation transaction registers", () => {
-  it("the recovered request reproduces the on-chain memo, and the proof verifies to the creator", async () => {
-    const params = await keeperMemoParams(REQUEST);
-    expect(await keeperRegisterMemoText(params)).toBe("percolator:keeper-register:v2:tFP4sUB_HGR5CkG8OGivmOXTuPHFzVdjLhs6lQJUpVs");
-    const v = await verifyKeeperRegisterProofTx(realTx() as never, params, WRAPPER);
-    expect(v).toEqual({ ok: true, creator: CREATOR });
-  });
+const mutated = (f: (b: Buffer) => void) => {
+  const b = liveSlab(SLAB);
+  f(b);
+  return b;
+};
+const refusedNothingWritten = () => {
+  expect(h.written).toBeNull();
+  expect(blobPut).not.toHaveBeenCalled();
+};
 
-  it("registers: active, manual, the pool + CA written, leverage stored as 5; the keeper blob written", async () => {
-    const res = await post(REQUEST);
-    const body = (await res.json()) as Record<string, unknown>;
-    expect(res.status).toBe(200);
-    expect(body).toMatchObject({ ok: true, registered: true, dexType: "pumpswap" });
-    expect(h.op).toBe("insert");
-    expect(h.written).toMatchObject({
-      slab_address: SLAB,
-      keeper_status: "active",
-      metadata_source: "manual",
-      dex_pool_address: POOL,
-      mainnet_ca: CA,
-      symbol: "Percolator",
-      oracle_mode: "admin",
-      max_leverage: 5,
-      trading_fee_bps: 5,
-      deployer: CREATOR,
-    });
-    expect(blobPut).toHaveBeenCalledTimes(1);
-  });
-
-  it("the production state (the indexer's 'auto' row, keeper_status retired) is taken over", async () => {
-    h.existing = { id: "6b3346de", metadata_source: "auto", dex_pool_address: null, mainnet_ca: null, keeper_status: "retired" };
+describe("review M-7: only a finished, keeper-priced market under the ceilings is enrolled", () => {
+  it("the slab as it is on chain -> 200, enrolled (active)", async () => {
     const res = await post(REQUEST);
     expect(res.status).toBe(200);
-    expect(h.op).toBe("update");
-    expect(h.written).toMatchObject({ keeper_status: "active", metadata_source: "manual", dex_pool_address: POOL, max_leverage: 5 });
+    expect(h.written).toMatchObject({ keeper_status: "active", slab_address: SLAB });
   });
 
-  it("NEGATIVE CONTROL: a payload that differs from what the memo bound is refused (no write)", async () => {
-    const res = await post({ ...REQUEST, payload: { ...REQUEST.payload, max_leverage: 5 } });
+  it("marketauth still the creator (launch stopped before the stake pool) -> 409, nothing written", async () => {
+    h.slab = mutated((b) => new PublicKey(CREATOR).toBuffer().copy(b, MARKETAUTH_OFF));
+    const res = await post(REQUEST);
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/not ready.*incomplete/);
+    refusedNothingWritten();
+  });
+
+  it("no insurance -> 409; no LP collateral -> 409; nothing written", async () => {
+    h.slab = mutated((b) => b.fill(0, INSURANCE_OFF, INSURANCE_OFF + 16));
+    expect((await post(REQUEST)).status).toBe(409);
+    h.slab = mutated((b) => b.fill(0, C_TOT_OFF, C_TOT_OFF + 16));
+    expect((await post(REQUEST)).status).toBe(409);
+    refusedNothingWritten();
+  });
+
+  it("an oracle authority that is not our keeper -> 403 (final), nothing written", async () => {
+    h.slab = mutated((b) => new PublicKey(CREATOR).toBuffer().copy(b, ORACLE_AUTHORITY_OFF));
+    expect((await post(REQUEST)).status).toBe(403);
+    refusedNothingWritten();
+  });
+
+  it("the creator at the per-wallet ceiling -> 403 with calm copy, nothing written", async () => {
+    h.activeMine = DEFAULT_MAX_ACTIVE_PER_CREATOR;
+    h.activeAll = DEFAULT_MAX_ACTIVE_PER_CREATOR;
+    const res = await post(REQUEST);
     expect(res.status).toBe(403);
-    expect(h.written).toBeNull();
+    expect(((await res.json()) as { error: string }).error).toBe(PER_CREATOR_CAP_COPY);
+    refusedNothingWritten();
+  });
+
+  it("the deployment at its ceiling -> 403, nothing written; one below -> enrolled", async () => {
+    h.activeAll = DEFAULT_MAX_ACTIVE_MARKETS;
+    const res = await post(REQUEST);
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: string }).error).toBe(GLOBAL_CAP_COPY);
+    refusedNothingWritten();
+    h.activeAll = DEFAULT_MAX_ACTIVE_MARKETS - 1;
+    h.activeMine = DEFAULT_MAX_ACTIVE_PER_CREATOR - 1;
+    expect((await post(REQUEST)).status).toBe(200);
   });
 });
