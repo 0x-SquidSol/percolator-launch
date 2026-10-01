@@ -8,10 +8,19 @@
  * SECURITY REVIEW REQUIRED before merge (replaces the signed-message registration).
  */
 import type { MarketRegistrationPayload } from "@/lib/market-registration-auth";
+import { PRICE_SOURCE_LOCKED } from "@/lib/market-registration";
+import { UNSUPPORTED_POOL_COPY } from "@/lib/wizard-copy";
 
 export const KEEPER_REGISTER_BACKOFF_MS = [5_000, 10_000, 20_000, 40_000, 60_000, 60_000] as const;
 export const KEEPER_REGISTER_STEADY_MS = 120_000;
 export const KEEPER_REGISTER_SLOW_AFTER_MS = 5 * 60_000;
+/**
+ * A server error (5xx) is retried with the normal backoff this many times, then surfaced as a
+ * "failed" phase with a calm line and a Retry button. Without a cap a persistent 5xx (2026-10-01:
+ * every fractional-leverage registration 500'd) kept the launch screen "connecting" forever.
+ * 409 / 429 / network errors keep the open-ended schedule (they clear by themselves).
+ */
+export const KEEPER_REGISTER_MAX_SERVER_RETRIES = 3;
 
 export const KEEPER_REGISTER_COPY = {
   connecting: "Connecting the live price… usually under a minute.",
@@ -20,7 +29,30 @@ export const KEEPER_REGISTER_COPY = {
   tryNow: "Try now",
   almostReady: "Almost ready",
   noProof: "This market's creation transaction isn't known on this device, so the live price can't be connected from here.",
+  serverTrouble: "Live price couldn't connect just now. Your market is live; try again in a moment.",
+  generic: "Live price couldn't connect for this market. Your market is live; try again in a moment.",
 } as const;
+
+/**
+ * The keeper-register reasons that were written for creators. Everything else the route can say
+ * ("Slab account does not exist on-chain", "Registration proof refused: …", "Invalid dexType", …)
+ * is an operator diagnostic, so the launch screen maps it to KEEPER_REGISTER_COPY.generic.
+ * An allow-list, not a deny-list: a new server message stays hidden until someone adds it here.
+ */
+export const USER_FACING_REGISTRATION_REASONS: readonly string[] = [
+  PRICE_SOURCE_LOCKED,
+  "This market's live price was turned off by a maintainer.",
+  UNSUPPORTED_POOL_COPY,
+  "Could not verify the pool on mainnet right now. Try again in a moment.",
+  KEEPER_REGISTER_COPY.noProof,
+  KEEPER_REGISTER_COPY.serverTrouble,
+];
+
+/** The line a creator sees for a failed registration: the reason itself if it is user copy. */
+export function userFacingRegistrationReason(message: string | null | undefined): string {
+  const m = (message ?? "").trim();
+  return USER_FACING_REGISTRATION_REASONS.includes(m) ? m : KEEPER_REGISTER_COPY.generic;
+}
 
 export interface KeeperRegisterRequest {
   slabAddress: string;
@@ -39,6 +71,8 @@ export interface KeeperRegisterAttempt {
   /** Worth retrying (not landed yet, RPC or server trouble). A 400 / 403 is final. */
   retryable: boolean;
   message: string;
+  /** HTTP status of the response; absent for a network error. */
+  status?: number;
 }
 
 export async function postKeeperRegistration(req: KeeperRegisterRequest, fetchImpl: typeof fetch = fetch): Promise<KeeperRegisterAttempt> {
@@ -57,9 +91,9 @@ export async function postKeeperRegistration(req: KeeperRegisterRequest, fetchIm
       }),
     });
     const body = (await r.json().catch(() => ({}))) as { registered?: boolean; error?: string; message?: string };
-    if (r.ok && body.registered) return { registered: true, retryable: false, message: KEEPER_REGISTER_COPY.ready };
+    if (r.ok && body.registered) return { registered: true, retryable: false, message: KEEPER_REGISTER_COPY.ready, status: r.status };
     const retryable = r.status === 409 || r.status === 429 || r.status >= 500;
-    return { registered: false, retryable, message: body.error ?? body.message ?? `HTTP ${r.status}` };
+    return { registered: false, retryable, message: body.error ?? body.message ?? `HTTP ${r.status}`, status: r.status };
   } catch (e) {
     return { registered: false, retryable: true, message: e instanceof Error ? e.message : String(e) };
   }
@@ -73,6 +107,8 @@ export interface KeeperRegisterLoopDeps {
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   now?: () => number;
   signal?: AbortSignal;
+  /** Consecutive 5xx retries before giving up with "failed" (default KEEPER_REGISTER_MAX_SERVER_RETRIES). */
+  maxServerRetries?: number;
 }
 
 const defaultSleep = (ms: number, signal?: AbortSignal) =>
@@ -86,7 +122,9 @@ export async function runKeeperRegistration(d: KeeperRegisterLoopDeps): Promise<
   const sleep = d.sleep ?? defaultSleep;
   const now = d.now ?? Date.now;
   const t0 = now();
+  const maxServerRetries = d.maxServerRetries ?? KEEPER_REGISTER_MAX_SERVER_RETRIES;
   let phase: KeeperRegisterPhase = "connecting";
+  let serverErrors = 0;
   for (let i = 0; ; i++) {
     if (d.signal?.aborted) return phase;
     const r = await d.attempt();
@@ -96,6 +134,11 @@ export async function runKeeperRegistration(d: KeeperRegisterLoopDeps): Promise<
     }
     if (!r.retryable) {
       d.onStatus({ phase: "failed", message: r.message, attempts: i + 1 });
+      return "failed";
+    }
+    serverErrors = r.status !== undefined && r.status >= 500 ? serverErrors + 1 : 0;
+    if (serverErrors > maxServerRetries) {
+      d.onStatus({ phase: "failed", message: KEEPER_REGISTER_COPY.serverTrouble, attempts: i + 1 });
       return "failed";
     }
     phase = now() - t0 >= KEEPER_REGISTER_SLOW_AFTER_MS ? "slow" : "connecting";

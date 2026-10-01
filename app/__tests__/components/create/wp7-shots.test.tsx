@@ -35,15 +35,17 @@ describe("WP-7 screens", () => {
     expect(container.textContent).not.toMatch(/slab|crank|LP\b|keeper/i);
     await snap("progress", container.firstElementChild as HTMLElement);
   });
-  it("almost ready: connecting (no button), then slow with Try now; never 'Ready to trade' before", async () => {
+  it("market created: actions with the connecting line (no button), then failed with Retry; never 'Ready to trade' before", async () => {
     const a = success({ priceFeedRequired: true, keeperDelegated: false, keeperPhase: "connecting", keeperMessage: KEEPER_REGISTER_COPY.connecting });
-    expect(a.container.textContent).toContain("Almost ready");
+    expect(a.container.textContent).toContain("Market created");
     expect(a.container.textContent).not.toContain("Ready to trade");
-    await snap("almost-ready", a.container.firstElementChild as HTMLElement);
+    expect(a.getByTestId("launch-go-to-market")).toBeTruthy();
+    expect(a.queryByTestId("launch-price-retry")).toBeNull();
+    await snap("market-created-connecting", a.container.firstElementChild as HTMLElement);
     a.unmount();
-    const b = success({ priceFeedRequired: true, keeperDelegated: false, keeperPhase: "slow", keeperMessage: KEEPER_REGISTER_COPY.slow });
-    expect(b.getByTestId("launch-price-feed-retry").textContent).toBe("Try now");
-    await snap("almost-ready-slow", b.container.firstElementChild as HTMLElement);
+    const b = success({ priceFeedRequired: true, keeperDelegated: false, keeperPhase: "failed", keeperMessage: KEEPER_REGISTER_COPY.serverTrouble });
+    expect(b.getByTestId("launch-price-retry").textContent).toBe("Retry");
+    await snap("market-created-failed", b.container.firstElementChild as HTMLElement);
   });
   it("ready to trade", async () => {
     const r = success({ priceFeedRequired: true, keeperDelegated: true });

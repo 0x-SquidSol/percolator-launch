@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   KEEPER_REGISTER_BACKOFF_MS,
   KEEPER_REGISTER_COPY,
+  KEEPER_REGISTER_MAX_SERVER_RETRIES,
   KEEPER_REGISTER_STEADY_MS,
   postKeeperRegistration,
   runKeeperRegistration,
@@ -103,6 +104,41 @@ describe("re-review I-R2: 'locked to another price source' is final", () => {
   it("422 -> not retryable, the reason is the message", async () => {
     const f = vi.fn(async () => res(422, { error: "This market is already registered with a different price source." }));
     const a = await postKeeperRegistration(REQ, f as unknown as typeof fetch);
-    expect(a).toEqual({ registered: false, retryable: false, message: "This market is already registered with a different price source." });
+    expect(a).toEqual({ registered: false, retryable: false, message: "This market is already registered with a different price source.", status: 422 });
+  });
+});
+
+describe("5xx is retried a bounded number of times, then 'failed' with calm copy", () => {
+  it("502 x4 -> failed after 3 retries (5, 10, 20 s); a 409 in between resets the count", async () => {
+    const r502 = () => res(502, { error: "Bad Gateway" });
+    const waits: number[] = [];
+    const statuses: string[] = [];
+    // Hard cap: a loop that never gives up on 5xx ends on a 403 here instead of spinning forever.
+    const f = vi.fn(async () => (f.mock.calls.length > 10 ? res(403, { error: "cap reached" }) : r502()));
+    const phase = await runKeeperRegistration({
+      attempt: () => postKeeperRegistration(REQ, f as unknown as typeof fetch),
+      onStatus: (s) => statuses.push(`${s.phase}:${s.message}`),
+      sleep: async (ms) => { waits.push(ms); },
+    });
+    expect(phase).toBe("failed");
+    expect(KEEPER_REGISTER_MAX_SERVER_RETRIES).toBe(3);
+    expect(f).toHaveBeenCalledTimes(4);
+    expect(waits).toEqual([5_000, 10_000, 20_000]);
+    expect(statuses[statuses.length - 1]).toBe(`failed:${KEEPER_REGISTER_COPY.serverTrouble}`);
+
+    const mixed = vi
+      .fn()
+      .mockResolvedValueOnce(r502())
+      .mockResolvedValueOnce(r502())
+      .mockResolvedValueOnce(res(409, { error: "not landed" }))
+      .mockResolvedValueOnce(r502())
+      .mockResolvedValueOnce(r502())
+      .mockResolvedValueOnce(res(200, { registered: true }));
+    const p2 = await runKeeperRegistration({
+      attempt: () => postKeeperRegistration(REQ, mixed as unknown as typeof fetch),
+      onStatus: () => undefined,
+      sleep: async () => undefined,
+    });
+    expect(p2).toBe("ready");
   });
 });

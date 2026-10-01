@@ -279,15 +279,19 @@ describe("LaunchSuccess", () => {
   describe("keeper registration retry (2026-07-09 fix)", () => {
     it("shows a Retry registration button when registration failed and a retry handler is provided", () => {
       const onRetry = vi.fn();
+      // The success screen keeps its actions; the failed price registration is a one-line status
+      // with Retry next to them.
       render(
         <LaunchSuccess
           {...defaultProps}
+          priceFeedRequired
+          keeperPhase="failed"
           keeperDelegated={false}
           keeperMessage="Signature verification failed."
           onRetryKeeperRegistration={onRetry}
         />
       );
-      const retryBtn = screen.getByText("RETRY REGISTRATION");
+      const retryBtn = screen.getByText("Retry");
       fireEvent.click(retryBtn);
       expect(onRetry).toHaveBeenCalledOnce();
     });
@@ -296,14 +300,16 @@ describe("LaunchSuccess", () => {
       render(
         <LaunchSuccess
           {...defaultProps}
+          priceFeedRequired
+          keeperPhase="failed"
           keeperDelegated={false}
           keeperMessage="Signature verification failed."
           onRetryKeeperRegistration={vi.fn()}
           keeperRegistering
         />
       );
-      expect(screen.getByText(/RETRYING/)).toBeDefined();
-      const retryBtn = screen.getByText(/RETRYING/).closest("button");
+      expect(screen.getByText(/Retrying/)).toBeDefined();
+      const retryBtn = screen.getByText(/Retrying/).closest("button");
       expect(retryBtn?.hasAttribute("disabled")).toBe(true);
     });
 
