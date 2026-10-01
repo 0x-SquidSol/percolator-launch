@@ -2,6 +2,8 @@
 
 import { use, useState, useEffect, useRef, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
+import { MobileTradeBand } from "@/components/trade/MobileTradeBand";
+import { isInsideModalSurface } from "@/hooks/useOtherModalOpen";
 import useSWR from "swr";
 import { useRouter } from "next/navigation";
 import { PublicKey } from "@solana/web3.js";
@@ -207,8 +209,9 @@ function MobileOrderSheet({ slab }: { slab: string }) {
     // touch outside the sheet still drags the page behind it. Block those moves
     // while allowing the sheet's own `overflow-y-auto` region to keep scrolling.
     const handleTouchMove = (e: TouchEvent) => {
-      const t = e.target;
-      if (t instanceof Node && sheetRef.current?.contains(t)) return;
+      // Touches inside the sheet, or inside a dialog opened on top of it
+      // (trade confirm, close position), keep their own scrolling.
+      if (isInsideModalSurface(e.target, sheetRef.current)) return;
       e.preventDefault();
     };
     document.addEventListener("touchmove", handleTouchMove, { passive: false });
@@ -262,54 +265,16 @@ function MobileOrderSheet({ slab }: { slab: string }) {
 
   return (
     <>
-      {/* Portaled to <body> like every other fixed layer in this codebase (the
-          backdrop + order sheet below, components/ui/Modal.tsx,
-          ClosePositionModal, TradeConfirmationModal, Tooltip…). Inline, this
-          band sits inside the trade page's `animate-fade-in` wrapper
-          (TradePageInner's root): while that opacity animation is below 1 it
-          forms a stacking context, which caps the band's z-40 INSIDE the
-          wrapper — and <Footer> (position: relative, rendered straight after
-          <main> in app/layout.tsx) then paints straight over it, so the
-          footer's social row scrolled visibly across the TRADE trigger. In
-          <body> the band competes with the whole `z-[1]` page wrapper instead
-          (40 > 1), so the footer can never reach it.
-
-          It docks on TOP of MobileBottomNav rather than running to bottom-0
-          with padding: portaled, the band is now ABOVE that nav (root z-40
-          vs the nav's effective z-1 inside the wrapper), so an opaque band
-          reaching bottom-0 would bury the nav entirely. The calc is the nav's
-          exact height — `min-h-[56px]` + its `border-t` (1px) +
-          `safe-area-bottom`'s `env(safe-area-inset-bottom)` — so the two abut
-          with no slit between them. `md:bottom-0` takes over from md, where
-          that nav hides itself (`md:hidden`) but this trigger is still live
-          up to lg.
-
-          The band is fully opaque — `bg-[var(--bg)]`, no /95, no
-          backdrop-blur — so page and footer content passing behind it during
-          a scroll can no longer bleed through. That bleed is what made the
-          footer read as sitting "transparent on the trade button". */}
-      {mounted &&
-        createPortal(
-          <div className="fixed inset-x-0 z-40 bottom-[calc(3.5rem+1px+env(safe-area-inset-bottom,0px))] border-t border-[var(--border)] bg-[var(--bg)] md:bottom-0 lg:hidden">
-            <button
-              onClick={() => setOpen(true)}
-              className="flex min-h-[48px] w-full items-center justify-center gap-2 bg-[var(--accent)]/10 px-4 py-3.5 text-[11px] font-bold uppercase tracking-[0.2em] text-[var(--accent)] transition-colors duration-150 active:bg-[var(--accent)]/25"
-              data-testid="mobile-trade-bar"
-              data-ticket-row={ticketRow ?? undefined}
-              aria-haspopup="dialog"
-              aria-expanded={open}
-            >
-              <span>{ticketRowLabel ? `Trade · ${ticketRowLabel}` : "Trade"}</span>
-              {/* Chevron points up because the ticket opens upward as a bottom
-                  sheet — the affordance that was missing when this was bare
-                  uppercase text that read as a section heading. */}
-              <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M6 15l6-6 6 6" />
-              </svg>
-            </button>
-          </div>,
-          document.body,
-        )}
+      {/* Trigger band: portaled to <body> and docked on MobileBottomNav; it
+          steps aside while any other modal dialog is open (see
+          components/trade/MobileTradeBand.tsx). */}
+      <MobileTradeBand
+        open={open}
+        onOpen={() => setOpen(true)}
+        label={ticketRowLabel}
+        ticketRow={ticketRow}
+        sheetRef={sheetRef}
+      />
 
       {/* Backdrop + sheet are portaled to <body> — the same thing every other
           dialog in this codebase already does (components/ui/Modal.tsx,
