@@ -112,7 +112,20 @@ function makeV17Market(claimable: bigint, kind: number = V17_KIND_MARKET): Uint8
 const fixture = JSON.parse(
   readFileSync(join(__dirname, "..", "fixtures", "BPgSUbDs.market.json"), "utf-8"),
 ) as { market: string; owner: string; dataLen: number; dataBase64: string };
-const fixtureData = new Uint8Array(Buffer.from(fixture.dataBase64, "base64"));
+/** The capture as-is: a version-17 header from the retired DhSkE7… wrapper. */
+const fixtureDataV17Header = new Uint8Array(Buffer.from(fixture.dataBase64, "base64"));
+/**
+ * The same bytes with the header version set to 18. SDK 6+ (24d5d19d; pinned 8.0.0)
+ * recognises only V17_EXPECTED_VERSION = 18 — every deployed market (wrapper ETDLAdi…)
+ * is version 18 — so the raw capture is now (correctly) refused. The regions these
+ * tests pin (config 584..592 and the asset-0 profile at 1350) sit at the same offsets
+ * in v18, so only the version word is re-stamped to keep pinning them on real bytes.
+ */
+const fixtureData = (() => {
+  const d = new Uint8Array(fixtureDataV17Header);
+  new DataView(d.buffer).setUint16(8, 18, true);
+  return d;
+})();
 
 // ── Real LIVE devnet market, captured 2026-09-28 (post-GH#420: the legacy
 // config counter is 0, the per-asset counter is not) — pins the regression
@@ -309,6 +322,11 @@ describe("readCreatorFeeClaimable — real LIVE devnet market (post-GH#420, perc
 });
 
 describe("readCreatorFeeClaimable — real devnet market (pre-upgrade padding)", () => {
+  it("refuses the raw version-17 capture (retired wrapper) instead of guessing at it", () => {
+    expect(new DataView(fixtureDataV17Header.buffer).getUint16(8, true)).toBe(17);
+    expect(readCreatorFeeClaimable(fixtureDataV17Header)).toBeNull();
+  });
+
   it("the fixture's neighbours are non-zero, so a 0n read pins the offset", () => {
     const dv = new DataView(
       fixtureData.buffer,

@@ -124,7 +124,11 @@ describe('useCreateMarket v17 matcher resume PoC', () => {
     // V17 magic used by the production account-discovery path:
     // [00, 36, 31, 56, 43, 52, 45, 50].
     const v17Magic = Buffer.from([0x00, 0x36, 0x31, 0x56, 0x43, 0x52, 0x45, 0x50]);
-    const v17Version = 17; // SDK 4.2.0: V17_EXPECTED_VERSION bumped 16 -> 17 (deployed markets are v17)
+    // v18 wrapper (24d5d19d / SDK 6+): V17_EXPECTED_VERSION is 18 on the deployed
+    // program. Read it from the SDK so the fixture tracks the real header.
+    const fixtureSdk =
+      await vi.importActual<typeof import('@percolatorct/sdk')>('@percolatorct/sdk');
+    const v17Version = fixtureSdk.V17_EXPECTED_VERSION;
     // A v17 market/slab response so create(params, 2) enters
     // the v17 matcher-initialization branch.
     const slabData = Buffer.alloc(26_364);
@@ -144,7 +148,9 @@ describe('useCreateMarket v17 matcher resume PoC', () => {
     // - remaining bytes zeroed, including matcher config enabled state.
     //
     // This models TX A having landed while TX C / TX D did not.
-    const lpPortfolioData = Buffer.alloc(9_347);
+    // v18 portfolio = V17_PORTFOLIO_ACCOUNT_LEN (9_563 in SDK 8): matcher config
+    // [104] then the 24-byte identity trailer (24d5d19d). Was 9_347 in v17.
+    const lpPortfolioData = Buffer.alloc(fixtureSdk.V17_PORTFOLIO_ACCOUNT_LEN);
     v17Magic.copy(lpPortfolioData, 0);
     lpPortfolioData.writeUInt16LE(v17Version, 8);
     slabKeypair.publicKey.toBuffer().copy(lpPortfolioData, 16);
@@ -152,16 +158,17 @@ describe('useCreateMarket v17 matcher resume PoC', () => {
 
     // Prove that the mocked account matches the same identity fields
     // used by the production getProgramAccounts lookup.
-    expect(lpPortfolioData).toHaveLength(9_347);
+    expect(lpPortfolioData).toHaveLength(fixtureSdk.V17_PORTFOLIO_ACCOUNT_LEN);
     expect(lpPortfolioData.subarray(0, 8)).toEqual(v17Magic);
     expect(lpPortfolioData.subarray(16, 48)).toEqual(slabKeypair.publicKey.toBuffer());
     expect(lpPortfolioData.subarray(80, 112)).toEqual(walletPublicKey.toBuffer());
 
-    // PortfolioMatcherConfigV16 occupies the final 104 bytes:
-    // matcher_program[32] + matcher_context[32] +
-    // matcher_delegate[32] + enabled[u64].
-    const matcherConfigOffset = lpPortfolioData.length - 104;
-    expect(matcherConfigOffset).toBe(9_243);
+    // PortfolioMatcherConfigV16 (104 bytes) sits just before the v18 identity
+    // trailer: matcher_program[32] + matcher_context[32] +
+    // matcher_delegate[32] + control[u64].
+    const matcherConfigOffset =
+      lpPortfolioData.length - 104 - fixtureSdk.V17_PORTFOLIO_IDENTITY_TRAILER_LEN;
+    expect(matcherConfigOffset).toBe(9_435);
     expect(lpPortfolioData.subarray(matcherConfigOffset, matcherConfigOffset + 96)).toEqual(
       Buffer.alloc(96),
     );
@@ -224,7 +231,7 @@ describe('useCreateMarket v17 matcher resume PoC', () => {
 
     const slabRecognizedByActualSdk = actualSdk.isV17Account(new Uint8Array(slabData));
 
-    expect(slabHeaderHex).toBe('00363156435245501100');
+    expect(slabHeaderHex).toBe('00363156435245501200'); // magic + u16 LE version 18
     expect(slabRecognizedByActualSdk).toBe(true);
 
     // The existing LP lookup must occur before matcher readiness is evaluated.
@@ -283,7 +290,7 @@ describe('useCreateMarket v17 matcher resume PoC', () => {
     // Valid v17 slab fixture.
     const v17Magic = Buffer.from([0x00, 0x36, 0x31, 0x56, 0x43, 0x52, 0x45, 0x50]);
 
-    const v17Version = 17; // SDK 4.2.0: V17_EXPECTED_VERSION bumped 16 -> 17 (deployed markets are v17)
+    const v17Version = actualSdk.V17_EXPECTED_VERSION; // 18 on the deployed v18 wrapper
     const slabData = Buffer.alloc(26_364);
 
     v17Magic.copy(slabData, 0);
@@ -307,7 +314,8 @@ describe('useCreateMarket v17 matcher resume PoC', () => {
 
     walletPublicKey.toBuffer().copy(lpPortfolioData, 80);
 
-    const matcherConfigOffset = lpPortfolioData.length - 104;
+    const matcherConfigOffset =
+      lpPortfolioData.length - 104 - actualSdk.V17_PORTFOLIO_IDENTITY_TRAILER_LEN;
 
     matcherProgramId.toBuffer().copy(lpPortfolioData, matcherConfigOffset);
 

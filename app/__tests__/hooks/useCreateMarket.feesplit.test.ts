@@ -1,7 +1,10 @@
 /**
  * Fee-split wiring in the create flow.
  *
- * 1. Tag-86 (UpdateFeeSplit) wire bytes: tag(1) + 3× u16 LE shares = 7 bytes.
+ * 1. Tag-86 (UpdateFeeSplit) wire bytes: tag(1) + 3× u16 LE shares + u64 LE
+ *    authority_epoch = 15 bytes. The u64 anti-replay epoch was added in the v18
+ *    wire (deployed wrapper 553d76f0, src/v16_program.rs tag-86 decode) and
+ *    adopted by the app in 0d975d00; this test predated it (7-byte v17 shape).
  * 2. Sequence invariant (orderStakeTailInstructions): UpdateFeeSplit MUST come
  *    BEFORE StakeInitPool (which irreversibly rotates cfg.marketauth to the pool
  *    PDA) and BindInsuranceAuthority MUST come AFTER it. This is the correctness
@@ -19,27 +22,41 @@ import {
 import { orderStakeTailInstructions } from "@/hooks/useCreateMarket";
 
 describe("UpdateFeeSplit (tag 86) wire bytes", () => {
-  it("encodes tag 86 + three u16 LE shares (7 bytes) for a non-default split", () => {
+  it("encodes tag 86 + three u16 LE shares + u64 authority epoch (15 bytes)", () => {
     const data = encodeUpdateFeeSplit({
       creatorShareBps: 2000,
       lpShareBps: 4000,
       insuranceShareBps: 2000,
+      authorityEpoch: 3n,
     });
-    expect(data.length).toBe(7);
+    expect(data.length).toBe(15);
     expect(data[0]).toBe(86);
     expect(IX_TAG.UpdateFeeSplit).toBe(86);
-    // 2000 = 0x07D0 → LE D0 07 ; 4000 = 0x0FA0 → LE A0 0F ; 2000 = D0 07
-    expect(Array.from(data.slice(1))).toEqual([0xd0, 0x07, 0xa0, 0x0f, 0xd0, 0x07]);
+    // 2000 = 0x07D0 → LE D0 07 ; 4000 = 0x0FA0 → LE A0 0F ; 2000 = D0 07 ; epoch 3 u64 LE
+    expect(Array.from(data.slice(1))).toEqual([
+      0xd0, 0x07, 0xa0, 0x0f, 0xd0, 0x07,
+      0x03, 0, 0, 0, 0, 0, 0, 0,
+    ]);
   });
 
-  it("round-trips the exact WRITE-verify split (creator/LP/insurance order preserved)", () => {
+  it("round-trips the exact WRITE-verify split (creator/LP/insurance/epoch order preserved)", () => {
     const data = encodeUpdateFeeSplit({
       creatorShareBps: 0x1111,
       lpShareBps: 0x2222,
       insuranceShareBps: 0x3333,
+      authorityEpoch: 0x0807060504030201n,
     });
-    // LE: 11 11 | 22 22 | 33 33
-    expect(Array.from(data.slice(1))).toEqual([0x11, 0x11, 0x22, 0x22, 0x33, 0x33]);
+    // LE: 11 11 | 22 22 | 33 33 | 01..08
+    expect(Array.from(data.slice(1))).toEqual([
+      0x11, 0x11, 0x22, 0x22, 0x33, 0x33,
+      0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+    ]);
+  });
+
+  it("refuses to encode without the authority epoch (no silent v17 7-byte shape)", () => {
+    expect(() =>
+      encodeUpdateFeeSplit({ creatorShareBps: 2000, lpShareBps: 4000, insuranceShareBps: 2000 } as any),
+    ).toThrow();
   });
 });
 

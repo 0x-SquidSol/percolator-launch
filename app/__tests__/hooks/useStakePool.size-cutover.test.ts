@@ -11,7 +11,12 @@
  *   1. the SDK's STAKE_POOL_SIZE — which the route now imports for its dataSize
  *      filter — equals the deployed 392;
  *   2. decodeStakePoolV1 reads the five frontend fields correctly from a real
- *      392-byte account (offsets are identical across the 352/392 layouts).
+ *      deployed-size account (offsets are identical across the 352/392/408 layouts).
+ *
+ * Update 2026-10-02: the relaunched stake program (VmpVUArR…, SDK 8.0.0 —
+ * 391be368 / 45abff9a) deploys 408-byte pools (SDK STAKE_POOL_SIZE_V4). A devnet
+ * read found 12 program accounts at 408 bytes and 0 at 352/392, and the raw
+ * offsets 104/136/184/192 matched the SDK decoder on every pool sampled.
  */
 import { describe, it, expect } from "vitest";
 import { PublicKey } from "@solana/web3.js";
@@ -19,20 +24,21 @@ import { STAKE_POOL_SIZE } from "@percolatorct/sdk";
 import { decodeStakePoolV1, STAKE_POOL_SIZE_V1 } from "@/hooks/useStakePool";
 
 describe("stake pool size — devnet-2 cutover", () => {
-  it("SDK STAKE_POOL_SIZE matches the deployed 392-byte v2 layout (not the retired 352)", () => {
-    expect(STAKE_POOL_SIZE).toBe(392);
+  it("SDK STAKE_POOL_SIZE matches the deployed 408-byte layout (not the retired 352/392)", () => {
+    expect(STAKE_POOL_SIZE).toBe(408);
     expect(STAKE_POOL_SIZE).not.toBe(352);
+    expect(STAKE_POOL_SIZE).not.toBe(392);
   });
 
-  it("STAKE_POOL_SIZE_V1 is a valid minimum floor cleared by a real 392-byte pool", () => {
+  it("STAKE_POOL_SIZE_V1 is a valid minimum floor cleared by a real deployed pool", () => {
     expect(STAKE_POOL_SIZE_V1).toBeLessThanOrEqual(STAKE_POOL_SIZE);
   });
 
-  it("decodeStakePoolV1 reads lpMint/vault/cooldown/cap from a 392-byte account", () => {
+  it("decodeStakePoolV1 reads lpMint/vault/cooldown/cap from a deployed-size (408-byte) account", () => {
     const lpMint = new PublicKey("GHreicn6XAGNqZhPKnmTg6k6pfkfgHKwkYZzUNy5fSis");
     const vault = new PublicKey("2pKMBdnueCgAA27wR8ZNGZjT7ykNTEzuQqAWrEyqn1Ak");
 
-    const data = new Uint8Array(392); // deployed v2 size
+    const data = new Uint8Array(STAKE_POOL_SIZE); // deployed size (408)
     data[0] = 1; // is_initialized
     data.set(lpMint.toBytes(), 104);
     data.set(vault.toBytes(), 136);

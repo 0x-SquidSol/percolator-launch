@@ -1,12 +1,24 @@
 /**
  * useTrade Hook Tests
- * 
+ *
  * Critical Test Cases:
- * - H4: RPC cancellation when wallet disconnects mid-trade
- * - C2: Stale preview data prevention
- * - Trade execution flow with permissionless crank
- * - Oracle authority validation
- * - Matcher context validation
+ * - Trade execution flow on a v17/v18 market (the only live path)
+ * - Oracle authority wallet is not blocked (5c33e236)
+ * - Oracle mode detection drives the self-heal catch-up oracle tail
+ * - Slippage limit derivation / pass-through on the v18 TradeCpi wire
+ *
+ * 2026-10-02 (fix/preexisting-test-failures): this suite used to drive the LEGACY
+ * v12 branch (no `raw` on the mocked slab), asserting a [crank, trade] tx sent via
+ * `sendTx` and the 29-byte v12 TradeCpi. Trunk moved on:
+ *   - 0d975d00: the v18 anti-replay wire — TradeCpi is 85 bytes and binds both
+ *     portfolios' identity (live-read via lib/v18-wire), so the v12 branch can no
+ *     longer build a trade at all (it is dead: no v12 market is live);
+ *   - 6d4112f3 / cc5d74c5: the taker crank NEVER rides in the trade's tx;
+ *   - the trade is sent with `sendTxWaiting` (UX WP-2 wait loop + self-heal);
+ *   - 18526d86: the LP is resolved by on-chain identity (lib/market-lp.ts, own tests);
+ *   - 5c33e236: the oracle-authority wallet trades like any other wallet.
+ * The suite now drives the v17 path with the resolver and identity reads stubbed;
+ * the assertions keep their intent against the current wire.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -27,6 +39,14 @@ vi.mock("@/components/providers/SlabProvider", () => ({
 
 vi.mock("@/lib/tx", () => ({
   sendTx: vi.fn(),
+  sendTxWaiting: vi.fn(),
+  prewarmTxLanding: vi.fn(),
+  simulateForGate: vi.fn(),
+  SimulationRefusal: class SimulationRefusal extends Error {},
+  buildBatchTx: vi.fn(),
+  signAllCompat: vi.fn(),
+  broadcastSignedTx: vi.fn(),
+  getPriorityFee: vi.fn(),
 }));
 
 vi.mock("@/lib/config", () => ({
@@ -38,6 +58,7 @@ vi.mock("@/lib/config", () => ({
 vi.mock("@/lib/programAllowlist", () => ({
   isKnownProgram: () => true,
   assertKnownProgram: () => {},
+  assertCanonicalMatcher: () => {},
 }));
 
 // Mock the price store's non-reactive snapshot reader so the slippage-limit
@@ -66,6 +87,11 @@ const mockVaultAuth = new PublicKey("DjVE6JNiYqPL2QXyCUUh8rNjHrbz9hXHNYt99MQ59qw
 // A stable mock delegate PDA — avoids the "no viable nonce" error that occurs when
 // deriveMatcherDelegate is called with all-zeros pubkeys (PublicKey.default) in tests.
 const mockMatcherDelegate = new PublicKey("De1egaTE11111111111111111111111111111111111");
+// v17 trade accounts (the LP comes from the identity resolver, the taker from the owner scan).
+const mockLpPortfolio = new PublicKey(new Uint8Array(32).fill(51));
+const mockTakerPortfolio = new PublicKey(new Uint8Array(32).fill(52));
+const mockMatcherProg = new PublicKey(new Uint8Array(32).fill(53));
+const mockMatcherCtx = new PublicKey(new Uint8Array(32).fill(54));
 
 vi.mock("@percolatorct/sdk", async () => {
   const actual = await vi.importActual("@percolatorct/sdk");
@@ -80,9 +106,53 @@ vi.mock("@percolatorct/sdk", async () => {
   };
 });
 
+vi.mock("@/lib/market-lp", () => ({
+  resolveMarketLp: vi.fn(async () => ({
+    pubkey: mockLpPortfolio,
+    data: new Uint8Array(0),
+    owner: new PublicKey(new Uint8Array(32).fill(55)),
+    portfolioId: 1n,
+    matcherProg: mockMatcherProg,
+    matcherCtx: mockMatcherCtx,
+    matcherDelegate: mockMatcherDelegate,
+    reason: "asset-admin",
+  })),
+}));
+
+vi.mock("@/lib/owner-portfolio", async (orig) => ({
+  ...((await orig()) as Record<string, unknown>),
+  findOwnerPortfolio: vi.fn(async () => mockTakerPortfolio),
+}));
+
+vi.mock("@/lib/v18-wire", async (orig) => ({
+  ...((await orig()) as Record<string, unknown>),
+  fetchPortfolioIdentity: vi.fn(async (_c: unknown, pk: PublicKey) => ({
+    portfolioId: pk.equals(mockLpPortfolio) ? 1n : 2n,
+    matcherSequence: 0n,
+    positionEpoch: 0n,
+  })),
+  fetchAssetMarketId: vi.fn(async () => 1n),
+}));
+
 import { useConnectionCompat, useWalletCompat } from "@/hooks/useWalletCompat";
 import { useSlabState } from "@/components/providers/SlabProvider";
-import { sendTx } from "@/lib/tx";
+import { sendTx, sendTxWaiting } from "@/lib/tx";
+
+/** The v17 trade is sent with sendTxWaiting; sendTx only carries a separate taker crank. */
+const sent = () => vi.mocked(sendTxWaiting);
+
+/** v18 TradeCpi (85 B): tag | 5×u64 ids | u16 asset | u64 marketId | i128 size | u64 fee | u64 limit | u16 cap. */
+const V18_TRADE_CPI_LEN = 85;
+const V18_TRADE_CPI_LIMIT_OFF = 75;
+
+/** A v17/v18 market header (magic + version 18 + kind 1) so useTrade takes the live path. */
+function v17MarketRaw(): Uint8Array {
+  const raw = new Uint8Array(64);
+  raw.set([0x00, 0x36, 0x31, 0x56, 0x43, 0x52, 0x45, 0x50], 0);
+  raw[8] = 18;
+  raw[10] = 1;
+  return raw;
+}
 
 describe("useTrade", () => {
   const mockSlabAddress = "11111111111111111111111111111111";
@@ -128,6 +198,8 @@ describe("useTrade", () => {
           // shows. Raised to match the FEED rather than lowering the feed, because
           // the slippage assertions further down are written against a 1_500_000 mark.
           authorityPriceE6: 1_500_000n,
+          // Pyth-pinned markets reference lastEffectivePriceE6 on-chain (same mark).
+          lastEffectivePriceE6: 1_500_000n,
       },
       accounts: [
         {
@@ -139,6 +211,8 @@ describe("useTrade", () => {
           },
         },
       ],
+      // v17/v18 market header — the live path (isV17Account(raw)).
+      raw: v17MarketRaw(),
       programId: mockProgramId,
       refresh: vi.fn(),
     };
@@ -147,6 +221,7 @@ describe("useTrade", () => {
     vi.mocked(useWalletCompat).mockReturnValue(mockWallet);
     vi.mocked(useSlabState).mockReturnValue(mockSlabState);
     vi.mocked(sendTx).mockResolvedValue({ signature: "mock-signature" });
+    vi.mocked(sendTxWaiting).mockResolvedValue("mock-signature");
 
     // Mock fetch for backend price API (PERC-8328: price required, no fallback allowed)
     global.fetch = vi.fn().mockResolvedValue({
@@ -162,7 +237,7 @@ describe("useTrade", () => {
   });
 
   describe("Happy Path", () => {
-    it("should execute trade successfully with permissionless crank", async () => {
+    it("should execute trade successfully as a lone TradeCpi (no crank in the trade's tx)", async () => {
       const { result } = renderHook(() => useTrade(mockSlabAddress));
 
       await act(async () => {
@@ -173,31 +248,45 @@ describe("useTrade", () => {
         });
       });
 
-      expect(sendTx).toHaveBeenCalledTimes(1);
+      expect(sent()).toHaveBeenCalledTimes(1);
       expect(result.current.loading).toBe(false);
       expect(result.current.error).toBeNull();
-      
-      // Verify instructions include crank + trade
-      const txCall = vi.mocked(sendTx).mock.calls[0][0];
-      expect(txCall.instructions).toHaveLength(2); // crank + trade
+
+      // 6d4112f3: crank + trade in one tx trips Custom(21); the trade goes alone.
+      const txCall = sent().mock.calls[0][0];
+      expect(txCall.instructions).toHaveLength(1);
+      const tradeIx = txCall.instructions[0];
+      expect(tradeIx.data[0]).toBe(10); // TradeCpi
+      expect(tradeIx.data.length).toBe(V18_TRADE_CPI_LEN);
+      // [2] taker portfolio, [3] LP portfolio, [4]/[5]/[6] the LP's matcher.
+      expect(tradeIx.keys[2].pubkey.equals(mockTakerPortfolio)).toBe(true);
+      expect(tradeIx.keys[3].pubkey.equals(mockLpPortfolio)).toBe(true);
+      expect(tradeIx.keys[4].pubkey.equals(mockMatcherProg)).toBe(true);
+      expect(tradeIx.keys[5].pubkey.equals(mockMatcherCtx)).toBe(true);
+      expect(tradeIx.keys[6].pubkey.equals(mockMatcherDelegate)).toBe(true);
+      // No separate crank either: the taker has no open legs.
+      expect(sendTx).not.toHaveBeenCalled();
     });
 
-    it("rejects inline oracle pushes for admin markets until the server-side flow is wired in", async () => {
+    // 5c33e236 removed the dead "inline oracle push removed" throw: v18 AUTH_MARK
+    // markets are priced by the keeper, so the authority wallet trades normally.
+    it("lets the oracle-authority wallet trade on an admin market (no inline push)", async () => {
       mockSlabState.config.oracleAuthority = mockWalletPubkey;
-      
+
       const { result } = renderHook(() => useTrade(mockSlabAddress));
 
       await act(async () => {
-        await expect(
-          result.current.trade({
-            lpIdx: 0,
-            userIdx: 1,
-            size: 1000000n,
-          })
-        ).rejects.toThrow(/server-side oracle publisher/i);
+        await result.current.trade({
+          lpIdx: 0,
+          userIdx: 1,
+          size: 1000000n,
+        });
       });
 
-      expect(sendTx).not.toHaveBeenCalled();
+      expect(sent()).toHaveBeenCalledTimes(1);
+      const ixs = sent().mock.calls[0][0].instructions;
+      expect(ixs.map((ix: { data: Uint8Array }) => ix.data[0])).toEqual([10]); // no PushOraclePrice (old tag 16)
+      expect(result.current.error).toBeNull();
     });
   });
 
@@ -229,7 +318,8 @@ describe("useTrade", () => {
       expect(result.current.error).toContain("Wallet not connected");
     });
 
-    it("should throw error if LP not found", async () => {
+    it("legacy v12 slab (no v17 header): should throw error if LP not found", async () => {
+      mockSlabState.raw = undefined;
       const { result } = renderHook(() => useTrade(mockSlabAddress));
 
       await act(async () => {
@@ -256,8 +346,9 @@ describe("useTrade", () => {
         });
       });
 
-      // Should continue despite RPC error (fail at tx time)
-      expect(sendTx).toHaveBeenCalled();
+      // The taker-portfolio read is best-effort (it only decides the separate crank):
+      // a failing read must not abort the trade.
+      expect(sent()).toHaveBeenCalled();
     });
   });
 
@@ -275,8 +366,9 @@ describe("useTrade", () => {
         });
       });
 
-      // Should use slab as oracle account (admin mode)
-      expect(sendTx).toHaveBeenCalled();
+      // Admin mode: the slab is the oracle, so the self-heal catch-up carries no oracle tail.
+      expect(sent()).toHaveBeenCalled();
+      expect(sent().mock.calls[0][0].selfHeal?.catchUp?.oracleTail).toEqual([]);
     });
 
     it("should detect admin oracle when feed is all zeros", async () => {
@@ -292,7 +384,8 @@ describe("useTrade", () => {
         });
       });
 
-      expect(sendTx).toHaveBeenCalled();
+      expect(sent()).toHaveBeenCalled();
+      expect(sent().mock.calls[0][0].selfHeal?.catchUp?.oracleTail).toEqual([]);
     });
 
     it("should use Pyth oracle for standard markets", async () => {
@@ -309,14 +402,18 @@ describe("useTrade", () => {
         });
       });
 
-      expect(sendTx).toHaveBeenCalled();
+      // Pyth-pinned: the Pyth push-oracle PDA rides as the catch-up oracle tail.
+      expect(sent()).toHaveBeenCalled();
+      const tail = sent().mock.calls[0][0].selfHeal?.catchUp?.oracleTail;
+      expect(tail).toHaveLength(1);
+      expect(tail?.[0]?.pubkey.equals(mockOraclePda)).toBe(true);
     });
   });
 
   describe("Loading State", () => {
     it("should set loading state during trade execution", async () => {
       let resolveSendTx: any;
-      vi.mocked(sendTx).mockReturnValue(
+      vi.mocked(sendTxWaiting).mockReturnValue(
         new Promise((resolve) => {
           resolveSendTx = resolve;
         })
@@ -335,7 +432,7 @@ describe("useTrade", () => {
       expect(result.current.loading).toBe(true);
 
       await act(async () => {
-        resolveSendTx({ signature: "mock-sig" });
+        resolveSendTx("mock-sig");
       });
 
       await waitFor(() => {
@@ -345,12 +442,13 @@ describe("useTrade", () => {
   });
 
   describe("Slippage protection", () => {
-    // useTrade builds a 2-ix tx: [crank, tradeCpi]. The tradeCpi data layout is
-    //   tag(u8=10) ‖ lpIdx(u16) ‖ userIdx(u16) ‖ size(i128) ‖ limit_price_e6(u64)
-    // = 1 + 2 + 2 + 16 + 8 = 29 bytes. The limit is the trailing u64 LE.
+    // v18 TradeCpi (deployed wrapper 553d76f0, tag-10 decode): tag ‖ a_id ‖ a_epoch ‖
+    // b_id ‖ b_epoch ‖ b_matcher_seq (5×u64) ‖ asset u16 ‖ market_id u64 ‖ size i128 ‖
+    // fee_bps u64 ‖ limit_price u64 ‖ backing_fee_cap_bps u16 = 85 bytes; limit @ 75.
     function decodeLimit(data: Uint8Array | Buffer): bigint {
-      const buf = data instanceof Uint8Array ? Buffer.from(data) : data;
-      return buf.readBigUInt64LE(buf.length - 8);
+      const buf = Buffer.from(data);
+      expect(buf.length).toBe(V18_TRADE_CPI_LEN);
+      return buf.readBigUInt64LE(V18_TRADE_CPI_LIMIT_OFF);
     }
 
     it("auto-computes a non-zero limit for a long when the caller omits limitPriceE6", async () => {
@@ -358,7 +456,7 @@ describe("useTrade", () => {
       await act(async () => {
         await result.current.trade({ lpIdx: 0, userIdx: 1, size: 1_000_000n });
       });
-      const tx = vi.mocked(sendTx).mock.calls[0][0] as {
+      const tx = sent().mock.calls[0][0] as {
         instructions: Array<{ data: Uint8Array }>;
       };
       const tradeIx = tx.instructions[tx.instructions.length - 1];
@@ -375,7 +473,7 @@ describe("useTrade", () => {
       await act(async () => {
         await result.current.trade({ lpIdx: 0, userIdx: 1, size: -1_000_000n });
       });
-      const tx = vi.mocked(sendTx).mock.calls[0][0] as {
+      const tx = sent().mock.calls[0][0] as {
         instructions: Array<{ data: Uint8Array }>;
       };
       const limit = decodeLimit(tx.instructions[tx.instructions.length - 1].data);
@@ -395,7 +493,7 @@ describe("useTrade", () => {
           limitPriceE6: 1_999_999n,
         });
       });
-      const tx = vi.mocked(sendTx).mock.calls[0][0] as {
+      const tx = sent().mock.calls[0][0] as {
         instructions: Array<{ data: Uint8Array }>;
       };
       const limit = decodeLimit(tx.instructions[tx.instructions.length - 1].data);
@@ -412,7 +510,7 @@ describe("useTrade", () => {
           limitPriceE6: 0n,
         });
       });
-      const tx = vi.mocked(sendTx).mock.calls[0][0] as {
+      const tx = sent().mock.calls[0][0] as {
         instructions: Array<{ data: Uint8Array }>;
       };
       const limit = decodeLimit(tx.instructions[tx.instructions.length - 1].data);
@@ -437,6 +535,7 @@ describe("useTrade", () => {
           result.current.trade({ lpIdx: 0, userIdx: 1, size: 1_000_000n }),
         ).rejects.toThrow(/mark price unavailable/i);
       });
+      expect(sent()).not.toHaveBeenCalled();
       expect(sendTx).not.toHaveBeenCalled();
     });
 
@@ -458,6 +557,7 @@ describe("useTrade", () => {
           result.current.trade({ lpIdx: 0, userIdx: 1, size: 1_000_000n }),
         ).rejects.toThrow(/mark price unavailable/i);
       });
+      expect(sent()).not.toHaveBeenCalled();
       expect(sendTx).not.toHaveBeenCalled();
     });
 
@@ -468,7 +568,7 @@ describe("useTrade", () => {
       await act(async () => {
         await result.current.trade({ lpIdx: 0, userIdx: 1, size: 1_000_000n });
       });
-      const tx = vi.mocked(sendTx).mock.calls[0][0] as {
+      const tx = sent().mock.calls[0][0] as {
         instructions: Array<{ data: Uint8Array }>;
       };
       const limit = decodeLimit(tx.instructions[tx.instructions.length - 1].data);
