@@ -38,7 +38,7 @@ import { SimulationRefusal } from "@/lib/tx";
 import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 import { resolveDevnetProgramIds } from "@/lib/program-ids";
 import { readEarnP3Context } from "@/lib/limits/earn-p3-read";
-import { readViewerTopupIxs } from "@/lib/limits/resolved-exit-load";
+import { readEmptyCloseIxs, readViewerTopupIxs } from "@/lib/limits/resolved-exit-load";
 import { sendWithTopup } from "@/lib/limits/resolved-topup";
 import { computeBudgetPrefix, connectionSelfHealDeps } from "@/lib/self-heal";
 import { readTxDrawSummary, type DrawSummary } from "@/lib/limits/p3-draw-logs";
@@ -54,6 +54,13 @@ import {
   type KnownBalance,
   type TokenRead,
 } from '@/lib/token-balance';
+
+/**
+ * Bytes left free in a bundled Earn payout for the instructions sendTx can add (review of #2721,
+ * measured with the app builders): up to 8 liveness repairs (64 B) + vault-LP crank with oracle tail
+ * (52 B) + senior-draw crank (20 B) + recall (30 B) = 166 B; 180 B with margin.
+ */
+const SELF_HEAL_RESERVE_BYTES = 180;
 
 /**
  * Which LP-vault redemption step a `withdraw()` call actually ran:
@@ -808,7 +815,7 @@ export function useInsuranceLP() {
       // P3 ordering: a resolved close that ran before the vault LP settled left the viewer a
       // PARTIAL payout receipt. Once 101 has closed, its tag-46 top-up rides in front of this tx
       // (sim-gated; dropped if it would refuse, so the withdrawal itself never pays for it).
-      const topup = await readViewerTopupIxs({
+      const viewerTopup = await readViewerTopupIxs({
         connection,
         programId: progPk,
         market: marketPk,
@@ -817,11 +824,26 @@ export function useInsuranceLP() {
         simulate: async (ixs) =>
           (await connectionSelfHealDeps(connection, marketPk, wallet.publicKey!).simulate([...computeBudgetPrefix(TOPUP_SIM_CU), ...ixs])).err ?? null,
       });
+      // Resolved bound market: a senior 77 is refused 21 while any EMPTY portfolio is still
+      // materialized; the permissionless tag-8 closes ride in front (sim-gated), so the payout
+      // never waits on the keeper.
+      const emptyCloses = await readEmptyCloseIxs({
+        connection,
+        programId: progPk,
+        market: marketPk,
+        collateralMint: slabState.config.collateralMint,
+        payer: wallet.publicKey,
+        simulate: async (ixs) =>
+          (await connectionSelfHealDeps(connection, marketPk, wallet.publicKey!).simulate([...computeBudgetPrefix(TOPUP_SIM_CU), ...ixs])).err ?? null,
+      });
+      const topup = [...emptyCloses, ...viewerTopup];
       const send = (instructions: TransactionInstruction[]) =>
         sendWithTopup({
           topup,
           base: instructions,
           isPreSignRefusal: (e) => e instanceof SimulationRefusal,
+          // The closes are optional; sendTx's self-heal / vault-LP repair may add instructions.
+          packet: { feePayer: wallet.publicKey!, droppable: emptyCloses.length, reserveBytes: SELF_HEAL_RESERVE_BYTES },
           send: (ixs, bundled) =>
             sendTx({
               connection,

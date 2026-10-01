@@ -129,3 +129,12 @@ Patches `*.limits-app-5544302a.patch` apply to a clean `git archive` of wrapper 
 LIMITS_APP_DIR=<percolator-launch>/app TSX_BIN=<percolator-launch>/node_modules/.bin/tsx \
   cargo test --release --test p3_vault_lp -- limits_ --test-threads=1
 ```
+
+### Empty-portfolio closes before 77 / 102 (2026-10-01)
+
+| Test | What it proves |
+|---|---|
+| `limits_app_p3_empty_closes_prepended_before_77_and_102` | After an APP sweep that leaves every `close-empty` undone (bridge `exit` with `skip`), a senior's APP 77 alone is refused `Custom(21)`; the APP's tag-8 closes (bridge `empty-closes`, `readEmptyCloseIxs`) + 77 in ONE tx pay the senior whole (10,099,789); conservation holds. |
+| `limits_app_p3_empty_closes_prepended_before_102` | The same staging for the junior: the APP's 102 alone is refused `Custom(21)`; closes + 102 in one tx release 60,000,000. |
+
+All 14 `p3_vault_lp limits_` tests pass on 5544302a with these.

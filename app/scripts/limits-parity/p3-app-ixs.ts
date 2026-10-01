@@ -27,6 +27,7 @@ import { CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET, TAG_DEPOSIT_TO_LP_VAULT, TAG
 import { buildDepositJuniorTrancheIx, buildWithdrawJuniorTrancheIx, deriveLpVaultRegistryPda, deriveVaultLpState } from "../../lib/limits/p3-ix";
 import { exitStepIxs, type ExitIxContext, type ExitPortfolioRef } from "../../lib/limits/resolved-exit-ixs";
 import { viewerOwnedKeys } from "../../lib/limits/resolved-topup";
+import { emptyCloseSteps, MAX_PREPENDED_EMPTY_CLOSES } from "../../lib/limits/resolved-exit-load";
 import { buildFinishList, finishEstimate, finishItemCu, finishItemIxs, FINISH_MAX_TXS, planPortfolios, pruneRefusedItems, stepNeeded, type FinishItem } from "../../lib/limits/resolved-finish";
 import { planResolvedExit, type ExitStep, type ExitPortfolio } from "../../lib/limits/resolved-exit";
 import {
@@ -375,7 +376,9 @@ if (cmd === "init-market") {
   }
 } else if (cmd === "plan" || cmd === "exit") {
   const x = exitSnapshot();
-  const steps: ExitStep[] = x.plan.phase === "sweep" || x.plan.phase === "owner-window" ? x.plan.steps : [];
+  // `skip`: step kinds the harness leaves for later (e.g. close-empty, to stage empties).
+  const skip = new Set(Array.isArray(a.skip) ? (a.skip as unknown[]).map(String) : []);
+  const steps: ExitStep[] = (x.plan.phase === "sweep" || x.plan.phase === "owner-window" ? x.plan.steps : []).filter((s) => !skip.has(s.kind));
   const blockers = x.plan.phase === "not-resolved" ? [] : x.plan.blockers.map((b) => b.kind);
   const summary: J = { phase: x.plan.phase, steps: steps.map((s) => ({ kind: s.kind, portfolio: "portfolio" in s ? s.portfolio : "" })), blockers };
   if (cmd === "plan" || steps.length === 0) {
@@ -385,6 +388,11 @@ if (cmd === "init-market") {
     if (!first) throw new Error("no step");
     out(exitStepIxs(first, x.ctx), summary);
   }
+} else if (cmd === "empty-closes") {
+  // useInsuranceLP / useJuniorTranche: the tag-8 closes of empty portfolios prepended to 77 / 102.
+  const x = exitSnapshot();
+  const steps = emptyCloseSteps(x.plan, a.max !== undefined ? Number(a.max) : MAX_PREPENDED_EMPTY_CLOSES);
+  out(steps.flatMap((st) => exitStepIxs(st, x.ctx)), { closes: steps.length });
 } else if (cmd === "finish") {
   // UX WP-8 "Finish now": the WHOLE pre-signed list from ONE snapshot (useResolvedExit.finish),
   // each item's instructions + compute budget; optionally the redeemer's own 76 last.
