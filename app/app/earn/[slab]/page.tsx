@@ -8,7 +8,9 @@ import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import { SlabProvider, useSlabState } from '@/components/providers/SlabProvider';
 import { useInsuranceLP } from '@/hooks/useInsuranceLP';
+import { useLpCostBasis } from '@/hooks/useLpCostBasis';
 import { useWalletCompat } from '@/hooks/useWalletCompat';
+import { computeLpEarnedForVault } from '@/lib/lp-earned';
 import { ResolvedExitPanel } from '@/components/limits/ResolvedExitPanel';
 import { earnExitProps } from '@/lib/limits/resolved-finish';
 import { EarnTrancheCardView } from '@/components/limits/EarnTrancheCard';
@@ -147,6 +149,16 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
   const earnTrancheView = earnViewFromLimits(earnLimits, lpVaultState.vaultTotalAtoms, lpVaultState.userLpBalance, undefined, lpValuation.value);
   const earnPricing = withSplitPotPricing(earnPanelPricing(earnLimits, lpVaultState.vaultTotalAtoms, lpValuation.sim ?? lpValuation.value), lpVaultState.splitPot);
   const { engine, totalOI, vault: engineVault } = useEngineState();
+
+  // percolator-indexer#207: exact earned = value − indexed cost basis (+ realized), priced on
+  // the same NAV/share pair as the card's Value (two-pot vaults use the registry's shares).
+  const lpClaimShares = lpVaultState.userLpBalance + lpVaultState.pendingRedemptionShares;
+  const lpCostBasis = useLpCostBasis(slabAddress, earnWallet.publicKey?.toBase58() ?? null, lpClaimShares);
+  const lpEarned = useMemo(
+    () => computeLpEarnedForVault(lpCostBasis, lpVaultState),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [lpCostBasis, lpVaultState.userLpBalance, lpVaultState.pendingRedemptionShares, lpVaultState.vaultTotalAtoms, lpVaultState.lpSupply, lpVaultState.splitPot],
+  );
 
   // BUG-5 FIX: resolve actual collateral mint from on-chain slab data.
   // Previously hardcoded to USDC — wrong for coin-margined markets.
@@ -405,6 +417,7 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
                   ? `${formatTokenAmount(atoms, collateralDecimals)} ${collateralSymbol}`
                   : `${formatTokenAmount(lpVaultState.pendingRedemptionShares, collateralDecimals)} shares`;
               })()}
+              earned={lpEarned}
             />
           </ScrollReveal>
 

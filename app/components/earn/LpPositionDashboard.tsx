@@ -3,6 +3,7 @@
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
 import { bigintRatio } from "@/lib/formatters";
 import { ShimmerSkeleton } from '@/components/ui/ShimmerSkeleton';
+import type { LpEarned } from '@/lib/lp-earned';
 
 
 interface LpPositionDashboardProps {
@@ -27,7 +28,22 @@ interface LpPositionDashboardProps {
    * LP position" while shares sit in the redemption ticket. The label is "12.50 USDC".
    */
   pendingWithdrawalLabel?: string | null;
+  /**
+   * Exact earnings from the indexer's cost basis (percolator-indexer#207), or
+   * why they are unavailable. Omitted -> the row is not rendered.
+   */
+  earned?: LpEarned;
 }
+
+/**
+ * Earned is decoration: with no indexed basis (or an empty vault) the row is simply not shown.
+ * While the basis catches up, or for shares that arrived by transfer, it reads a calm "—"
+ * with the reason on hover only.
+ */
+const EARNED_UNAVAILABLE_HINT: Partial<Record<Extract<LpEarned, { kind: 'unavailable' }>['reason'], string>> = {
+  'out-of-sync': 'Updating',
+  'basis-unknown': 'Not available for shares received by transfer',
+};
 
 export function LpPositionDashboard({
   userLpBalance,
@@ -39,6 +55,7 @@ export function LpPositionDashboard({
   redemptionRateE6,
   loading,
   pendingWithdrawalLabel = null,
+  earned,
 }: LpPositionDashboardProps) {
   const divisor = 10n ** BigInt(decimals);
   const hasPosition = userLpBalance > 0n;
@@ -126,6 +143,26 @@ export function LpPositionDashboard({
               </div>
             </div>
 
+            {earned && (earned.kind === 'exact' || EARNED_UNAVAILABLE_HINT[earned.reason]) && (
+              <div className="mb-5 flex items-baseline justify-between" data-testid="lp-earned">
+                <div className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-secondary)]">
+                  Earned
+                </div>
+                {earned.kind === 'exact' ? (
+                  <div
+                    className={`text-sm font-medium ${earned.earnedAtoms < 0n ? 'text-[var(--short)]' : 'text-[var(--long)]'}`}
+                    title={`Position value minus what you paid (${formatShares(earned.costBasisAtoms, decimals)} ${collateralSymbol}), plus realized from past redemptions (${formatSigned(earned.realizedAtoms, decimals)}). Fees compound into the share price; they are paid out on redemption.`}
+                  >
+                    {formatSigned(earned.earnedAtoms, decimals)} {collateralSymbol}
+                  </div>
+                ) : (
+                  <div className="text-[12px] text-[var(--text-muted)]" title={EARNED_UNAVAILABLE_HINT[earned.reason]}>
+                    —
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Metrics grid (UX WP-5 §4.4: shares at 2 dp, never raw atoms; one share value) */}
             <div className="grid grid-cols-2 gap-4">
               <MetricCell label="Shares" value={formatShares(userLpBalance, lpDecimals)} />
@@ -184,3 +221,8 @@ function formatShares(raw: bigint, decimals: number): string {
   return `${(cents / 100n).toLocaleString('en-US')}.${(cents % 100n).toString().padStart(2, '0')}`;
 }
 
+/** Signed amount with an explicit + / − sign (earned can be negative after a loss). */
+function formatSigned(raw: bigint, decimals: number): string {
+  if (raw === 0n) return '0';
+  return raw < 0n ? `−${formatShares(-raw, decimals)}` : `+${formatShares(raw, decimals)}`;
+}
