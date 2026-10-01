@@ -1,6 +1,7 @@
 "use client";
 
 import { STAKE_COPY, cooldownDuration } from "@/lib/stake-copy";
+import { useStakeCooldown } from "@/hooks/useStakeCooldown";
 import { useEffect, useState, useCallback, useSyncExternalStore, type CSSProperties } from "react";
 import { DEVNET_PROGRAM_IDS } from "@/lib/program-ids";
 import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
@@ -404,6 +405,8 @@ function PositionCard({
   });
 
   const [txStatus, setTxStatus] = useState<{ type: "success" | "error"; msg: string } | null>(null);
+  // Live countdown; at 0 re-read the position so "Withdraw All" enables without a refresh.
+  const cooldown = useStakeCooldown(position, onWithdrawSuccess);
 
   const handleWithdraw = useCallback(async () => {
     if (!position.cooldownElapsed) return;
@@ -451,7 +454,7 @@ function PositionCard({
             <span className="text-[10px] text-[var(--text-muted)] tabular-nums" style={{ fontFamily: "var(--font-mono)" }}>
               {position.cooldownElapsed
                 ? STAKE_COPY.ready
-                : STAKE_COPY.availableIn(position.cooldownRemaining)
+                : cooldown.label
               }
             </span>
           </div>
@@ -484,7 +487,7 @@ function PositionCard({
               ? "Withdrawing…"
               : position.cooldownElapsed
               ? "Withdraw All →"
-              : STAKE_COPY.availableIn(position.cooldownRemaining)}
+              : cooldown.label}
           </button>
 
           {/* Manage / Withdraw Partial — jumps to DepositWidget's Withdraw
@@ -587,6 +590,8 @@ function DepositWidget({
   const [withdrawPosition, setWithdrawPosition] = useState<UserPosition | null>(null);
   const [withdrawPositionLoading, setWithdrawPositionLoading] = useState(false);
   const [withdrawRefreshKey, setWithdrawRefreshKey] = useState(0);
+  // Live countdown for the Withdraw tab; at 0 re-read the position (the chain decides).
+  const withdrawCooldown = useStakeCooldown(withdrawPosition, () => setWithdrawRefreshKey((k) => k + 1));
   const [withdrawTxStatus, setWithdrawTxStatus] = useState<{ type: "success" | "error"; msg: string } | null>(null);
 
   const pool = pools.find((p) => p.id === selectedPool) ?? pools[0];
@@ -1008,7 +1013,7 @@ function DepositWidget({
               <p className={`text-[10px] ${withdrawPosition.cooldownElapsed ? "text-[var(--text-muted)]" : "text-[var(--short)]"}`}>
                 {withdrawPosition.cooldownElapsed
                   ? "Cooldown complete — ready to withdraw."
-                  : `${STAKE_COPY.availableIn(withdrawPosition.cooldownRemaining)}.`}
+                  : `${withdrawCooldown.label}.`}
               </p>
             )}
 
@@ -1043,7 +1048,7 @@ function DepositWidget({
                   : !withdrawPosition
                   ? "Nothing to Withdraw"
                   : !withdrawPosition.cooldownElapsed
-                  ? STAKE_COPY.availableIn(withdrawPosition.cooldownRemaining)
+                  ? withdrawCooldown.label
                   : "Withdraw →"}
               </button>
             )}
