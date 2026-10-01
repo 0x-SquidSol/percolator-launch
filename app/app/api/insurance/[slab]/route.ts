@@ -56,8 +56,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ slab: s
       balance: balance.toString(),
       totalRisk: totalRisk.toString(),
       totalOpenInterestQ: oiQ.toString(),
-      feeRevenue: "0",
-      dailyAccumulationRate: 0,
+      // No on-chain or indexer source on v18: null (unknown), never an invented 0.
+      feeRevenue: null,
+      dailyAccumulationRate: null,
       historicalBalance: [],
       source: "on-chain",
     },

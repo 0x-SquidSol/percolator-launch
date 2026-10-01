@@ -7,8 +7,8 @@
  * (PENGU, captured read-only) served as owned by the current wrapper.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { PublicKey } from "@solana/web3.js";
 import { parseMarketGroupV17OI, parseWrapperConfigV17, V17_HEADER_LEN } from "@percolatorct/sdk";
 import { readV17MaxAbsFunding } from "@/lib/v17-engine-config";
@@ -49,7 +49,6 @@ vi.mock("@/lib/indexer-db", () => ({ hasIndexerDb: () => h.dbConfigured, pingInd
 
 const { GET: fundingGET } = await import("@/app/api/funding/[slab]/route");
 const { GET: insuranceGET } = await import("@/app/api/insurance/[slab]/route");
-const { GET: pricesGET } = await import("@/app/api/prices/markets/route");
 const { GET: healthGET } = await import("@/app/api/health/route");
 
 const call = (fn: (r: Request, c: { params: Promise<{ slab: string }> }) => Promise<Response>, slab = SLAB) =>
@@ -99,7 +98,7 @@ describe("/api/insurance/:slab (InsuranceDashboard)", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.balance).toBe(oi.insuranceBalance.toString());
     expect(body.totalRisk).toBe((((oi.totalLongOiQ + oi.totalShortOiQ) * mark) / 1_000_000n).toString());
-    expect(body).toMatchObject({ feeRevenue: "0", dailyAccumulationRate: 0, historicalBalance: [], source: "on-chain" });
+    expect(body).toMatchObject({ feeRevenue: null, dailyAccumulationRate: null, historicalBalance: [], source: "on-chain" });
     // The dashboard's own mapping parses these as BigInt.
     expect(() => BigInt(body.balance as string) + BigInt(body.totalRisk as string)).not.toThrow();
   });
@@ -110,18 +109,8 @@ describe("/api/insurance/:slab (InsuranceDashboard)", () => {
 });
 
 describe("/api/prices/markets", () => {
-  it("built from the registry's live mark (mark > last > index), e6 strings", async () => {
-    h.rows = [
-      { slab_address: "A", mark_price: 1.5, last_price: 2 },
-      { slab_address: "B", mark_price: null, last_price: 0.25 },
-      { slab_address: "C", mark_price: 0, last_price: null, index_price: null },
-    ];
-    const res = await pricesGET();
-    expect(await res.json()).toEqual({ A: { priceE6: "1500000" }, B: { priceE6: "250000" } });
-  });
-  it("registry unavailable -> 503", async () => {
-    h.rows = null;
-    expect((await pricesGET()).status).toBe(503);
+  it("is deleted (no caller; was an unauthenticated service-role + all-slab read)", () => {
+    expect(existsSync(resolve(__dirname, "../../app/api/prices/markets/route.ts"))).toBe(false);
   });
 });
 
