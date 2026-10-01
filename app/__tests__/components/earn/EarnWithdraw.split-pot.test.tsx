@@ -98,8 +98,9 @@ describe("pending full withdrawal the vault can only partly pay", () => {
   it("Custom 25 on an Earn withdrawal reads as a calm line, not 'Something went wrong'", () => {
     const W = resolveDevnetProgramIds().wrapper;
     const msg = resolveUserMessage(new Error(`Transaction simulation failed: Error processing Instruction 2: custom program error: 0x19\nProgram ${W} failed: custom program error: 0x19`), { surface: "earn-withdraw" });
-    expect(msg.title).toBe("Partly available now");
-    expect(msg.body).toMatch(/Nothing moved/);
+    // #2740 (0x-SquidSol): the fallback line if a 77 still meets a split pot.
+    expect(msg.kind).toBe("earn-payout-split");
+    expect(msg.body).toMatch(/Nothing was sent/);
   });
 
   it("the request path's pre-sign cap refusal also reads calmly", () => {
