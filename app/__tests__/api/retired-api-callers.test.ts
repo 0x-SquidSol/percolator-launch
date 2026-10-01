@@ -199,6 +199,18 @@ describe("/api/open-interest/:slab (OpenInterestCard) -> chain only", () => {
     put(SLAB, { owner: WRAPPER, data: PENGU.subarray(0, 400) });
     expect((await call(oiGET, SLAB)).status).toBe(503);
   });
+  it("an account that is not a market at all -> 404 (permanent), not 503 'temporarily unavailable'", async () => {
+    put(SLAB, { owner: "11111111111111111111111111111111", data: Buffer.alloc(0) }); // system account
+    expect((await call(oiGET, SLAB)).status).toBe(404);
+    put(SLAB, { owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", data: Buffer.alloc(82) }); // a mint
+    expect((await call(oiGET, SLAB)).status).toBe(404);
+    put(SLAB, { owner: WRAPPER, data: Buffer.alloc(64) }); // wrapper-owned, not a v17 market
+    expect((await call(oiGET, SLAB)).status).toBe(404);
+  });
+  it("another program's market (e.g. the abandoned wrapper) -> 404 (owning-program check)", async () => {
+    put(SLAB, { owner: OLD_WRAPPER, data: PENGU });
+    expect((await call(oiGET, SLAB)).status).toBe(404);
+  });
   it("missing account -> 404; blocked slab -> 404", async () => {
     h.accounts.clear();
     expect((await call(oiGET, SLAB)).status).toBe(404);
