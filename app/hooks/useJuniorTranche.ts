@@ -19,6 +19,14 @@ import { keepAppMessage, plainMessage } from '@/lib/limits/user-message';
 import { assertDepositWithinBalance, readTokenBalance } from '@/lib/deposit-guard';
 import { decodeLpVaultRegistryDomain, decodeVaultLpState } from '@/lib/limits/decode';
 import { buildJuniorResolvedReleaseIxs, juniorReleaseNeedsHarvest } from '@/lib/limits/junior-resolved-release';
+import { readEmptyCloseIxs } from '@/lib/limits/resolved-exit-load';
+import { sendWithTopup } from '@/lib/limits/resolved-topup';
+import { computeBudgetPrefix, connectionSelfHealDeps } from '@/lib/self-heal';
+
+/** One empty-portfolio close simulated alone (a resolved ClosePortfolio measured 126k on BPF). */
+export const EMPTY_CLOSE_SIM_CU = 300_000;
+/** The bundled closes + 102 (+ 78) tx is sized from its own simulation, up to this cap. */
+export const EMPTY_CLOSE_BUNDLE_CU_CAP = 1_200_000;
 import {
   buildDepositJuniorTrancheIx,
   buildWithdrawJuniorTrancheIx,
@@ -112,7 +120,25 @@ export function useJuniorTranche(slabAddress: string | null) {
         if (amount <= 0n) throw new Error('Enter an amount greater than zero.');
         const c = await context();
         const ixs = buildJuniorResolvedReleaseIxs(c, amount, juniorReleaseNeedsHarvest(c.marketData, c.domain));
-        return await sendTx({ connection, wallet, instructions: ixs });
+        // 102 is refused 21 while any EMPTY portfolio is still materialized on the Resolved market:
+        // the permissionless tag-8 closes go first in the same tx (sim-gated; dropped if they
+        // would make it fail), so the junior never waits on the keeper.
+        const closes = await readEmptyCloseIxs({
+          connection,
+          programId: c.vm.programId,
+          market: c.vm.market,
+          collateralMint: c.mint,
+          payer: c.owner,
+          simulate: async (x) =>
+            (await connectionSelfHealDeps(connection, c.vm.market, c.owner).simulate([...computeBudgetPrefix(EMPTY_CLOSE_SIM_CU), ...x])).err ?? null,
+        });
+        return await sendWithTopup({
+          topup: closes,
+          base: ixs,
+          isPreSignRefusal: (e) => e instanceof SimulationRefusal,
+          send: (instructions, bundled) =>
+            sendTx({ connection, wallet, instructions, ...(bundled ? { computeUnitsFromSim: { cap: EMPTY_CLOSE_BUNDLE_CU_CAP } } : {}) }),
+        });
       } catch (e) {
         // UX WP-1 (JR-2): the one resolver, never the raw "custom program error: 0x4b".
         setError(plainMessage(e, { surface: 'creator-stake' }, keepAppMessage));

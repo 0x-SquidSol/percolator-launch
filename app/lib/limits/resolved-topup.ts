@@ -50,9 +50,10 @@ export function viewerReceiptStatus(plan: ResolvedExitPlan | null, portfolios: r
 }
 
 /**
- * Send `base` with the viewer's top-up in front when there is one. A top-up that makes the tx
- * fail its pre-sign simulation (`isPreSignRefusal`: the wallet never opened) is dropped and the
- * user's own tx is sent alone, so bundling can never cost the user their withdrawal.
+ * Send `base` with a prefix (the viewer's top-up, empty-portfolio closes) in front when there is
+ * one. A prefix that makes the tx fail its pre-sign simulation (`isPreSignRefusal`: the wallet
+ * never opened) is dropped and the user's own tx is sent alone, so bundling can never cost the
+ * user their tx; if that refuses too, the bundled refusal is the one reported.
  */
 export async function sendWithTopup<T>(p: {
   topup: readonly TransactionInstruction[];
@@ -61,10 +62,21 @@ export async function sendWithTopup<T>(p: {
   isPreSignRefusal: (e: unknown) => boolean;
 }): Promise<T> {
   if (p.topup.length === 0) return p.send(p.base, false);
+  let bundledErr: unknown;
   try {
     return await p.send([...p.topup, ...p.base], true);
   } catch (e) {
     if (!p.isPreSignRefusal(e)) throw e;
-    return p.send(p.base, false);
+    bundledErr = e;
+  }
+  try {
+    return await p.send(p.base, false);
+  } catch (e) {
+    // Both refused before the wallet opened: report the BUNDLED refusal. It is the one that got
+    // further (e.g. the closes landed in simulation and the payout then asked for 78 with 84), so
+    // a caller's own retry rule (sendWithHarvestOn84) can act on it; the user's tx alone would
+    // only say 21 "not terminal-flat".
+    if (p.isPreSignRefusal(e)) throw bundledErr;
+    throw e;
   }
 }

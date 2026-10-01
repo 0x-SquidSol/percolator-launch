@@ -1,6 +1,6 @@
 --- a/tests/p3_vault_lp.rs
 +++ b/tests/p3_vault_lp.rs
-@@ -3335,4 +3335,1040 @@
+@@ -3335,4 +3335,1135 @@
      assert!(r2.is_ok(), "the post-fee equity is recallable");
      assert!(after_equity >= 0);
      env.assert_conserved("recall post-fee");
@@ -147,7 +147,7 @@
 +            Instruction { program_id: ix["programId"].as_str().unwrap().parse().unwrap(), accounts, data }
 +        })
 +        .collect()
-+}
+ }
 +
 +impl Env {
 +    fn limits_add_ata_program(&mut self) {
@@ -526,7 +526,7 @@
 +        self.sibling = derive_lp_backing_ledger(&self.pid, &market, DOMAIN ^ 1).0;
 +        self.vault_lp = derive_vault_lp_state(&self.pid, &market).0;
 +    }
- }
++}
 +
 +/// Create a market with the APP's M1 (createAccount(slab) + InitMarket), finish the harness
 +/// setup (auth mark + CreateLpVault + Earn seed), then run the APP's M4p bind.
@@ -1040,4 +1040,99 @@
 +    let r = limits_partial_run(PartialCase::VaultWon, false, Some("retry101"));
 +    assert_ne!(r.final_phase, "ready", "without the 101 retry the market stays open: {:?}", r.sent);
 +    assert_eq!(r.senior, 0, "and the senior's 77 never becomes payable");
++}
++
++/// Resolved bound market with EMPTY portfolios still materialized (the sweep's tag-8 closes not
++/// yet run, e.g. the keeper is behind): a senior's 77 and the junior's 102 are refused 21. The
++/// APP prepends the permissionless tag-8 closes (bridge `empty-closes`, readEmptyCloseIxs) in the
++/// same tx, so both pay without waiting on anyone. Negative control: each alone is refused 21.
++#[test]
++fn limits_app_p3_empty_closes_prepended_before_77_and_102() {
++    let mut env = Env::new(Params { fee_bps: 30, ..Params::default() });
++    env.limits_add_ata_program();
++    let admin = env.admin.insecure_clone();
++    let seed = env.new_depositor();
++    env.earn_deposit(&seed, 10_000_000, None).expect("earn seed (unbound)");
++    let lp = limits_app_bind(&mut env, &admin);
++    let t = env.new_trader(20_000_000);
++    env.trade(&t, &lp, 50 * POS).expect("open");
++    env.svm.expire_blockhash();
++    env.trade(&t, &lp, -20 * POS).expect("partial close");
++    env.resolve();
++
++    // 1. APP sweep, but every close-empty is left undone: empties stay materialized.
++    let ports = [lp.portfolio, t.portfolio];
++    let mut skip_json = env.limits_exit_json(&ports);
++    for round in 0..12 {
++        skip_json = env.limits_exit_json(&ports);
++        skip_json["skip"] = serde_json::json!(["close-empty", "harvest"]);
++        let v = limits_app("exit", skip_json.clone());
++        if v["steps"].as_array().map_or(true, |s| s.is_empty()) { break; }
++        env.limits_send(limits_ixs(&v), &[]).unwrap_or_else(|e| panic!("round {round} sweep step refused: {e}\nplan {v}"));
++    }
++    let _ = skip_json;
++    let plan = limits_app("plan", env.limits_exit_json(&ports));
++    let empties = plan["steps"].as_array().unwrap().iter().filter(|s| s["kind"] == "close-empty").count();
++    println!("LIMITS-APP empty-closes: plan {plan}");
++    assert!(empties >= 1, "staged: empty portfolios still materialized: {plan}");
++
++    // 2. Senior 77: alone -> 21; with the APP's closes in front (78 forced on an 84) -> pays.
++    let shares = env.lp_shares(&seed);
++    env.earn_request(&seed, shares);
++    let exec = |env: &Env, force: bool| {
++        limits_app("execute", env.limits_earn_json(&seed.kp, serde_json::json!({
++            "redemption": seed.redemption.to_string(), "dest": seed.dest.to_string(), "forceHarvest": force})))
++    };
++    let alone = env.limits_send(limits_ixs(&exec(&env, false)), &[&seed.kp.insecure_clone()]);
++    println!("LIMITS-APP empty-closes: 77 alone -> {alone:?}");
++    assert!(format!("{alone:?}").contains("Custom(21)"), "77 alone is refused 21 while empties are materialized: {alone:?}");
++    let closes = limits_app("empty-closes", env.limits_exit_json(&ports));
++    assert!(closes["closes"].as_u64().unwrap() >= 1, "{closes}");
++    let mut paid = false;
++    for force in [false, true] {
++        let mut ixs = limits_ixs(&closes);
++        ixs.extend(limits_ixs(&exec(&env, force)));
++        let r = env.limits_send(ixs, &[&seed.kp.insecure_clone()]);
++        println!("LIMITS-APP empty-closes: closes + 77 (force78={force}) -> {:?}", r.as_ref().map(|_| "ok"));
++        if r.is_ok() { paid = true; break; }
++        assert!(format!("{r:?}").contains("Custom(84)"), "only an 84 may send the app to its 78 retry: {r:?}");
++    }
++    assert!(paid, "the senior is paid in the same tx as the closes");
++    println!("LIMITS-APP empty-closes: senior paid {}", env.tok(seed.dest));
++    assert!(env.tok(seed.dest) >= 10_000_000 - 1_000, "senior whole less dead-share dust: {}", env.tok(seed.dest));
++    env.assert_conserved("empty closes + 77");
++}
++
++/// The same staging for the JUNIOR: 102 alone is refused 21; the APP's closes + 102 pay.
++#[test]
++fn limits_app_p3_empty_closes_prepended_before_102() {
++    let mut env = Env::new(Params { fee_bps: 30, ..Params::default() });
++    env.limits_add_ata_program();
++    let admin = env.admin.insecure_clone();
++    let lp = limits_app_bind(&mut env, &admin);
++    let t = env.new_trader(20_000_000);
++    env.trade(&t, &lp, 50 * POS).expect("open");
++    env.svm.expire_blockhash();
++    env.trade(&t, &lp, -50 * POS).expect("close");
++    env.resolve();
++    let ports = [lp.portfolio, t.portfolio];
++    for round in 0..12 {
++        let mut j = env.limits_exit_json(&ports);
++        j["skip"] = serde_json::json!(["close-empty", "harvest"]);
++        let v = limits_app("exit", j);
++        if v["steps"].as_array().map_or(true, |s| s.is_empty()) { break; }
++        env.limits_send(limits_ixs(&v), &[]).unwrap_or_else(|e| panic!("round {round}: {e}\n{v}"));
++    }
++    let closes = limits_app("empty-closes", env.limits_exit_json(&ports));
++    println!("LIMITS-APP empty-closes 102: closes {}", closes["closes"]);
++    assert!(closes["closes"].as_u64().unwrap() >= 1);
++    let rel = limits_app("junior-release", env.limits_junior_release_json(&admin, None));
++    println!("LIMITS-APP empty-closes 102: release plan {}", rel["amount"]);
++    let alone = env.limits_send(limits_ixs(&rel), &[&admin.insecure_clone()]);
++    println!("LIMITS-APP empty-closes 102: alone -> {alone:?}");
++    assert!(format!("{alone:?}").contains("Custom(21)"), "102 alone is refused 21 while empties are materialized: {alone:?}");
++    let mut ixs = limits_ixs(&closes);
++    ixs.extend(limits_ixs(&rel));
++    env.limits_send(ixs, &[&admin.insecure_clone()]).expect("APP closes + 102 in one tx");
++    println!("LIMITS-APP empty-closes 102: junior released {}", rel["amount"]);
 +}

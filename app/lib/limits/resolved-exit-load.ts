@@ -19,7 +19,7 @@ import {
   decodeVaultLpState,
 } from "./decode";
 import { deriveLpVaultRegistryPda, deriveVaultLpState } from "./p3-ix";
-import { planResolvedExit, type ExitPortfolio, type ResolvedExitPlan } from "./resolved-exit";
+import { planResolvedExit, type ExitPortfolio, type ExitStep, type ResolvedExitPlan } from "./resolved-exit";
 import { exitStepIxs, type ExitIxContext, type ExitPortfolioRef } from "./resolved-exit-ixs";
 import { viewerTopupSteps } from "./resolved-topup";
 import { harvestableFeeAtoms } from "./vault-tranche";
@@ -142,6 +142,47 @@ export async function readViewerTopupIxs(p: {
     if (!s || !s.ctx) return [];
     const out: TransactionInstruction[] = [];
     for (const step of viewerTopupSteps(s.plan, s.portfolios, p.viewer)) {
+      const ixs = exitStepIxs(step, s.ctx);
+      if ((await p.simulate(ixs)) === null) out.push(...ixs);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** The plan's tag-8 closes of EMPTY portfolios (the vault LP's included), at most `max`. */
+export function emptyCloseSteps(plan: ResolvedExitPlan, max: number): Extract<ExitStep, { kind: "close-empty" }>[] {
+  if (plan.phase !== "sweep" && plan.phase !== "owner-window") return [];
+  const out: Extract<ExitStep, { kind: "close-empty" }>[] = [];
+  for (const s of plan.steps) if (s.kind === "close-empty" && out.length < max) out.push(s);
+  return out;
+}
+
+/** Most tag-8 closes one bundled tx carries (each ~126k CU and 4 accounts; the rest next time). */
+export const MAX_PREPENDED_EMPTY_CLOSES = 4;
+
+/**
+ * Permissionless tag-8 closes for every EMPTY portfolio still materialized on a Resolved market
+ * (F-4: [closer (s), market, portfolio, owner] with the rent to the owner, as the keeper sends them
+ * at f43272d). On a Resolved bound market the junior's 102 and a senior's 77 are refused 21 while
+ * any empty portfolio is materialized, so these ride in front of that tx and nobody waits on the
+ * keeper. Each close is simulated alone first; a refused one is left out. Never throws.
+ */
+export async function readEmptyCloseIxs(p: {
+  connection: Connection;
+  programId: PublicKey;
+  market: PublicKey;
+  collateralMint: PublicKey;
+  payer: PublicKey;
+  simulate: (ixs: TransactionInstruction[]) => Promise<unknown | null>;
+  max?: number;
+}): Promise<TransactionInstruction[]> {
+  try {
+    const s = await loadResolvedExitSnapshot({ ...p, payer: p.payer });
+    if (!s || !s.ctx) return [];
+    const out: TransactionInstruction[] = [];
+    for (const step of emptyCloseSteps(s.plan, p.max ?? MAX_PREPENDED_EMPTY_CLOSES)) {
       const ixs = exitStepIxs(step, s.ctx);
       if ((await p.simulate(ixs)) === null) out.push(...ixs);
     }

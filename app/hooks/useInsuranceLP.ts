@@ -38,7 +38,7 @@ import { SimulationRefusal } from "@/lib/tx";
 import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 import { resolveDevnetProgramIds } from "@/lib/program-ids";
 import { readEarnP3Context } from "@/lib/limits/earn-p3-read";
-import { readViewerTopupIxs } from "@/lib/limits/resolved-exit-load";
+import { readEmptyCloseIxs, readViewerTopupIxs } from "@/lib/limits/resolved-exit-load";
 import { sendWithTopup } from "@/lib/limits/resolved-topup";
 import { computeBudgetPrefix, connectionSelfHealDeps } from "@/lib/self-heal";
 import { readTxDrawSummary, type DrawSummary } from "@/lib/limits/p3-draw-logs";
@@ -808,7 +808,7 @@ export function useInsuranceLP() {
       // P3 ordering: a resolved close that ran before the vault LP settled left the viewer a
       // PARTIAL payout receipt. Once 101 has closed, its tag-46 top-up rides in front of this tx
       // (sim-gated; dropped if it would refuse, so the withdrawal itself never pays for it).
-      const topup = await readViewerTopupIxs({
+      const viewerTopup = await readViewerTopupIxs({
         connection,
         programId: progPk,
         market: marketPk,
@@ -817,6 +817,19 @@ export function useInsuranceLP() {
         simulate: async (ixs) =>
           (await connectionSelfHealDeps(connection, marketPk, wallet.publicKey!).simulate([...computeBudgetPrefix(TOPUP_SIM_CU), ...ixs])).err ?? null,
       });
+      // Resolved bound market: a senior 77 is refused 21 while any EMPTY portfolio is still
+      // materialized; the permissionless tag-8 closes ride in front (sim-gated), so the payout
+      // never waits on the keeper.
+      const emptyCloses = await readEmptyCloseIxs({
+        connection,
+        programId: progPk,
+        market: marketPk,
+        collateralMint: slabState.config.collateralMint,
+        payer: wallet.publicKey,
+        simulate: async (ixs) =>
+          (await connectionSelfHealDeps(connection, marketPk, wallet.publicKey!).simulate([...computeBudgetPrefix(TOPUP_SIM_CU), ...ixs])).err ?? null,
+      });
+      const topup = [...emptyCloses, ...viewerTopup];
       const send = (instructions: TransactionInstruction[]) =>
         sendWithTopup({
           topup,
