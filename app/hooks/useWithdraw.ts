@@ -33,6 +33,14 @@ import { fetchPortfolioIdentity, defaultCrankObservations } from "@/lib/v18-wire
 import { computePositionInitialMargin, estimateEntryFromPnl } from "@/lib/trading";
 import { getEntryPrice } from "@/lib/entry-price";
 import { isSentinelValue } from "@/lib/health";
+import {
+  WithdrawRefusal,
+  connectionQuoteDeps,
+  convertPrefixForWithdraw,
+  settlingProfitMessage,
+} from "@/lib/convert-released-pnl";
+import { WRAPPER_ERR } from "@/lib/wrapper-errors";
+import type { TransactionInstruction } from "@solana/web3.js";
 
 // M7: withdraw's own EngineStale(19) surface. Unlike a trade (which can be
 // auto-retried after the next keeper crank via withTransientRetry — see
@@ -47,6 +55,12 @@ const ENGINE_STALE_CODE = 19;
 function isEngineStaleWithdrawError(msg: string): boolean {
   const m = msg.match(/Custom\((\d+)\)/) ?? msg.match(/"Custom"\s*:\s*(\d+)/);
   return m !== null && parseInt(m[1], 10) === ENGINE_STALE_CODE;
+}
+// The profit leg of a convert+withdraw lost a race (released/backed amount moved
+// between the quote and landing): same calm line as the pre-sign refusal.
+function isLockActiveError(msg: string): boolean {
+  const m = msg.match(/Custom\((\d+)\)/) ?? msg.match(/"Custom"\s*:\s*(\d+)/);
+  return m !== null && parseInt(m[1], 10) === WRAPPER_ERR.EngineLockActive;
 }
 // VERIFIED against the deployed engine 2026-07-27: `withdraw_not_atomic`
 // (percolator/src/v16.rs:14412) returns `Stale` (Custom 19) UNCONDITIONALLY
@@ -75,6 +89,8 @@ export function useWithdraw(slabAddress: string) {
     async (params: { userIdx: number; amount: bigint; portfolioPk?: PublicKey }) => {
       if (inflightRef.current) throw new Error("Withdrawal already in progress");
       inflightRef.current = true;
+      // True once a ConvertReleasedPnl prefix rides in this withdraw (error copy below).
+      let usedConvertPrefix = false;
       setLoading(true);
       setError(null);
       try {
@@ -260,6 +276,11 @@ export function useWithdraw(slabAddress: string) {
           // valid withdrawal — it only tightens the early client-side bound
           // to match what the chain will actually allow.
           let hasActiveLegs = false;
+          // ConvertReleasedPnl (tag 28) prefix: withdraw is bounded by CAPITAL only
+          // (engine v16.rs:20435-20436), so a flat winner's released profit has to be
+          // moved from pnl into capital first, inside this same transaction
+          // (lib/convert-released-pnl.ts). Empty unless the amount exceeds capital.
+          let convertPrefix: TransactionInstruction[] = [];
           if (portfolioData) {
             try {
               const portfolio = parsePortfolioV17(portfolioData);
@@ -297,7 +318,12 @@ export function useWithdraw(slabAddress: string) {
                   ? computePositionInitialMargin(positionSize, effectiveEntryPrice, initialMarginBps)
                   : portfolio.capital; // fail closed: no entry price could be established
               const freeMargin = portfolio.capital > lockedMargin ? portfolio.capital - lockedMargin : 0n;
-              if (params.amount > freeMargin) {
+              if (!hasActiveLegs && params.amount > portfolio.capital) {
+                convertPrefix = await convertPrefixForWithdraw(
+                  { programId, owner: wallet.publicKey, market: slabPk, portfolio: portfolioPk, portfolioData: new Uint8Array(portfolioData), amount: params.amount },
+                  connectionQuoteDeps(connection, wallet.publicKey),
+                );
+              } else if (params.amount > freeMargin) {
                 throw new Error(
                   hasActiveLegs
                     ? "Withdrawal amount exceeds your free margin. Part of your balance backs an open position — reduce the amount or close the position first."
@@ -307,9 +333,10 @@ export function useWithdraw(slabAddress: string) {
             } catch (checkErr) {
               // Re-throw our own validation errors; ignore parse failures (best-effort).
               if (
-                checkErr instanceof Error &&
-                (checkErr.message.startsWith("Withdrawal amount exceeds") ||
-                  checkErr.message === OPEN_POSITION_WITHDRAW_MESSAGE)
+                checkErr instanceof WithdrawRefusal ||
+                (checkErr instanceof Error &&
+                  (checkErr.message.startsWith("Withdrawal amount exceeds") ||
+                    checkErr.message === OPEN_POSITION_WITHDRAW_MESSAGE))
               ) {
                 throw checkErr;
               }
@@ -332,6 +359,8 @@ export function useWithdraw(slabAddress: string) {
           // watermark, read live off the portfolio (no open position here — the
           // engine blocks withdraw with active legs, guarded above).
           const wdId = await fetchPortfolioIdentity(connection, portfolioPk);
+          instructions.push(...convertPrefix);
+          usedConvertPrefix = convertPrefix.length > 0;
           instructions.push(buildIx({
             programId,
             keys: buildAccountMetas(ACCOUNTS_WITHDRAW_COLLATERAL, [
@@ -376,8 +405,10 @@ export function useWithdraw(slabAddress: string) {
 
         // 600k CU when the v17 crank rides along (matches useTrade's
         // crank+trade budget); all pre-existing paths keep the original 300k.
+        // The convert prefix (recertify crank ~81k + tag 28 ~86k, measured on devnet) rides
+        // with the withdraw (~49k): give it headroom; plain withdraws keep 300k.
         const sig = await sendTx({
-          connection, wallet, instructions, computeUnits: 300_000,
+          connection, wallet, instructions, computeUnits: usedConvertPrefix ? 600_000 : 300_000,
           selfHeal: { programId, market: slabPk },
         });
         // Force immediate slab re-read so balance updates without waiting for the next poll.
@@ -388,7 +419,15 @@ export function useWithdraw(slabAddress: string) {
         const rawMsg = e instanceof Error ? e.message : String(e);
         // M7: don't let a withdraw-specific EngineStale(19) read as
         // transient/auto-fixable — see ENGINE_STALE_WITHDRAW_MESSAGE above.
-        setError(isEngineStaleWithdrawError(rawMsg) ? ENGINE_STALE_WITHDRAW_MESSAGE : humanizeError(rawMsg));
+        setError(
+          e instanceof WithdrawRefusal
+            ? rawMsg
+            : usedConvertPrefix && isLockActiveError(rawMsg)
+              ? settlingProfitMessage(WRAPPER_ERR.EngineLockActive)
+              : isEngineStaleWithdrawError(rawMsg)
+              ? ENGINE_STALE_WITHDRAW_MESSAGE
+              : humanizeError(rawMsg),
+        );
         throw e;
       } finally {
         inflightRef.current = false;

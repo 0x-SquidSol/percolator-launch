@@ -22,6 +22,8 @@ import { computePositionInitialMargin, estimateEntryFromPnl } from "@/lib/tradin
 import { getEntryPrice } from "@/lib/entry-price";
 import { useLivePrice } from "@/hooks/useLivePrice";
 import { isSentinelValue } from "@/lib/health";
+import { useConvertibleProfit } from "@/hooks/useConvertibleProfit";
+import { settlingProfitMessage } from "@/lib/convert-released-pnl";
 
 interface DepositWithdrawCardProps {
   slabAddress: string;
@@ -195,6 +197,17 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
     setAmount(formatTokenAmount(prefillAmt, decimals));
   }, [mode, amount, walletBalance, userAccount, decimals]);
 
+  // Released profit the program would move into capital for a withdraw (tag 28, prepended
+  // by useWithdraw). Withdraw is capital-only on-chain, so without this a flat winner's
+  // profit would never show as withdrawable. Hook runs before the early returns below.
+  const convertQuote = useConvertibleProfit(
+    slabAddress,
+    mockMode ? undefined : userAccount?.pubkey,
+    userAccount?.account.capital ?? 0n,
+    userAccount && !isSentinelValue(userAccount.account.pnl) ? userAccount.account.pnl : 0n,
+    (userAccount?.account.positionSize ?? 0n) !== 0n,
+  );
+
   if (!connected) {
     return (
       <div className="relative rounded-none border border-[var(--border)]/50 bg-[var(--bg)]/80 p-3">
@@ -315,6 +328,13 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
       ? computePositionInitialMargin(positionSize, effectiveEntryPrice, initialMarginBps)
       : capital; // fail closed: no entry price could be established at all
   const freeMargin = capital > lockedMargin ? capital - lockedMargin : 0n;
+  // Flat: capital plus the released profit tag 28 would convert in the same tx.
+  const withdrawable = !hasOpenPosition && convertQuote?.status === "ready" && convertQuote.postCapital > freeMargin
+    ? convertQuote.postCapital
+    : freeMargin;
+  const settlingProfitLine = !hasOpenPosition && convertQuote?.status === "settling"
+    ? settlingProfitMessage(convertQuote.code)
+    : null;
   const loading = mode === "deposit" ? depositLoading : withdrawLoading;
   const error = mode === "deposit" ? depositError : withdrawError;
   const isDepositBalanceUnverified =
@@ -331,7 +351,7 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
       parseError = `Too many decimal places (max ${decimals})`;
     }
   }
-  const isOverWithdraw = !parseError && mode === "withdraw" && parsedAmount > 0n && parsedAmount > freeMargin;
+  const isOverWithdraw = !parseError && mode === "withdraw" && parsedAmount > 0n && parsedAmount > withdrawable;
   const isOverDeposit = !parseError && mode === "deposit" && parsedAmount > 0n && walletBalance !== null && parsedAmount > walletBalance;
   const validationError = parseError
     ? parseError
@@ -384,7 +404,7 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
         <div className="p-2">
           <p className="text-[9px] uppercase tracking-[0.15em] text-[var(--text-secondary)]">Account Balance</p>
           {/* 3dp display only — the MAX buttons below still use full raw precision */}
-          <p className="text-sm font-medium text-[var(--text)]" style={{ fontFamily: "var(--font-mono)" }}>{formatTokenAmount(capital, decimals, 3)} <span className="text-[10px] font-normal text-[var(--text-secondary)]">{symbol}</span></p>
+          <p data-testid="account-balance" className="text-sm font-medium text-[var(--text)]" style={{ fontFamily: "var(--font-mono)" }}>{formatTokenAmount(hasOpenPosition ? capital : withdrawable, decimals, 3)} <span className="text-[10px] font-normal text-[var(--text-secondary)]">{symbol}</span></p>
         </div>
         <div className="p-2 border-l border-[var(--border)]/20">
           <p className="text-[9px] uppercase tracking-[0.15em] text-[var(--text-secondary)]">Wallet Balance</p>
@@ -439,13 +459,14 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
             style={{ fontFamily: "var(--font-mono)" }}
             className="w-full rounded-none border border-[var(--border)]/50 bg-[var(--bg)] px-3 py-2 pr-14 text-sm text-[var(--text)] placeholder-[var(--text-muted)] focus:border-[var(--accent)]/40 focus:outline-none focus:ring-1 focus:ring-[var(--accent)]/20"
           />
-          {mode === "withdraw" && freeMargin > 0n && (
+          {mode === "withdraw" && withdrawable > 0n && (
             <button
               type="button"
               // M7: Max = FREE margin, not total capital — total capital
               // includes margin locked by an open position, which the
-              // on-chain program refuses to release.
-              onClick={() => { maxRawRef.current = freeMargin; setAmount(formatTokenAmount(freeMargin, decimals)); }}
+              // on-chain program refuses to release. Flat: plus the released
+              // profit that converts to capital in the same transaction.
+              onClick={() => { maxRawRef.current = withdrawable; setAmount(formatTokenAmount(withdrawable, decimals)); }}
               className="absolute right-2 top-1/2 -translate-y-1/2 rounded-none px-2 py-0.5 text-[9px] font-semibold uppercase text-[var(--accent)] hover:bg-[var(--accent)]/10"
             >
               Max
@@ -463,6 +484,9 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
         </div>
         {validationError && (
           <p className="mt-1 text-[10px] text-[var(--short)]">{validationError}</p>
+        )}
+        {mode === "withdraw" && settlingProfitLine && (
+          <p data-testid="settling-profit" className="mt-1 text-[10px] text-[var(--text-secondary)]">{settlingProfitLine}</p>
         )}
       </div>
 
