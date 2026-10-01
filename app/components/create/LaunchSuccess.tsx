@@ -192,6 +192,26 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
           )}
           {keeperMessage || "Connecting the live price… usually under a minute."}
         </p>
+        {/* The market the creator just made — the same preview card the ready
+            screen shows (symbol, fee, leverage), so the connecting state still
+            shows WHAT was created with the brand colour, not a bare address. */}
+        <div className="mx-auto mb-5 w-full max-w-sm border border-[var(--accent)]/20 bg-[var(--accent)]/[0.03] p-4 text-left">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center border border-[var(--accent)]/30 bg-[var(--accent)]/[0.1] text-[12px] font-bold text-[var(--accent)]">
+              {tokenSymbol.slice(0, 2).toUpperCase()}
+            </div>
+            <div>
+              <p className="text-[13px] font-bold text-[var(--text)]">{tokenSymbol}</p>
+              <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                <span className="text-[9px] text-[var(--text-secondary)]">Fee: {bpsPct(tradingFeeBps)}</span>
+                <span className="text-[9px] text-[var(--text-secondary)]">·</span>
+                <span className="text-[9px] text-[var(--text-secondary)]">Leverage: {maxLeverage}x</span>
+                <span className="text-[9px] text-[var(--text-secondary)]">·</span>
+                <span className="text-[9px] text-[var(--text-secondary)]">Market size: max capacity</span>
+              </div>
+            </div>
+          </div>
+        </div>
         {onRetryKeeperRegistration && (keeperPhase === "slow" || keeperPhase === "failed") && (
           <button
             type="button"
@@ -230,6 +250,9 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
             </Link>
           )}
         </div>
+        {/* Set the market's logo while the price connects — the same uploader the
+            ready screen carries, so a creator can brand their market right away. */}
+        <LogoUpload slabAddress={marketAddress} mainnetCa={mainnetCA} />
         <div className="mt-4">
           <button
             type="button"
