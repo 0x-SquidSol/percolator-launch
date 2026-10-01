@@ -1883,7 +1883,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       </div>
       {connected && showInlineDeposit && !((needsAccount || needsDeposit) && !walletHasTokens) && (
         <div className="mt-1.5" data-deposit-trigger>
-          <DepositWithdrawCard slabAddress={slabAddress} initialMode={inlineDepositMode} />
+          <DepositWithdrawCard slabAddress={slabAddress} initialMode={inlineDepositMode} offerFaucet={fundOverWallet} />
         </div>
       )}
 
