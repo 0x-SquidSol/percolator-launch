@@ -91,7 +91,10 @@ export async function postKeeperRegistration(req: KeeperRegisterRequest, fetchIm
     });
     const body = (await r.json().catch(() => ({}))) as { registered?: boolean; error?: string; message?: string };
     if (r.ok && body.registered) return { registered: true, retryable: false, message: KEEPER_REGISTER_COPY.ready, status: r.status };
-    const retryable = r.status === 409 || r.status === 429 || r.status >= 500;
+    // 401 comes only from the devnet v2 waitlist gate (middleware.ts; this route never 401s
+    // itself): the visitor's session lapsed. That says nothing about the registration, so it
+    // must stay retryable — final would mark the launch "refused" in localStorage forever.
+    const retryable = r.status === 401 || r.status === 409 || r.status === 429 || r.status >= 500;
     return { registered: false, retryable, message: body.error ?? body.message ?? `HTTP ${r.status}`, status: r.status };
   } catch (e) {
     return { registered: false, retryable: true, message: e instanceof Error ? e.message : String(e) };
