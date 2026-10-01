@@ -10,6 +10,7 @@
 import type { MarketRegistrationPayload } from "@/lib/market-registration-auth";
 import { PRICE_SOURCE_LOCKED } from "@/lib/market-registration";
 import { UNSUPPORTED_POOL_COPY } from "@/lib/wizard-copy";
+import { GLOBAL_CAP_COPY, PER_CREATOR_CAP_COPY } from "@/lib/keeper-enrollment-guard";
 
 export const KEEPER_REGISTER_BACKOFF_MS = [5_000, 10_000, 20_000, 40_000, 60_000, 60_000] as const;
 export const KEEPER_REGISTER_STEADY_MS = 120_000;
@@ -45,6 +46,8 @@ export const USER_FACING_REGISTRATION_REASONS: readonly string[] = [
   "Could not verify the pool on mainnet right now. Try again in a moment.",
   KEEPER_REGISTER_COPY.noProof,
   KEEPER_REGISTER_COPY.serverTrouble,
+  PER_CREATOR_CAP_COPY,
+  GLOBAL_CAP_COPY,
 ];
 
 /** The line a creator sees for a failed registration: the reason itself if it is user copy. */

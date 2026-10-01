@@ -46,6 +46,13 @@
  *   b) Admin bypass: header `x-admin-secret` matching ADMIN_API_SECRET (maintainer fixes; the
  *      only path that may change or re-activate an existing row).
  *
+ * Enrollment guard (review M-7, lib/keeper-enrollment-guard.ts), proof path only: the market must
+ * be FINISHED (marketauth rotated to the stake-pool PDA, insurance and LP collateral in, asset 0
+ * AUTH_MARK with our keeper as oracle authority; else 409 / 403), and a new enrollment is refused
+ * once the creator (KEEPER_MAX_ACTIVE_PER_CREATOR, default 10) or the deployment
+ * (KEEPER_MAX_ACTIVE_MARKETS, default 50) is at its ceiling. Every enrolled market costs the
+ * keeper SOL on every push.
+ *
  * Body: {
  *   slabAddress:    string  — devnet market account
  *   mainnetCA:      string  — mainnet token CA (for keeper labelling)
@@ -88,6 +95,8 @@ import { resolveTokenLogo } from "@/lib/token-logo";
 import { sanitizeLogoUrl } from "@/lib/token-metadata-validators";
 import { upsertRegisteredMarketRow } from "@/lib/market-registration";
 import { checkSymbol, checkName } from "@/lib/market-metadata-validation";
+import { checkKeeperReadiness, enrollmentCapsFromEnv, readinessStatus } from "@/lib/keeper-enrollment-guard";
+import { getPlaygroundKeeperSigner } from "@/lib/playground-keeper-signer";
 
 export const dynamic = "force-dynamic";
 
@@ -241,6 +250,27 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: `Registration proof refused: ${verdict.reason}` }, { status });
       }
       slabAdmin = verdict.creator;
+
+      // Review M-7: only a FINISHED market priced by our keeper is enrolled. Read from the bytes
+      // already in hand (no extra RPC). The launch registers after its last step lands, so a
+      // not-yet-finished market is "try again" (409), never a final refusal.
+      const readiness = checkKeeperReadiness(
+        new Uint8Array(accountInfo.data),
+        new PublicKey(slabAddress),
+        (getConfig() as { vaultProgramId?: string }).vaultProgramId,
+        getPlaygroundKeeperSigner()?.publicKey(),
+      );
+      if (!readiness.ok) {
+        Sentry.captureMessage("[playground/keeper-register] market not ready for the keeper", {
+          level: "warning",
+          tags: { endpoint: "/api/playground/keeper-register", auth: "not-ready" },
+          extra: { slabAddress, reason: readiness.reason },
+        });
+        return NextResponse.json(
+          { error: `Market is not ready for the live price: ${readiness.reason}` },
+          { status: readinessStatus(readiness.reason) },
+        );
+      }
     } catch (err) {
       console.error("[playground/keeper-register] proof check failed:", err instanceof Error ? err.message : String(err));
       return NextResponse.json({ error: "Failed to verify the market-creation proof on-chain" }, { status: 503 });
@@ -402,7 +432,7 @@ export async function POST(req: NextRequest) {
     max_leverage: num(p.max_leverage),
     trading_fee_bps: num(p.trading_fee_bps),
     logo_url: resolvedLogo,
-  }, admin ? "admin" : "proof");
+  }, admin ? "admin" : "proof", admin ? undefined : enrollmentCapsFromEnv());
   if (!dbResult.ok) {
     // Log the underlying cause server-side: a bare "Failed to register market"
     // with no log line left a real production failure undiagnosable.
