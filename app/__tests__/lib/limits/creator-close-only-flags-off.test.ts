@@ -77,7 +77,8 @@ describe("app pre-sign refusals get a specific calm line", () => {
   const cases: Array<[string, string]> = [
     ["No LP portfolio with an active matcher config found for this market. The LP must call SetMatcherConfig before trading.", "market-not-ready"],
     ["Failed to scan LP portfolio accounts on-chain: 429 Too Many Requests", "rpc-unreachable"],
-    ["account not found: 9EPm8nB8Fs7WcEZgE1WGFPTGc6rAzD6GhFJyMm4dEFHn", "rpc-unreachable"],
+    ["account not found: 9EPm8nB8Fs7WcEZgE1WGFPTGc6rAzD6GhFJyMm4dEFHn", "out-of-date"],
+    ["Trade already in progress", "in-progress"],
     ["This market's matcher is not the recognized Percolator matcher program. Refusing to build a transaction.", "unsupported-market"],
     ["Wallet does not support signAllTransactions or signTransaction", "wallet-unsupported"],
     ["Market not loaded", "market-loading"],
@@ -98,8 +99,16 @@ describe("app pre-sign refusals get a specific calm line", () => {
 });
 
 describe("humanizeError never hides a cause it can name", () => {
-  it("a plain app message is shown as it is", () => {
-    expect(humanizeError("Trade already in progress", "trade")).toBe("Trade already in progress");
+  it("runtime / RPC / wallet free text is never shown verbatim (review of #2726)", () => {
+    for (const raw of [
+      "Cannot read properties of undefined (reading 'toBytes')",
+      "failed to get recent blockhash: TypeError: fetch failed",
+      'Unexpected token \'<\', "<!DOCTYPE "... is not valid JSON',
+      "WalletSignTransactionError: Something went wrong in the extension",
+      "Request failed with status code 500",
+    ]) {
+      expect(humanizeError(raw, "trade")).toBe(UNMAPPED_MESSAGE);
+    }
   });
   it("an unknown on-chain code is named", () => {
     expect(humanizeError("custom program error: 0x7a69", "trade")).toBe("Solana didn't accept this (error 31337), so nothing changed.");

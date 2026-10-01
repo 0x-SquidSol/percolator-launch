@@ -211,10 +211,18 @@ export function resolveUserMessage(err: unknown, ctx: MessageContext): UserMessa
         action: { id: "refresh", label: "Refresh" },
       });
     }
-    if (/failed to scan lp portfolio|account not found: [1-9a-hj-np-z]{32,44}/i.test(p.raw)) {
+    if (/failed to scan lp portfolio/i.test(p.raw)) {
       return m("rpc-unreachable", "error", "Couldn't reach Solana", "Couldn't read the market from Solana. Nothing was sent.", {
         action: { id: "try-again", label: "Try again" },
       });
+    }
+    if (/account not found: [1-9a-hj-np-z]{32,44}/i.test(p.raw)) {
+      return m("out-of-date", "error", "Page out of date", "Part of this market couldn't be read. Refresh to continue. Nothing was sent.", {
+        action: { id: "refresh", label: "Refresh" },
+      });
+    }
+    if (/^trade already in progress$/i.test(p.raw.trim())) {
+      return m("in-progress", "info", "Already sending", "Your last order is still being sent. Nothing new was sent.");
     }
     if (/not the recognized percolator matcher|not owned by a recognized percolator program/i.test(p.raw)) {
       return m("unsupported-market", "error", "Not supported here", "This market isn't supported by this app. Nothing was sent.");
