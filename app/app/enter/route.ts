@@ -69,7 +69,8 @@ async function handle(req: NextRequest, token: string | null, team: string | nul
 
 export async function GET(req: NextRequest) {
   const q = req.nextUrl.searchParams;
-  return handle(req, q.get("token") ?? q.get("h"), q.get("team"));
+  // "t" is what percolator.trade sends (main lib/playground-access.ts HANDOFF_PARAM).
+  return handle(req, q.get("t") ?? q.get("token") ?? q.get("h"), q.get("team"));
 }
 
 export async function POST(req: NextRequest) {

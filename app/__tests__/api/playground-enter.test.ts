@@ -81,6 +81,15 @@ describe("GET/POST /enter route", () => {
     return import("@/app/enter/route");
   }
 
+  it("accepts ?t= — the exact parameter percolator.trade's /api/playground/enter redirects with", async () => {
+    const { GET } = await route();
+    const token = gate.mintHandoff("row-7", 7, SECRET);
+    const res = await GET(new NextRequest(`https://percolator-playground.vercel.app/enter?t=${token}`));
+    expect(res.status).toBe(303);
+    expect(new URL(res.headers.get("location")!).pathname).toBe("/");
+    expect(res.headers.get("set-cookie") ?? "").toMatch(/^pg_access=/);
+  });
+
   it("valid handoff → 303 to / with a HttpOnly; Secure; SameSite=Lax; Path=/; 24h cookie", async () => {
     const { GET } = await route();
     const token = gate.mintHandoff("row-1", 10, SECRET);
