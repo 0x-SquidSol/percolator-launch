@@ -87,12 +87,6 @@ const TIMEFRAME_MS: Record<Timeframe, number> = {
 
 const CANDLE_INTERVAL_MS = 5 * 60 * 1000;
 
-/** Oracle price history uses unix seconds; external chart candles use ms (Prompt 89). */
-function pricePointTimestampToMs(t: number): number {
-  if (!Number.isFinite(t) || t <= 0) return Date.now();
-  return t < 100_000_000_000 ? t * 1000 : t;
-}
-
 // PERC-8090: removed 7d/30d from TIMEFRAMES — too exotic for a perps UI
 const VISIBLE_TIMEFRAMES: Timeframe[] = ["1m", "5m", "15m", "1h", "4h", "1d"];
 
@@ -465,22 +459,8 @@ const TradingChartInner: FC<{ slabAddress: string; mintAddress?: string }> = ({
   const hasPercolatorData = activeDataSource === "percolator";
   const hasExternalData = activeDataSource === "dex";
 
-  // Fetch oracle price history
-  useEffect(() => {
-    fetch(`/api/markets/${slabAddress}/prices`)
-      .then((r) => r.json())
-      .then((d) => {
-        const apiPrices = (d.prices ?? []).map((p: { price_e6: string; timestamp: number }) => ({
-          timestamp: pricePointTimestampToMs(p.timestamp),
-          price: parseInt(p.price_e6) / 1e6,
-        }));
-        // lightweight-charts requires strictly ascending timestamps; sort defensively
-        // in case the API returns prices in an unexpected order.
-        apiPrices.sort((a: PricePoint, b: PricePoint) => a.timestamp - b.timestamp);
-        setOraclePrices(apiPrices);
-      })
-      .catch(() => {});
-  }, [slabAddress]);
+  // No oracle price-history fetch: nothing records one on v18 (/api/markets/:slab/prices answers
+  // 404). The oracle fallback series grows from live price-store ticks below.
 
   // Live price updates — feeds the oracle-aggregated FALLBACK candle source
   // (only actually used when Percolator/DEX all have no data for this
