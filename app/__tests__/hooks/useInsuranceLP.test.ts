@@ -74,6 +74,10 @@ vi.mock("@percolatorct/sdk", async () => {
       redemptionCooldownSlots: 0n,
       domain: 0,
     }),
+    // The payout reads the pending ticket's shares (split-pot planning, 2026-10-01b).
+    parseLpRedemption: vi.fn().mockReturnValue({ shares: 1_000n, requestSlot: 0n }),
+    encodeRebalanceLpVaultBacking: vi.fn().mockReturnValue(Buffer.alloc(35)),
+    ACCOUNTS_REBALANCE_LP_VAULT_BACKING: [],
     buildAccountMetas: vi.fn().mockReturnValue([]),
     buildIx: vi.fn().mockReturnValue({
       programId: progId,

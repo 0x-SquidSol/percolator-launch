@@ -25,7 +25,8 @@ import {
   parseLpVaultRegistry,
   parseLpRedemption,
 } from '@percolatorct/sdk';
-import { sendTx } from '@/lib/tx';
+import { sendTx, broadcastSignedTx, buildBatchTx, getFreshBlockhash, getPriorityFee, signAllCompat, simulateForGate } from '@/lib/tx';
+import { sizeComputeUnitLimit } from '@/lib/compute-budget';
 import { useSlabState } from '../components/providers/SlabProvider';
 import { assertKnownProgram } from '@/lib/programAllowlist';
 import { assertDepositWithinBalance, readTokenBalance } from '@/lib/deposit-guard';
@@ -43,6 +44,16 @@ import { sendWithTopup } from "@/lib/limits/resolved-topup";
 import { computeBudgetPrefix, connectionSelfHealDeps } from "@/lib/self-heal";
 import { readTxDrawSummary, type DrawSummary } from "@/lib/limits/p3-draw-logs";
 import { withdrawFlow } from "@/lib/limits/earn-withdraw";
+import {
+  EarnPayoutCapError,
+  buildCancelRedemptionIx,
+  buildRebalanceBackingIx,
+  cappedShares,
+  combinedVault,
+  planSplitPotRedemption,
+  readSplitPotState,
+  type SplitPotState,
+} from "@/lib/limits/earn-split-pot";
 import { TAG_DEPOSIT_TO_LP_VAULT, TAG_EXECUTE_REDEMPTION } from "@/lib/limits/constants";
 import { COPY as LIMITS_COPY } from "@/lib/limits/copy";
 import { sanitizeOnChainValue } from '@/lib/health';
@@ -134,6 +145,12 @@ export interface InsuranceLPState {
   cooldownRemainingSlots: bigint;
   /** True when there is no pending redemption, or its cooldown has fully elapsed (ready for ExecuteRedemption). */
   cooldownElapsed: boolean;
+  /**
+   * Non-bound (two-pot) vault only, else null: the program's own pricing (registry shares and the
+   * combined NAV 77 pays at), and what the user's whole position (wallet + pending escrow) can be
+   * paid right now when that is less than all of it (lib/limits/earn-split-pot.ts).
+   */
+  splitPot: { totalShares: bigint; navAtoms: bigint; maxNowAtoms: bigint | null } | null;
 }
 
 /** P3: refuse (with the reason) before signing when the program would refuse the Earn op. */
@@ -189,6 +206,7 @@ export function useInsuranceLP() {
     pendingRedemptionShares: 0n,
     cooldownRemainingSlots: 0n,
     cooldownElapsed: true,
+    splitPot: null,
   });
   // Starts true: this hook backs the Earn page's real data (vault TVL, LP
   // balance, redemption state) via refreshState() below. Starting at `false`
@@ -469,6 +487,28 @@ export function useInsuranceLP() {
         console.error('Failed to refresh LP vault registry state:', registryErr);
       }
 
+      // Non-bound (two-pot) vault: value positions at the program's combined NAV over the
+      // registry's shares (what 77 pays), count the escrowed pending shares as the user's, and
+      // work out what the whole position can be paid right now (Custom 21 / 25 before signing).
+      let splitPot: InsuranceLPState['splitPot'] = null;
+      if (registryExists && programId && slabAddress) {
+        const sp = await readSplitPotState(connection, new PublicKey(programId), new PublicKey(slabAddress));
+        if (stale()) return;
+        const v = sp ? combinedVault(sp.own, sp.sib, sp.feeShareBps) : null;
+        if (sp && v && sp.totalShares > 0n) {
+          const held = userLpBalance + pendingRedemptionShares;
+          vaultTotalAtoms = v.nav;
+          vaultSharePriceE6 = (v.nav * 1_000_000n) / sp.totalShares;
+          userVaultValueAtoms = (held * v.nav) / sp.totalShares;
+          let maxNowAtoms: bigint | null = null;
+          if (held > 0n) {
+            const plan = planSplitPotRedemption({ own: sp.own, sib: sp.sib, totalShares: sp.totalShares, shares: held, feeShareBps: sp.feeShareBps });
+            if (plan && !plan.payable) maxNowAtoms = (cappedShares(plan.maxShares, held) * v.nav) / sp.totalShares;
+          }
+          splitPot = { totalShares: sp.totalShares, navAtoms: v.nav, maxNowAtoms };
+        }
+      }
+
       if (stale()) return;
       // This run's result is the one being published — it's also the one the
       // carry-forward cache should hold from now on.
@@ -496,6 +536,7 @@ export function useInsuranceLP() {
         pendingRedemptionShares,
         cooldownRemainingSlots,
         cooldownElapsed,
+        splitPot,
       });
     } catch (err) {
       console.error('Failed to refresh insurance LP state:', err);
@@ -510,7 +551,7 @@ export function useInsuranceLP() {
       // market's zeroed state as if it were already loaded.
       if (!stale()) setLoading(false);
     }
-  }, [slabState, lpMintInfo, registryInfo, connection, walletPubkeyStr]);
+  }, [slabState, lpMintInfo, registryInfo, connection, walletPubkeyStr, programId, slabAddress]);
 
   // H3: Auto-refresh every 10s — use ref to avoid stale closure
   const refreshStateRef = useRef(refreshState);
@@ -775,7 +816,29 @@ export function useInsuranceLP() {
       // tokenProgram, siblingLedger(w), redeemerRentDest(w)]. `cranker` is permissionless (anyone may execute post-cooldown,
       // and is directly credited the redemption PDA's reclaimed rent) — the UI always
       // calls it as the redeemer themselves.
-      const buildExecuteIxs = async (forceHarvest = false) => {
+      // Non-bound (two-pot) vault: 77 prices on both pots but pays from one (Custom 25). Plan the
+      // payout for `shares`: refuse before signing when the vault cannot pay that many now (the UI
+      // offers the max), else prepend the permissionless 91 that moves the sibling pot's movable
+      // principal into the payout pot (lib/limits/earn-split-pot.ts).
+      const splitPotPrefix = async (shares: bigint): Promise<TransactionInstruction[]> => {
+        const sp: SplitPotState | null = await readSplitPotState(connection, progPk, marketPk);
+        if (!sp) return [];
+        const plan = planSplitPotRedemption({ own: sp.own, sib: sp.sib, totalShares: sp.totalShares, shares, feeShareBps: sp.feeShareBps });
+        if (!plan) return [];
+        if (!plan.payable) {
+          const capped = cappedShares(plan.maxShares, shares);
+          const v = combinedVault(sp.own, sp.sib, sp.feeShareBps);
+          throw new EarnPayoutCapError(capped, v ? (capped * v.nav) / sp.totalShares : 0n);
+        }
+        if (plan.rebalance <= 0n) return [];
+        return [
+          buildRebalanceBackingIx({
+            programId: progPk, cranker: wallet.publicKey!, market: marketPk, registry: registryPda,
+            fromLedger: sp.sibLedger, toLedger: sp.ownLedger, fromDomain: sp.ownDomain ^ 1, toDomain: sp.ownDomain, amount: plan.rebalance,
+          }),
+        ];
+      };
+      const buildExecuteIxs = async (forceHarvest = false, shares: bigint | null = null) => {
         const [vaultPda] = deriveVaultAuthority(progPk, marketPk);
         // v17 DUAL-DOMAIN: [11] is the sibling pot's ledger. NAV and
         // available-principal are summed across both pots, so it is required
@@ -795,7 +858,8 @@ export function useInsuranceLP() {
         // rent is returned to the RECORDED redeemer - the UI only claims its own redemption.
         const p3 = withForcedHarvest(earnTxPlan(TAG_EXECUTE_REDEMPTION, await readEarnP3Context(connection, progPk, marketPk)), forceHarvest);
         assertEarnPlan(p3);
-        return buildEarnExecuteIxs({
+        const prefix = shares !== null && !p3.tail ? await splitPotPrefix(shares) : [];
+        return [...prefix, ...buildEarnExecuteIxs({
           programId: progPk,
           redeemer: wallet.publicKey!,
           market: marketPk,
@@ -810,7 +874,7 @@ export function useInsuranceLP() {
           siblingLedger: siblingLedgerPda,
           domain,
           plan: p3,
-        });
+        })];
       };
       // P3 ordering: a resolved close that ran before the vault LP settled left the viewer a
       // PARTIAL payout receipt. Once 101 has closed, its tag-46 top-up rides in front of this tx
@@ -862,13 +926,14 @@ export function useInsuranceLP() {
         // 85/87 crank, 88 recall / other pot) before the wallet opens.
         // 5544302a: a Resolved terminal-flat 77 can need 78 first (stray pot backing); a pre-sign 84
         // rebuilds the same payout with 78 in front (lib/limits/earn-ixs.ts sendWithHarvestOn84).
-        signature = await sendWithHarvestOn84({ build: buildExecuteIxs, send, isHarvestPendingRefusal });
+        const pendingShares = parseLpRedemption(new Uint8Array(redemptionInfo.data)).shares;
+        signature = await sendWithHarvestOn84({ build: (force) => buildExecuteIxs(force, BigInt(pendingShares)), send, isHarvestPendingRefusal });
         step = 'executed';
         void readTxDrawSummary(connection, signature).then(setLastDrawSummary);
       } else if (state.registryExists && withdrawFlow(state.redemptionCooldownSlots) === 'one-tx') {
         // UX WP-4: only a vault whose cooldown is 0 requests AND pays out in one tx.
         signature = await sendWithHarvestOn84({
-          build: async (force) => [await buildRequestIx(), ...(await buildExecuteIxs(force))],
+          build: async (force) => [await buildRequestIx(), ...(await buildExecuteIxs(force, lpAmount))],
           send,
           isHarvestPendingRefusal,
         });
@@ -877,6 +942,8 @@ export function useInsuranceLP() {
       } else {
         // Step 1 of 2: the request. The cooldown protects the seniors who stay; the page counts
         // it down and opens the payout by itself (components/earn/EarnPendingWithdrawal).
+        // Never request what the vault cannot pay (the payout would only fail after the cooldown).
+        await splitPotPrefix(lpAmount);
         signature = await send([await buildRequestIx()]);
         step = 'requested';
       }
@@ -891,6 +958,56 @@ export function useInsuranceLP() {
     }
   }, [wallet, connection, slabAddress, programId, slabState, state.lpVaultDomain, state.redemptionCooldownSlots, state.registryExists, refreshState, earnRepairFor]);
 
+  /**
+   * A pending redemption the vault cannot pay in full right now (EarnPayoutCapError): cancel it
+   * (81) and re-request `shares` (76) under ONE wallet approval. They are two transactions: 76
+   * re-creates the redemption account 81 closes, which the program refuses inside the same
+   * transaction (Custom 2 AlreadyInitialized, devnet simulation 2026-10-01). 81 is simulated
+   * before the prompt, both are signed with one signAll on one blockhash, 81 is confirmed, then
+   * 76 is sent. The cooldown restarts; the pending card then collects [91, 77] by itself.
+   * If 76 fails after 81 landed, the shares are back in the wallet: nothing is lost, and the
+   * withdraw form offers the max available.
+   */
+  const resizeRedemption = useCallback(async (shares: bigint): Promise<string> => {
+    if (!wallet.publicKey || !wallet.signTransaction) throw new Error('Wallet not connected');
+    if (!slabAddress || !programId) throw new Error('Market not loaded');
+    if (shares <= 0n) throw new Error('Nothing to withdraw');
+    assertKnownProgram(new PublicKey(programId));
+    setLoading(true);
+    setError(null);
+    try {
+      const payer = wallet.publicKey;
+      const marketPk = new PublicKey(slabAddress);
+      const progPk = new PublicKey(programId);
+      const [registryPda] = deriveLpVaultRegistry(progPk, marketPk);
+      const [redemptionPda] = deriveLpRedemption(progPk, registryPda, payer);
+      const [lpMintPda] = deriveInsuranceLpMint(progPk, marketPk);
+      const [escrowPda] = deriveLpEscrow(progPk, marketPk);
+      const lpAta = await getAssociatedTokenAddress(lpMintPda, payer);
+      const cancel = buildCancelRedemptionIx({ programId: progPk, redeemer: payer, registry: registryPda, redemption: redemptionPda, lpMint: lpMintPda, redeemerLpAta: lpAta, escrow: escrowPda });
+      const request = buildRequestRedeemIx({ programId: progPk, redeemer: payer, registry: registryPda, lpMint: lpMintPda, redeemerLpAta: lpAta, escrow: escrowPda, redemption: redemptionPda, shares });
+      const gate = await simulateForGate(connection, payer, [cancel]);
+      if (gate.err) throw gate.err instanceof Error ? gate.err : new Error(typeof gate.err === 'string' ? gate.err : JSON.stringify(gate.err));
+      const [blockhash, fee] = await Promise.all([getFreshBlockhash(connection, true), getPriorityFee(connection)]);
+      const txs = [
+        buildBatchTx({ instructions: [cancel], computeUnits: sizeComputeUnitLimit(gate.consumed, { cap: RESIZE_CU_CAP }), priorityFeeMicroLamports: fee, blockhash, feePayer: payer }),
+        buildBatchTx({ instructions: [request], computeUnits: RESIZE_CU_CAP, priorityFeeMicroLamports: fee + 1, blockhash, feePayer: payer }),
+      ];
+      const [signedCancel, signedRequest] = await signAllCompat(wallet, txs);
+      if (!signedCancel || !signedRequest) throw new Error('the wallet returned fewer signed transactions');
+      await broadcastSignedTx(connection, signedCancel);
+      const sig = await broadcastSignedTx(connection, signedRequest);
+      await refreshState();
+      return sig;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      await refreshState().catch(() => {});
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, [wallet, connection, slabAddress, programId, refreshState]);
+
   return {
     state,
     loading,
@@ -898,6 +1015,7 @@ export function useInsuranceLP() {
     createMint,
     deposit,
     withdraw,
+    resizeRedemption,
     refreshState,
     /** d119eebd: the senior draw booked / restored by the user's LAST Earn tx (its logs), or null. */
     lastDrawSummary,
@@ -906,6 +1024,8 @@ export function useInsuranceLP() {
 
 /** Simulation budget for the viewer's tag-46 top-up alone (budgeted like a CloseResolved payout). */
 export const TOPUP_SIM_CU = 400_000;
+/** CancelRedemption / RequestRedeemLpShares each simulate at ~10k CU; 120k is ample. */
+export const RESIZE_CU_CAP = 120_000;
 /** A bundled top-up + Earn payout is sized from its own simulation, up to this cap. */
 export const TOPUP_BUNDLE_CU_CAP = 1_200_000;
 
