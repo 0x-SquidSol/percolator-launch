@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PublicKey } from "@solana/web3.js";
+import { registeredPoolForMint } from "@/lib/registered-pool";
 import { SUPPORTED_DEX_IDS } from "@/lib/dex-constants";
 import { classifyPoolsByOwner, isOfferable, MAX_CLASSIFY_POOLS } from "@/lib/dex-pool-owner";
 import type { KeeperDexType } from "@/lib/dex-type";
@@ -86,7 +87,7 @@ async function fetchJupiterPrice(
 
 async function fetchDexScreenerInfo(
   ca: string,
-): Promise<{ price: number; symbol: string | null; candidates: string[] } | null> {
+): Promise<{ price: number; symbol: string | null; candidates: string[]; priceByPair: Record<string, number> } | null> {
   try {
     const resp = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${ca}`, {
       signal: AbortSignal.timeout(6000),
@@ -126,7 +127,12 @@ async function fetchDexScreenerInfo(
       if (!candidates.includes(p.pairAddress)) candidates.push(p.pairAddress);
       if (candidates.length >= MAX_CLASSIFY_POOLS) break;
     }
-    return { price, symbol: best.baseToken?.symbol ?? null, candidates };
+    const priceByPair: Record<string, number> = {};
+    for (const p of solPairs) {
+      const v = parseFloat(p.priceUsd ?? "");
+      if (p.pairAddress && isFinite(v) && v > 0) priceByPair[p.pairAddress] = v;
+    }
+    return { price, symbol: best.baseToken?.symbol ?? null, candidates, priceByPair };
   } catch {
     return null;
   }
@@ -201,10 +207,14 @@ export async function GET(
   }
 
   const [jupResult, dexResult] = await sourceLookup;
+  // A token that already has a live market resolves to THAT market's registered pool (the venue
+  // the keeper prices it from), never a re-ranked "best" pair (lib/registered-pool.ts).
+  const registered = await registeredPoolForMint(ca);
 
   // Best price: prefer DexScreener for memecoins, Jupiter as fallback
   const priceSource = dexResult ?? jupResult;
-  const price = priceSource?.price ?? 0;
+  const registeredPrice = registered ? dexResult?.priceByPair[registered.pool] : undefined;
+  const price = registeredPrice ?? priceSource?.price ?? 0;
   const symbolFromPrice = priceSource?.symbol ?? null;
 
   let result: OracleResolveResult;
@@ -214,7 +224,14 @@ export async function GET(
   let bestPool: string | null = null;
   let bestDexType: string | null = null;
   const candidates = dexResult?.candidates ?? [];
-  if (candidates.length > 0) {
+  if (registered) {
+    bestPool = registered.pool;
+    bestDexType = registered.dexType;
+    if (!bestDexType) {
+      const classes = await classifyPoolsByOwner([registered.pool]);
+      bestDexType = classes && isOfferable(classes[registered.pool]) ? (classes[registered.pool] as KeeperDexType) : null;
+    }
+  } else if (candidates.length > 0) {
     const classes = await classifyPoolsByOwner(candidates);
     if (!classes) {
       // Not cached: a transient RPC failure must not pin "no pool" for the TTL.

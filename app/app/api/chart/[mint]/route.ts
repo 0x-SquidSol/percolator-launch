@@ -39,6 +39,7 @@
 
 import { type NextRequest, NextResponse } from "next/server";
 import { PublicKey } from "@solana/web3.js";
+import { registeredPoolForSlab } from "@/lib/registered-pool";
 import { boundedSet } from "@/lib/bounded-map";
 import { geckoFetch, getGeckoConfig } from "@/lib/gecko-fetch";
 
@@ -258,8 +259,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ mint
   const before =
     beforeParam && /^\d+$/.test(beforeParam) && Number(beforeParam) > 0 ? beforeParam : undefined;
 
+  // A REGISTERED market's chart is its registered pool (the venue the keeper prices it from),
+  // never GeckoTerminal's "top pool" for the mint (lib/registered-pool.ts).
+  const slabParam = sp.get("slab");
+
   try {
-    const pool = await resolveTopPool(canonicalMint);
+    const registered = slabParam ? await registeredPoolForSlab(slabParam, canonicalMint) : null;
+    const pool = registered?.pool ?? (await resolveTopPool(canonicalMint));
     if (!pool) return emptyResponse();
 
     // `before` joins the key — otherwise page 2 would read (and pollute) page
