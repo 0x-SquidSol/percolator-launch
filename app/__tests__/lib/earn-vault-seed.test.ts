@@ -23,13 +23,14 @@ const u128 = (d: Uint8Array, o: number) => {
 };
 
 describe("earn vault seed step list (bug C-1)", () => {
-  it("is CreateLpVault, ATA, ONE DepositToLpVault(d0) — no direct TopUpBackingBucket", () => {
+  it("is CreateLpVault, ATA, DepositToLpVault(d0), DepositToLpVault(d1) — no direct TopUpBackingBucket", () => {
     const a = args();
     const ixs = buildEarnVaultSeedInstructions(a);
-    expect(ixs.length).toBe(3);
+    expect(ixs.length).toBe(4);
     expect(ixs[0].data[0]).toBe(IX_TAG.CreateLpVault); // 74
     expect(ixs[1].programId.equals(ASSOCIATED_TOKEN_PROGRAM_ID)).toBe(true);
     expect(ixs[2].data[0]).toBe(IX_TAG.DepositToLpVault); // 75
+    expect(ixs[3].data[0]).toBe(IX_TAG.DepositToLpVault);
     for (const ix of ixs) {
       if (ix.programId.equals(a.programId)) expect(ix.data[0]).not.toBe(IX_TAG.TopUpBackingBucket);
     }
@@ -37,24 +38,23 @@ describe("earn vault seed step list (bug C-1)", () => {
     expect(ixs.findIndex((i) => i.data[0] === 74)).toBeLessThan(ixs.findIndex((i) => i.data[0] === 75));
   });
 
-  it("seeds ONE pot (domain 0) with the same total, so a new vault never splits (2026-10-01b)", () => {
+  it("deposits BOTH domains, each with the full per-domain seed", () => {
     const a = args();
-    const ixs = buildEarnVaultSeedInstructions(a);
-    const deposits = ixs.filter((i) => i.programId.equals(a.programId) && i.data[0] === IX_TAG.DepositToLpVault);
-    expect(deposits.length).toBe(1);
+    const [, , d0, d1] = buildEarnVaultSeedInstructions(a);
     // wrapper decode (v16_program.rs:6800-6803): tag(1) + amount u128 + domain u16
-    const [d0] = deposits;
-    expect(d0.data.length).toBe(1 + 16 + 2);
-    expect(u128(d0.data, 1)).toBe(a.seedPerDomain * 2n);
-    expect(new DataView(d0.data.buffer, d0.data.byteOffset).getUint16(17, true)).toBe(0);
+    for (const [ix, dom] of [[d0, 0], [d1, 1]] as const) {
+      expect(ix.data.length).toBe(1 + 16 + 2);
+      expect(u128(ix.data, 1)).toBe(a.seedPerDomain);
+      expect(new DataView(ix.data.buffer, ix.data.byteOffset).getUint16(17, true)).toBe(dom);
+    }
   });
 
   it("deposit accounts match handle_deposit_to_lp_vault order (ledger=domain0, sibling=domain1)", () => {
     const a = args();
-    const [, ata, d0] = buildEarnVaultSeedInstructions(a);
+    const [, ata, d0, d1] = buildEarnVaultSeedInstructions(a);
     const [l0] = deriveLpBackingLedger(a.programId, a.market, 0);
     const [l1] = deriveLpBackingLedger(a.programId, a.market, 1);
-    for (const ix of [d0]) {
+    for (const ix of [d0, d1]) {
       const kk = ix.keys.map((x) => x.pubkey.toBase58());
       expect(kk[0]).toBe(a.wallet.toBase58());      // depositor (signer)
       expect(ix.keys[0].isSigner).toBe(true);
@@ -70,10 +70,10 @@ describe("earn vault seed step list (bug C-1)", () => {
     }
   });
 
-  it("resume variant (registry exists) omits CreateLpVault but keeps the one deposit", () => {
+  it("resume variant (registry exists) omits CreateLpVault but keeps both deposits", () => {
     const ixs = buildEarnVaultSeedInstructions({ ...args(), includeCreate: false });
     expect(ixs.map((i) => i.data[0] === 74)).not.toContain(true);
-    expect(ixs.filter((i) => i.data[0] === 75).length).toBe(1);
+    expect(ixs.filter((i) => i.data[0] === 75).length).toBe(2);
   });
 
   it("CreateLpVault bytes match the wrapper decode (domain 0, unchanged vault params)", () => {
