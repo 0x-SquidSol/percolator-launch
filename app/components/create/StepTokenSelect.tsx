@@ -1,6 +1,7 @@
 "use client";
 
 import { FC, useState, useEffect, useMemo, useRef } from "react";
+import { ConnectWalletCta } from "@/components/wallet/ConnectWalletCta";
 import Link from "next/link";
 import { PublicKey } from "@solana/web3.js";
 import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
@@ -385,7 +386,12 @@ export const StepTokenSelect: FC<StepTokenSelectProps> = ({
         <p className="text-[10px] text-[var(--text-dim)]">Checking wallet balance...</p>
       )}
 
-      {/* Continue */}
+      {/* Continue — leaving this step needs a connected wallet: every later
+          step builds or signs a transaction. Without one, the slot is a
+          clear "connect" CTA instead of a Continue that leads nowhere. */}
+      {!publicKey ? (
+        <ConnectWalletCta label="Connect wallet to continue" testId="wizard-connect-wallet" />
+      ) : (
       <button
         type="button"
         onClick={onContinue}
@@ -395,6 +401,7 @@ export const StepTokenSelect: FC<StepTokenSelectProps> = ({
       >
         {mintNetworkStatus === "loading" ? "VALIDATING..." : "CONTINUE →"}
       </button>
+      )}
     </div>
   );
 };

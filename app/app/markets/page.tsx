@@ -1,7 +1,7 @@
 "use client";
 
 import { baseSymbol } from "@/lib/symbol-utils";
-import { useEffect, useState, useMemo, useRef, useCallback, useSyncExternalStore, Suspense, type FC } from "react";
+import { useEffect, useState, useMemo, useRef, Suspense } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { useConnectionCompat } from "@/hooks/useWalletCompat";
@@ -12,7 +12,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useMarketDiscovery } from "@/hooks/useMarketDiscovery";
 import { computeMarketHealth, computeMarketHealthFromStats, sanitizeOnChainValue } from "@/lib/health";
 import { HealthBadge } from "@/components/market/HealthBadge";
-import { formatTokenAmount, formatUsdFromNumber } from "@/lib/format";
+import { formatTokenAmount } from "@/lib/format";
 import type { Database } from "@/lib/database.types";
 
 type MarketWithStats = Database['public']['Views']['markets_with_stats']['Row'];
@@ -30,7 +30,7 @@ import { useMarketHealth } from "@/hooks/useMarketHealth";
 import { MAX_HEALTH_SLABS } from "@/lib/market-health";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { detectOracleMode, resolveMarketPriceE6, priceE6ToUsd, sanitizePriceE6, applyInvert } from "@/lib/oraclePrice";
-import { subscribeSlab, getSnapshot } from "@/lib/priceStore/priceStore";
+import { LiveRowPrice } from "@/components/market/LiveRowPrice";
 import { formatStatValue } from "@/lib/format";
 import { qToUsd, Q_DECIMALS, rowVolumeUsd } from "@/lib/q-usd";
 import { MIN_VAULT_FOR_OI } from "@/lib/phantom-oi";
@@ -84,19 +84,6 @@ function resolveDiscoveredPriceE6(oc: DiscoveredMarket): bigint {
   if (!oc.config?.indexFeedId) return 0n;
   return resolveMarketPriceE6(oc.config);
 }
-
-/** Live-ticking price cell. Subscribes this row's slab to the shared price
- *  store (the same WS feed the trade page ticks off), so list prices move in
- *  real time instead of freezing at the discovery/stats snapshot. Falls back
- *  to the static snapshot price until the first tick arrives — markets the
- *  feed doesn't stream (or no WS configured) keep the previous behavior.
- *  Isolated as a component so ticks re-render only this cell, not the list. */
-const LiveRowPrice: FC<{ slab: string; fallback: number | null }> = ({ slab, fallback }) => {
-  const subscribe = useCallback((cb: () => void) => subscribeSlab(slab, cb), [slab]);
-  const getSnap = useCallback(() => getSnapshot(slab).priceUsd, [slab]);
-  const live = useSyncExternalStore(subscribe, getSnap, () => null);
-  return <>{formatUsdFromNumber(live ?? fallback)}</>;
-};
 
 function isPlaceholderMarketSymbol(sym: string | null | undefined, addresses: Array<string | null | undefined>): boolean {
   if (!sym) return true;
