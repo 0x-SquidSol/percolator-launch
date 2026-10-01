@@ -13,7 +13,7 @@ import { leverageFromMarginBps } from '@/lib/market-params';
 import { qToUsd, rowVolumeUsd } from '@/lib/q-usd';
 import { pollWhenVisible } from '@/lib/pollWhenVisible';
 import { getMultipleAccountsInfoChunked } from '@/lib/rpc-chunk';
-import { combinedVault, splitPotLedgerKeys, splitPotStateFromAccounts } from '@/lib/limits/earn-split-pot';
+import { splitPotLedgerKeys, splitPotStateFromAccounts, vaultValue } from '@/lib/limits/earn-split-pot';
 
 // ═══════════════════════════════════════════════════════════════
 // Types
@@ -391,7 +391,7 @@ export async function fetchCuratedVaultsOnChain(
       splitPot.forEach((s, j) => {
         const [m, lo, ls] = spInfos.slice(3 * j, 3 * j + 3);
         const sp = splitPotStateFromAccounts(programId, s.market, s.registryData, m?.data ?? null, lo?.data ?? null, ls?.data ?? null);
-        const v = sp ? combinedVault(sp.own, sp.sib, sp.feeShareBps) : null;
+        const v = sp ? vaultValue(sp) : null;
         if (sp && v && sp.totalShares > 0n) result[s.slab] = { ...result[s.slab], tvlAtoms: v.nav };
       });
     }

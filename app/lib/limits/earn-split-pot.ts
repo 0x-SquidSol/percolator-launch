@@ -1,24 +1,33 @@
 /**
- * Earn withdrawals on a NON-bound (legacy, two-pot) vault: the split-pot repair.
+ * Earn on a NON-bound (two-pot) vault: what ExecuteRedemption (77) can pay now, and the one repair
+ * the app still has to send.
  *
- * WHY (live investigation 2026-10-01b, SI "Payout not sent"): ExecuteRedemption (77) prices the
- * payout on BOTH pots combined (`lp_vault_combined_available_principal_atoms`) but draws the
- * principal from ONE (`principal_portion > ledger.total_principal_atoms` -> Custom 25
- * EngineCounterUnderflow). The wizard seeded 1,000 USDC into each domain, so every wizard market
- * hits it as soon as one LP's claim exceeds one pot. The program's own remedy (#419) is the
- * permissionless RebalanceLpVaultBacking (91): move the sibling pot's movable principal into the
- * payout pot, in the user's own transaction, in front of 77. No tokens move; same vault.
+ * Deployed wrapper 553d76f0 (PR #522, live 2026-10-01): a non-bound 77 prices AND pays across both
+ * pots. When the payout pot is short it tops itself up from the sibling inside 77
+ * (`vault_pot_top_up_from_sibling`, non-bound rules: ledger AVAILABLE principal, sibling clamped to
+ * its own available principal and free backing) and relabels the sibling's earnings
+ * (`vault_pot_earnings_top_up_from_sibling`). So the app sends 77 alone; the old [91, 77] prefix
+ * (#2764) is gone. Verified live on devnet 2026-10-02 (PERC 9EPm8nB8): a plain 77 paid, and
+ * [91 drain the payout pot, plain 77] paid with `p3_redeem_pot_top_up from=1 to=0`.
+ *
+ * What #522 does not cover (M-1, live on SI 8WC8vALs 2026-10-02): a pot whose booked loss exceeds
+ * its ledger principal (traders won more than that pot's principal). Every pricing of the vault
+ * (75 deposit, 77 payout) then underflows (Custom 25) for every depositor. The program's repair is
+ * permissionless RebalanceLpVaultBacking (91) from the healthy pot into the underwater one, of at
+ * least the deficit (`loss - recovery - principal`); one atom short still fails. No tokens move and
+ * both pots belong to the same holders, so the vault's value after the move is exactly its true
+ * value (the loss is shared). `repairUnderwaterPot` plans it; the app prepends it to the user's
+ * own 75 / 77.
  *
  * A 100% exit can still fail 77's stay-fully-backed gate (Custom 21: the pot's source credit rate
- * must stay at scale while traders hold positive claims against it). The cap below is that gate
- * solved for shares, so the app can offer "Withdraw max available now" instead of a failure.
+ * must stay at scale while traders hold positive claims against it). `planSplitPotRedemption` is
+ * that gate solved for shares, so the app can offer "Withdraw max available now" instead.
  *
- * Every formula mirrors the deployed wrapper (percolator-prog feat/p3-vault-owned-lp @ bd4fe5f8,
- * engine 35ddd692):
+ * Every formula mirrors the deployed wrapper (percolator-prog 553d76f0, src/v16_program.rs):
  *   - sync_backing_domain_ledger / lp_vault_domain_available_principal_atoms / lp_vault_nav_atoms
- *   - handle_rebalance_lp_vault_backing (source gates + post-move credit rate)
- *   - handle_execute_redemption (ledger gate, fresh-unliened gate, credit-rate gate)
- * Pure; the hook reads the accounts. Layouts are the ones the investigation decoded live.
+ *   - handle_rebalance_lp_vault_backing (source gates, available-principal clamp, refill)
+ *   - handle_execute_redemption (+ vault_pot_free_backing_num and both sibling top-ups)
+ * Pure; the hook reads the accounts.
  */
 import { SystemProgram, type Connection, type PublicKey, type TransactionInstruction } from "@solana/web3.js";
 import {
@@ -215,20 +224,44 @@ export function movablePrincipal(sib: DomainState): bigint {
   return pos(min(avail, ls.totalPrincipal, sib.bucket.freshUnliened / BS, creditRoomAtoms(sib.source)));
 }
 
+/**
+ * `vault_pot_free_backing_num` / BOUND_SCALE: a pot's fresh idle backing its live winner claims do
+ * not reserve (what can leave it while it stays fully backed). 0 for a non-Fresh pot.
+ */
+function potFreeAtoms(d: DomainState): bigint {
+  if (d.bucket.status !== BUCKET_STATUS_FRESH) return 0n;
+  const s = d.source;
+  return pos(min(d.bucket.freshUnliened, s.freshReserved - s.positiveClaimBound, sourceAvailableNum(s) - s.positiveClaimBound)) / BS;
+}
+
+/** Most principal 77's own sibling top-up can bring into the payout pot (non-bound rules). */
+function siblingTopUpAtoms(sib: DomainState): bigint {
+  if (!sib.ledger) return 0n; // the program skips an uninitialised sibling ledger
+  const avail = availablePrincipal(syncedLedger(sib));
+  if (avail === null) return 0n;
+  return min(potFreeAtoms(sib), avail);
+}
+
+/** Gross utilization-fee earnings 77 can relabel from the sibling onto the payout pot. */
+function siblingEarningsTopUp(sib: DomainState): bigint {
+  if (!sib.ledger) return 0n;
+  const ls = syncedLedger(sib);
+  return min(sib.bucket.utilFeeEarnings, pos(ls.totalEarnings - ls.totalEarningsWithdrawn));
+}
+
 export interface SplitPotPlan {
-  /** Principal 91 moves sibling -> payout pot in front of 77 (0n = 77 needs no help). */
-  rebalance: bigint;
   /** What 77 pays for `shares`, and its principal part. */
   atoms: bigint;
   principal: bigint;
-  /** Largest share count 77 can pay right now (after the rebalance), before the safety margin. */
+  /** Largest share count 77 can pay right now (its own cross-pot top-up included), before the safety margin. */
   maxShares: bigint;
   /** `shares <= maxShares`. */
   payable: boolean;
 }
 
 /**
- * Plan a non-bound 77 that pays `shares` out of `own` (the registry's domain).
+ * What a non-bound 77 can pay for `shares` out of `own` (the registry's domain). The app sends 77
+ * alone: the program moves the sibling's principal and earnings in by itself when `own` is short.
  * null = the vault's counters could not be priced (the program would refuse too).
  */
 export function planSplitPotRedemption(p: {
@@ -241,43 +274,120 @@ export function planSplitPotRedemption(p: {
   if (p.totalShares <= 0n) return null;
   const v = combinedVault(p.own, p.sib, p.feeShareBps);
   if (!v) return null;
-  const lo = syncedLedger(p.own);
+  const ownAvail = availablePrincipal(syncedLedger(p.own));
+  if (ownAvail === null) return null;
   const principalFor = (s: bigint) => (s * v.available) / p.totalShares;
   const atomsFor = (s: bigint) => (s * v.nav) / p.totalShares;
-  const atoms = atomsFor(p.shares);
-  const principal = principalFor(p.shares);
 
-  // Most principal the payout pot can release, with `r` moved in by 91. Every term grows by r.
+  // Most principal the payout pot can release once 77 has moved `r` in from the sibling: its
+  // ledger gate (available principal), its fresh backing and its stay-fully-backed credit room
+  // all grow by r.
   const ownCap = (r: bigint) =>
-    pos(min(lo.totalPrincipal + r, (p.own.bucket.freshUnliened + r * BS) / BS, creditRoomAtoms({ ...p.own.source, freshReserved: p.own.source.freshReserved + r * BS })));
-  // 77's earnings gate: the LP earnings slice is drawn from the PAYOUT pot's bucket only
-  // (gross_consumed = ceil(earnings * 10_000 / fee_share_bps) <= utilization_fee_earnings). 91 moves
-  // principal, never earnings, so this cannot be repaired here; it only lowers the cap.
+    pos(min(ownAvail + r, (p.own.bucket.freshUnliened + r * BS) / BS, creditRoomAtoms({ ...p.own.source, freshReserved: p.own.source.freshReserved + r * BS })));
+  const capMax = ownCap(siblingTopUpAtoms(p.sib));
+  // 77's earnings gate: the gross LP earnings slice (ceil(earnings * 10_000 / fee_share_bps)) must
+  // fit the payout pot's bucket after 77 relabels the sibling's unwithdrawn earnings onto it.
+  const earningsRoom = p.own.bucket.utilFeeEarnings + siblingEarningsTopUp(p.sib);
   const earningsOk = (s: bigint) => {
     const earnings = atomsFor(s) - principalFor(s);
     if (earnings <= 0n) return true;
     if (p.feeShareBps <= 0) return false;
     const fee = BigInt(p.feeShareBps);
-    const gross = (earnings * 10_000n + fee - 1n) / fee;
-    return gross <= p.own.bucket.utilFeeEarnings;
+    return (earnings * 10_000n + fee - 1n) / fee <= earningsRoom;
   };
-
-  const movable = movablePrincipal(p.sib);
-  const capMax = ownCap(movable);
   const payableFor = (s: bigint) => principalFor(s) <= capMax && earningsOk(s);
-  // Move only what this payout needs (the sibling keeps the rest of its headroom).
-  const need = principal - ownCap(0n);
-  const rebalance = need > 0n ? (need < movable ? need : movable) : 0n;
 
   // Largest payable share count (both gates are monotone in s, up to floor wobble): binary search.
-  let lo_ = 0n;
+  let lo = 0n;
   let hi = p.totalShares;
-  while (lo_ < hi) {
-    const mid = (lo_ + hi + 1n) / 2n;
-    if (payableFor(mid)) lo_ = mid;
+  while (lo < hi) {
+    const mid = (lo + hi + 1n) / 2n;
+    if (payableFor(mid)) lo = mid;
     else hi = mid - 1n;
   }
-  return { rebalance, atoms, principal, maxShares: lo_, payable: payableFor(p.shares) && principal <= ownCap(rebalance) };
+  return { atoms: atomsFor(p.shares), principal: principalFor(p.shares), maxShares: lo, payable: payableFor(p.shares) };
+}
+
+// ── Underwater pot (M-1): the reverse-91 repair ─────────────────────────────────────────────
+
+/** A pot's booked loss beyond its ledger principal (atoms); > 0 = every 75 / 77 on the vault fails 25. */
+export function potDeficit(l: DomainLedger): bigint {
+  const net = l.cumulativeLoss - l.cumulativeRecovery;
+  return net > l.totalPrincipal ? net - l.totalPrincipal : 0n;
+}
+
+/** Headroom over the exact deficit, so a little more loss between read and landing does not re-fail. */
+export const POT_REPAIR_HEADROOM_BPS = 10n; // 0.1%
+
+export interface PotRepair {
+  /** Absolute domains (even = long, odd = short). */
+  fromDomain: number;
+  toDomain: number;
+  amount: bigint;
+}
+
+/**
+ * The vault as the program sees it after the repair (`state`), and the 91 to send first (`repair`,
+ * null when no pot is underwater). Returns null when a pot is underwater and the other pot cannot
+ * cover the deficit (both underwater, or not enough free principal): nothing the app can send fixes
+ * that, and the program's own refusal is what the user sees.
+ */
+export function repairUnderwaterPot(sp: SplitPotState): { state: SplitPotState; repair: PotRepair | null } | null {
+  const lo = syncedLedger(sp.own);
+  const ls = syncedLedger(sp.sib);
+  if (lo.cumulativeLoss < lo.cumulativeRecovery || ls.cumulativeLoss < ls.cumulativeRecovery) return null;
+  const dOwn = potDeficit(lo);
+  const dSib = potDeficit(ls);
+  if (dOwn === 0n && dSib === 0n) return { state: sp, repair: null };
+  if (dOwn > 0n && dSib > 0n) return null;
+  const ownUnder = dOwn > 0n;
+  const under = ownUnder ? sp.own : sp.sib;
+  const healthy = ownUnder ? sp.sib : sp.own;
+  const deficit = ownUnder ? dOwn : dSib;
+  const movable = movablePrincipal(healthy);
+  if (movable < deficit) return null;
+  const want = deficit + pos((deficit * POT_REPAIR_HEADROOM_BPS) / 10_000n) + 1n;
+  const amount = want < movable ? want : movable;
+  const num = amount * BS;
+
+  // Source side (handle_rebalance_lp_vault_backing): synced ledger loses `amount` of principal.
+  const hl = syncedLedger(healthy);
+  const healthyAfter: DomainState = {
+    bucket: { ...healthy.bucket, freshUnliened: healthy.bucket.freshUnliened - num },
+    source: { ...healthy.source, freshReserved: healthy.source.freshReserved - num },
+    ledger: { ...hl, totalPrincipal: hl.totalPrincipal - amount },
+  };
+  // Destination: sync against the pre-refill bucket, refill pays the provider receivable
+  // (= consumed) down and adds fresh backing, watermark pinned to the post-refill bucket.
+  const ul = syncedLedger(under);
+  const refill = num < under.bucket.consumed ? num : under.bucket.consumed;
+  const ub = { ...under.bucket, consumed: under.bucket.consumed - refill, freshUnliened: under.bucket.freshUnliened + num };
+  const underAfter: DomainState = {
+    bucket: ub,
+    source: { ...under.source, freshReserved: under.source.freshReserved + num },
+    ledger: { ...ul, totalPrincipal: ul.totalPrincipal + amount, lastObsUnavailable: unavailableAtoms(ub) },
+  };
+  const ownDomain = sp.ownDomain;
+  return {
+    state: { ...sp, own: ownUnder ? underAfter : healthyAfter, sib: ownUnder ? healthyAfter : underAfter },
+    repair: { fromDomain: ownUnder ? ownDomain ^ 1 : ownDomain, toDomain: ownUnder ? ownDomain : ownDomain ^ 1, amount },
+  };
+}
+
+/** Combined NAV / available principal as the program prices them once any underwater pot is repaired. */
+export function vaultValue(sp: SplitPotState): { nav: bigint; available: bigint } | null {
+  const fixed = repairUnderwaterPot(sp);
+  return fixed ? combinedVault(fixed.state.own, fixed.state.sib, fixed.state.feeShareBps) : null;
+}
+
+/** The repair 91 for `sp` (accounts from the read). */
+export function buildPotRepairIx(p: { programId: PublicKey; cranker: PublicKey; market: PublicKey; registry: PublicKey; sp: SplitPotState; repair: PotRepair }): TransactionInstruction {
+  const ledgerOf = (d: number) => (d === p.sp.ownDomain ? p.sp.ownLedger : p.sp.sibLedger);
+  return buildRebalanceBackingIx({
+    programId: p.programId, cranker: p.cranker, market: p.market, registry: p.registry,
+    fromLedger: ledgerOf(p.repair.fromDomain), toLedger: ledgerOf(p.repair.toDomain),
+    fromDomain: p.repair.fromDomain, toDomain: p.repair.toDomain, amount: p.repair.amount,
+  });
 }
 
 /** The share count to re-request when the full amount cannot pay: the cap less the safety margin. */
@@ -341,6 +451,37 @@ export class EarnPayoutCapError extends Error {
     super("Earn payout above what the vault can pay now");
     this.name = "EarnPayoutCapError";
   }
+}
+
+/**
+ * The instructions the app puts in front of a non-bound 75 / 77: only the underwater-pot repair
+ * (91), never a payout 91 (553d76f0's 77 tops itself up from the sibling). With `payoutShares`
+ * (a 77), refuses before the wallet opens when 77 cannot pay that many now (EarnPayoutCapError).
+ * `sp` null (a BOUND vault, or unreadable) = nothing to add.
+ */
+export function splitPotPrefixIxs(p: {
+  programId: PublicKey;
+  cranker: PublicKey;
+  market: PublicKey;
+  registry: PublicKey;
+  sp: SplitPotState | null;
+  payoutShares?: bigint | null;
+}): TransactionInstruction[] {
+  if (!p.sp) return [];
+  const fixed = repairUnderwaterPot(p.sp);
+  if (!fixed) return [];
+  const sp = fixed.state;
+  if (p.payoutShares != null) {
+    const plan = planSplitPotRedemption({ own: sp.own, sib: sp.sib, totalShares: sp.totalShares, shares: p.payoutShares, feeShareBps: sp.feeShareBps });
+    if (plan && !plan.payable) {
+      const capped = cappedShares(plan.maxShares, p.payoutShares);
+      const v = combinedVault(sp.own, sp.sib, sp.feeShareBps);
+      throw new EarnPayoutCapError(capped, v ? (capped * v.nav) / sp.totalShares : 0n);
+    }
+  }
+  return fixed.repair
+    ? [buildPotRepairIx({ programId: p.programId, cranker: p.cranker, market: p.market, registry: p.registry, sp: p.sp, repair: fixed.repair })]
+    : [];
 }
 
 // ── Read (one round trip) ────────────────────────────────────────────────────────────────────

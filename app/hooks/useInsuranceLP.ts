@@ -45,14 +45,13 @@ import { computeBudgetPrefix, connectionSelfHealDeps } from "@/lib/self-heal";
 import { readTxDrawSummary, type DrawSummary } from "@/lib/limits/p3-draw-logs";
 import { withdrawFlow } from "@/lib/limits/earn-withdraw";
 import {
-  EarnPayoutCapError,
   buildCancelRedemptionIx,
-  buildRebalanceBackingIx,
   cappedShares,
   combinedVault,
   planSplitPotRedemption,
   readSplitPotState,
-  type SplitPotState,
+  repairUnderwaterPot,
+  splitPotPrefixIxs,
 } from "@/lib/limits/earn-split-pot";
 import { TAG_DEPOSIT_TO_LP_VAULT, TAG_EXECUTE_REDEMPTION } from "@/lib/limits/constants";
 import { COPY as LIMITS_COPY } from "@/lib/limits/copy";
@@ -492,8 +491,10 @@ export function useInsuranceLP() {
       // work out what the whole position can be paid right now (Custom 21 / 25 before signing).
       let splitPot: InsuranceLPState['splitPot'] = null;
       if (registryExists && programId && slabAddress) {
-        const sp = await readSplitPotState(connection, new PublicKey(programId), new PublicKey(slabAddress));
+        const read = await readSplitPotState(connection, new PublicKey(programId), new PublicKey(slabAddress));
         if (stale()) return;
+        // Priced as the program will see it once the app's own repair (an underwater pot) lands.
+        const sp = read ? repairUnderwaterPot(read)?.state ?? null : null;
         const v = sp ? combinedVault(sp.own, sp.sib, sp.feeShareBps) : null;
         if (sp && v && sp.totalShares > 0n) {
           const held = userLpBalance + pendingRedemptionShares;
@@ -728,6 +729,14 @@ export function useInsuranceLP() {
       // with the LiteSVM bridge (lib/limits/earn-ixs.ts), so the sim runs this exact code.
       const p3 = earnTxPlan(TAG_DEPOSIT_TO_LP_VAULT, await readEarnP3Context(connection, progPk, marketPk));
       assertEarnPlan(p3);
+      // Non-bound vault with an underwater pot: every deposit is refused (Custom 25) until the
+      // permissionless repair (91) lands, so it rides in front of the user's own deposit.
+      if (!p3.tail) {
+        ixs.push(...splitPotPrefixIxs({
+          programId: progPk, cranker: wallet.publicKey, market: marketPk, registry: registryPda,
+          sp: await readSplitPotState(connection, progPk, marketPk),
+        }));
+      }
       ixs.push(...buildEarnDepositIxs({
         programId: progPk,
         depositor: wallet.publicKey,
@@ -816,28 +825,14 @@ export function useInsuranceLP() {
       // tokenProgram, siblingLedger(w), redeemerRentDest(w)]. `cranker` is permissionless (anyone may execute post-cooldown,
       // and is directly credited the redemption PDA's reclaimed rent) — the UI always
       // calls it as the redeemer themselves.
-      // Non-bound (two-pot) vault: 77 prices on both pots but pays from one (Custom 25). Plan the
-      // payout for `shares`: refuse before signing when the vault cannot pay that many now (the UI
-      // offers the max), else prepend the permissionless 91 that moves the sibling pot's movable
-      // principal into the payout pot (lib/limits/earn-split-pot.ts).
-      const splitPotPrefix = async (shares: bigint): Promise<TransactionInstruction[]> => {
-        const sp: SplitPotState | null = await readSplitPotState(connection, progPk, marketPk);
-        if (!sp) return [];
-        const plan = planSplitPotRedemption({ own: sp.own, sib: sp.sib, totalShares: sp.totalShares, shares, feeShareBps: sp.feeShareBps });
-        if (!plan) return [];
-        if (!plan.payable) {
-          const capped = cappedShares(plan.maxShares, shares);
-          const v = combinedVault(sp.own, sp.sib, sp.feeShareBps);
-          throw new EarnPayoutCapError(capped, v ? (capped * v.nav) / sp.totalShares : 0n);
-        }
-        if (plan.rebalance <= 0n) return [];
-        return [
-          buildRebalanceBackingIx({
-            programId: progPk, cranker: wallet.publicKey!, market: marketPk, registry: registryPda,
-            fromLedger: sp.sibLedger, toLedger: sp.ownLedger, fromDomain: sp.ownDomain ^ 1, toDomain: sp.ownDomain, amount: plan.rebalance,
-          }),
-        ];
-      };
+      // Non-bound (two-pot) vault: 77 pays across both pots by itself (wrapper 553d76f0), so it is
+      // sent alone. In front of it only the underwater-pot repair (91, lib/limits/earn-split-pot.ts),
+      // and a refusal before signing when the vault cannot pay `shares` now (the UI offers the max).
+      const splitPotPrefix = async (shares: bigint): Promise<TransactionInstruction[]> =>
+        splitPotPrefixIxs({
+          programId: progPk, cranker: wallet.publicKey!, market: marketPk, registry: registryPda,
+          sp: await readSplitPotState(connection, progPk, marketPk), payoutShares: shares,
+        });
       const buildExecuteIxs = async (forceHarvest = false, shares: bigint | null = null) => {
         const [vaultPda] = deriveVaultAuthority(progPk, marketPk);
         // v17 DUAL-DOMAIN: [11] is the sibling pot's ledger. NAV and
@@ -964,7 +959,7 @@ export function useInsuranceLP() {
    * re-creates the redemption account 81 closes, which the program refuses inside the same
    * transaction (Custom 2 AlreadyInitialized, devnet simulation 2026-10-01). 81 is simulated
    * before the prompt, both are signed with one signAll on one blockhash, 81 is confirmed, then
-   * 76 is sent. The cooldown restarts; the pending card then collects [91, 77] by itself.
+   * 76 is sent. The cooldown restarts; the pending card then collects the payout by itself.
    * If 76 fails after 81 landed, the shares are back in the wallet: nothing is lost, and the
    * withdraw form offers the max available.
    */
