@@ -148,7 +148,13 @@ async function fetchMarkets(url: string): Promise<RegisteredMarket[] | null> {
     console.warn(`[playground-registered-markets] blob fetch ${resp.status} — read failed`);
     return null;
   }
-  const data: unknown = await resp.json();
+  let data: unknown;
+  try {
+    data = await resp.json();
+  } catch {
+    console.warn('[playground-registered-markets] blob content is not JSON — read failed');
+    return null;
+  }
   // A found-but-non-array blob is corrupted data, not "empty".
   if (!Array.isArray(data)) {
     console.warn('[playground-registered-markets] blob content is not an array — read failed');
@@ -166,7 +172,11 @@ async function readSnapshot(): Promise<RegisteredMarketsSnapshot> {
     const versions = await listVersions();
     if (versions.length > 0) {
       const markets = await fetchMarkets(versions[0].url);
-      return markets === null ? { markets: [], seq: 0, ok: false } : { markets, seq: versions[0].seq, ok: true };
+      if (markets !== null) return { markets, seq: versions[0].seq, ok: true };
+      // The newest snapshot can't be read this moment: serve the previous one to readers, but
+      // report it as not-ok so a writer never merges onto an older seq (fail closed).
+      const prev = versions[1] ? await fetchMarkets(versions[1].url) : null;
+      return { markets: prev ?? [], seq: 0, ok: false };
     }
     const { blobs } = await list({ prefix: REGISTERED_MARKETS_BLOB_PATHNAME, limit: 1 });
     const legacy = blobs.find((b) => b.pathname === REGISTERED_MARKETS_BLOB_PATHNAME);
@@ -191,6 +201,7 @@ async function readSnapshot(): Promise<RegisteredMarketsSnapshot> {
  * (see `upsertRegisteredMarket`, which aborts on a failed read).
  */
 export async function readRegisteredMarkets(): Promise<RegisteredMarket[]> {
+  // Lenient: on a failed newest read this is the previous snapshot (or []), never a throw.
   const { markets } = await readSnapshot();
   return markets;
 }
@@ -269,8 +280,6 @@ export async function upsertRegisteredMarket(entry: RegisteredMarket): Promise<R
     const next = applyRegisteredMarketUpsert(snapshot.markets, entry);
     try {
       await createSnapshot(snapshot.seq + 1, next);
-      await pruneOldSnapshots();
-      return next;
     } catch (err) {
       // Lost the race only if someone else's seq+1 now exists; anything else is a real failure.
       const newest = await listVersions().then((v) => v[0]?.seq ?? 0, () => 0);
@@ -281,6 +290,18 @@ export async function upsertRegisteredMarket(entry: RegisteredMarket): Promise<R
       }
       throw err;
     }
+    // Verify-after-create: a writer that stalled while several others wrote can find its target
+    // seq already PRUNED, so the create-only write "succeeds" on a recycled path below the
+    // newest snapshot and its entry would be silently lost. Only a write that is the newest
+    // snapshot counts; otherwise re-read the true newest and merge again.
+    const newestAfter = await listVersions().then((v) => v[0]?.seq ?? null, () => null);
+    if (newestAfter !== null && newestAfter !== snapshot.seq + 1) {
+      lastConflict = new Error(`snapshot v${snapshot.seq + 1} was superseded by v${newestAfter} while writing`);
+      await sleep(casRetryDelayMs(attempt));
+      continue;
+    }
+    await pruneOldSnapshots();
+    return next;
   }
   const conflictDetail = lastConflict instanceof Error ? ` Last conflict: ${lastConflict.message}` : '';
   throw new Error(

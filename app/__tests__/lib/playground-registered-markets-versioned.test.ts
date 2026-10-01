@@ -134,6 +134,42 @@ describe("versioned registry", () => {
     expect(versions()).toEqual([1, 2, 3]);
   });
 
+  it("REVIEW #2727: a writer stalled across >= KEEP upserts never loses its entry (pruned seq recycled)", async () => {
+    await upsertRegisteredMarket(mk("SEED", 0)); // v1
+    // A reads v1 and stalls inside its create of v2 while others write v2..v8 and prune.
+    const { put } = await import("@vercel/blob");
+    const realPut = vi.mocked(put).getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let first = true;
+    vi.mocked(put).mockImplementation(async (pathname: string, body: unknown, opts: unknown) => {
+      if (first && pathname === registeredMarketsVersionPath(2) && String(body).includes('"A"')) {
+        first = false;
+        await gate;
+      }
+      return realPut(pathname, body as string, opts as { allowOverwrite?: boolean });
+    });
+    const a = upsertRegisteredMarket(mk("A", 1));
+    await new Promise((r) => setTimeout(r, 0));
+    for (let i = 0; i < REGISTERED_MARKETS_KEEP_VERSIONS + 2; i += 1) await upsertRegisteredMarket(mk(`W${i}`, 10 + i));
+    expect(origin.has(registeredMarketsVersionPath(2))).toBe(false); // pruned
+    release();
+    await a;
+    vi.mocked(put).mockImplementation(realPut);
+    const slabs = (await readRegisteredMarkets()).map((m) => m.slabAddress);
+    expect(slabs).toContain("A");
+    expect(slabs).toContain(`W${REGISTERED_MARKETS_KEEP_VERSIONS + 1}`);
+  });
+
+  it("a newest snapshot that can't be read: readers get the previous one, writers fail closed", async () => {
+    await upsertRegisteredMarket(mk("A"));
+    await upsertRegisteredMarket(mk("B"));
+    edge.clear();
+    origin.set(registeredMarketsVersionPath(2), { body: "not json" }); // newest listed but unreadable
+    expect((await readRegisteredMarkets()).map((m) => m.slabAddress)).toEqual(["A"]);
+    await expect(upsertRegisteredMarket(mk("C"))).rejects.toThrow(/aborting without writing/);
+  });
+
   it("re-registering a slab replaces its row in place", async () => {
     await upsertRegisteredMarket(mk("A", 1));
     await upsertRegisteredMarket({ ...mk("A", 5), dexType: "meteora-dlmm" });
