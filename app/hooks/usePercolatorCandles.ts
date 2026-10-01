@@ -38,12 +38,10 @@ const RESOLUTION_MAP: Record<Timeframe, { resolution: string; bucketSec: number;
     ]),
   ) as Record<Timeframe, { resolution: string; bucketSec: number; lookbackSec: number }>;
 
+/** The price-WS service (NEXT_PUBLIC_WS_URL). No fallback: the retired percolator-api URL it was
+ *  once derived from is dead, so without an explicit URL there is no live trade feed. */
 function deriveWsUrl(): string | null {
-  const explicit = process.env.NEXT_PUBLIC_WS_URL;
-  if (explicit) return explicit;
-  const api = process.env.NEXT_PUBLIC_API_URL;
-  if (!api) return null;
-  return api.replace(/^http/, "ws");
+  return process.env.NEXT_PUBLIC_WS_URL || null;
 }
 
 // Module-level (not per-component-instance) so it survives a slab switch and

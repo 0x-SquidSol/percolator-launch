@@ -50,8 +50,6 @@ import { useEngineFreshness } from "@/hooks/useEngineFreshness";
 import { StatusLine } from "@/components/ui/StatusLine";
 import { getEntryPrice, getEntryLeverage, clearEntryPrice } from "@/lib/entry-price";
 import { applyInvert, sanitizePriceE6 } from "@/lib/oraclePrice";
-import { getBackendUrl } from "@/lib/config";
-import { pollWhenVisible } from "@/lib/pollWhenVisible";
 import { parseHumanAmount } from "@/lib/parseAmount";
 import { isOracleStaleBlocking } from "@/lib/oracle-stale-gate";
 import { computeMarginHealthPct } from "@/lib/margin-health";
@@ -64,52 +62,6 @@ import {
 
 function abs(n: bigint): bigint {
   return n < 0n ? -n : n;
-}
-
-// ─── 5.7: ADL rank for this user's position slot ─────────────────────────────
-
-interface AdlRankResult {
-  rank: number | null;      // null = not in rankings (safe)
-  adlNeeded: boolean;
-}
-
-function useAdlRank(slabAddress: string, positionIdx: number | null): AdlRankResult {
-  const [result, setResult] = useState<AdlRankResult>({ rank: null, adlNeeded: false });
-
-  useEffect(() => {
-    if (positionIdx === null) return;
-    // Guards against a slow response landing after slabAddress/positionIdx has
-    // already changed (market switch mid-flight), which would otherwise
-    // overwrite the new market's rank with the old market's stale response.
-    let cancelled = false;
-
-    const fetchRank = async () => {
-      try {
-        const base = getBackendUrl();
-        const res = await fetch(`${base}/api/adl/rankings?slab=${encodeURIComponent(slabAddress)}`);
-        if (!res.ok || cancelled) return;
-        const json = await res.json() as {
-          adlNeeded: boolean;
-          rankings: { rank: number; idx: number }[];
-        };
-        if (cancelled) return;
-        const entry = json.rankings.find((r) => r.idx === positionIdx);
-        setResult({ rank: entry?.rank ?? null, adlNeeded: json.adlNeeded });
-      } catch {
-        // non-critical — leave last known value
-      }
-    };
-
-    fetchRank();
-    // Visibility-gated so hidden tabs don't keep polling ADL rankings.
-    const dispose = pollWhenVisible(fetchRank, 30_000);
-    return () => {
-      cancelled = true;
-      dispose();
-    };
-  }, [slabAddress, positionIdx]);
-
-  return result;
 }
 
 // ─── 5.9: Add Margin modal ────────────────────────────────────────────────────
@@ -279,10 +231,6 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // useEngineFreshness's file header.
   const { engineStale } = useEngineFreshness();
   const closeBlockedByStaleness = !mockMode && (oracleStale || engineStale);
-
-  // 5.7: ADL rank — fetch once account is known; positionIdx = userAccount.idx
-  const adlPositionIdx = userAccount ? userAccount.idx : null;
-  const { rank: adlRank, adlNeeded } = useAdlRank(slabAddress, adlPositionIdx);
 
   const lpEntry = useMemo(() => {
     return accounts.find(({ account }) => account.kind === AccountKind.LP) ?? null;
@@ -587,8 +535,6 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             >
               {POSITION_LEVERAGE_LABEL} {leverageDisplay.text}
             </span>
-            {/* 5.7: ADL rank indicator */}
-            <AdlRankBadge rank={adlRank} adlNeeded={adlNeeded} />
             {/* Spacer + CLOSE button */}
             <div className="flex-1" />
             <button
@@ -824,45 +770,6 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     </div>
   );
 };
-
-// ─── 5.7: ADL rank badge ──────────────────────────────────────────────────────
-
-function AdlRankBadge({ rank, adlNeeded }: { rank: number | null; adlNeeded: boolean }) {
-  if (!adlNeeded && rank === null) return null;
-
-  // Color: rank <= 3 is high risk (red), rank <= 10 yellow, rest green
-  const color =
-    rank !== null && rank <= 3
-      ? "bg-[var(--short)] border-[var(--short)]/50 text-white"
-      : rank !== null && rank <= 10
-        ? "bg-[var(--warning)] border-[var(--warning)]/50 text-[var(--bg)]"
-        : "bg-[var(--long)] border-[var(--long)]/50 text-white";
-
-  const label =
-    rank !== null
-      ? `ADL #${rank}`
-      : adlNeeded
-        ? "ADL Safe"
-        : null;
-
-  if (!label) return null;
-
-  const tooltip =
-    rank !== null && rank <= 3
-      ? "High ADL risk — position may be auto-deleveraged soon"
-      : rank !== null && rank <= 10
-        ? "Moderate ADL risk — monitor insurance fund utilization"
-        : "ADL active but your position is relatively safe";
-
-  return (
-    <span
-      title={tooltip}
-      className={`inline-flex items-center gap-0.5 rounded-none border px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.06em] ${color}`}
-    >
-      {label}
-    </span>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // 3.2 + 3.3: PnL section — extracted to use hooks cleanly

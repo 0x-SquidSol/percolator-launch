@@ -5,9 +5,6 @@ import type { NextConfig } from "next";
 // modules"). See the export at the bottom of this file.
 // import { withSentryConfig } from "@sentry/nextjs";
 
-// NEXT_PUBLIC_API_URL is no longer read here: the config has no proxy rewrites any more (see
-// rewrites below). The few routes that still try percolator-api read it through getBackendUrl().
-
 // `eslint`/`typescript` are valid next.config runtime keys, but this @types/next
 // version omits them from the NextConfig type — hence the `as NextConfig` cast below.
 const nextConfig = {

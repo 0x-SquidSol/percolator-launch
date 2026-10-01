@@ -85,9 +85,8 @@ describe("sendTx computeUnitsFromSim", () => {
 
 describe("every trade / close / batch sender uses it", () => {
   const src = (f: string) => readFileSync(join(process.cwd(), f), "utf8");
-  it("useTrade (opens AND closes: useClosePosition calls trade()), useBatchTrade, the tag-44 close", () => {
+  it("useTrade (opens AND closes: useClosePosition calls trade()), the tag-44 close", () => {
     expect(src("hooks/useTrade.ts")).toContain("computeUnitsFromSim: { cap: tradeCuCap(legs.length) },");
-    expect(src("hooks/useBatchTrade.ts")).toContain("computeUnitsFromSim: { cap: tradeCuCap(params.legs.length) },");
     expect(src("lib/limits/rebalance-close.ts")).toContain("computeUnitsFromSim: { cap: tradeCuCap(1) },");
     expect(src("hooks/useClosePosition.ts")).toContain("async () => trade({");
   });

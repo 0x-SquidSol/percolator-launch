@@ -252,23 +252,6 @@ export function setNetwork(network: Network) {
 // Removed eager eval: `export const config = getConfig()` broke SSG/SSR
 // when localStorage or env vars weren't available at module load time.
 
-/** Backend API URL — reads NEXT_PUBLIC_API_URL with Railway production as fallback.
- * This is the single source of truth for the backend URL across the entire frontend.
- * Previously: NEXT_PUBLIC_BACKEND_URL, NEXT_PUBLIC_API_URL were used inconsistently.
- */
-export function getBackendUrl(): string {
-  const url = process.env.NEXT_PUBLIC_API_URL ?? process.env.NEXT_PUBLIC_BACKEND_URL;
-  if (!url) {
-    // Backend URL is required in all environments — no hardcoded fallback
-    // This prevents misconfigured deployments from silently routing to production
-    throw new Error(
-      "NEXT_PUBLIC_API_URL or NEXT_PUBLIC_BACKEND_URL must be explicitly set. " +
-      "No hardcoded fallback is provided — ensure your environment configuration is correct."
-    );
-  }
-  return url.trim();
-}
-
 /** Build an explorer URL for a transaction */
 export function explorerTxUrl(sig: string): string {
   const c = getConfig();
