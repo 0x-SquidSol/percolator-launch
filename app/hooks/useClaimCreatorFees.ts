@@ -52,10 +52,34 @@ export interface ClaimProgress {
 /** CU cap for one tag-90 claim tx (sized from its simulation below the cap). */
 export const CLAIM_CU_CAP = 200_000;
 
-/** A guard failure already reads well; anything else goes through the shared mapper. */
+export interface ClaimOptions {
+  /** Called once per market whose claim CONFIRMED, as it confirms (re-read balances here). */
+  onLanded?: (slab: string) => void;
+}
+
+/**
+ * A guard failure already reads well; anything else goes through the shared mapper.
+ *
+ * TOTAL BY CONSTRUCTION — this is the error path for the whole claim, so it must
+ * not be able to throw on its way to reporting a throw. `JSON.stringify` throws
+ * outright on a BigInt field or a circular reference (both occur in RPC error
+ * payloads), and RETURNS `undefined` for `undefined`, a function or a symbol —
+ * which would then reach `humanizeError(rawMsg: string)` as a non-string and
+ * throw there instead. Either one would reject out of `claim()` from inside its
+ * own catch block, which is the stuck-button bug coming back by a narrower door.
+ */
 function claimErrorText(err: unknown): string {
   if (err instanceof CreatorFeeClaimError) return err.message;
-  const raw = err instanceof Error ? err.message : typeof err === "string" ? err : JSON.stringify(err);
+  let raw: string;
+  if (err instanceof Error) raw = err.message;
+  else if (typeof err === "string") raw = err;
+  else {
+    try {
+      raw = JSON.stringify(err) ?? String(err);
+    } catch {
+      raw = String(err);
+    }
+  }
   return mapCreatorClaimError(raw);
 }
 
@@ -83,16 +107,13 @@ export function useClaimCreatorFees() {
   const [outcomes, setOutcomes] = useState<ClaimOutcome[]>([]);
 
   const claim = useCallback(
-    async (slabs: readonly string[]): Promise<ClaimOutcome[]> => {
+    async (slabs: readonly string[], opts: ClaimOptions = {}): Promise<ClaimOutcome[]> => {
       if (slabs.length === 0) return [];
       if (!wallet.publicKey || !wallet.signTransaction) {
         const failed = slabs.map((slab) => ({ slab, error: "Wallet not connected" }));
         setOutcomes(failed);
         return failed;
       }
-
-      const programId = new PublicKey(getConfig().programId as string);
-      assertKnownProgram(programId.toBase58());
 
       setBusy(true);
       setOutcomes([]);
@@ -101,46 +122,120 @@ export function useClaimCreatorFees() {
       // Read at send time, per the module note above; a market that cannot build is reported.
       const results = new Map<string, ClaimOutcome>();
       const units: { key: string; instructions: TransactionInstruction[]; amount: bigint }[] = [];
-      for (const slab of slabs) {
+      // runOneApproval builds and broadcasts the signed units in the SAME order (one-approval.ts),
+      // and signAll may hand back new transaction objects, so units are matched by position.
+      const builtKeys: string[] = [];
+      let broadcastIndex = 0;
+      try {
+        // Inside the try on purpose: getConfig/new PublicKey/assertKnownProgram all
+        // throw (a mis-set program id, an unlisted program), and a throw here used to
+        // reject out of the hook with no outcome for the caller to render.
+        const programId = new PublicKey(getConfig().programId as string);
+        assertKnownProgram(programId.toBase58());
+
+        for (const slab of slabs) {
+          try {
+            const market = new PublicKey(slab);
+            const info = await connection.getAccountInfo(market);
+            if (!info?.data) throw new CreatorFeeClaimError("Market account not found.");
+            const built = await buildCreatorFeeClaimIx({ programId, market, raw: new Uint8Array(info.data), claimant: wallet.publicKey });
+            units.push({ key: slab, instructions: [built.instruction], amount: built.amount });
+          } catch (err) {
+            results.set(slab, { slab, error: claimErrorText(err) });
+          }
+        }
+        if (units.length > 0) {
+          const payer = wallet.publicKey;
+          const [blockhash, fee] = await Promise.all([getFreshBlockhash(connection, true), getPriorityFee(connection)]);
+          const outcomes = await runOneApproval(units, {
+            simulate: async (ixs) => {
+              const g = await simulateForGate(connection, payer, ixs);
+              return { err: g.err, consumed: g.consumed };
+            },
+            build: (ixs, consumed, i) => {
+              const tx = buildBatchTx({ instructions: ixs, computeUnits: sizeComputeUnitLimit(consumed, { cap: CLAIM_CU_CAP }), priorityFeeMicroLamports: fee + i, blockhash, feePayer: payer });
+              builtKeys[i] = units.find((u) => u.instructions === ixs)?.key ?? "";
+              return tx;
+            },
+            signAll: (txs) => signAllCompat(wallet, txs),
+            // Per transaction, as each confirms: progress moves and the caller re-reads that
+            // market's balance, so a partial success shows up while the rest are still going.
+            broadcast: async (tx) => {
+              const key = builtKeys[broadcastIndex++] || null;
+              setProgress((p) => ({ ...p, current: key }));
+              try {
+                const sig = await broadcastSignedTx(connection, tx);
+                if (key) {
+                  try { opts.onLanded?.(key); } catch { /* a caller's refresh never fails a landed claim */ }
+                }
+                return sig;
+              } finally {
+                setProgress((p) => ({ ...p, current: null, done: p.done + 1 }));
+              }
+            },
+          });
+          for (const [i, o] of outcomes.entries()) {
+            const u = units[i]!;
+            // A SIGNATURE IS BANKED UNCONDITIONALLY, and only the error branch is
+            // allowed to run mapping code. Once a transaction is on the wire this
+            // loop is the only thing that can still throw, and a throw here would
+            // leave later units unwritten for the catch below to relabel — telling
+            // a creator a claim failed when it actually landed, with the signature
+            // discarded. Structural, so it does not depend on the error mapper
+            // staying total.
+            if (o.ok) {
+              results.set(u.key, { slab: u.key, signature: o.signature, amount: u.amount });
+            } else {
+              let text: string;
+              try {
+                text = claimErrorText(o.error);
+              } catch {
+                text = "Claim failed.";
+              }
+              results.set(u.key, { slab: u.key, error: text });
+            }
+          }
+        }
+      } catch (err) {
+        // Everything from the program-id checks to the wallet approval lands here:
+        // a declined signature (one-approval.ts:42 awaits signAll outside its try)
+        // or a getLatestBlockhash failure. These used to reject out of the hook,
+        // skipping the release below and stranding the button on "claiming…".
+        // Report per market instead — `claim()` is typed to RESOLVE with outcomes
+        // and both callers read the resolved array.
+        // Guarded for the same reason as the loop above: this is the last code
+        // between a throw and the caller, so it must not be able to throw itself.
+        // That keeps "claim() resolves" a property of this function rather than
+        // an inherited promise about the shared error mapper.
+        let text: string;
         try {
-          const market = new PublicKey(slab);
-          const info = await connection.getAccountInfo(market);
-          if (!info?.data) throw new CreatorFeeClaimError("Market account not found.");
-          const built = await buildCreatorFeeClaimIx({ programId, market, raw: new Uint8Array(info.data), claimant: wallet.publicKey });
-          units.push({ key: slab, instructions: [built.instruction], amount: built.amount });
-        } catch (err) {
-          results.set(slab, { slab, error: claimErrorText(err) });
+          text = claimErrorText(err);
+        } catch {
+          text = "Claim failed.";
         }
-      }
-      if (units.length > 0) {
-        const payer = wallet.publicKey;
-        const [blockhash, fee] = await Promise.all([getFreshBlockhash(connection, true), getPriorityFee(connection)]);
-        const outcomes = await runOneApproval(units, {
-          simulate: async (ixs) => {
-            const g = await simulateForGate(connection, payer, ixs);
-            return { err: g.err, consumed: g.consumed };
-          },
-          build: (ixs, consumed, i) =>
-            buildBatchTx({ instructions: ixs, computeUnits: sizeComputeUnitLimit(consumed, { cap: CLAIM_CU_CAP }), priorityFeeMicroLamports: fee + i, blockhash, feePayer: payer }),
-          signAll: (txs) => signAllCompat(wallet, txs),
-          broadcast: (tx) => broadcastSignedTx(connection, tx),
-        });
-        for (const [i, o] of outcomes.entries()) {
-          const u = units[i]!;
-          results.set(u.key, o.ok ? { slab: u.key, signature: o.signature, amount: u.amount } : { slab: u.key, error: claimErrorText(o.error) });
-          setProgress((p) => ({ ...p, done: p.done + 1 }));
+        for (const slab of slabs) {
+          // Never overwrite a market that already has a verdict — a build failure
+          // with its own specific reason, or a claim that already succeeded.
+          if (!results.has(slab)) results.set(slab, { slab, error: text });
         }
+      } finally {
+        // The ONE release. In a `finally` rather than on the last line so that no
+        // await added to the body above can ever strand the button again.
+        setBusy(false);
       }
       const ordered = slabs.map((slab) => results.get(slab)!);
       setOutcomes(ordered);
       setProgress({ current: null, done: slabs.length, total: slabs.length });
-      setBusy(false);
       return ordered;
     },
     [wallet, connection],
   );
 
   const reset = useCallback(() => {
+    // `busy` too: a reset that leaves the component reading "claiming…" on a
+    // disabled button is not a reset. Nothing calls this today, so it is the
+    // escape hatch being made correct rather than a live recovery path.
+    setBusy(false);
     setOutcomes([]);
     setProgress({ current: null, done: 0, total: 0 });
   }, []);
