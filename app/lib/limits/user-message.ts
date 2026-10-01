@@ -304,6 +304,15 @@ export function resolveUserMessage(err: unknown, ctx: MessageContext): UserMessa
     }
   }
 
+  // #2729 backstop: SameOwnerTrade (67) is a wrapper-only refusal with no matcher
+  // twin, raised by the user's own top-level wrapper trade(). A send-time error can
+  // carry the code without a parseable "Program X failed" line (origin "unknown"),
+  // which the wrapperish gate above skips — so a creator saw the generic message.
+  // Map it here too, excluding matcher/other origins so a reused number can't be
+  // mis-attributed. (origin "wrapper" already returned inside the switch above.)
+  if (p.code === WRAPPER_ERR.SameOwnerTrade && origin !== "matcher" && origin !== "other") {
+    return m("same-owner", "paused", "Close-only for this wallet", "You created this market, so this wallet can only close positions here.");
+  }
   return m("unmapped", "error", "Something went wrong", "Something went wrong and nothing was sent.");
 }
 

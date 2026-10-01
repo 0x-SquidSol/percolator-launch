@@ -203,6 +203,17 @@ describe("resolveUserMessage (§5.3): every code, both wallet shapes, plain word
     // the SAME 66 raised by the wrapper is
     expect(resolveUserMessage(new Error(`Program ${WRAPPER} failed: custom program error: 0x42`), { surface: "trade" }).kind).toBe("price-moved");
   });
+  it("#2729: an unattributed SameOwnerTrade(67) still maps to close-only; a matcher-origin 67 does not", () => {
+    // 0x43 == 67. A send-time error carries the code with no "Program X failed"
+    // line => origin "unknown"; the wrapper switch skips it, so the backstop maps it.
+    const bare = resolveUserMessage(new Error("Transaction failed: custom program error: 0x43"), { surface: "trade" });
+    expect(bare.details.code).toBe(67);
+    expect(bare.kind).toBe("same-owner");
+    // wrapper-attributed 67 maps the same way via the main switch.
+    expect(resolveUserMessage(new Error(`Program ${WRAPPER} failed: custom program error: 0x43`), { surface: "trade" }).kind).toBe("same-owner");
+    // a 67 attributed to the MATCHER is not assumed to be the wrapper's rule (no mis-map).
+    expect(resolveUserMessage(new Error(`Program ${MATCHER} failed: custom program error: 0x43`), { surface: "trade" }).kind).not.toBe("same-owner");
+  });
   it("wallet / network conditions", () => {
     const r = (s: string) => resolveUserMessage(new Error(s), { surface: "any" });
     expect(r("User rejected the request.").quiet).toBe(true);

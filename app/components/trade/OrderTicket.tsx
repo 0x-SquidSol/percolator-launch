@@ -802,6 +802,20 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const feeFitQ = feeOverMax ? feeFitSizeQ(limitsInput) : null;
   const shortfall = marginNative > effectiveBalance ? marginNative - effectiveBalance : 0n;
 
+  // #2729: a market's creator (deployer / asset_admin a.k.a. creator_fee_authority)
+  // can only CLOSE on their own market on-chain (wrapper SameOwnerTrade, Custom 67).
+  // `ticketLimits.sameOwner` already detects this from the risk-limits feed, but that
+  // feed is feature-flagged and loads async — so when it's off/unready the Open tab
+  // wasn't blocked and the creator submitted a doomed order that failed generically.
+  // Market identity (deployer / creator_fee_authority) is ALWAYS loaded here, so OR it
+  // in to block Open with the clear "close-only" reason regardless of the limits feed.
+  const isOwnMarket = useMemo(() => {
+    if (mockMode || !publicKey || !marketInfo) return false;
+    const me = publicKey.toBase58();
+    const mi = marketInfo as unknown as { deployer?: string | null; creator_fee_authority?: string | null };
+    return me === mi.deployer || me === mi.creator_fee_authority;
+  }, [mockMode, publicKey, marketInfo]);
+
   // ── The state machine (audit §3.3): one status slot, one state-labelled button ──
   const ticketState = deriveTicketState({
     direction,
@@ -815,7 +829,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     waitingForPrice: !mockMode && (oracleUnavailable || oracleStale || priceUsd == null),
     sidePaused,
     openingPaused: !mockMode && (vaultEmpty || lpDepleted || lpUnderfunded || riskGateActive),
-    sameOwner: ticketLimits.sameOwner,
+    sameOwner: ticketLimits.sameOwner || isOwnMarket,
     exceedsBalance,
     shortfallLabel: fundingMode ? fundLabel : `${formatTokenAmount(shortfall, decimals)} ${collateralSymbol}`,
     feeOverMax,
