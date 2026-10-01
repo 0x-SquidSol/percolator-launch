@@ -53,10 +53,14 @@ describe("F-2: an oversize order is never a same-asset BatchTradeCpi", () => {
 });
 
 describe("F-2: batch caps are real, never 0/0", () => {
-  it("matches the devnet-verified caps for a $20 long at 3600 with a 5% limit and 5 bps fee", () => {
+  it("caps for a $20 long at 3600 with a 5% limit and 5 bps fee: slippage = limit budget, fee with headroom", () => {
     const q = (20n * 10n ** 12n) / 3600n;
     const caps = batchTradeCaps({ legs: [{ sizeQ: q, limitPriceE6: 3780n, markE6: 3600n }], feeBps: 5n });
-    expect(caps).toEqual({ maxSlippageAtoms: 1_000_001n, maxFeeAtoms: 10_001n });
+    expect(caps.maxSlippageAtoms).toBe(1_000_001n);
+    // Fee priced at the worst price (limit 3780 +5%), not the mark: one tick of drift must fit.
+    expect(caps.maxFeeAtoms).toBe(11_026n);
+    const atMarkFee = 10_000n; // ceil($20 * 5 bps) in atoms
+    expect(caps.maxFeeAtoms - atMarkFee).toBeGreaterThan(1_000n);
   });
   it("no limit => the fallback slippage budget, still non-zero", () => {
     const caps = batchTradeCaps({ legs: [{ sizeQ: -1_000_000n, limitPriceE6: 0n, markE6: 2_000_000n }], feeBps: 0n });

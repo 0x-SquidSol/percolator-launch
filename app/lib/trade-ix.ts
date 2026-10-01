@@ -39,7 +39,10 @@ export interface TradeCpiIxParams {
  * HARD caps on the batch's aggregate adverse slippage (quote atoms, each leg's exec price vs its
  * oracle price) and aggregate taker fee; 0/0 refuses every fill (Custom 9). Caps for a batch the
  * taker signed with per-leg `limitPriceE6`: slippage = sum |q| * |limit - mark| / 1e6 (the most the
- * per-leg limits already allow), fee = sum notional * feeBps / 1e4, each rounded up, +1 atom/leg.
+ * per-leg limits already allow); fee = sum |q| * worst price * feeBps / 1e4, where the worst price
+ * is max(limit, mark) raised by the fallback slippage margin (the fee is charged on the EXEC
+ * notional, which moves with every tick: pricing it at the app's mark left ~1 atom of headroom and
+ * failed Custom 9 on a one-tick move in devnet sims, QA of #2731). Rounded up, +1 atom/leg.
  * With no limit (0) the slippage budget falls back to `fallbackSlippageBps` of notional.
  */
 export function batchTradeCaps(p: {
@@ -57,7 +60,9 @@ export function batchTradeCaps(p: {
     const mark = l.markE6 > 0n ? l.markE6 : 0n;
     const notional = ceilDiv(q * mark, 1_000_000n);
     slip += l.limitPriceE6 > 0n && mark > 0n ? ceilDiv(q * abs(l.limitPriceE6 - mark), 1_000_000n) + 1n : ceilDiv(notional * fallback, 10_000n) + 1n;
-    fee += ceilDiv(notional * (p.feeBps > 0n ? p.feeBps : 0n), 10_000n) + 1n;
+    const worst = l.limitPriceE6 > mark ? l.limitPriceE6 : mark;
+    const feeNotional = ceilDiv(q * ceilDiv(worst * (10_000n + fallback), 10_000n), 1_000_000n);
+    fee += ceilDiv(feeNotional * (p.feeBps > 0n ? p.feeBps : 0n), 10_000n) + 1n;
   }
   return { maxSlippageAtoms: slip, maxFeeAtoms: fee };
 }
