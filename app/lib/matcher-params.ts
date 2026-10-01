@@ -32,12 +32,34 @@
  * FORMULAS (all integer, bigint; `lev` = floor(leverage), min 1)
  * --------------------------------------------------------------
  *   capacity        = lpCollateralAtoms * lev              (notional atoms)
- *   maxInventoryAbs = max(1, capacity * 40% * 1e6 / priceE6)   base-unit q
+ *   exposureAtoms   = lpCollateralAtoms * exposureBps / 1e4    (default 1x LP)
+ *   maxInventoryAbs = max(1, exposureAtoms * 1e6 / priceE6)     base-unit q
  *   maxFillAbs      = max(1, maxInventoryAbs / 4), and <= maxInventoryAbs
  *   liquidityNotionalE6 = max(1, capacity)
- *   impactKBps      = 200   -> a max-size fill (10% of capacity) pays +20 bps
+ *   impactKBps      = 200   -> a max-size fill pays +200 bps x fill/capacity
  *   skewSpreadMultBps = clamp(ceil(100 * 10_000 / maxInventoryAbs), 1, 10_000)
  * both caps clamped to I128_MAX. priceE6 <= 0 falls back to $1.
+ *
+ * WHY the inventory cap is a multiple of the LP seed, not of leverage
+ * --------------------------------------------------------------------
+ * Until 2026-10-01 the cap was 40% of `capacity` (LP x leverage): 4x the LP's own
+ * capital at 10x. Market SI (8WC8vALs…) was seeded with 1,000 USDC; one wallet
+ * opened a ~$1,470 short against it, SI fell ~40% and the LP lost all 1,000 and was
+ * closed out (every later open reverts LpFloorHalt 69). The LP's loss on a move is
+ * `exposure x move`, independent of the traders' leverage, so the cap must be a
+ * fraction of the LP's capital: at the 1x default a 40% adverse move on a full cap
+ * costs the LP at most 40% of its seed (the cap is in base units at the launch
+ * price, so it is that notional at launch); the creator may raise it to 2x
+ * (LP_EXPOSURE_MAX_BPS), and the wizard notes calmly that above 1.25x
+ * (LP_EXPOSURE_SAFE_BPS: 40% x 1.25 = 50% of the seed) a 40% move can cost more
+ * than half.
+ *
+ * Only the matcher caps are creator-settable at launch on the deployed programs.
+ * The wrapper's own LP exposure multiplier, side-OI cap and LP floor
+ * (AssetRiskLimitsV17: lp_exposure_k_bps / side_oi_cap_q / lp_floor_atoms) are
+ * written only by SetAssetRiskLimits (tag 93, upgrade-authority-gated), and the
+ * deployed wrapper (553d76f0) has no per-wallet position cap at all, so
+ * max_fill_abs (one trade) is the closest per-trader limit that exists.
  *
  * Skew note (vamm.rs:912-942): extra_bps = |inventory_q| * mult / 10_000, capped
  * at 5000 and by max_total_bps. Inventory is in raw base units (1e-6 token), so
@@ -55,7 +77,29 @@ export const SKEW_MULT_MAX = 10_000;
 /** vamm.rs:28-31 */
 export const MATCHER_KIND_VAMM = 1;
 
-export const INVENTORY_CAP_PCT_OF_CAPACITY = 40n;
+/** Default max one-sided LP exposure: 1x the LP seed (bps of the seed). */
+export const LP_EXPOSURE_DEFAULT_BPS = 10_000;
+/** Above this a 40% adverse move on a full cap costs more than half the seed (40% x 1.25 = 50%). */
+export const LP_EXPOSURE_SAFE_BPS = 12_500;
+/** Lowest / highest the wizard lets a creator choose, and its step. */
+export const LP_EXPOSURE_MIN_BPS = 2_500;
+export const LP_EXPOSURE_MAX_BPS = 20_000;
+export const LP_EXPOSURE_STEP_BPS = 2_500;
+/** The adverse move the wizard's safety line is phrased around. */
+export const LP_SAFETY_MOVE_PCT = 40;
+
+/** Clamp a creator's choice into [MIN, MAX]; anything non-finite falls back to the default. */
+export function clampLpExposureBps(bps: number | undefined | null): number {
+  if (bps === undefined || bps === null || !Number.isFinite(bps)) return LP_EXPOSURE_DEFAULT_BPS;
+  return Math.min(LP_EXPOSURE_MAX_BPS, Math.max(LP_EXPOSURE_MIN_BPS, Math.round(bps)));
+}
+
+/** Notional (collateral atoms) the LP will take on one side at most: seed x exposure. */
+export function lpExposureAtoms(lpCollateralAtoms: bigint, exposureBps?: number): bigint {
+  const lp = lpCollateralAtoms > 0n ? lpCollateralAtoms : 0n;
+  return (lp * BigInt(clampLpExposureBps(exposureBps))) / 10_000n;
+}
+
 export const FILL_CAP_DIVISOR = 4n;
 /** Impact charged (bps) when a fill consumes 100% of liquidity_notional. */
 export const IMPACT_K_BPS = 200;
@@ -96,6 +140,7 @@ export function deriveMatcherLimits(
   leverageX: number,
   lpCollateralAtoms: bigint,
   initialPriceE6: bigint,
+  lpExposureBps: number = LP_EXPOSURE_DEFAULT_BPS,
 ): MatcherLimits {
   const levNum = Number.isFinite(leverageX) ? Math.floor(leverageX) : 1;
   const lev = BigInt(Math.max(1, levNum));
@@ -103,7 +148,7 @@ export function deriveMatcherLimits(
   const px = initialPriceE6 > 0n ? initialPriceE6 : 1_000_000n;
 
   const capacity = collateral * lev;
-  const inventoryCapAtoms = (capacity * INVENTORY_CAP_PCT_OF_CAPACITY) / 100n;
+  const inventoryCapAtoms = lpExposureAtoms(collateral, lpExposureBps);
   const maxInventoryAbs = clampPositive((inventoryCapAtoms * 1_000_000n) / px);
   let maxFillAbs = clampPositive(maxInventoryAbs / FILL_CAP_DIVISOR);
   if (maxFillAbs > maxInventoryAbs) maxFillAbs = maxInventoryAbs;

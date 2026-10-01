@@ -6,10 +6,11 @@
  * Every market's LP (the AMM counterparty) is protected by two caps chosen at
  * creation by `deriveMarketParams`:
  *
- *   maxInventoryAbs = LP collateral x leverage x 40%   (total LP exposure)
+ *   maxInventoryAbs = LP collateral x the creator's position limit (default 1x;
+ *                     markets launched before 2026-10-01: LP x leverage x 40%)
  *   maxFillAbs      = maxInventoryAbs / 4              (ONE trade)
  *
- * so a single trade can move at most `10% x LP x leverage` of notional. They
+ * (values are read back from each market's own context, never recomputed). They
  * exist because without them the LP is "a free, unlimited, fixed-price
  * counterparty" — that is how the Jimothy market's LP reached $0 capital and
  * -$2,479 pnl (see the launch repo's 66fd991b).

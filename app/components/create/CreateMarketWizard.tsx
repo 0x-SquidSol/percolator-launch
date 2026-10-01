@@ -22,6 +22,7 @@ import { type DexPoolResult, isVerifiedPool } from "@/hooks/useDexPoolSearch";
 import { parseHumanAmount } from "@/lib/parseAmount";
 import { MAX_FUNDABLE_REQUIREMENT } from "@/lib/prefund-requirement";
 import { backingSeedPerDomain } from "@/lib/market-params";
+import { LP_EXPOSURE_DEFAULT_BPS, clampLpExposureBps } from "@/lib/matcher-params";
 import { getConfig, getNetwork } from "@/lib/config";
 import { toE6, formatMarkPrice } from "@/lib/format";
 
@@ -59,6 +60,8 @@ interface WizardState {
   lpCollateral: string;
   /** P3 wizard: junior floor, bps of the senior claim (10%..100%). */
   juniorFloorBps?: number;
+  /** Largest one-sided position the LP takes on, bps of the LP seed (default 1x). */
+  lpExposureBps: number;
   insuranceAmount: string;
   adminPrice: string | null;
   // #2588: set only by the user turning the dial. Detection that lands on step 2
@@ -83,6 +86,7 @@ const DEFAULT_STATE: WizardState = {
   // tied to the old dead 6.67x floor, it just predates the tier defaults below.
   initialMarginBps: 2000,
   lpCollateral: "",
+  lpExposureBps: LP_EXPOSURE_DEFAULT_BPS,
   insuranceAmount: "100",
   adminPrice: null,
   marginSetByUser: false,
@@ -174,6 +178,8 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
           mintAddress: initialMint ?? parsed.mintAddress ?? "",
           marginSetByUser: false,
           lpSetByUser: false,
+          // Restored with a bare spread above: never let a stale/corrupt value reach the matcher.
+          lpExposureBps: clampLpExposureBps(parsed.lpExposureBps),
         };
       }
     } catch {
@@ -849,6 +855,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
       invert: false,
       tradingFeeBps: wizard.tradingFeeBps,
       initialMarginBps: wizard.initialMarginBps,
+      lpExposureBps: clampLpExposureBps(wizard.lpExposureBps),
       // BUG 1 fix: don't override the DEFAULT_SLAB_SIZE fallback — InitMarket always
       // encodes maxPortfolioAssets:14, so the slab MUST be exactly v17MarketAccountLen(14)
       // regardless of anything the wizard used to let the user pick, or InitMarket reverts
@@ -925,6 +932,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
       invert: false,
       tradingFeeBps: wizard.tradingFeeBps,
       initialMarginBps: wizard.initialMarginBps,
+      lpExposureBps: clampLpExposureBps(wizard.lpExposureBps),
       // BUG 1 fix: same rationale as handleLaunch above — always the real v17 slab size.
       slabDataSize: DEFAULT_SLAB_SIZE,
       // P3: vault-owned LP + the creator's junior tranche (= the Liquidity amount).
@@ -1226,6 +1234,9 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
             onMarginBpsChange={setInitialMarginBps}
             onLpCollateralChange={setLpCollateral}
             onInsuranceChange={setInsuranceAmount}
+            lpExposureBps={clampLpExposureBps(wizard.lpExposureBps)}
+            onLpExposureChange={(bps) => setWizard((prev) => ({ ...prev, lpExposureBps: clampLpExposureBps(bps) }))}
+            p3={p3WizardEnabled()}
             juniorFloorBps={wizard.juniorFloorBps ?? DEFAULT_JUNIOR_FLOOR_BPS}
             onJuniorFloorChange={(bps) => setWizard((prev) => ({ ...prev, juniorFloorBps: bps }))}
             onLaunch={handleLaunch}

@@ -74,7 +74,7 @@ import { buildKeeperRegisterMemoIx, keeperMemoParams } from "@/lib/keeper-regist
 import { buildM1Instructions } from "@/lib/create-market-m1";
 import { WIZARD_STEP_COPY } from "@/lib/wizard-copy";
 import { KEEPER_REGISTER_COPY, loadProofPayload, loadProofTx, markRegistered, postKeeperRegistration, runKeeperRegistration, saveProofPayload, saveProofTx, saveRegisterRequest, type KeeperRegisterPhase } from "@/lib/keeper-register-client";
-import { deriveMarketParams, MIN_LEVERAGE_X, backingSeedPerDomain, leverageFromMarginBps } from "@/lib/market-params";
+import { deriveLaunchMarketParams, deriveMarketParams, MIN_LEVERAGE_X, backingSeedPerDomain, leverageFromMarginBps } from "@/lib/market-params";
 // GH#2592: the step-4 predicate and /api/devnet-pre-fund's funding target must be
 // the SAME number. They were two hand-copies, and the route's was understated by
 // both backing seeds, so it answered "sufficient" to the very request that said
@@ -337,6 +337,13 @@ export interface CreateMarketParams {
      *  canonical matcher and caps (07a1d0eb), so the vault LP is the market's only LP. */
     juniorAtoms: bigint;
   };
+  /**
+   * Largest one-sided position the LP takes on, bps of the LP seed (lpCollateral). Written once
+   * into the matcher's max_inventory_abs (one trade <= a quarter of it). Omitted = 1x; clamped
+   * to [0.25x, 2x] (lib/matcher-params.ts). Legacy creator-LP path only: under P3 tag 94 pins
+   * the vault LP's caps and the wrapper holds it to 1x its junior equity.
+   */
+  lpExposureBps?: number;
   initialMarginBps: number;
   /** Number of trader slots (256, 1024, 4096). Defaults to 4096 if omitted.
    *  IMPORTANT: Must match the compiled MAX_ACCOUNTS of the target program binary.
@@ -749,11 +756,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
   let failingLabel = "Creating the market";
   // Every risk parameter for this market, derived from the creator's leverage
   // and LP seed. Nothing below hand-picks a price-move rate or an LP cap.
-  const derived = deriveMarketParams(
-    params.initialMarginBps > 0 ? 10_000 / params.initialMarginBps : MIN_LEVERAGE_X,
-    params.lpCollateral,
-    params.initialPriceE6,
-  );
+  const derived = deriveLaunchMarketParams(params);
   // Collateral seeded into EACH backing domain. Must be real, not dust — the
   // SHORT domain is unfundable after CreateLpVault. See lib/market-params.ts.
   const backingSeed = backingSeedPerDomain(params.lpCollateral);
@@ -1885,11 +1888,7 @@ export function useCreateMarket() {
       // leverage and LP seed (see lib/market-params.ts). Shared by the
       // sequential path's InitMarket + InitMatcherCtx sites below, exactly as
       // the merged path derives its own copy.
-      const derived = deriveMarketParams(
-        params.initialMarginBps > 0 ? 10_000 / params.initialMarginBps : MIN_LEVERAGE_X,
-        params.lpCollateral,
-        params.initialPriceE6,
-      );
+      const derived = deriveLaunchMarketParams(params);
       const backingSeed = backingSeedPerDomain(params.lpCollateral);
 
       // P3: refuse a junior requirement the program (or the cushion floor) would refuse BEFORE

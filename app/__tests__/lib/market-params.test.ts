@@ -111,8 +111,9 @@ describe("solvency envelope — bisected on-chain 2026-07-27", () => {
 describe("LP guardrails — the caps whose absence drained Jimothy", () => {
   it("caps one-sided inventory well inside the LP's capacity", () => {
     const d = deriveMarketParams(10, LP, PRICE_E6);
-    // 40% of leveraged capacity, converted notional -> base q at the open price.
-    expect(d.maxInventoryAbs).toBe((LP * 10n * 40n) / 100n);
+    // 2026-10-01: 1x the LP seed (was 40% of LP x leverage = 4x at 10x — the SI drain),
+    // converted notional -> base q at the open price.
+    expect(d.maxInventoryAbs).toBe(LP);
   });
 
   it("stops any single fill jumping the LP from flat to fully loaded", () => {
