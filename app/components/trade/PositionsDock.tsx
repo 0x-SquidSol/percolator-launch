@@ -258,12 +258,16 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
   // in this SAME native scale — estimateEntryFromPnl's whole premise is that
   // computeMarkPnl(size, derivedEntry, mark) === account.pnl — so one
   // conversion below covers both branches.
+  // M-6: with no cached entry, `entryPriceE6` is the entry back-solved from the
+  // on-chain `pnl` (collateral atoms) — feed THAT through computeMarkPnl, never
+  // the raw `pnl` itself, which is already collateral-scale and would be scaled
+  // by the mark a second time below (+$5 shown as +$0.018 at a $0.0036 mark).
+  // An "unknown" source resolves to the mark, so this is a 0 placeholder the
+  // cells render as "--" (pnlIsKnown).
   const pnlNative = hasValidMark
-    ? (resolvedEntryPrice > 0n
-        // Effective, not nominal: a deleveraged leg gains/loses at
-        // `basis * a_side / a_basis` per unit of price (v16.rs:9547-9576).
-        ? computeMarkPnl(effectiveSize, resolvedEntryPrice, currentPriceE6)
-        : (isSentinelValue(account.pnl) ? 0n : account.pnl))
+    // Effective, not nominal: a deleveraged leg gains/loses at
+    // `basis * a_side / a_basis` per unit of price (v16.rs:9547-9576).
+    ? computeMarkPnl(effectiveSize, entryPriceE6, currentPriceE6)
     : 0n;
   // Collateral-equivalent PnL — the single number this row's USDC line, USD
   // line, ROE, and pool-cap check all derive from, so they can't disagree
