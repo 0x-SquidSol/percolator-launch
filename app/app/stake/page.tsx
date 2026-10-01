@@ -14,7 +14,7 @@ import {
 import { STAKE_POOL_SIZE_V1, decodeStakePoolV1 } from "@/hooks/useStakePool";
 import { getConfig } from "@/lib/config";
 import { unpackAccount, getMint } from "@solana/spl-token";
-import { exceedsStakedBalance, readPoolTotalLpSupply, stakeWithdrawChipAmount, valueStakePosition } from "@/lib/stake-position";
+import { readPoolTotalLpSupply, stakeWithdrawChipAmount, valueStakePosition, withdrawAmountError } from "@/lib/stake-position";
 import { useStakeDepositByPool } from "@/hooks/useStakeDepositByPool";
 import { useStakeWithdrawByPool } from "@/hooks/useStakeWithdrawByPool";
 import { parseHumanAmount, formatHumanAmount } from "@/lib/parseAmount";
@@ -607,7 +607,9 @@ function DepositWidget({
   const depositAmountError = depositAmountMessage(depositStatus, walletBalanceRaw, balanceDecimals, "USDC");
   const withdrawAmountNum = parseFloat(withdrawAmount) || 0;
   // handleWithdraw refuses more than the staked balance; say so here instead of a button that does nothing.
-  const withdrawExceeds = !!withdrawPosition && exceedsStakedBalance(withdrawAmount, withdrawPosition.lpBalanceRaw, withdrawPosition.lpDecimals);
+  // Never throws (extra decimals would make parseHumanAmount throw mid-render).
+  const withdrawAmountIssue = withdrawPosition ? withdrawAmountError(withdrawAmount, withdrawPosition.lpBalanceRaw, withdrawPosition.lpDecimals) : null;
+  const withdrawExceeds = withdrawAmountIssue !== null;
 
   // Bug #12: the Junior (first-loss) tranche selector was removed — DepositJunior
   // (tag 16, PERC-303) belongs to the v2 StakePool program. The fresh devnet
@@ -1008,9 +1010,9 @@ function DepositWidget({
               <p className="text-[11px] text-[var(--text-muted)]">No staked balance in this pool.</p>
             )}
 
-            {withdrawExceeds && (
+            {withdrawAmountIssue && (
               <p role="alert" data-testid="stake-withdraw-amount-error" className="text-[11px] text-[var(--short)]">
-                Exceeds your staked balance.
+                {withdrawAmountIssue}
               </p>
             )}
 

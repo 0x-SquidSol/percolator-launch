@@ -14,7 +14,6 @@
 import { formatTokenAmount } from "@/lib/format";
 import { parseHumanAmount } from "@/lib/parseAmount";
 
-
 /** Stake pools hold USDC-style 6-decimal collateral (same convention as /api/stake/pools `tvl`). */
 export const STAKE_COLLATERAL_DECIMALS = 6;
 
@@ -64,7 +63,23 @@ export function stakeWithdrawChipAmount(lpBalanceRaw: bigint, pct: number, lpDec
   return formatTokenAmount((lpBalanceRaw * BigInt(pct)) / 100n, lpDecimals);
 }
 
-/** True when the typed withdraw amount is more than the staked LP balance. */
+/**
+ * True when the typed withdraw amount can't be withdrawn as typed: more than the staked LP balance,
+ * or more decimal places than the LP mint has. Never throws: parseHumanAmount throws on extra
+ * decimals, and this runs on every render of the Stake page, so a throw here would take the page down.
+ * Empty / non-numeric input is not "exceeding" (the button is already off for a zero amount).
+ */
 export function exceedsStakedBalance(amount: string, lpBalanceRaw: bigint, lpDecimals: number): boolean {
-  return parseHumanAmount(amount, lpDecimals) > lpBalanceRaw;
+  return withdrawAmountError(amount, lpBalanceRaw, lpDecimals) !== null;
+}
+
+/** The one-line reason a typed withdraw amount can't go through, or null when it can (or is empty). */
+export function withdrawAmountError(amount: string, lpBalanceRaw: bigint, lpDecimals: number): string | null {
+  let raw: bigint;
+  try {
+    raw = parseHumanAmount(amount, lpDecimals);
+  } catch {
+    return `Use up to ${lpDecimals} decimal places.`;
+  }
+  return raw > lpBalanceRaw ? "Exceeds your staked balance." : null;
 }

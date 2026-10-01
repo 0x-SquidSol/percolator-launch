@@ -7,7 +7,7 @@
 import fs from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
-import { exceedsStakedBalance, stakeWithdrawChipAmount } from "@/lib/stake-position";
+import { exceedsStakedBalance, stakeWithdrawChipAmount, withdrawAmountError } from "@/lib/stake-position";
 import { parseHumanAmount } from "@/lib/parseAmount";
 
 const RAW = 10_123_456n; // 10.123456 LP at 6 decimals
@@ -36,11 +36,29 @@ describe("stake withdraw chips", () => {
     expect(exceedsStakedBalance("", RAW, 6)).toBe(false);
   });
 
+  it("never throws on input parseHumanAmount rejects (it runs every render)", () => {
+    // parseHumanAmount throws on more decimals than the mint has; an uncaught throw here crashed /stake.
+    for (const typed of ["0.0000001", "10.1234567", "1.00000000000000000001"]) {
+      expect(() => exceedsStakedBalance(typed, RAW, 6)).not.toThrow();
+      expect(exceedsStakedBalance(typed, RAW, 6)).toBe(true); // can't be withdrawn as typed: button off
+      expect(withdrawAmountError(typed, RAW, 6)).toBe("Use up to 6 decimal places.");
+    }
+    // Garbage / negative / huge parse without throwing; the zero-amount guard owns garbage and negatives.
+    for (const typed of ["abc", "1e3", "-5", "1.2.3", ".", "  "]) {
+      expect(() => exceedsStakedBalance(typed, RAW, 6)).not.toThrow();
+      expect(exceedsStakedBalance(typed, RAW, 6)).toBe(false);
+    }
+    expect(exceedsStakedBalance("9".repeat(400), RAW, 6)).toBe(true);
+    expect(withdrawAmountError("10.1235", RAW, 6)).toBe("Exceeds your staked balance.");
+    expect(withdrawAmountError("10.123456", RAW, 6)).toBeNull();
+  });
+
   it("the page uses them, disables Withdraw and says why", () => {
     const src = fs.readFileSync(path.resolve(__dirname, "../../app/stake/page.tsx"), "utf8");
     expect(src).toContain("setWithdrawAmount(stakeWithdrawChipAmount(withdrawPosition.lpBalanceRaw, pct, withdrawPosition.lpDecimals))");
     expect(src).not.toMatch(/setWithdrawAmount\(val\.toFixed\(4\)\)/);
     expect(src).toMatch(/disabled=\{[^}]*withdrawExceeds[^}]*\}/);
     expect(src).toContain('data-testid="stake-withdraw-amount-error"');
+    expect(src).toContain("withdrawAmountError(withdrawAmount, withdrawPosition.lpBalanceRaw, withdrawPosition.lpDecimals)");
   });
 });
