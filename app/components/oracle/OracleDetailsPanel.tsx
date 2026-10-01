@@ -92,6 +92,9 @@ export const OracleDetailsPanel: FC<OracleDetailsPanelProps> = ({ onClose }) => 
       className={`fixed inset-0 z-50 ${isClosing ? "animate-[fade-out_200ms_ease-in_forwards]" : "animate-[fade-in_200ms_ease-out]"}`}
       onClick={handleOverlayClick}
       style={{ backgroundColor: "rgba(0,0,0,0.4)" }}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Oracle details"
     >
       {/* Desktop: right slide-in panel */}
       <div

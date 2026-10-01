@@ -118,6 +118,9 @@ export const AddMarginModal: FC<AddMarginModalProps> = ({ slabAddress, userIdx, 
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Add margin"
     >
       <div className="w-full max-w-sm rounded-none border border-[var(--border)]/60 bg-[var(--bg)] p-4 shadow-2xl">
         <div className="mb-3 flex items-center justify-between">

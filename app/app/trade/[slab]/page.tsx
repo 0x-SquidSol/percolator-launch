@@ -1,6 +1,9 @@
 "use client";
 
 import { use, useState, useEffect, useRef, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
+import { MobileTradeBand } from "@/components/trade/MobileTradeBand";
+import { isInsideModalSurface } from "@/hooks/useOtherModalOpen";
 import useSWR from "swr";
 import { useRouter } from "next/navigation";
 import { PublicKey } from "@solana/web3.js";
@@ -180,6 +183,11 @@ function MobileOrderSheet({ slab }: { slab: string }) {
   const ticketRow = useTicketRow(slab);
   const ticketRowLabel = ticketRowShortLabel(ticketRow);
   const sheetRef = useRef<HTMLDivElement>(null);
+  // Portal gate, same pattern as components/ui/Tooltip.tsx: render nothing on
+  // the server or on the first client pass so hydration matches, then attach
+  // the modal layer to <body>.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
 
   // While the bottom-sheet (role="dialog" aria-modal) is open, lock background
   // scroll and close it on Escape — otherwise the page scrolls behind the sheet
@@ -188,7 +196,25 @@ function MobileOrderSheet({ slab }: { slab: string }) {
   useEffect(() => {
     if (!open) return;
     const prevOverflow = document.body.style.overflow;
+    const prevHtmlOverflow = document.documentElement.style.overflow;
+    // Lock BOTH elements: `globals.css` sets `html { overflow-x: hidden }`, which
+    // makes <html> itself the viewport scroller (overflow-y computes to `auto`).
+    // The UA propagates <html>'s overflow to the viewport and only falls back to
+    // <body>'s when <html> itself is `visible` — so locking body alone locked
+    // nothing and the page behind the sheet kept scrolling under a 40% backdrop.
     document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+
+    // iOS Safari ignores overflow:hidden on the viewport scroller entirely, so a
+    // touch outside the sheet still drags the page behind it. Block those moves
+    // while allowing the sheet's own `overflow-y-auto` region to keep scrolling.
+    const handleTouchMove = (e: TouchEvent) => {
+      // Touches inside the sheet, or inside a dialog opened on top of it
+      // (trade confirm, close position), keep their own scrolling.
+      if (isInsideModalSurface(e.target, sheetRef.current)) return;
+      e.preventDefault();
+    };
+    document.addEventListener("touchmove", handleTouchMove, { passive: false });
 
     // BUG 21 fix: move initial focus into the dialog (APG dialog pattern —
     // mirrors ClosePositionModal/TradeConfirmationModal) so Tab starts
@@ -231,61 +257,81 @@ function MobileOrderSheet({ slab }: { slab: string }) {
     document.addEventListener("keydown", handleKeyDown);
     return () => {
       document.body.style.overflow = prevOverflow;
+      document.documentElement.style.overflow = prevHtmlOverflow;
+      document.removeEventListener("touchmove", handleTouchMove);
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [open]);
 
   return (
     <>
-      {/* Raised above the global MobileBottomNav (components/layout/MobileBottomNav.tsx,
-          fixed bottom-0, ~56px, md:hidden) below the md breakpoint, where both are
-          visible simultaneously; flush with bottom-0 at md+ where that nav hides
-          itself (its own md:hidden) but this trigger is still relevant up to lg. */}
-      <div className="fixed inset-x-0 bottom-16 z-40 border-t border-[var(--border)] bg-[var(--bg)]/95 backdrop-blur-sm md:bottom-0 lg:hidden">
-        <button
-          onClick={() => setOpen(true)}
-          className="flex w-full items-center justify-center gap-2 py-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--text)]"
-          data-testid="mobile-trade-bar"
-          data-ticket-row={ticketRow ?? undefined}
-        >
-          {ticketRowLabel ? `Trade · ${ticketRowLabel}` : "Trade"}
-        </button>
-      </div>
+      {/* Trigger band: portaled to <body> and docked on MobileBottomNav; it
+          steps aside while any other modal dialog is open (see
+          components/trade/MobileTradeBand.tsx). */}
+      <MobileTradeBand
+        open={open}
+        onOpen={() => setOpen(true)}
+        label={ticketRowLabel}
+        ticketRow={ticketRow}
+        sheetRef={sheetRef}
+      />
 
-      {open && (
-        <div
-          className="fixed inset-0 z-[60] bg-black/40 lg:hidden"
-          onClick={() => setOpen(false)}
-          aria-hidden="true"
-        />
-      )}
+      {/* Backdrop + sheet are portaled to <body> — the same thing every other
+          dialog in this codebase already does (components/ui/Modal.tsx,
+          ClosePositionModal, TradeConfirmationModal, InsuranceTopUpModal,
+          SendPositionNftModal, InsuranceExplainerModal). This sheet was the
+          only one left inline, and inline it sits inside the trade page's
+          `animate-fade-in` wrapper (see the TradePageInner root). While that
+          opacity animation is below 1 it creates a stacking context, which
+          caps this layer's z-[60]/z-[61] INSIDE the wrapper — so
+          MobileBottomNav (z-50, a sibling of <main> in app/layout.tsx) painted
+          straight over the sheet's submit buttons and swallowed the taps needed
+          to send the trade. Portaled into <body>, the z-index competes with the
+          nav directly and 61 > 50 always wins, regardless of animation state. */}
+      {mounted &&
+        createPortal(
+          <>
+            {open && (
+              <div
+                className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-sm lg:hidden"
+                onClick={() => setOpen(false)}
+                aria-hidden="true"
+              />
+            )}
 
-      <div
-        ref={sheetRef}
-        // BUG 21 fix: `inert` when closed — previously the sheet stayed fully
-        // mounted off-screen (`translate-y-full`) with no `inert`/
-        // `aria-hidden`, so its inputs/buttons stayed in the Tab order and
-        // the accessibility tree even though invisible. Native `inert`
-        // removes both without unmounting the form (unmounting would lose
-        // in-progress input on every close).
-        inert={!open ? true : undefined}
-        className={`fixed inset-x-0 bottom-0 z-[61] max-h-[85dvh] overflow-y-auto rounded-t-md border-t border-[var(--border)] bg-[var(--bg)] transition-transform duration-150 ease-out lg:hidden ${
-          open ? "translate-y-0" : "translate-y-full"
-        }`}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Order ticket"
-      >
-        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-[var(--border)]/50 bg-[var(--bg)] px-3 py-2">
-          <span className="text-[10px] uppercase tracking-[0.15em] text-[var(--text-dim)]">Order ticket</span>
-          <button onClick={() => setOpen(false)} className="text-[var(--text-muted)] transition-colors duration-150 hover:text-[var(--text)]" aria-label="Close">
-            ✕
-          </button>
-        </div>
-        <div className="space-y-1.5 p-3">
-          <OrderTicketRail slab={slab} />
-        </div>
-      </div>
+            <div
+              ref={sheetRef}
+              // BUG 21 fix: `inert` when closed — previously the sheet stayed
+              // fully mounted off-screen (`translate-y-full`) with no `inert`/
+              // `aria-hidden`, so its inputs/buttons stayed in the Tab order and
+              // the accessibility tree even though invisible. Native `inert`
+              // removes both without unmounting the form (unmounting would lose
+              // in-progress input on every close).
+              inert={!open ? true : undefined}
+              className={`fixed inset-x-0 bottom-0 z-[61] max-h-[85dvh] overflow-y-auto rounded-t-md border-t border-[var(--border)] bg-[var(--bg)] transition-transform duration-150 ease-out lg:hidden ${
+                open ? "translate-y-0" : "translate-y-full"
+              }`}
+              role="dialog"
+              aria-modal="true"
+              aria-label="Order ticket"
+            >
+              <div className="sticky top-0 z-10 flex items-center justify-between border-b border-[var(--border)]/50 bg-[var(--bg)] px-3 py-2">
+                <span className="text-[10px] uppercase tracking-[0.15em] text-[var(--text-dim)]">Order ticket</span>
+                <button onClick={() => setOpen(false)} className="text-[var(--text-muted)] transition-colors duration-150 hover:text-[var(--text)]" aria-label="Close">
+                  ✕
+                </button>
+              </div>
+              {/* The sheet covers MobileBottomNav while open, so its final
+                  controls sit at the viewport's bottom edge: they need their
+                  own clearance there (plus the iOS home-indicator safe area) or
+                  the last row lands flush against — or underneath — the edge. */}
+              <div className="space-y-1.5 p-3 pb-[calc(2rem+env(safe-area-inset-bottom,0px))]">
+                <OrderTicketRail slab={slab} />
+              </div>
+            </div>
+          </>,
+          document.body,
+        )}
     </>
   );
 }
