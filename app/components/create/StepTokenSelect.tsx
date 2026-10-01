@@ -268,6 +268,7 @@ export const StepTokenSelect: FC<StepTokenSelectProps> = ({
         </label>
         <input
           id="token-mint"
+          data-testid="wizard-token-input"
           type="text"
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
@@ -388,6 +389,7 @@ export const StepTokenSelect: FC<StepTokenSelectProps> = ({
       <button
         type="button"
         onClick={onContinue}
+        data-testid="wizard-next"
         disabled={!effectiveCanContinue}
         className="w-full border border-[var(--accent)]/50 bg-[var(--accent)]/[0.08] py-3 text-[13px] font-bold uppercase tracking-[0.1em] text-[var(--accent)] transition-all duration-200 hud-btn-corners hover:border-[var(--accent)] hover:bg-[var(--accent)]/[0.15] disabled:cursor-not-allowed disabled:border-[var(--border)] disabled:bg-transparent disabled:text-[var(--text-secondary)]"
       >

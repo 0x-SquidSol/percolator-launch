@@ -95,6 +95,7 @@ export const HoldToLaunch: FC<HoldToLaunchProps> = ({
     <div className="flex flex-col items-center">
       <button
         type="button"
+        data-testid="wizard-launch"
         disabled={disabled || fired}
         aria-label={disabled ? (disabledReason ?? "Launch unavailable") : "Hold to launch market"}
         onMouseDown={begin}

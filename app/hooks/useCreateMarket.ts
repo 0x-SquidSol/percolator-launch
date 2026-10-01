@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { DEVNET_PROGRAM_IDS } from "@/lib/program-ids";
 import {
   Keypair,
   PublicKey,
@@ -27,14 +28,12 @@ import {
   encodeSetMatcherConfig,
   encodeInitUser,
   encodeSetNftProgramId,
-  encodeCreateLpVaultV17,
   encodeStakeInitPool,
   encodeUpdateFeeSplit,
   encodeStakeBindInsuranceAuthority,
   bindInsuranceAuthorityAccounts,
   ACCOUNTS_UPDATE_FEE_SPLIT,
   validateFeeSplit,
-  encodeTopUpBackingBucket,
   MAX_BACKING_BUCKET_EXPIRY_SLOT,
   detectDexType,
   parseDexPool,
@@ -45,8 +44,6 @@ import {
   ACCOUNTS_SET_MATCHER_CONFIG,
   ACCOUNTS_INIT_MATCHER_CTX,
   ACCOUNTS_INIT_USER,
-  ACCOUNTS_CREATE_LP_VAULT,
-  ACCOUNTS_TOP_UP_BACKING_BUCKET,
   buildAccountMetas,
   WELL_KNOWN,
   buildIx,
@@ -58,7 +55,6 @@ import {
   deriveInsuranceLpMint,
   deriveStakePool,
   deriveStakeVaultAuth,
-  deriveLpBackingLedger,
   initPoolAccounts,
   parseHeader,
   isV17Account,
@@ -71,6 +67,7 @@ import {
   parsePortfolioV17,
   parseMarketGroupV17OI,
   parseAssetOracleProfileV17,
+  parseLpVaultRegistry,
 } from "@percolatorct/sdk";
 import { PERCOLATOR_NFT_PROGRAM_ID } from "@/lib/nft-program";
 import { toE6 } from "@/lib/format";
@@ -104,14 +101,20 @@ import {
 import { getConfig, getNetwork } from "@/lib/config";
 import { resolveMarketOracleMode } from "@/lib/resolveMarketOracleMode";
 import { normalizeDexType } from "@/lib/dex-type";
-import { parseMarketCreationError } from "@/lib/parseMarketError";
+import { parseMarketCreationError, extractCustomCode } from "@/lib/parseMarketError";
 import {
-  DIRECT_BACKING_TOPUP_EXPIRY_SLOT,
+  buildEarnVaultSeedInstructions,
+  EARN_VAULT_SEED_COMPUTE_UNITS,
+  EARN_VAULT_BUCKET_NOT_EMPTY_MESSAGE,
+  LP_VAULT_BACKING_BUCKET_NOT_EMPTY_CODE,
+} from "@/lib/earn-vault-seed";
+import {
   freshLaunchAuthorityEpoch,
   isOracleDelegationApplied,
   sequentialStepKind,
   type CreateStepKind,
 } from "@/lib/create-market-v18";
+import { buildInitMatcherCtxArgs } from "@/lib/matcher-params";
 import {
   inspectV17MatcherContext,
   isEmptyV17PortfolioMatcherConfig,
@@ -169,13 +172,10 @@ export function orderStakeTailInstructions<T>(
 }
 
 // BACKING-BUCKET SEEDING: both domains of asset 0 (long=2*assetIndex,
-// short=2*assetIndex+1) are seeded to Fresh@DIRECT_BACKING_TOPUP_EXPIRY_SLOT via
-// TopUpBackingBucket in Step 3, right after DepositCollateral lands (buckets are
-// still Empty — nothing in Steps 0-5 calls TradeCpi). That defuses the
-// freshness deadlock. The AMOUNT now comes from backingSeedPerDomain() rather
-// than a flat 0.01 dust: the SHORT domain can never be topped up again once
-// CreateLpVault rebinds backing_bucket_authority, so dust there meant shorts
-// were permanently backed by one cent. See lib/market-params.ts.
+// short=2*assetIndex+1) are funded by DepositToLpVault in the Earn-vault step
+// (CreateLpVault + 2 deposits, lib/earn-vault-seed.ts), NOT by a direct
+// TopUpBackingBucket — a direct top-up makes CreateLpVault fail Custom(63).
+// The AMOUNT is backingSeedPerDomain() (lib/market-params.ts).
 
 /**
  * PERC-465: Fetch the current USD price for a token from Jupiter price API.
@@ -871,7 +871,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     const [lpVaultMint] = deriveInsuranceLpMint(programId, slabPk);
     const stakeProgramId = new PublicKey(
       (getConfig() as { vaultProgramId?: string }).vaultProgramId ??
-        "GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3",
+        DEVNET_PROGRAM_IDS.stake,
     );
     const [stakePoolPda] = deriveStakePool(slabPk, stakeProgramId);
     const [stakeVaultAuth] = deriveStakeVaultAuth(stakePoolPda, stakeProgramId);
@@ -1166,15 +1166,10 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
         lpOwner: walletPk, market: slabPk, lpPortfolio: lpPortfolioKp.publicKey,
         matcherCtx: matcherCtxKp.publicKey, matcherProg: matcherProgramId, matcherDelegate: matcherDelegatePk,
       }),
-      data: encodeInitMatcherCtx({
-        kind: 0, tradingFeeBps: Number(params.tradingFeeBps), baseSpreadBps: 50, maxTotalBps: 200,
-        impactKBps: 0, liquidityNotionalE6: 0n,
-        // LP GUARDRAILS (2026-07-27). These were i128::MAX / 0 — an unlimited,
-        // fixed-price counterparty with no skew, which is how Jimothy's LP was
-        // drained to $0 / -$2,479. Now sized to LP capital: see lib/market-params.ts.
-        maxFillAbs: derived.maxFillAbs, maxInventoryAbs: derived.maxInventoryAbs,
-        feeToInsuranceBps: 0, skewSpreadMultBps: derived.skewSpreadMultBps,
-      }),
+      // Matcher config for NEW markets: kind 1 (vAMM) + skew + FINITE non-zero
+      // caps, all from lib/matcher-params.ts (never 0: max_fill 0 = no fills,
+      // max_inventory 0 = unlimited LP). Existing markets are never reconfigured.
+      data: encodeInitMatcherCtx(buildInitMatcherCtxArgs(Number(params.tradingFeeBps), derived.matcher)),
     });
     const m2Descriptor: TailTxDescriptor = {
       label: "Setting up the liquidity pool",
@@ -1183,7 +1178,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       signers: [lpPortfolioKp, matcherCtxKp],
     };
 
-    // M3a: DepositCollateral + 2x TopUpBackingBucket (deadlock-prevention seed)
+    // M3a: DepositCollateral only (the backing seed moved to M4a — see below)
     const depositIx = buildIx({
       programId,
       keys: buildAccountMetas(ACCOUNTS_DEPOSIT_COLLATERAL, {
@@ -1199,44 +1194,13 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
         amount: params.lpCollateral.toString(),
       }),
     });
-    const backingIxs: TransactionInstruction[] = [0, 1].map((domain) => {
-      // v18 TOP_UP_BACKING_BUCKET grew to 7 accounts: +ledger (a per-domain,
-      // handler-created PDA) +systemProgram (percolator-prog #433). The ledger is
-      // DIFFERENT per domain, so derive it inside this per-domain map. Matches the
-      // proven newmarkets.ts seed; the old 5-account array missed both new accounts.
-      const [ledger] = deriveLpBackingLedger(programId, slabPk, domain);
-      return buildIx({
-        programId,
-        keys: buildAccountMetas(ACCOUNTS_TOP_UP_BACKING_BUCKET, {
-          signer: walletPk,
-          market: slabPk,
-          sourceToken: userAta,
-          vaultToken: vaultAta,
-          tokenProgram: WELL_KNOWN.tokenProgram,
-          ledger,
-          systemProgram: WELL_KNOWN.systemProgram,
-        }),
-        data: encodeTopUpBackingBucket({
-          // Real seed, not dust: the SHORT domain can never be topped up again
-          // once CreateLpVault runs. See backingSeedPerDomain in lib/market-params.ts.
-          // v18 fresh-market: asset-0 market_id = 1; authority_epoch = the value
-          // after the oracle hand-off (see assetZeroAuthorityEpoch); intentId is
-          // the strictly-increasing one-shot lane — long(domain 0)=1, short(domain
-          // 1)=2 (matches the newmarkets.ts seed).
-          domain,
-          marketId: 1n,
-          intentId: BigInt(domain) + 1n,
-          authorityEpoch: assetZeroAuthorityEpoch,
-          amount: backingSeed.toString(),
-          // NOT MAX_BACKING_BUCKET_EXPIRY_SLOT: that is the reserved LP-vault
-          // sentinel and the wrapper refuses it here (Custom 9).
-          expirySlot: DIRECT_BACKING_TOPUP_EXPIRY_SLOT.toString(),
-        }),
-      });
-    });
+    // NO direct TopUpBackingBucket here (bug C-1): a direct top-up at any expiry other
+    // than the LP-vault sentinel makes the M4a CreateLpVault fail Custom(63)
+    // LpVaultBackingBucketNotEmpty. Both domains are funded in M4a via
+    // DepositToLpVault instead — see lib/earn-vault-seed.ts.
     const m3aDescriptor: TailTxDescriptor = {
       label: "Funding liquidity",
-      instructions: [depositIx, ...backingIxs],
+      instructions: [depositIx],
       computeUnits: 450_000,
       signers: [],
     };
@@ -1288,13 +1252,12 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     // M4a/M4b instructions — CreateLpVault (M4a) + createAccount(mint)+
     // createAccount(vault)+StakeInitPool tail (M4b). Split into two separate
     // transactions below (see the M4-split fix note above this function).
-    const createLpVaultIx = buildIx({
-      programId,
-      keys: buildAccountMetas(ACCOUNTS_CREATE_LP_VAULT, {
-        admin: walletPk, market: slabPk, registry: lpVaultRegistry, lpMint: lpVaultMint,
-        systemProgram: WELL_KNOWN.systemProgram, tokenProgram: WELL_KNOWN.tokenProgram,
-      }),
-      data: encodeCreateLpVaultV17({ feeShareBps: 1000, oiReservationThresholdBps: 8000, redemptionCooldownSlots: 5n, domain: 0 }),
+    // CreateLpVault(domain 0) + DepositToLpVault into domain 0 AND 1, atomically. Both
+    // buckets are still Empty here (M3a no longer touches them), which is exactly what
+    // CreateLpVault requires; the deposits then stamp LP_VAULT_BACKING_EXPIRY_SLOT.
+    const earnVaultIxs = buildEarnVaultSeedInstructions({
+      programId, wallet: walletPk, market: slabPk, registry: lpVaultRegistry, lpMint: lpVaultMint,
+      userAta, vaultAta, seedPerDomain: backingSeed, includeCreate: true,
     });
     const createLpMintIx = SystemProgram.createAccount({
       fromPubkey: walletPk, newAccountPubkey: stakeLpMintKp.publicKey,
@@ -1367,8 +1330,8 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
     // when the actual broadcast/size issue was in the (unrelated) stake-pool tail.
     const m4aDescriptor: TailTxDescriptor = {
       label: "Creating the Earn vault",
-      instructions: [createLpVaultIx],
-      computeUnits: 250_000,
+      instructions: earnVaultIxs,
+      computeUnits: EARN_VAULT_SEED_COMPUTE_UNITS,
       signers: [],
     };
     const m4bDescriptor: TailTxDescriptor = {
@@ -2758,19 +2721,9 @@ export function useCreateMarket() {
                   matcherProg: matcherProgramId,
                   matcherDelegate: delegatePk,
                 }),
-                data: encodeInitMatcherCtx({
-                  kind: 0,
-                  tradingFeeBps: Number(params.tradingFeeBps),
-                  baseSpreadBps: 50,
-                  maxTotalBps: 200,
-                  impactKBps: 0,
-                  liquidityNotionalE6: 0n,
-                  // LP guardrails — mirrors the merged path. See lib/market-params.ts.
-                  maxFillAbs: derived.maxFillAbs,
-                  maxInventoryAbs: derived.maxInventoryAbs,
-                  feeToInsuranceBps: 0,
-                  skewSpreadMultBps: derived.skewSpreadMultBps,
-                }),
+                data: encodeInitMatcherCtx(
+                  buildInitMatcherCtxArgs(Number(params.tradingFeeBps), derived.matcher),
+                ),
               });
 
             const sendMatcherContextInitialization = async (
@@ -3357,118 +3310,13 @@ export function useCreateMarket() {
             console.log("[useCreateMarket] Step 3 deposit already landed (portfolio capital >= target) — skipping.");
           }
 
-          // ── Backing-bucket-freshness deadlock prevention (2026-07-09) ──────────
-          // ROOT CAUSE (percolator/src/v16.rs prepare_counterparty_backing_add_delta,
-          // ~line 755): a source-domain backing bucket that is Fresh-but-lapsed
-          // (current_slot >= expiry_slot) permanently reverts Custom(21) LockActive
-          // the next time ANYTHING requests a new (later) finite expiry for it —
-          // which happens AUTOMATICALLY inside the engine's loss-reserve path
-          // (reserve_new_capital_backed_loss_for_source_domain_not_atomic) the
-          // first time either side of a trade realizes a genuine loss. The only
-          // escape (expire_source_backing_bucket_not_atomic) is reachable exclusively
-          // from a Resolved-market terminal close — dead code for a Live market.
-          //
-          // CreateLpVault (Step 4 below) does NOT protect against this: it only
-          // creates the LP-vault registry/mint PDAs (handle_create_lp_vault,
-          // v16_program.rs:11646) — it never calls DepositToLpVault, so it never
-          // touches a backing bucket. Seeding only ever happens if/when someone
-          // later, optionally, calls the permissionless DepositToLpVault from the
-          // Earn page (by design — "anyone, including the creator, later" — see the
-          // Step 4 comment) — not guaranteed for any given market, and even then
-          // only for domain 0 (long); there is no equivalent for domain 1 (short).
-          //
-          // FIX: explicitly seed BOTH domains (long=0, short=1) to
-          // Fresh@MAX_BACKING_BUCKET_EXPIRY_SLOT (u64::MAX/2) here, deterministically,
-          // as part of market creation — while both buckets are still Empty (no
-          // Step 0-5 instruction ever calls TradeCpi). fresh_counterparty_backing_
-          // expiry_slot() then always returns this same MAX value, so every later
-          // automatic loss-reserve request matches the existing expiry and hits the
-          // harmless no-op arm — the LockActive trap becomes unreachable for this
-          // market's lifetime. backing_bucket_authority defaults to config.marketauth
-          // at InitMarket (== wallet.publicKey, the creator, set in Step 0) and
-          // nothing in Steps 0-5 ever rotates it (Stake InitPool, Step 5, makes no
-          // wrapper CPI at all — verified against percolator-stake/src/processor.rs),
-          // so the connected wallet can sign this here with no prior authority setup.
-          //
-          // v17-only (backing-bucket domains are a v16/v17 engine concept; v12
-          // legacy markets have no equivalent trap or instruction). Best-effort/
-          // non-fatal like the insurance top-up above: a transient RPC failure here
-          // must not strand an otherwise-successful market creation — a retry of
-          // this step (or a later maintainer backfill) is safe because a repeat
-          // TopUp against an already-Fresh-at-MAX bucket hits the harmless no-op arm.
-          if (isV17SlabDeposit) {
-            try {
-              const backingVaultToken = vaultTokenAta;
-              const LONG_DOMAIN = 0; // 2*assetIndex, assetIndex=0
-              const SHORT_DOMAIN = 1; // 2*assetIndex+1
-              // v18: TopUpBackingBucket binds asset-0 market_id + authority_epoch
-              // (CAS, current) + a strictly-increasing one-shot intentId per domain.
-              // Live-read the market; intentId long(0)=1, short(1)=2 on a fresh lane.
-              const bbSlabInfo = await connection.getAccountInfo(slabPk);
-              if (!bbSlabInfo?.data) throw new Error("Market account not found for backing seed");
-              const bbSlabData = new Uint8Array(bbSlabInfo.data);
-              const bbMarketId = readAssetMarketId(bbSlabData, 0);
-              const bbAuthorityEpoch = readAssetControlSeqs(bbSlabData, 0).authorityEpoch;
-              const backingIxs: TransactionInstruction[] = [];
-              for (const domain of [LONG_DOMAIN, SHORT_DOMAIN]) {
-                // v18 TOP_UP_BACKING_BUCKET grew to 7 accounts: +ledger (a
-                // per-domain, handler-created PDA) +systemProgram (#433). The
-                // ledger is DIFFERENT per domain — derive it inside this loop.
-                // Matches the fix at ~line 1087 (main path) and the proven
-                // newmarkets.ts seed; the old 5-account array here missed both
-                // new accounts and silently built the wrong instruction on this
-                // Step 3 resume/retry path.
-                const [ledger] = deriveLpBackingLedger(programId, slabPk, domain);
-                backingIxs.push(
-                  buildIx({
-                    programId,
-                    keys: buildAccountMetas(ACCOUNTS_TOP_UP_BACKING_BUCKET, {
-                      signer: wallet.publicKey,
-                      market: slabPk,
-                      sourceToken: userAta,
-                      vaultToken: backingVaultToken,
-                      tokenProgram: WELL_KNOWN.tokenProgram,
-                      ledger,
-                      systemProgram: WELL_KNOWN.systemProgram,
-                    }),
-                    data: encodeTopUpBackingBucket({
-                      domain,
-                      marketId: bbMarketId,
-                      intentId: BigInt(domain) + 1n,
-                      authorityEpoch: bbAuthorityEpoch,
-                      amount: backingSeed.toString(),
-                      // Not the SDK's MAX (the reserved LP-vault sentinel, refused
-                      // here with Custom 9) — see DIRECT_BACKING_TOPUP_EXPIRY_SLOT.
-                      expirySlot: DIRECT_BACKING_TOPUP_EXPIRY_SLOT.toString(),
-                    }),
-                  }),
-                );
-              }
-              const backingSig = await sendTx({
-                simulateBeforeSign: true,
-                connection, wallet,
-                abortSignal,
-                instructions: backingIxs,
-                computeUnits: 200_000,
-              });
-              setState((s) => ({ ...s, txSigs: [...s.txSigs, backingSig] }));
-            } catch (backingBucketErr) {
-              console.warn(
-                "[useCreateMarket] Step 3 backing-bucket seeding (deadlock prevention) failed — " +
-                "market is otherwise live, but domains 0/1 may still be vulnerable to the freshness " +
-                "deadlock until this is retried or backfilled:",
-                backingBucketErr,
-              );
-              // GH#2514: staying non-fatal is right — a transient RPC error must
-              // not strand a live market, and a repeat TopUp against an
-              // already-Fresh-at-MAX bucket is a harmless no-op. Staying SILENT
-              // is not. The rationale above was written when this seed was dust;
-              // it is now backingSeedPerDomain(lp) per domain, so swallowing the
-              // failure hands the creator a "Market created!" for a market
-              // missing two allocations worth twice their LP collateral.
-              setState((s) => ({ ...s, backingSeedFailed: true }));
-            }
-          }
+          // Backing-bucket seeding is NO LONGER done here (bug C-1). A direct
+          // TopUpBackingBucket at any expiry other than the LP-vault sentinel makes
+          // Step 4's CreateLpVault fail Custom(63) LpVaultBackingBucketNotEmpty
+          // (v16_program.rs @ 6377376a handle_create_lp_vault). Step 4 now creates the
+          // vault and funds BOTH domains with DepositToLpVault, which stamps
+          // LP_VAULT_BACKING_EXPIRY_SLOT (never lapses -> no freshness deadlock).
+          // See lib/earn-vault-seed.ts.
 
           // TopUpInsurance + final crank — NOT part of the proven on-chain sequence
           // (launch-test-market.ts, the 8/8 ground truth, creates a tradeable market
@@ -3682,37 +3530,53 @@ export function useCreateMarket() {
           const [lpVaultRegistry] = deriveLpVaultRegistry(programId, slabPk);
           const [lpVaultMint] = deriveInsuranceLpMint(programId, slabPk);
 
-          // Idempotent on retry — a prior attempt may have already landed this ix
-          // even though the overall create() call subsequently failed/threw.
+          // Idempotent on retry. One ATOMIC tx does CreateLpVault + LP-share ATA +
+          // DepositToLpVault(domain 0) + DepositToLpVault(domain 1) (lib/earn-vault-seed.ts),
+          // so "registry exists" normally means everything landed. The one exception is a
+          // registry created WITHOUT deposits (markets from before this fix whose direct
+          // top-up never landed): total shares == 0 -> send only ATA + deposits.
           const existingRegistry = await connection.getAccountInfo(lpVaultRegistry);
-          if (!existingRegistry) {
-            const createLpVaultIx = buildIx({
+          let vaultNeedsSeed = !existingRegistry;
+          if (existingRegistry) {
+            try {
+              vaultNeedsSeed =
+                parseLpVaultRegistry(new Uint8Array(existingRegistry.data)).totalLpSharesOutstanding === 0n;
+            } catch {
+              vaultNeedsSeed = false; // unreadable registry: do not guess, continue
+            }
+          }
+          if (vaultNeedsSeed) {
+            const seedUserAta = await getAssociatedTokenAddress(params.mint, wallet.publicKey);
+            const seedVaultAta = await getAssociatedTokenAddress(params.mint, vaultPda, true);
+            const earnVaultIxs = buildEarnVaultSeedInstructions({
               programId,
-              keys: buildAccountMetas(ACCOUNTS_CREATE_LP_VAULT, {
-                admin: wallet.publicKey,
-                market: slabPk,
-                registry: lpVaultRegistry,
-                lpMint: lpVaultMint,
-                systemProgram: WELL_KNOWN.systemProgram,
-                tokenProgram: WELL_KNOWN.tokenProgram,
-              }),
-              data: encodeCreateLpVaultV17({
-                feeShareBps: 1000, // 10% fee share — matches the 5 seeded markets
-                oiReservationThresholdBps: 8000,
-                redemptionCooldownSlots: 5n, // fast cooldown for devnet — matches seeded markets
-                domain: 0,
-              }),
+              wallet: wallet.publicKey,
+              market: slabPk,
+              registry: lpVaultRegistry,
+              lpMint: lpVaultMint,
+              userAta: seedUserAta,
+              vaultAta: seedVaultAta,
+              seedPerDomain: backingSeed,
+              includeCreate: !existingRegistry,
             });
-
-            const sigLpVault = await sendTx({
-              simulateBeforeSign: true,
-              connection,
-              wallet,
-              abortSignal,
-              instructions: [createLpVaultIx],
-              computeUnits: 250_000,
-            });
-            setState((s) => ({ ...s, txSigs: [...s.txSigs, sigLpVault] }));
+            try {
+              const sigLpVault = await sendTx({
+                simulateBeforeSign: true,
+                connection,
+                wallet,
+                abortSignal,
+                instructions: earnVaultIxs,
+                computeUnits: EARN_VAULT_SEED_COMPUTE_UNITS,
+              });
+              setState((s) => ({ ...s, txSigs: [...s.txSigs, sigLpVault] }));
+            } catch (earnErr) {
+              // Old-flow market (MAX-1 buckets present): CreateLpVault can NEVER succeed.
+              // Say so once, clearly, instead of letting Retry loop on it.
+              if (extractCustomCode(earnErr instanceof Error ? earnErr.message : String(earnErr)) === LP_VAULT_BACKING_BUCKET_NOT_EMPTY_CODE) {
+                throw new Error(EARN_VAULT_BUCKET_NOT_EMPTY_MESSAGE);
+              }
+              throw earnErr;
+            }
           }
           updateInFlightStep(slabPk.toBase58(), 5);
         }
@@ -3774,7 +3638,7 @@ export function useCreateMarket() {
           // hooks/useStakeDeposit.ts and hooks/useStakePool.ts.
           const stakeProgramId = new PublicKey(
             (getConfig() as { vaultProgramId?: string }).vaultProgramId ??
-              "GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3",
+              DEVNET_PROGRAM_IDS.stake,
           );
           const [stakePoolPda] = deriveStakePool(slabPk, stakeProgramId);
 

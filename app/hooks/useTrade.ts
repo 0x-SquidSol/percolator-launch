@@ -672,7 +672,12 @@ export function useTrade(slabAddress: string) {
         // are bounded structurally (position ≤ 4× fill cap ⇒ ≤ 5 legs), so
         // this stays inside the 1.4M tx ceiling.
         const computeUnits = Math.min(600_000 + 250_000 * (legs.length - 1), 1_400_000);
-        const sig = await sendTx({ connection, wallet, instructions, computeUnits });
+        const sig = await sendTx({
+          connection, wallet, instructions, computeUnits,
+          // P0b: prepend ExpireBackingBucket / FinalizeResetSide only if this
+          // trade/close would otherwise revert 19/21 on them (lib/self-heal.ts).
+          selfHeal: isV17Market ? { programId, market: slabPk } : undefined,
+        });
 
         // Immediate local application of the confirmed fill: sendTx's
         // pollConfirmation has ALREADY verified this tx landed on-chain by

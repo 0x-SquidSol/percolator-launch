@@ -2,6 +2,9 @@ import { Connection, Transaction, TransactionInstruction, ComputeBudgetProgram, 
 import bs58 from "bs58";
 import type { PublicKey, Signer } from "@solana/web3.js";
 import { getNetwork } from "@/lib/config";
+import { connectionSelfHealDeps, describeRepair, isSelfHealEnabled, planSelfHeal } from "@/lib/self-heal";
+import type { SelfHealResult } from "@/lib/self-heal";
+import { getMaintenanceConfig, MaintenanceError } from "@/lib/maintenance";
 
 /**
  * PERC-8388: Lighthouse v2 program ID — Blowfish/Phantom wallet middleware injects
@@ -55,6 +58,17 @@ export interface SendTxParams {
    * already been asked to sign. The create-market wizard sets it on every step.
    */
   simulateBeforeSign?: boolean;
+  /**
+   * P0b client self-heal (lib/self-heal.ts). When set, sendTx reads this
+   * market (overlapped with the blockhash fetch) and, only if the user's
+   * transaction would revert Custom(19)/Custom(21) because of a lapsed backing
+   * bucket or a ResetPending side, prepends the permissionless repairs
+   * (ExpireBackingBucket 89 / FinalizeResetSide 45) to THIS transaction.
+   * Steady state (nothing to repair) costs one overlapped account read.
+   */
+  selfHeal?: { programId: PublicKey; market: PublicKey };
+  /** Test/diagnostic hook: receives the self-heal decision once per sendTx. */
+  onSelfHeal?: (result: SelfHealResult) => void;
 }
 
 /**
@@ -591,6 +605,8 @@ export async function sendTx({
   abortSignal,
   skipPreflight = false,
   simulateBeforeSign = false,
+  selfHeal,
+  onSelfHeal,
 }: SendTxParams): Promise<string> {
   if (!wallet.publicKey || (!wallet.signTransaction && !wallet.signAndSendTransaction)) {
     throw new Error("Wallet not connected");
@@ -605,6 +621,10 @@ export async function sendTx({
   // stop FUTURE signatures, never an already-submitted one).
   if (abortSignal?.aborted) {
     throw new TxCancelledError();
+  }
+  // Maintenance with writes blocked: refuse before any tx is built or signed.
+  if (getMaintenanceConfig().blockWrites) {
+    throw new MaintenanceError();
   }
 
   // Check clock drift — genuinely non-blocking now (it was awaited serially
@@ -622,6 +642,24 @@ export async function sendTx({
   let lastError: Error | null = null;
   let lastSignature: string | undefined;
 
+  // P0b self-heal. Planned from the ORIGINAL instructions on EVERY attempt:
+  // a repair that someone else (the keeper) landed meanwhile makes its engine
+  // gate false, and resending that stale repair would revert the whole tx on
+  // each retry (security review 2026-09-29, LOW). Attempt 0's plan starts
+  // before the first blockhash fetch so the market read overlaps it.
+  const feePayer = wallet.publicKey;
+  const selfHealOn = !!selfHeal && isSelfHealEnabled() && !skipPreflight;
+  const planHeal = (): Promise<SelfHealResult | null> =>
+    selfHeal && selfHealOn
+      ? planSelfHeal(
+          { programId: selfHeal.programId, market: selfHeal.market, instructions, computeUnits },
+          connectionSelfHealDeps(connection, selfHeal.market, feePayer),
+        )
+      : Promise.resolve(null);
+  let selfHealPromise: Promise<SelfHealResult | null> = planHeal();
+  let healedInstructions = instructions;
+  let healedComputeUnits = computeUnits;
+
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       // Latency: kick the blockhash fetch off FIRST so it overlaps the fee
@@ -629,6 +667,20 @@ export async function sendTx({
       // a prewarmTxLanding call; retries force a fresh blockhash since a
       // stale one is a plausible cause of the failure being retried).
       const blockhashPromise = getFreshBlockhash(connection, attempt > 0);
+      if (selfHealOn) {
+        if (attempt > 0) selfHealPromise = planHeal();
+        const heal = await selfHealPromise;
+        healedInstructions = instructions;
+        healedComputeUnits = computeUnits;
+        if (heal) {
+          onSelfHeal?.(heal);
+          if (heal.outcome === "repaired") {
+            healedInstructions = heal.instructions;
+            healedComputeUnits = heal.computeUnits;
+            console.info(`[self-heal] prepended ${heal.repairs.map(describeRepair).join(", ")}`);
+          }
+        }
+      }
 
       // Get dynamic priority fee on first attempt (cached 45s)
       const priorityFee = attempt === 0 ? await getPriorityFee(connection) : PRIORITY_FEE_FALLBACK;
@@ -640,7 +692,7 @@ export async function sendTx({
       let balanceCheckPromise: Promise<void> | null = null;
       if (attempt === 0) {
         const numSignatures = 1 + signers.length; // wallet + additional signers
-        const fees = estimateFees(computeUnits, priorityFee, numSignatures);
+        const fees = estimateFees(healedComputeUnits, priorityFee, numSignatures);
         // BUG 17: only non-zero when this tx actually creates an account (e.g.
         // init/first-deposit's InitPortfolio) — a plain trade's instructions
         // contain no CreateAccount ix, so this is 0 and behavior is unchanged.
@@ -652,7 +704,7 @@ export async function sendTx({
       // injected into the instruction array by wallet middleware or upstream hooks.
       // This is a defensive filter — our code doesn't add these, but wallet extensions
       // or provider wrappers might contaminate the instruction list before it reaches sendTx.
-      const cleanInstructions = instructions.filter(
+      const cleanInstructions = healedInstructions.filter(
         (ix) => ix.programId.toBase58() !== LIGHTHOUSE_PROGRAM_ID
       );
 
@@ -661,7 +713,7 @@ export async function sendTx({
       // violation in heap section") on its first heap allocation unless the tx
       // requests the full heap frame. Must be the FIRST instruction. (issue #176)
       tx.add(ComputeBudgetProgram.requestHeapFrame({ bytes: 131072 }));
-      tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: computeUnits }));
+      tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: healedComputeUnits }));
       tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }));
       for (const ix of cleanInstructions) {
         tx.add(ix);

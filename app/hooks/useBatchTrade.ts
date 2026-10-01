@@ -131,7 +131,10 @@ export function useBatchTrade() {
           accountBMatcherSequence: makerId.matcherSequence,
         });
         const ix = buildIx({ programId: params.programId, keys, data });
-        return await sendTx({ connection, wallet, instructions: [ix], computeUnits: 800_000 });
+        return await sendTx({
+          connection, wallet, instructions: [ix], computeUnits: 800_000,
+          selfHeal: { programId: params.programId, market: slabPk },
+        });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         setError(msg);

@@ -391,7 +391,7 @@ export function useDeposit(slabAddress: string) {
           );
         }
 
-        const sig = await sendTx({ connection, wallet, instructions });
+        const sig = await sendTx({ connection, wallet, instructions, selfHeal: { programId, market: slabPk } });
 
         // Force immediate slab re-read so balance updates without waiting for
         // the next poll cycle (which can be up to 30 s when WS is active).

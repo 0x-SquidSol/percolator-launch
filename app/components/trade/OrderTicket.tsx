@@ -45,6 +45,8 @@ import { useMarketFillCap } from "@/hooks/useMarketFillCap";
 import { remainingSideCapacityQ, wouldExceedInventoryCap, UNLIMITED_CAPACITY } from "@/lib/marketCapacity";
 import { isBlockedSlab } from "@/lib/blocklist";
 import { humanizeError, isEngineLockError, withTransientRetry } from "@/lib/errorMessages";
+import { useSingleMarketHealth } from "@/hooks/useMarketHealth";
+import { safeExplainMarketTxError } from "@/lib/market-error";
 import { PublicKey } from "@solana/web3.js";
 import { diagnoseTradeRejection } from "@/lib/tradeRejectDiagnosis";
 import { explorerTxUrl, getNetwork } from "@/lib/config";
@@ -132,6 +134,10 @@ interface TicketValidationCtx {
   marketPaused: boolean;
   vaultEmpty: boolean;
   lpUnderfunded: boolean;
+  /** v18: the matcher LP portfolio has 0 capital (market health). */
+  lpDepleted: boolean;
+  /** v18: header.mode == Resolved (market health). */
+  marketResolved: boolean;
   riskGateActive: boolean;
   oracleUnavailable: boolean;
   oracleStale: boolean;
@@ -180,7 +186,16 @@ function buildValidationIssues(ctx: TicketValidationCtx): ValidationIssue[] {
   if (ctx.vaultEmpty) {
     issues.push({ severity: "error", title: "No vault liquidity", message: "This market has no LP deposits. Trading will be enabled once liquidity is added to the vault." });
   }
-  if (ctx.lpUnderfunded) {
+  if (ctx.marketResolved) {
+    issues.push({ severity: "error", title: "Market resolved", message: "This market is resolved. New positions can't be opened; existing positions can still be closed and funds withdrawn." });
+  }
+  if (ctx.lpDepleted) {
+    issues.push({
+      severity: "error",
+      title: "LP depleted",
+      message: "The market's liquidity provider has no capital left, so there is no counterparty for a new position. Opening is disabled until the LP is re-funded; closing still works.",
+    });
+  } else if (ctx.lpUnderfunded) {
     issues.push({ severity: "error", title: "Liquidity unavailable", message: "The LP has no capital. Trades cannot execute until the LP is funded." });
   }
   if (ctx.riskGateActive) {
@@ -425,6 +440,13 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const lpIdx = lpEntry?.idx ?? 0;
   const hasValidLP = lpEntry !== null;
   const lpUnderfunded = hasValidLP && lpEntry!.account.capital === 0n;
+  // P0b: on v17/v18 `accounts` is always [] (gotcha #2), so the check above is
+  // dead there. The live v18 signal is the LP portfolio's capital from
+  // /api/markets/health. Blocks OPENS only — a close reduces the LP's risk and
+  // is not gated on this (OrderTicketClosePanel keeps the legacy value).
+  const marketHealth = useSingleMarketHealth(slabAddress);
+  const lpDepleted = marketHealth?.lpDepleted === true;
+  const marketResolved = marketHealth?.lockReasons.includes("resolved") === true;
 
   const { market: marketInfo } = useMarketInfo(slabAddress);
   const symbol = marketInfo?.symbol ?? collateralSymbol;
@@ -801,7 +823,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     marketRetired: !mockMode && isBlockedSlab(slabAddress),
     marketPaused: !!header?.paused,
     vaultEmpty,
-    lpUnderfunded,
+    lpUnderfunded: lpUnderfunded || lpDepleted,
+    lpDepleted,
+    marketResolved,
     riskGateActive,
     oracleUnavailable,
     oracleStale,
@@ -910,7 +934,10 @@ setEngineLockError(null);
       // trade-context text (not the generic "invalid instruction" one, which is
       // still correct for deposit/withdraw/NFT/market-creation call sites).
       // Custom(9) is NOT always slippage — see the #2643 refinement below.
-      const friendlyMsg = humanizeError(msg, "trade");
+      // P0b: refine 19/21/49 with live market health (LP depleted / resolved /
+      // bankruptcy / repairable) — lib/market-error.ts. Wallet lock and program
+      // Unauthorized(8) are never refined into "locked".
+      const friendlyMsg = safeExplainMarketTxError(msg, "open", marketHealth) ?? humanizeError(msg, "trade");
     if (isEngineLockError(msg)) {
       setEngineLockError(friendlyMsg);
     }
@@ -956,6 +983,8 @@ setEngineLockError(null);
           role="tab"
           aria-selected={ticketMode === m}
           onClick={() => setTicketMode(m)}
+          data-testid="trade-mode-tab"
+          data-mode={m}
           className={`flex-1 rounded-none border py-2 text-[11px] font-bold uppercase tracking-[0.1em] transition-colors duration-150 ${
             ticketMode === m
               ? "border-[var(--accent)] bg-[var(--accent)]/[0.08] text-[var(--accent)]"
@@ -1029,6 +1058,8 @@ setEngineLockError(null);
       <div className="mb-3 flex gap-1">
         <button
           onClick={() => setDirection("long")}
+          data-testid="trade-side-long"
+          data-side="long"
           aria-pressed={direction === "long"}
           className={`flex-1 rounded-none border py-2.5 text-[11px] font-bold uppercase tracking-[0.1em] transition-colors duration-150 ${
             direction === "long"
@@ -1040,6 +1071,8 @@ setEngineLockError(null);
         </button>
         <button
           onClick={() => setDirection("short")}
+          data-testid="trade-side-short"
+          data-side="short"
           aria-pressed={direction === "short"}
           className={`flex-1 rounded-none border py-2.5 text-[11px] font-bold uppercase tracking-[0.1em] transition-colors duration-150 ${
             direction === "short"
@@ -1096,6 +1129,7 @@ setEngineLockError(null);
         <div className="flex gap-1.5">
           <input
             id="order-size-input"
+            data-testid="trade-size-input"
             type="text"
             inputMode="decimal"
             value={sizeInput}
@@ -1125,6 +1159,8 @@ setEngineLockError(null);
           <button
             key={pct}
             onClick={() => setSizePercent(pct)}
+          data-testid="trade-size-preset"
+          data-percent={pct}
             className="flex-1 rounded-none border border-[var(--border)]/30 py-1 text-[10px] font-medium text-[var(--text-secondary)] transition-colors duration-150 hover:border-[var(--accent)]/30 hover:bg-[var(--accent-subtle)] hover:text-[var(--text)]"
           >
             {pct === 100 ? "Max" : `${pct}%`}
@@ -1194,6 +1230,7 @@ setEngineLockError(null);
           <div className="flex items-center gap-1">
             <input
               id="order-leverage-input"
+              data-testid="trade-leverage-input"
               type="text"
               inputMode="decimal"
               value={leverageText}
@@ -1274,6 +1311,7 @@ setEngineLockError(null);
                   className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
                   style={{ height: "100%" }}
                   aria-label="Leverage"
+                  data-testid="trade-leverage-slider"
                 />
               </div>
               {/* Labels — uniformly spaced, one per snap point */}
@@ -1283,6 +1321,8 @@ setEngineLockError(null);
                     key={l}
                     type="button"
                     onClick={() => updateLeverage(l)}
+                    data-testid="trade-leverage-preset"
+                    data-leverage={l}
                     className={`text-[8px] font-mono transition-colors duration-100 ${
                       leverage === l
                         ? "text-[var(--accent)] font-bold"
@@ -1470,6 +1510,7 @@ setEngineLockError(null);
                     </label>
                     <input
                       id="starter-deposit-amount"
+                      data-testid="deposit-amount-input"
                       type="text"
                       inputMode="decimal"
                       value={starterAmountInput}
@@ -1504,6 +1545,7 @@ setEngineLockError(null);
                   </p>
                 )}
                 <button
+                  data-testid="deposit-submit"
                   onClick={canOneClick ? onClickDirect : () => setShowInlineDeposit((v) => !v)}
                   disabled={initLoading || starterOver}
                   className={`w-full rounded-none py-2.5 text-[11px] font-bold uppercase tracking-[0.1em] transition-[filter] duration-150 hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-70 ${
@@ -1515,7 +1557,7 @@ setEngineLockError(null);
               </>
             );
           })()}
-          {(initCtaError || initError) && <p className="mt-1 text-[10px] text-[var(--short)]">{initCtaError ?? initError}</p>}
+          {(initCtaError || initError) && <p data-testid="deposit-error" className="mt-1 text-[10px] text-[var(--short)]">{initCtaError ?? initError}</p>}
           {showInlineDeposit && (
             <div className="mt-1.5" data-deposit-trigger>
               <DepositWithdrawCard slabAddress={slabAddress} />
@@ -1524,6 +1566,7 @@ setEngineLockError(null);
         </>
       ) : (
         <button
+          data-testid="trade-submit"
           onClick={() => {
             if (submitDisabled) return;
             const signedSize = direction === "short" ? -positionSize : positionSize;
@@ -1580,13 +1623,13 @@ setEngineLockError(null);
           engineLockError takes precedence over humanError since a lock failure
           sets both. */}
       {engineLockError ? (
-        <div className="mt-2 rounded-none border border-[var(--warning)]/30 bg-[var(--warning)]/5 px-3 py-2">
+        <div data-testid="trade-error" data-kind="engine-lock" className="mt-2 rounded-none border border-[var(--warning)]/30 bg-[var(--warning)]/5 px-3 py-2">
           <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--warning)]">Market temporarily locked</p>
           <p className="mt-1 text-[10px] leading-relaxed text-[var(--text-secondary)]">{engineLockError}</p>
           <p className="mt-1 text-[10px] leading-relaxed text-[var(--text-muted)]">This usually clears once the market is cranked again — try again shortly.</p>
         </div>
       ) : humanError ? (
-        <div className="mt-2 rounded-none border border-[var(--short)]/20 bg-[var(--short)]/5 px-3 py-2">
+        <div data-testid="trade-error" data-kind="trade" className="mt-2 rounded-none border border-[var(--short)]/20 bg-[var(--short)]/5 px-3 py-2">
           <p className="text-[10px] text-[var(--short)]">{humanError}</p>
         </div>
       ) : null}
@@ -1623,12 +1666,14 @@ setEngineLockError(null);
           <div className="flex shrink-0 items-center gap-1.5">
             <button
               onClick={() => toggleInlineDeposit("deposit")}
+              data-testid="deposit-toggle"
               className="rounded-sm border border-[var(--accent)]/50 bg-[var(--accent)]/[0.1] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--accent)] transition-all duration-150 hover:bg-[var(--accent)]/[0.18] hover:brightness-110"
             >
               + Deposit
             </button>
             <button
               onClick={() => toggleInlineDeposit("withdraw")}
+              data-testid="withdraw-toggle"
               className="rounded-sm border border-[var(--long)]/50 bg-[var(--long)]/[0.1] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--long)] transition-all duration-150 hover:bg-[var(--long)]/[0.18] hover:brightness-110"
             >
               − Withdraw

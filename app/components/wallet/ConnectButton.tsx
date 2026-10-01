@@ -136,6 +136,8 @@ const ConnectButtonAdapterInner: FC = () => {
       <div className="relative" ref={menuRef}>
         <button
           onClick={() => setMenuOpen((v) => !v)}
+          data-testid="wallet-connect"
+          data-state="connected"
           className="min-h-10 max-w-[10rem] truncate rounded-sm border border-[var(--accent)]/30 bg-[var(--accent)]/[0.06] px-4 text-[13px] font-medium text-[var(--accent)] transition-all duration-200 hover:bg-[var(--accent)]/[0.12] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
           aria-label={`Wallet: ${displayAddress}`}
         >
@@ -196,6 +198,8 @@ const ConnectButtonAdapterInner: FC = () => {
     return (
       <button
         onClick={() => void handleConnect(readyWallets[0].adapter.name)}
+        data-testid="wallet-connect"
+        data-state="disconnected"
         className="min-h-10 rounded-sm border border-[var(--accent)] bg-[var(--accent)]/20 px-4 text-[13px] font-medium text-[var(--text)] transition-all hover:bg-[var(--accent)]/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
       >
         Connect {readyWallets[0].adapter.name}
@@ -208,6 +212,8 @@ const ConnectButtonAdapterInner: FC = () => {
     <div className="relative" ref={menuRef}>
       <button
         onClick={() => setMenuOpen((v) => !v)}
+        data-testid="wallet-connect"
+        data-state="disconnected"
         className="min-h-10 rounded-sm border border-[var(--accent)] bg-[var(--accent)]/20 px-4 text-[13px] font-medium text-[var(--text)] transition-all hover:bg-[var(--accent)]/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
       >
         Connect Wallet

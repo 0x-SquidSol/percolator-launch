@@ -256,6 +256,8 @@ export function DepositWithdrawPanel({
         {(['deposit', 'withdraw'] as Tab[]).map((t) => (
           <button
             key={t}
+            data-testid="earn-tab"
+            data-tab={t}
             onClick={() => {
               setTab(t);
               setAmount('');
@@ -297,13 +299,14 @@ export function DepositWithdrawPanel({
           </p>
 
           {claimError && (
-            <p role="alert" className="mb-2 text-[11px] text-[var(--short)]">{claimError}</p>
+            <p role="alert" data-testid="earn-error" data-kind="claim" className="mb-2 text-[11px] text-[var(--short)]">{claimError}</p>
           )}
           {claimSuccess && (
             <p role="status" aria-live="polite" className="mb-2 text-[11px] text-[var(--cyan)]">{claimSuccess}</p>
           )}
 
           <GlowButton
+            data-testid="earn-withdraw-execute"
             onClick={handleClaimRedemption}
             disabled={!vaultAvailable || !cooldownElapsed || claimSubmitting || loading}
             variant="primary"
@@ -339,6 +342,7 @@ export function DepositWithdrawPanel({
           <div className="relative">
             <input
               id="earn-amount-input"
+              data-testid={tab === 'deposit' ? 'earn-deposit-input' : 'earn-withdraw-input'}
               type="text"
               inputMode="decimal"
               placeholder="0.00"
@@ -484,7 +488,7 @@ export function DepositWithdrawPanel({
 
         {/* Error / Success */}
         {txError && (
-          <div role="alert" className="mb-4 p-3 bg-[var(--short)]/5 border border-[var(--short)]/20 rounded-sm">
+          <div role="alert" data-testid="earn-error" data-kind="tx" className="mb-4 p-3 bg-[var(--short)]/5 border border-[var(--short)]/20 rounded-sm">
             <p className="text-[11px] text-[var(--short)]">{txError}</p>
           </div>
         )}
@@ -499,12 +503,14 @@ export function DepositWithdrawPanel({
           {withdrawConfirming && (
             <button
               onClick={() => setWithdrawConfirming(false)}
+              data-testid="earn-withdraw-cancel"
               className="flex-none px-4 py-2.5 text-[12px] font-medium border border-[var(--border)] rounded-sm text-[var(--text-secondary)] hover:text-[var(--text)] hover:border-[var(--accent)]/30 transition-all"
             >
               Cancel
             </button>
           )}
           <GlowButton
+            data-testid={tab === 'deposit' ? 'earn-deposit-submit' : 'earn-withdraw-request'}
             onClick={handleSubmit}
             disabled={!isValid || submitting || loading}
             variant="primary"
