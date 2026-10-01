@@ -1,4 +1,4 @@
-﻿/**
+/**
  * #2634: dashboard PositionSummary liquidation display.
  *
  * Live-PnL follow-up: PositionSummary labels Mark / PnL / ROE as current
@@ -70,6 +70,7 @@ vi.mock("@/lib/priceStore/priceStore", () => ({
 
 import { PositionSummary } from "@/components/dashboard/PositionSummary";
 import { computeLivePositionPnl } from "@/lib/trading";
+import { computePositionLeverage, describePositionLeverage } from "@/lib/position-leverage";
 
 const ENTRY_E6 = 100_000_000n;
 const STALE_MARK_E6 = 120_000_000n;
@@ -231,5 +232,71 @@ describe("PositionSummary live PnL freshness", () => {
         screen.getByText(pct(live.pnlPercent)),
       ).toBeInTheDocument();
     });
+  });
+});
+
+describe("PositionSummary — one card per portfolio, each on its own numbers", () => {
+  // Two portfolios on the SAME market (usePortfolio returns one row per
+  // portfolio account). A slab-keyed metric lookup collapsed them, so both
+  // cards rendered whichever portfolio was inserted last.
+  const SLAB = "Slab111111111111111111111111111111111111111";
+  const MARK = 120_000_000n;
+
+  function leg(entryE6: bigint, idx: number) {
+    return pos({
+      slabAddress: SLAB,
+      idx,
+      symbol: "SOL-PERP",
+      effectiveSize: 1_000_000n,
+      effectiveEntryPrice: entryE6,
+      entryPriceSource: "cache",
+      oraclePriceE6: MARK,
+      account: { positionSize: 1_000_000n, capital: CAPITAL, entryPrice: 0n },
+    });
+  }
+
+  it("renders each portfolio's own live ROE when two portfolios share a slab", () => {
+    const a = leg(100_000_000n, 0);
+    const b = leg(80_000_000n, 1);
+    state.positions = [a, b];
+    state.priceE6 = MARK;
+
+    const roeA = computeLivePositionPnl(1_000_000n, 100_000_000n, MARK, INITIAL_MARGIN_BPS, CAPITAL, 0n, 0).pnlPercent;
+    const roeB = computeLivePositionPnl(1_000_000n, 80_000_000n, MARK, INITIAL_MARGIN_BPS, CAPITAL, 0n, 0).pnlPercent;
+    expect(pct(roeA)).not.toBe(pct(roeB));
+
+    render(<PositionSummary />);
+
+    expect(screen.getAllByText("(2)").length).toBeGreaterThan(0);
+    expect(screen.getByText(pct(roeA))).toBeInTheDocument();
+    expect(screen.getByText(pct(roeB))).toBeInTheDocument();
+  });
+});
+
+describe("PositionSummary — leverage follows the same live mark as PnL", () => {
+  it("prices the Lev badge at the shared live mark, not the scan snapshot", () => {
+    const SIZE_Q = 1_000_000n; // 1 unit: $100 → 2×, $150 → 3× on $50 equity
+    const STALE = 100_000_000n;
+    const LIVE = 150_000_000n;
+    state.positions = [
+      pos({
+        effectiveSize: SIZE_Q,
+        oraclePriceE6: STALE,
+        account: { positionSize: SIZE_Q, capital: CAPITAL, pnl: 0n, entryPrice: 0n },
+      }),
+    ];
+    state.priceE6 = LIVE;
+
+    const at = (markE6: bigint) =>
+      describePositionLeverage(
+        computePositionLeverage({ sizeQ: SIZE_Q, markPriceE6: markE6, capital: CAPITAL, pnl: 0n, collateralDecimals: 6 }),
+      ).text;
+    expect(at(LIVE)).not.toBe(at(STALE));
+    expect(at(LIVE)).not.toBe("—");
+
+    render(<PositionSummary />);
+
+    expect(screen.getByText(`Lev ${at(LIVE)}`)).toBeInTheDocument();
+    expect(screen.queryByText(`Lev ${at(STALE)}`)).toBeNull();
   });
 });

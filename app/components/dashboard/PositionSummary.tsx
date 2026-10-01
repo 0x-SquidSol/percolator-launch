@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePortfolio, getLiquidationSeverity, isOpenPosition, type PortfolioPosition } from "@/hooks/usePortfolio";
+import { usePortfolio, getLiquidationSeverity, type PortfolioPosition } from "@/hooks/usePortfolio";
 import { formatTokenAmount, formatUsdPriceE6 } from "@/lib/format";
 import { useMultiTokenMeta } from "@/hooks/useMultiTokenMeta";
 import { describeLiqPrice } from "@/lib/liq-price-display";
@@ -45,18 +45,20 @@ function PositionCard({
   const side = posSize > 0n ? "Long" : posSize < 0n ? "Short" : "Flat";
   const sizeAbs = posSize < 0n ? -posSize : posSize;
   const severity = getLiquidationSeverity(pos.liquidationDistancePct);
+  const markE6 = live.markE6;
   // Current effective leverage: nominal notional / (capital + pnl) at the live mark.
   const leverageDisplay = describePositionLeverage(
     computePositionLeverage({
       sizeQ: pos.account?.positionSize ?? 0n,
-      markPriceE6: pos.oraclePriceE6 > 0n ? pos.oraclePriceE6 : null,
+      // Same live mark as the Mark / PnL / ROE cells below (and as the
+      // portfolio page's card), not the slower portfolio scan snapshot.
+      markPriceE6: markE6 > 0n ? markE6 : null,
       capital: pos.account?.capital,
       pnl: pos.account?.pnl,
       collateralDecimals: decimals,
     }),
   );
   const hasPosition = posSize !== 0n;
-  const markE6 = live.markE6;
 
   // #2660/#2671: keep the Entry cell's trust verdict aligned with the shared
   // live metric. Unknown entry still renders "--", never fake zero PnL.
@@ -231,15 +233,17 @@ export function PositionSummary() {
   const { connected } = useWalletCompat();
   const portfolio = usePortfolio();
 
-  // Only OPEN positions — exclude closed (size-0 "Flat") ones that still have a
-  // portfolio account, so a market you've closed doesn't linger in the list/count.
-  const positions = ((portfolio.positions ?? []) as PortfolioPosition[]).filter(isOpenPosition);
   const loading = portfolio.loading;
 
+  // Only OPEN positions (the hook drops closed size-0 "Flat" rows that still
+  // have a portfolio account), each paired with its OWN live metric. One
+  // entry per portfolio — two portfolios on the same market stay two cards
+  // with their own PnL, never one entry looked up by slab.
   const liveMetrics = useLivePortfolioMetrics(
-    portfolio.positions ?? [],
+    (portfolio.positions ?? []) as PortfolioPosition[],
     portfolio.totalDeposited ?? 0n,
   );
+  const positions = liveMetrics.openPositions;
 
   // v17 markets return an empty `market.config` from the SDK (real value in
   // `market.configV17.collateralMint`) — use the pre-resolved `pos.collateralMint`
@@ -285,11 +289,13 @@ export function PositionSummary() {
           </div>
         ) : (
           <div className="space-y-2">
-            {positions.slice(0, 8).map((pos, i) => (
+            {liveMetrics.livePositions.slice(0, 8).map((live, i) => {
+              const pos = live.position;
+              return (
               <PositionCard
-                key={`${pos.slabAddress}-${i}`}
+                key={`${pos.slabAddress}-${pos.idx}-${i}`}
                 pos={pos}
-                live={liveMetrics.bySlab.get(pos.slabAddress)!}
+                live={live}
                 symbol={
                   // P1: label by the market's own symbol (e.g. "SOL-PERP"), not the
                   // collateral token — sim-USDC is the SAME collateral across every
@@ -303,7 +309,8 @@ export function PositionSummary() {
                 }
                 decimals={tokenMetaMap.get(pos.collateralMint.toBase58())?.decimals ?? 6}
               />
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

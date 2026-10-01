@@ -1,4 +1,4 @@
-﻿/**
+/**
  * GH#2677: dashboard must not present time-based PnL figures it has no history
  * source for.
  *

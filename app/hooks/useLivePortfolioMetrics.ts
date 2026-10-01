@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import {
@@ -30,9 +30,16 @@ export interface LivePositionMetric {
 
 export interface LivePortfolioMetrics {
   openPositions: PortfolioPosition[];
+  /**
+   * One entry per OPEN position, in the same order as `openPositions`.
+   *
+   * Deliberately NOT keyed by slab: a wallet can hold more than one portfolio
+   * on the same market (usePortfolio returns one row per portfolio account),
+   * and a slab-keyed lookup collapsed them so every card on that market showed
+   * the LAST portfolio's PnL. Render from this list (each entry carries its own
+   * `position`) instead of looking metrics up.
+   */
   livePositions: LivePositionMetric[];
-  /** Convenience lookup for the single-position-per-market playground model. */
-  bySlab: ReadonlyMap<string, LivePositionMetric>;
   totalUnrealizedPnl: bigint;
   /** Same definition usePortfolio uses: deposited capital + current unrealized PnL. */
   totalValue: bigint;
@@ -169,12 +176,6 @@ export function useLivePortfolioMetrics(
     return {
       openPositions,
       livePositions,
-      bySlab: new Map(
-        livePositions.map((metric) => [
-          metric.position.slabAddress,
-          metric,
-        ]),
-      ),
       totalUnrealizedPnl,
       totalValue: totalDeposited + totalUnrealizedPnl,
       wins,
