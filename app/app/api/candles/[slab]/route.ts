@@ -26,8 +26,8 @@ const SWR_CACHE = { "Cache-Control": "public, max-age=10, stale-while-revalidate
  *     (same algorithm as percolator-api/src/routes/candles.ts).
  *  2. Proxy to percolator-api backend — legacy path when the indexer DB is not set.
  *
- * When the direct path returns < 10 bars, usePercolatorCandles falls back to
- * Pyth chart data automatically — no empty-state handling needed here.
+ * When the direct path returns < 10 bars, TradingChart falls back to the DEX
+ * (GeckoTerminal) series automatically — no empty-state handling needed here.
  */
 export async function GET(
   req: NextRequest,

@@ -525,10 +525,9 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
    * "admin" default until the user leaves step 1, and gating on it deadlocked
    * every devnet launch once before (see 7567e0b5).
    */
-  const resolvedOracleType: "pyth" | "hyperp_ema" | "admin" | "keeper" =
-    quickLaunch.oracleType === "pyth" && quickLaunch.pythFeedId
-      ? "pyth"
-      : quickLaunch.oracleType === "hyperp_ema" && quickLaunch.dexPoolAddress
+  // No Pyth (2026-10-01): the detection never yields a Pyth oracle; a DEX pool or admin only.
+  const resolvedOracleType: "hyperp_ema" | "admin" | "keeper" =
+    quickLaunch.oracleType === "hyperp_ema" && quickLaunch.dexPoolAddress
         ? isDevnet
           ? "keeper"
           : "hyperp_ema"
@@ -548,8 +547,6 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
    */
   const detectedOracle = useMemo(() => {
     switch (resolvedOracleType) {
-      case "pyth":
-        return { oracleType: "pyth" as const, oracleFeed: quickLaunch.pythFeedId! };
       case "keeper":
       case "hyperp_ema":
         return {
@@ -560,7 +557,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
       default:
         return { oracleType: "admin" as const, oracleFeed: "" };
     }
-  }, [resolvedOracleType, quickLaunch.pythFeedId, quickLaunch.dexPoolAddress, quickLaunch.poolInfo]);
+  }, [resolvedOracleType, quickLaunch.dexPoolAddress, quickLaunch.poolInfo]);
 
   // Once create() has started, the wizard's oracle fields describe the slab on
   // chain and handleRetry must reuse them, so the sync stops.

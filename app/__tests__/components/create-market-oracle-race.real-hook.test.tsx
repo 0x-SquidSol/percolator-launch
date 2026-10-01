@@ -332,16 +332,16 @@ describe("oracle resolve lands after the advance: edge cases", () => {
     expect(p?.dexPoolAddress).toBe(POOL);
   });
 
-  it("mainnet: a Pyth feed that lands after the advance replaces the admin placeholder", async () => {
+  it("no Pyth (2026-10-01): a stray feed id that lands after the advance is NOT adopted", async () => {
     g.__network = "mainnet";
     const FEED = "ab".repeat(32);
     g.__resolveReply = () => json({ ...RESOLVE_BODY, feedId: FEED, dexPoolAddress: null, oracleMode: "pyth" });
     await advanceWithResolvePending();
     gateResolve.release(); await flush();
-    const s = snapshot("mainnet pyth");
-    // The wizard now holds the feed, not "Admin Oracle". (The button itself
-    // stays blocked here on the mocked zero token balance, unrelated.)
-    expect(s.priceFeed).toBe(`${FEED.slice(0, 12)}...`);
+    const s = snapshot("mainnet stray feed");
+    // The wizard never takes a Pyth feed any more (the resolver no longer returns one; a stray
+    // id is ignored): with no DEX pool it stays on the admin placeholder.
+    expect(s.priceFeed).not.toBe(`${FEED.slice(0, 12)}...`);
     expect(s.ariaLabel).not.toBe("Resolving price feed");
   });
 });
