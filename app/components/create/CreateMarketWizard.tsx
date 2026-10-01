@@ -392,8 +392,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
   // shows "Connect wallet to continue" in place of Continue). Gates both the
   // Continue click and the one-shot auto-advance, which then fires as soon as
   // the user connects.
-  const step1CanAdvance =
-    step1Valid && !duplicateCheck.checking && duplicateCheck.duplicates.length === 0 && !!publicKey;
+  const step1CanAdvance = step1Valid && !duplicateCheck.checking && duplicateCheck.duplicates.length === 0 && !!publicKey;
 
   // Control Room (dial) validation — trading fee, leverage margin, and seed amounts.
   const paramsValid =
