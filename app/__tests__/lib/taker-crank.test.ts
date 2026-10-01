@@ -62,6 +62,25 @@ describe("planTakerCrank: the taker crank never shares the trade's transaction",
     }
   });
 
+  it("a 21 from the trade alone (keeper-side lag) is NOT cured by our crank: no crank sent", async () => {
+    const lag = async (l: TransactionInstruction[]): Promise<TakerCrankSim> =>
+      ({ err: l.includes(TRADE) ? { InstructionError: [l.indexOf(TRADE), { Custom: 21 }] } : null, rpcFailed: false });
+    expect(await planTakerCrank(lag, [TRADE], CRANK)).toBe("none");
+  });
+
+  it("honours the simulator's compute-budget prefix when attributing the refusal", async () => {
+    const PREFIX = [ix(200), ix(201)];
+    const sim = async (l: TransactionInstruction[]): Promise<TakerCrankSim> => {
+      const full = [...PREFIX, ...l];
+      const ti = full.indexOf(TRADE);
+      return { err: ti >= 0 ? { InstructionError: [ti, { Custom: 19 }] } : null, rpcFailed: false };
+    };
+    expect(await planTakerCrank(sim, [TRADE], CRANK, 2)).toBe("separate-tx");
+    // A refusal by an instruction of ANOTHER program (here: index 0 = the prefix) is not ours to cure.
+    const other = async (): Promise<TakerCrankSim> => ({ err: { InstructionError: [0, { Custom: 19 }] }, rpcFailed: false });
+    expect(await planTakerCrank(other, [TRADE], CRANK, 2)).toBe("none");
+  });
+
   it("no verdict (RPC failure) or a crank that itself fails: no crank is sent", async () => {
     const rpc = async (): Promise<TakerCrankSim> => ({ err: null, rpcFailed: true });
     expect(await planTakerCrank(rpc, [TRADE], CRANK)).toBe("none");

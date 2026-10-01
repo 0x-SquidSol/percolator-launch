@@ -669,6 +669,7 @@ export function useTrade(slabAddress: string) {
             (ixs) => simulateForGate(connection, takerWallet, ixs),
             tradeIxs,
             crankIx,
+            2, // simulateForGate's heap-frame + CU-limit prefix
           );
           if (plan === "separate-tx") {
             console.info("[useTrade] taker portfolio needs a maintenance crank first; sending it as its own tx");
