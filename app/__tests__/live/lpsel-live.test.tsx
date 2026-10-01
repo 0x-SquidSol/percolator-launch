@@ -50,10 +50,10 @@ function walletFor(kp: Keypair): WalletApi {
 }
 
 describe.skipIf(!RPC)("LIVE: app hooks trade from a fresh non-creator wallet", () => {
-  const kp = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(process.env.LIVE_WALLET!, "utf8"))));
   for (const [name, slab] of Object.entries(MARKETS)) {
     if (only && !only.includes(name)) continue;
     it(`${name}: first trade, add, close`, async () => {
+      const kp = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(process.env.LIVE_WALLET ?? "", "utf8"))));
       const w = walletFor(kp);
       const wrapper = ({ children }: { children: React.ReactNode }) => (
         <WalletApiContext.Provider value={w}>
