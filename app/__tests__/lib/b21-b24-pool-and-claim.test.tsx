@@ -34,6 +34,7 @@ import {
 import { normalizeDexType } from "@/lib/dex-type";
 import { launchPriceFeedStatus } from "@/lib/launch-outcome";
 import { LaunchSuccess, LAUNCH_PRICE_COPY } from "@/components/create/LaunchSuccess";
+import { UNSUPPORTED_POOL_COPY as POOL_UNSUPPORTED_LINE } from "@/lib/wizard-copy";
 import { earnErrorMessage } from "@/lib/earnErrors";
 import { resolveDevnetProgramIds } from "@/lib/program-ids";
 
@@ -181,13 +182,13 @@ describe("B21: never 'launched' without a registered price feed", () => {
           priceFeedRequired: true,
           keeperDelegated: false,
           keeperPhase: "failed",
-          keeperMessage: "Price-feed registration failed: This pool is on a DEX type the price feed can't read",
+          keeperMessage: POOL_UNSUPPORTED_LINE,
           onRetryKeeperRegistration: retry,
         })}
       />,
     );
     expect(screen.queryByText("Ready to trade")).toBeNull();
-    expect(screen.getByTestId("launch-price-status-line").textContent).toMatch(/can't read/);
+    expect(screen.getByTestId("launch-price-status-line").textContent).toBe(POOL_UNSUPPORTED_LINE);
     fireEvent.click(screen.getByTestId("launch-price-retry"));
     expect(retry).toHaveBeenCalledTimes(1);
   });

@@ -21,6 +21,7 @@ vi.mock("@/hooks/useWalletCompat", () => ({ useWalletCompat: () => ({ publicKey:
 vi.mock("@/components/create/LogoUpload", () => ({ LogoUpload: () => null }));
 
 import { LaunchSuccess, LAUNCH_PRICE_WAIT_MS } from "@/components/create/LaunchSuccess";
+import { PRICE_SOURCE_LOCKED } from "@/lib/market-registration";
 import {
   KEEPER_REGISTER_COPY,
   postKeeperRegistration,
@@ -116,13 +117,14 @@ describe("launch success: actions while the live price is still connecting", () 
 });
 
 /** The real registration loop driving the real screen, with keeper-register answering 502. */
-function Harness({ fetchImpl, onRetry }: { fetchImpl: typeof fetch; onRetry: () => void }) {
+const REG_REQ = { slabAddress: SLAB, dexPoolAddress: "P", proofTx: "sig" };
+function Harness({ fetchImpl, onRetry }: { fetchImpl: typeof fetch; onRetry?: () => void }) {
   const [phase, setPhase] = useState<KeeperRegisterPhase>("connecting");
   const [message, setMessage] = useState<string>(KEEPER_REGISTER_COPY.connecting);
   useEffect(() => {
     const ac = new AbortController();
     void runKeeperRegistration({
-      attempt: () => postKeeperRegistration({ slabAddress: SLAB, dexPoolAddress: "P", proofTx: "sig" }, fetchImpl),
+      attempt: () => postKeeperRegistration(REG_REQ, fetchImpl),
       signal: ac.signal,
       onStatus: (s) => {
         setPhase(s.phase);
@@ -133,7 +135,13 @@ function Harness({ fetchImpl, onRetry }: { fetchImpl: typeof fetch; onRetry: () 
   }, [fetchImpl]);
   return (
     <LaunchSuccess
-      {...base({ keeperPhase: phase, keeperMessage: message, keeperDelegated: phase === "ready", onRetryKeeperRegistration: onRetry })}
+      {...base({
+        keeperPhase: phase,
+        keeperMessage: message,
+        keeperDelegated: phase === "ready",
+        // Default Retry = the same POST the wizard's retry makes.
+        onRetryKeeperRegistration: onRetry ?? (() => void postKeeperRegistration(REG_REQ, fetchImpl)),
+      })}
     />
   );
 }
@@ -142,8 +150,7 @@ describe("keeper-register 5xx: retried with backoff, then Retry", () => {
   it("a 502 is retried a few times, then a calm line with Retry (no status code shown)", async () => {
     vi.useFakeTimers();
     const fetchImpl = vi.fn(async () => ({ ok: false, status: 502, json: async () => ({ error: "Bad Gateway" }) }) as unknown as Response);
-    const onRetry = vi.fn();
-    render(<Harness fetchImpl={fetchImpl as unknown as typeof fetch} onRetry={onRetry} />);
+    render(<Harness fetchImpl={fetchImpl as unknown as typeof fetch} />);
 
     // Still well inside the 90 s bound: the backoff (5 + 10 + 20 s) runs out first.
     for (let i = 0; i < 40; i++) {
@@ -157,13 +164,58 @@ describe("keeper-register 5xx: retried with backoff, then Retry", () => {
     const line = screen.getByTestId("launch-price-status-line").textContent ?? "";
     expect(line).toBe(KEEPER_REGISTER_COPY.serverTrouble);
     expect(line).not.toMatch(/502|HTTP|Bad Gateway/);
-    fireEvent.click(screen.getByTestId("launch-price-retry"));
-    expect(onRetry).toHaveBeenCalledTimes(1);
-    // The loop stopped: no further attempts.
+    // The loop stopped: no further attempts on its own.
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10 * 60_000);
     });
     expect(fetchImpl).toHaveBeenCalledTimes(4);
+    // Retry really POSTs to keeper-register.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("launch-price-retry"));
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(5);
+    const [url, init] = fetchImpl.mock.calls[4] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/playground/keeper-register");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body)).slabAddress).toBe(SLAB);
     expect(screen.getByTestId("launch-go-to-market").getAttribute("href")).toBe(`/trade/${SLAB}`);
+  });
+});
+
+describe("a final refusal shows only reasons written for creators", () => {
+  const refuse = (status: number, error: string) =>
+    vi.fn(async () => ({ ok: false, status, json: async () => ({ error }) }) as unknown as Response);
+
+  it.each([
+    "Slab account does not exist on-chain",
+    "Slab account is not a market of this deployment's program",
+    "Registration proof refused: memo signer is not the market creator",
+    "Invalid dexType",
+  ])("jargon 400 %j -> the generic calm line", async (jargon) => {
+    const fetchImpl = refuse(400, jargon);
+    render(<Harness fetchImpl={fetchImpl as unknown as typeof fetch} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await vi.waitFor(() => expect(screen.getByTestId("launch-price-status").getAttribute("data-status")).toBe("failed"));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("launch-price-status-line").textContent).toBe(
+      "Live price couldn't connect for this market. Your market is live; try again in a moment.",
+    );
+    expect(screen.getByTestId("launch-success").textContent).not.toContain(jargon);
+    expect(screen.getByTestId("launch-price-retry")).toBeTruthy();
+  });
+
+  it("an allow-listed reason (422 price source locked) passes through", async () => {
+    const fetchImpl = refuse(422, PRICE_SOURCE_LOCKED);
+    render(<Harness fetchImpl={fetchImpl as unknown as typeof fetch} />);
+    await vi.waitFor(() => expect(screen.getByTestId("launch-price-status").getAttribute("data-status")).toBe("failed"));
+    expect(screen.getByTestId("launch-price-status-line").textContent).toBe(PRICE_SOURCE_LOCKED);
+  });
+
+  it("no creation tx on this device: the reason, and no Retry that could only repeat it", () => {
+    render(<LaunchSuccess {...base({ keeperPhase: "failed", keeperMessage: KEEPER_REGISTER_COPY.noProof })} />);
+    expect(screen.getByTestId("launch-price-status-line").textContent).toBe(KEEPER_REGISTER_COPY.noProof);
+    expect(screen.queryByTestId("launch-price-retry")).toBeNull();
   });
 });

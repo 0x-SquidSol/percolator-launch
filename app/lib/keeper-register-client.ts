@@ -8,6 +8,8 @@
  * SECURITY REVIEW REQUIRED before merge (replaces the signed-message registration).
  */
 import type { MarketRegistrationPayload } from "@/lib/market-registration-auth";
+import { PRICE_SOURCE_LOCKED } from "@/lib/market-registration";
+import { UNSUPPORTED_POOL_COPY } from "@/lib/wizard-copy";
 
 export const KEEPER_REGISTER_BACKOFF_MS = [5_000, 10_000, 20_000, 40_000, 60_000, 60_000] as const;
 export const KEEPER_REGISTER_STEADY_MS = 120_000;
@@ -28,7 +30,29 @@ export const KEEPER_REGISTER_COPY = {
   almostReady: "Almost ready",
   noProof: "This market's creation transaction isn't known on this device, so the live price can't be connected from here.",
   serverTrouble: "Live price couldn't connect just now. Your market is live; try again in a moment.",
+  generic: "Live price couldn't connect for this market. Your market is live; try again in a moment.",
 } as const;
+
+/**
+ * The keeper-register reasons that were written for creators. Everything else the route can say
+ * ("Slab account does not exist on-chain", "Registration proof refused: …", "Invalid dexType", …)
+ * is an operator diagnostic, so the launch screen maps it to KEEPER_REGISTER_COPY.generic.
+ * An allow-list, not a deny-list: a new server message stays hidden until someone adds it here.
+ */
+export const USER_FACING_REGISTRATION_REASONS: readonly string[] = [
+  PRICE_SOURCE_LOCKED,
+  "This market's live price was turned off by a maintainer.",
+  UNSUPPORTED_POOL_COPY,
+  "Could not verify the pool on mainnet right now. Try again in a moment.",
+  KEEPER_REGISTER_COPY.noProof,
+  KEEPER_REGISTER_COPY.serverTrouble,
+];
+
+/** The line a creator sees for a failed registration: the reason itself if it is user copy. */
+export function userFacingRegistrationReason(message: string | null | undefined): string {
+  const m = (message ?? "").trim();
+  return USER_FACING_REGISTRATION_REASONS.includes(m) ? m : KEEPER_REGISTER_COPY.generic;
+}
 
 export interface KeeperRegisterRequest {
   slabAddress: string;

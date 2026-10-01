@@ -8,7 +8,7 @@ import { LogoUpload } from "./LogoUpload";
 import { getNetwork } from "@/lib/config";
 import { useWalletCompat } from "@/hooks/useWalletCompat";
 import { launchPriceFeedStatus } from "@/lib/launch-outcome";
-import { KEEPER_REGISTER_COPY } from "@/lib/keeper-register-client";
+import { KEEPER_REGISTER_COPY, userFacingRegistrationReason } from "@/lib/keeper-register-client";
 
 interface LaunchSuccessProps {
   tokenSymbol: string;
@@ -69,9 +69,6 @@ export const LAUNCH_PRICE_COPY = {
   retrying: "Retrying…",
 } as const;
 
-/** A server reason is shown only when it reads as a sentence, never a bare status code. */
-const looksRaw = (m: string) => /\bHTTP \d{3}\b|^\s*[{[]|\b[45]\d\d\b/.test(m);
-
 /**
  * Success state after market launch.
  * Shows market card, address with copy, Solscan link, and CTAs.
@@ -126,13 +123,16 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
       : priceStatus === "timed-out"
         ? LAUNCH_PRICE_COPY.timedOut
         : priceStatus === "failed"
-          ? keeperMessage && !looksRaw(keeperMessage)
-            ? keeperMessage
+          ? keeperMessage
+            ? userFacingRegistrationReason(keeperMessage)
             : LAUNCH_PRICE_COPY.failed
           : priceStatus === "ready"
             ? LAUNCH_PRICE_COPY.ready
             : null;
-  const showPriceRetry = !!onRetryKeeperRegistration && (priceStatus === "failed" || priceStatus === "timed-out");
+  // Without the creation tx on this device a retry can only repeat the same message, so none is offered.
+  const noProofHere = keeperMessage === KEEPER_REGISTER_COPY.noProof;
+  const showPriceRetry =
+    !!onRetryKeeperRegistration && !noProofHere && (priceStatus === "failed" || priceStatus === "timed-out");
 
   /**
    * PERC-475: Claim ~$500 of Sim-USDC collateral, then navigate to the trade page.

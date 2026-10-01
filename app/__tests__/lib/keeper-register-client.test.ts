@@ -113,14 +113,16 @@ describe("5xx is retried a bounded number of times, then 'failed' with calm copy
     const r502 = () => res(502, { error: "Bad Gateway" });
     const waits: number[] = [];
     const statuses: string[] = [];
-    const f = vi.fn(async () => r502());
+    // Hard cap: a loop that never gives up on 5xx ends on a 403 here instead of spinning forever.
+    const f = vi.fn(async () => (f.mock.calls.length > 10 ? res(403, { error: "cap reached" }) : r502()));
     const phase = await runKeeperRegistration({
       attempt: () => postKeeperRegistration(REQ, f as unknown as typeof fetch),
       onStatus: (s) => statuses.push(`${s.phase}:${s.message}`),
       sleep: async (ms) => { waits.push(ms); },
     });
     expect(phase).toBe("failed");
-    expect(f).toHaveBeenCalledTimes(KEEPER_REGISTER_MAX_SERVER_RETRIES + 1);
+    expect(KEEPER_REGISTER_MAX_SERVER_RETRIES).toBe(3);
+    expect(f).toHaveBeenCalledTimes(4);
     expect(waits).toEqual([5_000, 10_000, 20_000]);
     expect(statuses[statuses.length - 1]).toBe(`failed:${KEEPER_REGISTER_COPY.serverTrouble}`);
 
