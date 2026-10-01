@@ -183,12 +183,14 @@ export function useMarketLimits(slabAddress: string | null | undefined, assetInd
   }, [anyOn, slabAddress, programIdStr, connection, boundVaultLpKey, marketId, assetIndex, flags.p3]);
 
   return useMemo((): MarketLimits => {
-    if (!anyOn) return OFF(flags);
+    const admin = assetProfile?.assetAdmin ? assetProfile.assetAdmin.toBytes() : null;
+    // The creator (asset_admin) is close-only on-chain regardless of the limits flags
+    // (SameOwnerTrade), so the OFF view still carries it for the ticket's same-owner gate.
+    if (!anyOn) return { ...OFF(flags), assetAdmin: admin };
     const accPart = accts && accts.slab === slabAddress ? accts : null;
     let state: LimitsState = "loading";
     if (slabPart && accPart) state = accPart.error && !accPart.lp ? "error" : "ready";
     if (slabPart && flags.p1 && slabPart.riskLimits === null && raw) state = "error";
-    const admin = assetProfile?.assetAdmin ? assetProfile.assetAdmin.toBytes() : null;
     return {
       state,
       flags,

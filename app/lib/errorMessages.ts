@@ -505,8 +505,16 @@ export function humanizeError(rawMsg: string, context?: "trade"): string {
   // UX WP-10 (audit §5.1 / §5.3 "unmapped"): never a raw code or "Transaction failed: …raw" in
   // the UI; the raw text stays in the console / the Details disclosure.
   console.warn("[humanizeError] unmapped:", rawMsg.slice(0, 300));
+  // Never hide a cause the app knows (§5.3): the app's own plain-language refusals are shown
+  // as they are; an unknown on-chain code is named, still without raw logs or program ids.
+  const plain = rawMsg.trim();
+  if (plain && plain.length < 200 && /\s/.test(plain) && !RAW_CHAIN_TEXT_RE.test(plain)) return plain;
+  if (code !== null) return `Solana didn't accept this (error ${code}), so nothing changed.`;
   return UNMAPPED_MESSAGE;
 }
+
+/** Text that is raw chain output, never shown to a user (mirrors lib/limits/user-message.ts). */
+const RAW_CHAIN_TEXT_RE = /custom program error|InstructionError|Program [1-9A-HJ-NP-Za-km-z]{32,44}|Transaction (simulation )?failed|\b0x[0-9a-f]+\b|Custom\(\d+\)|"Custom"|^\s*[{[]|\b[1-9A-HJ-NP-Za-km-z]{32,44}\b|\bat \S+ \(/i;
 
 /** §5.3 "unmapped": the one line for anything the maps do not know. */
 export const UNMAPPED_MESSAGE = "Something went wrong and nothing was sent.";

@@ -116,11 +116,15 @@ export function useFirstTrade(slabAddress: string) {
         const kp = Keypair.generate();
         const rent = await connection.getMinimumBalanceForRentExemption(V17_PORTFOLIO_ACCOUNT_LEN);
         const aIxs: TransactionInstruction[] = buildFirstTradeInitIxs({ programId, owner, market, portfolio: kp.publicKey }, rent);
-        // A is simulated before the prompt (B can't be: its portfolio doesn't exist yet; the
-        // ticket's own limits math already pre-empts 66/68/69/70/80 for the trade leg).
+        // A is simulated alone (its CU sizing), then A+B as ONE simulated list: B's portfolio
+        // does not exist until A lands, but inside one simulated tx it does, so a refusal of the
+        // trade leg (SameOwnerTrade 67, exec band 66, caps 68-70, ...) is caught here, before the
+        // wallet opens, attributed to the program that raised it, and mapped to its line.
         const simA = await simulateForGate(connection, owner, aIxs);
         if (simA.err) throw new SimulationRefusal(simA.err, simA.logs, simA.simulated);
         const bIxs = buildFundAndTradeIxs(ixp(kp.publicKey), { portfolioId: predicted, sequence: 0n, positionEpoch: 0n });
+        const simAB = await simulateForGate(connection, owner, [...aIxs, ...bIxs]);
+        if (simAB.err) throw new SimulationRefusal(simAB.err, simAB.logs, simAB.simulated);
         const [{ blockhash }, fee] = await Promise.all([connection.getLatestBlockhash("confirmed"), getPriorityFee(connection)]);
         const txA = buildBatchTx({ instructions: aIxs, computeUnits: Math.max(60_000, Math.ceil((simA.consumed ?? 50_000) * 1.3)), priorityFeeMicroLamports: fee, blockhash, feePayer: owner });
         const txB = buildBatchTx({ instructions: bIxs, computeUnits: tradeCuCap(1) + 60_000, priorityFeeMicroLamports: fee, blockhash, feePayer: owner });

@@ -62,12 +62,13 @@ describe("humanizeError", () => {
   });
 
   it("handles unknown Custom() codes", () => {
-    // UX WP-10 (§5.1): an unknown code is never shown raw.
-    expect(humanizeError("Custom(999)")).toBe("Something went wrong and nothing was sent.");
+    // UX WP-10 (§5.1): an unknown code is never shown raw, but it is named (2026-10-01: never
+    // hide a cause behind "Something went wrong").
+    expect(humanizeError("Custom(999)")).toBe("Solana didn't accept this (error 999), so nothing changed.");
   });
 
   it("handles unknown custom program error", () => {
-    expect(humanizeError("custom program error: 0xff")).toBe("Something went wrong and nothing was sent.");
+    expect(humanizeError("custom program error: 0xff")).toBe("Solana didn't accept this (error 255), so nothing changed.");
   });
 
   it("trims long unknown messages", () => {
