@@ -322,6 +322,22 @@ export function resolveUserMessage(err: unknown, ctx: MessageContext): UserMessa
         return m("earn-booking-move", "wait", "Booking a market move", "The vault is booking a recent market move; we'll retry automatically.", { autoRetry: true });
       case W.VaultLpRedeemNeedsRecall:
         return m("earn-in-use", "paused", "Partly in use", ctx.maxNow ? `Part of this vault's money is in use by open trades right now. You can withdraw up to ${ctx.maxNow} now, or the rest once those trades close.` : "Part of this vault's money is in use by open trades right now. The rest is available once those trades close.", ctx.maxNow ? { action: { id: "use-max", label: `Withdraw ${ctx.maxNow}` } } : {});
+      case W.EngineCounterUnderflow:
+        // Unbound Earn vault, redemption split across pots. The payout is PRICED on
+        // the vault's combined backing across BOTH of the market's sides (domains)
+        // but is physically DRAWN from one side's pot, so a redemption whose share
+        // of combined principal exceeds that one pot is refused in
+        // percolator-prog handle_execute_redemption with the engine's generic
+        // `EngineCounterUnderflow` (the `principal_portion > ledger.total_principal_atoms`
+        // gate, v16_program.rs). A BOUND vault names this VaultLpRedeemNeedsRecall and
+        // auto-repairs (senior-draw-repair.ts); an UNBOUND vault has no recall path, so
+        // without this case it falls through to "Something went wrong" — alarming on a
+        // money path where nothing was actually sent. Scope STRICTLY to the withdraw
+        // surface: everywhere else Custom(25) is a genuine internal-accounting fault and
+        // must stay generic. Funds are safe either way (a failed tx moves nothing).
+        if (ctx.surface === "earn-withdraw")
+          return m("earn-payout-split", "paused", "Can't pay out in full", "Part of this vault's backing is on the market's other side right now. Nothing was sent and your withdrawal stays ready to collect.");
+        break;
       case W.VaultLpBindRequiresFlatAsset:
         return m("setup-not-allowed", "error", "Not available here", "This market already has open positions, so the Earn vault can't take over its liquidity. Create a new market to use it.");
       case W.VaultLpPausedForSeniorDraw:
