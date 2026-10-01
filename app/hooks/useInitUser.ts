@@ -30,6 +30,7 @@ import { assertKnownProgram } from "@/lib/programAllowlist";
 import { humanizeError } from "@/lib/errorMessages";
 import { fetchPortfolioIdentity } from "@/lib/v18-wire";
 import { assertDepositWithinBalance, DepositExceedsBalanceError } from "@/lib/deposit-guard";
+import { readU64LE } from "@/lib/u64le";
 
 // ---------------------------------------------------------------------------
 // v17 portfolio discovery helper — mirrors useDeposit's findV17Portfolio.
@@ -227,7 +228,7 @@ export function useInitUser(slabAddress: string) {
               } else {
                 // SPL / Token-2022 token account: amount is a u64 LE at offset 64.
                 const ataBalance =
-                  ataInfo.data.length >= 72 ? ataInfo.data.readBigUInt64LE(64) : 0n;
+                  ataInfo.data.length >= 72 ? readU64LE(ataInfo.data, 64) : 0n;
                 // Never SILENTLY shrink the deposit: an over-balance request
                 // used to be clamped here, so the user typed N and only the
                 // wallet's (smaller) balance moved with no warning. Refuse
