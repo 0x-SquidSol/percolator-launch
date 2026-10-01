@@ -25,10 +25,22 @@ import {
   encodePushOraclePrice,
   ACCOUNTS_PUSH_ORACLE_PRICE,
 } from "@/lib/sdk-compat";
-import { sendTx, sendTxWaiting, prewarmTxLanding, simulateForGate } from "@/lib/tx";
+import {
+  sendTx,
+  sendTxWaiting,
+  prewarmTxLanding,
+  simulateForGate,
+  SimulationRefusal,
+  buildBatchTx,
+  signAllCompat,
+  broadcastSignedTx,
+  getPriorityFee,
+} from "@/lib/tx";
 import { planTakerCrank } from "@/lib/taker-crank";
+import { getMaintenanceConfig, MaintenanceError } from "@/lib/maintenance";
+import { PartialLegSendError, SINGLE_TX_MAX_LEGS, sendLegGroups } from "@/lib/trade-leg-groups";
 import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
-import { applyConfirmedFill, getPortfolioRawSnapshot, isLpPortfolio, makePortfolioScanKey } from "@/lib/userAccountScan";
+import { applyConfirmedFill, getPortfolioRawSnapshot, makePortfolioScanKey } from "@/lib/userAccountScan";
 import { limitsFlags } from "@/lib/limits/flags";
 import { decodeMarketEngineView, signedPositionForAsset } from "@/lib/limits/decode";
 import { measureFill, recordFillResult } from "@/lib/limits/fill-check";
@@ -42,6 +54,7 @@ import { computeLimitPriceE6, assertFeedAgreesWithChain } from "@/lib/slippage";
 import { fetchPortfolioIdentity, fetchAssetMarketId, defaultCrankObservations } from "@/lib/v18-wire";
 import { buildTradeIxs } from "@/lib/trade-ix";
 import { isPortfolioAccount } from "@/lib/portfolio-account";
+import { findOwnerPortfolio } from "@/lib/owner-portfolio";
 
 // ---------------------------------------------------------------------------
 // v17 portfolio account layout constants
@@ -62,13 +75,8 @@ const V17_PORTFOLIO_MAGIC = Buffer.from([0x00, 0x36, 0x31, 0x56, 0x43, 0x52, 0x4
 const PORTFOLIO_PROVENANCE_MARKET_GROUP_OFF = 16; // offset 16 in raw account data
 const PORTFOLIO_PROVENANCE_OWNER_OFF = 80;        // offset 80 in raw account data
 
-// Mutable owner (SDK PF_OWNER_OFF) — HEADER_LEN(16) + provenance(100) = offset 116.
-// MintPositionNft moves this to the escrow PDA on wrap, leaving provenanceOwner@80
-// unchanged. findV17Portfolio (the TAKER's own-portfolio discovery, below) MUST
-// filter on this offset, not provenanceOwner@80, or a wrapped position still
-// matches and gets treated as the taker's tradeable portfolio (portfolio-discovery
-// bug — a wrapped position rendered as a normal row with a Close that fails on-chain).
-const PORTFOLIO_OWNER_OFF = 116;
+// The TAKER's own-portfolio discovery (mutable owner @116, not provenanceOwner@80)
+// lives in lib/owner-portfolio.ts.
 
 // PortfolioMatcherConfigV16 is appended after the portfolio body.
 // PORTFOLIO_ENGINE_ACCOUNT_LEN = HEADER_LEN(16) + PORTFOLIO_STATE_LEN
@@ -119,10 +127,12 @@ function readPortfolioOwner(data: Buffer): PublicKey {
 
 /**
  * Find the v17 standalone portfolio account for a given (market, owner) pair.
- * Uses getProgramAccounts with memcmp filters on magic, market_group_id, and owner.
- * Returns null if no portfolio exists for this user on this market.
+ * `null` ONLY when the scan completed and found none; an RPC failure is retried
+ * and then thrown as PortfolioLookupError (M-4 — a swallowed 429 used to read as
+ * "no account" and the first-trade flow created a duplicate portfolio). The
+ * selector is the shared one in lib/owner-portfolio.ts.
  *
- * Shared with useDeposit — kept co-located here to avoid a cross-hook import.
+ * Shared with useFirstTrade / useClosePosition.
  */
 export async function findV17Portfolio(
   connection: Connection,
@@ -130,36 +140,7 @@ export async function findV17Portfolio(
   marketPk: PublicKey,
   ownerPk: PublicKey,
 ): Promise<PublicKey | null> {
-  try {
-    const accounts = await connection.getProgramAccounts(programId, {
-      filters: [
-        { memcmp: { offset: 0, bytes: V17_PORTFOLIO_MAGIC.toString("base64"), encoding: "base64" } },
-        { memcmp: { offset: PORTFOLIO_PROVENANCE_MARKET_GROUP_OFF, bytes: marketPk.toBase58() } },
-        { memcmp: { offset: PORTFOLIO_OWNER_OFF, bytes: ownerPk.toBase58() } },
-      ],
-    });
-    // Drop the market's LP portfolio BEFORE the sort/pick below — this is
-    // the TAKER's own-portfolio discovery (accountA); a market's CREATOR must
-    // never resolve to their own LP here (that's accountB's job, resolved
-    // separately in resolveV17TradeAccounts). See isLpPortfolio's doc comment.
-    const nonLpAccounts = accounts.filter(({ account }) => !isLpPortfolio(account.data));
-    if (nonLpAccounts.length === 0) return null;
-
-    // getProgramAccounts() does not guarantee stable result ordering.
-    // Use the same canonical pubkey ordering as deposit and withdraw
-    // so every owner+market flow targets the same portfolio account.
-    const sorted = [...nonLpAccounts].sort((a, b) =>
-      a.pubkey.toBase58().localeCompare(b.pubkey.toBase58()),
-    );
-    // Defense-in-depth: re-verify the mutable owner actually matches after fetch —
-    // memcmp filters are advisory server-side; don't trust them blindly.
-    const data = Buffer.from(sorted[0].account.data);
-    const portfolio = parsePortfolioV17(data);
-    if (!portfolio.owner.equals(ownerPk)) return null;
-    return sorted[0].pubkey;
-  } catch {
-    return null;
-  }
+  return findOwnerPortfolio(connection, programId, marketPk, ownerPk);
 }
 
 // ============================================================================
@@ -602,7 +583,7 @@ export function useTrade(slabAddress: string) {
 
         // v18: TradeCpi/BatchTradeCpi bind both portfolios' identity + accountB's matcher
         // sequence + the asset marketId (lib/trade-ix.ts; shared with the first-trade flow).
-        const tradeIxs = buildTradeIxs({
+        const tradeIxParams = {
           programId,
           signer: wallet.publicKey,
           market: slabPk,
@@ -619,7 +600,8 @@ export function useTrade(slabAddress: string) {
           limitPriceE6: effectiveLimitPriceE6,
           feeBps: params.feeBps,
           marketTradeFeeBps: wrapperConfigV17?.tradeFeeBps,
-        });
+        };
+        const tradeIxs = buildTradeIxs(tradeIxParams);
         // v17 PermissionlessCrank (tag 5) on the TAKER's portfolio: [owner(s,w), market(w),
         // portfolio(w)] + oracle tail. NEVER in the trade's own transaction: crank + trade in
         // one tx fails the trade with Custom(21) EngineLockActive most of the time while the
@@ -667,7 +649,8 @@ export function useTrade(slabAddress: string) {
           const takerWallet = wallet.publicKey;
           const plan = await planTakerCrank(
             (ixs) => simulateForGate(connection, takerWallet, ixs),
-            tradeIxs,
+            // M-2: a split over one tx's budget is judged on what fits ONE tx (the first legs).
+            legs.length > SINGLE_TX_MAX_LEGS ? tradeIxs.slice(0, SINGLE_TX_MAX_LEGS) : tradeIxs,
             crankIx,
             2, // simulateForGate's heap-frame + CU-limit prefix
           );
@@ -689,33 +672,67 @@ export function useTrade(slabAddress: string) {
             data: encodePermissionlessCrank({ nowSlot: 0n, observations: defaultCrankObservations(0) }),
           }));
         }
-        instructions.push(...tradeIxs);
+        let sig: string;
+        if (isV17Market && legs.length > SINGLE_TX_MAX_LEGS) {
+          // M-2: more legs than one transaction's 1.4M CU can carry. Pack them into as many
+          // transactions as the budget needs, simulate every one before signing (re-planning
+          // with fewer legs per tx on compute exhaustion), sign ALL with one approval, then
+          // broadcast in order (lib/trade-leg-groups.ts). `instructions` holds nothing on v17
+          // (the taker crank never shares the trade's tx, lib/taker-crank.ts); kept generic.
+          if (getMaintenanceConfig().blockWrites) throw new MaintenanceError();
+          const owner = wallet.publicKey;
+          const prepend = [...instructions];
+          const [{ blockhash }, priorityFee] = await Promise.all([
+            connection.getLatestBlockhash("confirmed"),
+            getPriorityFee(connection),
+          ]);
+          const sent = await sendLegGroups(
+            {
+              legs,
+              buildGroupIxs: (group, i) => [
+                ...(i === 0 ? prepend : []),
+                ...buildTradeIxs({ ...tradeIxParams, legs: group, size: group.reduce((a, b) => a + b, 0n) }),
+              ],
+            },
+            {
+              simulate: (ixs) => simulateForGate(connection, owner, ixs),
+              refusal: (sim) => new SimulationRefusal(sim.err, sim.logs, sim.simulated),
+              buildTx: (ixs, computeUnits) =>
+                buildBatchTx({ instructions: ixs, computeUnits, priorityFeeMicroLamports: priorityFee, blockhash, feePayer: owner }),
+              signAll: (txs) => signAllCompat(wallet, txs),
+              broadcast: (tx) => broadcastSignedTx(connection, tx, { abortSignal: params.abortSignal }),
+            },
+          );
+          sig = sent.signatures[sent.signatures.length - 1];
+        } else {
+          instructions.push(...tradeIxs);
 
-        // Explicit limit sized from a simulation of THIS tx (P1: CPI trades cost ~13k more CU;
-        // a single-leg batch on asset 1 is 216k > the 200k default), capped at 400k per leg
-        // (lib/compute-budget.ts). Also used by closes (useClosePosition calls trade()).
-        const sig = await sendTxWaiting({
-          connection, wallet, instructions,
-          onWaiting: params.onWaiting,
-          abortSignal: params.abortSignal,
-          keepWaiting: params.keepWaiting,
-          onWaitingLong: params.onWaitingLong,
-          computeUnitsFromSim: { cap: tradeCuCap(legs.length) },
-          // P0b: prepend ExpireBackingBucket / FinalizeResetSide only if this
-          // trade/close would otherwise revert 19/21 on them (lib/self-heal.ts).
-          // UX WP-2 (SH-2): a lagging engine clock is caught up by cranking the market's LP
-          // (accountB; the vault LP on P3) inside THIS tx — never "ask a maintainer".
-          selfHeal: isV17Market
-            ? {
-                programId,
-                market: slabPk,
-                catchUp: {
-                  portfolio: accountB,
-                  oracleTail: useAdminOracle ? [] : [{ pubkey: oracleAccount, isSigner: false, isWritable: false }],
-                },
-              }
-            : undefined,
-        });
+          // Explicit limit sized from a simulation of THIS tx (P1: CPI trades cost ~13k more CU;
+          // a single-leg batch on asset 1 is 216k > the 200k default), capped at 400k per leg
+          // (lib/compute-budget.ts). Also used by closes (useClosePosition calls trade()).
+          sig = await sendTxWaiting({
+            connection, wallet, instructions,
+            onWaiting: params.onWaiting,
+            abortSignal: params.abortSignal,
+            keepWaiting: params.keepWaiting,
+            onWaitingLong: params.onWaitingLong,
+            computeUnitsFromSim: { cap: tradeCuCap(legs.length) },
+            // P0b: prepend ExpireBackingBucket / FinalizeResetSide only if this
+            // trade/close would otherwise revert 19/21 on them (lib/self-heal.ts).
+            // UX WP-2 (SH-2): a lagging engine clock is caught up by cranking the market's LP
+            // (accountB; the vault LP on P3) inside THIS tx — never "ask a maintainer".
+            selfHeal: isV17Market
+              ? {
+                  programId,
+                  market: slabPk,
+                  catchUp: {
+                    portfolio: accountB,
+                    oracleTail: useAdminOracle ? [] : [{ pubkey: oracleAccount, isSigner: false, isWritable: false }],
+                  },
+                }
+              : undefined,
+          });
+        }
 
         // Immediate local application of the confirmed fill: sendTx's
         // pollConfirmation has ALREADY verified this tx landed on-chain by
@@ -764,6 +781,11 @@ export function useTrade(slabAddress: string) {
             // retry with the same wrong leg split.
             invalidateMatcherCaps(slabProgramId, new PublicKey(slabAddress));
           } catch { /* malformed address — nothing cached */ }
+        }
+        // M-2: part of a multi-transaction order landed — re-read so the position is current.
+        if (e instanceof PartialLegSendError) {
+          refreshSlab?.();
+          [1200, 2200, 3500].forEach((ms) => setTimeout(() => refreshSlab?.(), ms));
         }
         const msg = e instanceof Error ? e.message : String(e);
         if (mountedRef.current) setError(msg);

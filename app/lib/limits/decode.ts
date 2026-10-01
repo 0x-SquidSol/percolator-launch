@@ -46,6 +46,9 @@ export interface MarketEngineView {
   oiEffShortQ: bigint;
   modeLong: number;
   modeShort: number;
+  /** Side reset epochs; a leg whose `epoch_snap` differs is from before a reset (M-3). */
+  epochLong: bigint;
+  epochShort: bigint;
   /** Money + epoch fields for the P3 vault valuation (harvestable fees, cert currency). */
   vaultAtoms: bigint;
   insuranceAtoms: bigint;
@@ -94,6 +97,8 @@ export function decodeMarketEngineView(d: Uint8Array, assetIndex = 0): MarketEng
     oiEffShortQ: u128(d, e + C.A_OI_EFF_SHORT_Q),
     modeLong: d[e + C.A_MODE_LONG],
     modeShort: d[e + C.A_MODE_SHORT],
+    epochLong: u64(d, e + C.A_EPOCH_LONG),
+    epochShort: u64(d, e + C.A_EPOCH_SHORT),
     vaultAtoms: u128(d, g + C.H_VAULT),
     insuranceAtoms: u128(d, g + C.H_INSURANCE),
     sourceInsuranceCreditReservedTotal: u128(d, g + C.H_SOURCE_INSURANCE_CREDIT_RESERVED_TOTAL),
