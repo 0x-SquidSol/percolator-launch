@@ -115,8 +115,14 @@ function mergeCandles(...batches: CandleData[][]): CandleData[] {
  */
 export function useTokenChart(
   mintAddress: string | null | undefined,
-  timeframe: Timeframe = "1d"
+  timeframe: Timeframe = "1d",
+  /** The market whose chart this is: its REGISTERED pool is used, never a re-resolved "best" pool. */
+  slabAddress?: string | null,
 ): UseTokenChartResult {
+  const slab = slabAddress ?? "";
+  const slabRef = useRef(slab);
+  slabRef.current = slab;
+  const venueQs = () => (slabRef.current ? `&slab=${encodeURIComponent(slabRef.current)}` : "");
   const [candles, setCandles] = useState<CandleData[]>([]);
   const [poolAddress, setPoolAddress] = useState<string | null>(null);
   const [status, setStatus] = useState<ChartDataStatus>("idle");
@@ -163,7 +169,7 @@ export function useTokenChart(
 
   const fetchData = useCallback(
     async (mint: string, tf: Timeframe) => {
-      const key = `${mint}:${tf}`;
+      const key = `${mint}:${tf}:${slabRef.current}`;
       fetchKeyRef.current = key;
 
       // Stale-while-revalidate: paint any cached bars for this (mint,
@@ -186,7 +192,7 @@ export function useTokenChart(
       }
 
       const { timeframe: apiTf, aggregate, limit } = TIMEFRAME_TO_API[tf];
-      const url = `/api/chart/${mint}?timeframe=${apiTf}&aggregate=${aggregate}&limit=${limit}`;
+      const url = `/api/chart/${mint}?timeframe=${apiTf}&aggregate=${aggregate}&limit=${limit}${venueQs()}`;
 
       try {
         const res = await fetch(url);
@@ -244,7 +250,7 @@ export function useTokenChart(
   const loadOlder = useCallback(() => {
     const mint = mintAddress;
     if (!mint) return;
-    const key = `${mint}:${timeframe}`;
+    const key = `${mint}:${timeframe}:${slabRef.current}`;
     // Stale caller (e.g. a range-change event that fired just after a
     // mint/timeframe switch) — the fetch effect below will do its own initial
     // fetch for the new key; loadOlder for the old one no longer applies.
@@ -267,7 +273,7 @@ export function useTokenChart(
     // GeckoTerminal's before_timestamp is unix SECONDS; our candle timestamps
     // are unix ms (see CandleData).
     const beforeSeconds = Math.floor(oldest / 1000);
-    const url = `/api/chart/${mint}?timeframe=${apiTf}&aggregate=${aggregate}&limit=${limit}&before=${beforeSeconds}`;
+    const url = `/api/chart/${mint}?timeframe=${apiTf}&aggregate=${aggregate}&limit=${limit}&before=${beforeSeconds}${venueQs()}`;
 
     fetch(url)
       .then(async (res) => {
@@ -315,7 +321,7 @@ export function useTokenChart(
         isLoadingOlderRef.current = false;
         setIsLoadingOlder(false);
       });
-  }, [mintAddress, timeframe, poolAddress]);
+  }, [mintAddress, timeframe, poolAddress, slab]);
 
   // Initial fetch + timeframe changes
   useEffect(() => {
@@ -337,7 +343,7 @@ export function useTokenChart(
     // than inside fetchData (which also runs on every 60s poll of the SAME
     // key, where resetting isLoadingOlderRef would defeat the in-flight
     // guard above if a poll happened to land mid-loadOlder).
-    const key = `${mintAddress}:${timeframe}`;
+    const key = `${mintAddress}:${timeframe}:${slab}`;
     isLoadingOlderRef.current = false;
     setIsLoadingOlder(false);
     setHasMoreHistory(!exhaustedHistoryKeys.has(key));
@@ -359,11 +365,11 @@ export function useTokenChart(
     return pollWhenVisible(() => {
       if (statusRef.current !== "success") fetchData(mintAddress, timeframe);
     }, EMPTY_RETRY_INTERVAL_MS);
-  }, [mintAddress, timeframe, fetchData]);
+  }, [mintAddress, timeframe, fetchData, slab]);
 
   const refresh = useCallback(() => {
     if (mintAddress) fetchData(mintAddress, timeframe);
-  }, [mintAddress, timeframe, fetchData]);
+  }, [mintAddress, timeframe, fetchData, slab]);
 
   return { candles, poolAddress, status, error, refresh, loadOlder, isLoadingOlder, hasMoreHistory };
 }

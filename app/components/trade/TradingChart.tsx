@@ -367,7 +367,7 @@ const TradingChartInner: FC<{ slabAddress: string; mintAddress?: string }> = ({
     // supports `before_timestamp` paging today — see the range-change
     // effect below for why the other sources are excluded.
     loadOlder: loadOlderExternal,
-  } = useTokenChart(mintAddress ?? null, timeframe);
+  } = useTokenChart(mintAddress ?? null, timeframe, slabAddress);
   // Read through a ref inside the chart-level range-change handler below —
   // that subscription is registered once per chart lifetime (keyed off
   // chartReady, not timeframe/mint), so it must not close over a stale
