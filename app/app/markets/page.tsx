@@ -33,6 +33,7 @@ import { MAX_HEALTH_SLABS } from "@/lib/market-health";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { detectOracleMode, resolveMarketPriceE6, priceE6ToUsd, sanitizePriceE6, applyInvert } from "@/lib/oraclePrice";
 import { subscribeSlab, getSnapshot } from "@/lib/priceStore/priceStore";
+import { usePriceFlash } from "@/hooks/usePriceFlash";
 import { formatStatValue } from "@/lib/format";
 import { qToUsd, Q_DECIMALS, rowVolumeUsd } from "@/lib/q-usd";
 import { MIN_VAULT_FOR_OI } from "@/lib/phantom-oi";
@@ -99,8 +100,22 @@ function resolveDiscoveredPriceE6(oc: DiscoveredMarket): bigint {
 const LiveRowPrice: FC<{ slab: string; fallback: number | null }> = ({ slab, fallback }) => {
   const subscribe = useCallback((cb: () => void) => subscribeSlab(slab, cb), [slab]);
   const getSnap = useCallback(() => getSnapshot(slab).priceUsd, [slab]);
+  const getE6 = useCallback(() => getSnapshot(slab).priceE6, [slab]);
   const live = useSyncExternalStore(subscribe, getSnap, () => null);
-  return <>{formatUsdFromNumber(live ?? fallback)}</>;
+  // The classic perp-DEX tick flash — green on an up-tick, red on a down-tick,
+  // easing back to neutral — read off the exact e6 tick value (not the rounded
+  // USD float) via the same usePriceFlash the trade page's mark uses. Only the
+  // LIVE (WS) price flashes; the static fallback snapshot stays neutral. The
+  // resting class is empty so the cell keeps the row's own price color, and only
+  // a flash overrides it, then transitions back.
+  const liveE6 = useSyncExternalStore(subscribe, getE6, () => null);
+  const flash = usePriceFlash(liveE6);
+  const flashColor = flash === "up" ? "text-[var(--long)]" : flash === "down" ? "text-[var(--short)]" : "";
+  return (
+    <span className={`transition-colors duration-300 ease-out ${flashColor}`}>
+      {formatUsdFromNumber(live ?? fallback)}
+    </span>
+  );
 };
 
 function isPlaceholderMarketSymbol(sym: string | null | undefined, addresses: Array<string | null | undefined>): boolean {
