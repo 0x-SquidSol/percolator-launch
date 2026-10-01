@@ -121,14 +121,15 @@ describe("deriveMatcherLimits — never 0, never overflows (negative controls)",
   });
 
   it("naive formula WOULD give 0 for a tiny LP (control: proves the guard is doing work)", () => {
-    const naive = ((1n * 2n * 40n) / 100n * 1_000_000n) / 1_000_000n; // = 0
+    const naive = ((1n * 2_500n) / 10_000n * 1_000_000n) / 1_000_000n; // 1 atom at 0.25x = 0
     expect(naive).toBe(0n);
-    expect(deriveMatcherLimits(2, 1n, 1_000_000n).maxInventoryAbs).toBe(1n);
+    expect(deriveMatcherLimits(2, 1n, 1_000_000n, 2_500).maxInventoryAbs).toBe(1n);
   });
 
   it("matches the documented formula for a normal market", () => {
     const m = deriveMatcherLimits(5, 1_000_000_000n, 150_000_000n);
-    expect(m.maxInventoryAbs).toBe(((1_000_000_000n * 5n * 40n) / 100n * 1_000_000n) / 150_000_000n);
+    // Default position limit: 1x the LP seed, independent of leverage.
+    expect(m.maxInventoryAbs).toBe((1_000_000_000n * 1_000_000n) / 150_000_000n);
     expect(m.maxFillAbs).toBe(m.maxInventoryAbs / 4n);
     expect(m.liquidityNotionalE6).toBe(5_000_000_000n);
   });

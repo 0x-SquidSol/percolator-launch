@@ -208,7 +208,7 @@ export function leverageFromMarginBps(initialMarginBps: number): number {
   return Math.floor(exact * 10) / 10;
 }
 
-import { deriveMatcherLimits, type MatcherLimits } from "@/lib/matcher-params";
+import { LP_EXPOSURE_DEFAULT_BPS, deriveMatcherLimits, type MatcherLimits } from "@/lib/matcher-params";
 
 export interface DerivedMarketParams {
   /** Full matcher config (kind 1 vAMM + caps + skew); see lib/matcher-params.ts. */
@@ -252,11 +252,14 @@ export function maxPriceMoveForMaintenanceBps(maintenanceBps: number): number {
  * @param leverageX        creator's choice, clamped to [2, 10]
  * @param lpCollateralAtoms  what the creator seeds the LP portfolio with
  * @param initialPriceE6   opening price, used to convert notional -> base q
+ * @param lpExposureBps    max one-sided LP exposure, bps of the LP seed (default 1x,
+ *                         clamped to [0.25x, 2x]; see lib/matcher-params.ts)
  */
 export function deriveMarketParams(
   leverageX: number,
   lpCollateralAtoms: bigint,
   initialPriceE6: bigint,
+  lpExposureBps: number = LP_EXPOSURE_DEFAULT_BPS,
 ): DerivedMarketParams {
   const lev = clampLeverage(leverageX);
   // Round margin UP so the realised leverage never EXCEEDS what was asked for
@@ -268,9 +271,9 @@ export function deriveMarketParams(
 
   // ── LP guardrails ────────────────────────────────────────────────────────
   // Formulas, guards (never 0, <= i128::MAX) and source citations live in
-  // lib/matcher-params.ts. Inventory cap = 40% of LP capacity (collateral x
-  // leverage) in base units; one fill <= a quarter of that.
-  const matcher = deriveMatcherLimits(Math.floor(lev), lpCollateralAtoms, initialPriceE6);
+  // lib/matcher-params.ts. Inventory cap = LP seed x lpExposureBps (1x default)
+  // in base units at the opening price; one fill <= a quarter of that.
+  const matcher = deriveMatcherLimits(Math.floor(lev), lpCollateralAtoms, initialPriceE6, lpExposureBps);
   const { maxInventoryAbs, maxFillAbs, skewSpreadMultBps } = matcher;
 
   return {
@@ -285,4 +288,23 @@ export function deriveMarketParams(
     skewSpreadMultBps,
     estimatedFreezeSecondsFor26PctMove: Math.round((2600 / maxPriceMoveBpsPerSlot) * 0.4),
   };
+}
+
+/**
+ * The one derivation every create path runs on the launch params (merged batch and
+ * sequential/recovery in hooks/useCreateMarket.ts), so the creator's position limit
+ * reaches the matcher identically on both. `lpExposureBps` omitted = 1x the LP seed.
+ */
+export function deriveLaunchMarketParams(p: {
+  initialMarginBps: number;
+  lpCollateral: bigint;
+  initialPriceE6: bigint;
+  lpExposureBps?: number;
+}): DerivedMarketParams {
+  return deriveMarketParams(
+    p.initialMarginBps > 0 ? 10_000 / p.initialMarginBps : MIN_LEVERAGE_X,
+    p.lpCollateral,
+    p.initialPriceE6,
+    p.lpExposureBps ?? LP_EXPOSURE_DEFAULT_BPS,
+  );
 }

@@ -5,8 +5,10 @@ import { FC, useMemo } from "react";
 import { RotaryDial } from "./RotaryDial";
 import { HoldToLaunch } from "./HoldToLaunch";
 import { MAX_LEVERAGE_X, MIN_LEVERAGE_X } from "@/lib/market-params";
+import { LP_EXPOSURE_DEFAULT_BPS } from "@/lib/matcher-params";
 import { FeeBreakdown } from "@/components/FeeBreakdown";
 import { WizardTranchePanel } from "@/components/limits/CreatorLimits";
+import { PositionLimit } from "./PositionLimit";
 
 /**
  * GH#2621: this dial used to floor initial margin at the OLD
@@ -83,6 +85,11 @@ export interface StepControlRoomProps {
   /** P3 wizard: junior floor bps + setter (the panel renders only when the P3 wizard is on). */
   juniorFloorBps?: number;
   onJuniorFloorChange?: (bps: number) => void;
+  /** Largest one-sided LP position, bps of the liquidity (lib/matcher-params.ts); default 1x. */
+  lpExposureBps?: number;
+  onLpExposureChange?: (bps: number) => void;
+  /** P3 launch: the protocol pins the limit, so it is shown read-only. */
+  p3?: boolean;
 
   onLaunch: () => void;
   launchDisabled?: boolean;
@@ -130,6 +137,9 @@ export const StepControlRoom: FC<StepControlRoomProps> = ({
   onInsuranceChange,
   juniorFloorBps,
   onJuniorFloorChange,
+  lpExposureBps,
+  onLpExposureChange,
+  p3,
   onLaunch,
   launchDisabled,
   launchDisabledReason,
@@ -212,6 +222,13 @@ export const StepControlRoom: FC<StepControlRoomProps> = ({
           {MAX_LEVERAGE}×, set by how much price-move headroom the protocol can guarantee at
           that margin.
         </p>
+        <PositionLimit
+          liquidity={lp}
+          exposureBps={lpExposureBps ?? LP_EXPOSURE_DEFAULT_BPS}
+          onChange={onLpExposureChange}
+          collateralSymbol={collateralSymbol}
+          fixedByProtocol={p3}
+        />
         {/* P3 (flag-gated): the liquidity above is the creator's junior, first-loss tranche. */}
         <WizardTranchePanel
           juniorUnits={lp}
