@@ -16,8 +16,6 @@ import {
   deriveMatcherDelegate,
   isV17Account,
   parsePortfolioV17,
-  V17_PORTFOLIO_IDENTITY_TRAILER_LEN,
-  decodePortfolioMatcherControl,
 } from "@percolatorct/sdk";
 // TODO(oracle-migration): encodePushOraclePrice/ACCOUNTS_PUSH_ORACLE_PRICE removed in beta.29.
 // The DEX oracle inline push path needs to migrate to /api/oracle/advance-phase.
@@ -28,6 +26,7 @@ import {
 import { sendTx, sendTxWaiting, prewarmTxLanding, simulateForGate } from "@/lib/tx";
 import { planTakerCrank } from "@/lib/taker-crank";
 import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
+import { resolveMarketLp } from "@/lib/market-lp";
 import { applyConfirmedFill, getPortfolioRawSnapshot, isLpPortfolio, makePortfolioScanKey } from "@/lib/userAccountScan";
 import { limitsFlags } from "@/lib/limits/flags";
 import { decodeMarketEngineView, signedPositionForAsset } from "@/lib/limits/decode";
@@ -56,11 +55,8 @@ const V17_PORTFOLIO_MAGIC = Buffer.from([0x00, 0x36, 0x31, 0x56, 0x43, 0x52, 0x4
 // market_group_id is at HEADER_LEN(16) + provenance.market_group_id(0) = 16
 // portfolio_account_id is at HEADER_LEN(16) + 32 = 48
 // provenanceOwner (IMMUTABLE — set at portfolio creation, never changes) is at
-// HEADER_LEN(16) + 64 = 80. Used below ONLY for readPortfolioOwner (LP owner for
-// matcherDelegate derivation) — that must keep reading the same offset SetMatcherConfig
-// used, regardless of any later NFT-wrap on the LP's own portfolio.
+// HEADER_LEN(16) + 64 = 80 (lib/market-lp.ts reads it for the LP's delegate derivation).
 const PORTFOLIO_PROVENANCE_MARKET_GROUP_OFF = 16; // offset 16 in raw account data
-const PORTFOLIO_PROVENANCE_OWNER_OFF = 80;        // offset 80 in raw account data
 
 // Mutable owner (SDK PF_OWNER_OFF) — HEADER_LEN(16) + provenance(100) = offset 116.
 // MintPositionNft moves this to the escrow PDA on wrap, leaving provenanceOwner@80
@@ -70,52 +66,7 @@ const PORTFOLIO_PROVENANCE_OWNER_OFF = 80;        // offset 80 in raw account da
 // bug — a wrapped position rendered as a normal row with a Close that fails on-chain).
 const PORTFOLIO_OWNER_OFF = 116;
 
-// PortfolioMatcherConfigV16 is appended after the portfolio body.
-// PORTFOLIO_ENGINE_ACCOUNT_LEN = HEADER_LEN(16) + PORTFOLIO_STATE_LEN
-// PORTFOLIO_MATCHER_CONFIG_OFF = PORTFOLIO_ENGINE_ACCOUNT_LEN
-// Layout: matcher_program[32] | matcher_context[32] | matcher_delegate[32] | enabled[8] = 104 bytes
-// From v16_program.rs: PORTFOLIO_MATCHER_CONFIG_OFF and PORTFOLIO_MATCHER_CONFIG_LEN=104
-//
-// NOTE: PORTFOLIO_STATE_LEN is not stable — derive the offset from the account data length
-// minus 104 bytes (the matcher config size). The program always appends this at the end.
-const PORTFOLIO_MATCHER_CONFIG_LEN = 104; // sizeof(PortfolioMatcherConfigV16)
-
-/**
- * Read PortfolioMatcherConfigV16 from a v17 portfolio account.
- * The config is at the END of the account data, PORTFOLIO_MATCHER_CONFIG_LEN bytes before the end.
- * Returns null if the account is too short or matcher is disabled (enabled != 1).
- */
-function readPortfolioMatcherConfig(data: Buffer): {
-  matcherProgram: PublicKey;
-  matcherContext: PublicKey;
-  matcherDelegate: PublicKey;
-} | null {
-  // v18: the matcher config is followed by a `V17_PORTFOLIO_IDENTITY_TRAILER_LEN`-byte
-  // identity trailer, so anchor off the end minus BOTH the trailer and the config.
-  if (!isPortfolioAccount(data)) return null; // F-3: never the Earn registry / ledgers
-  const trailerLen = V17_PORTFOLIO_IDENTITY_TRAILER_LEN;
-  if (data.length < PORTFOLIO_MATCHER_CONFIG_LEN + trailerLen) return null;
-  const off = data.length - PORTFOLIO_MATCHER_CONFIG_LEN - trailerLen;
-  // `data` is a Uint8Array in the browser (web3.js) — it has no Buffer.readBigUInt64LE,
-  // and Next's Buffer polyfill is missing the BigInt read methods. Use DataView (works
-  // for both Buffer and Uint8Array). LE = true.
-  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  // v18: the trailing u64 is a packed control word (bit 0 = enabled).
-  if (!decodePortfolioMatcherControl(dv.getBigUint64(off + 96, true)).enabled) return null;
-  return {
-    matcherProgram: new PublicKey(data.subarray(off, off + 32)),
-    matcherContext: new PublicKey(data.subarray(off + 32, off + 64)),
-    matcherDelegate: new PublicKey(data.subarray(off + 64, off + 96)),
-  };
-}
-
-/**
- * Read the LP owner public key from a v17 portfolio account provenance header.
- * The owner wallet is at offset 80 in the raw account data.
- */
-function readPortfolioOwner(data: Buffer): PublicKey {
-  return new PublicKey(data.subarray(PORTFOLIO_PROVENANCE_OWNER_OFF, PORTFOLIO_PROVENANCE_OWNER_OFF + 32));
-}
+// The LP side (accountB) and its matcher config are read in lib/market-lp.ts.
 
 /**
  * Find the v17 standalone portfolio account for a given (market, owner) pair.
@@ -211,84 +162,47 @@ export async function resolveLpTradeAccounts(
   programId: PublicKey,
   slabPk: PublicKey,
 ): Promise<Omit<V17TradeAccounts, "accountA">> {
-  // ── accountB: the LP portfolio (the one with an enabled matcher config) ──
-  // Curated markets have the LP portfolio address pinned in
-  // PLAYGROUND_SLAB_META — one targeted getAccountInfo instead of a full
-  // program scan. Wizard/unknown markets fall back to the scan.
-  let lpPortfolioData: Buffer | null = null;
-  let lpPortfolioPk: PublicKey | null = null;
-
-  const knownLp = PLAYGROUND_SLAB_META[slabPk.toBase58()]?.lp_portfolio_address;
-  if (knownLp) {
-    try {
-      const lpPk = new PublicKey(knownLp);
-      const info = await connection.getAccountInfo(lpPk, "confirmed");
-      if (info) {
-        const data = Buffer.from(info.data);
-        if (readPortfolioMatcherConfig(data)) {
-          lpPortfolioData = data;
-          lpPortfolioPk = lpPk;
-        }
-      }
-    } catch {
-      /* fall through to the scan */
-    }
+  // accountB is the market's LP chosen by ON-CHAIN IDENTITY (lib/market-lp.ts): the bound
+  // P3 vault LP, else the portfolio owned by asset 0's asset_admin, else the launch
+  // portfolio; and its matcher ctx must be bound to it (ctx.lp_pda == the derived
+  // delegate). NEVER "the first portfolio with an enabled matcher": anyone can enable a
+  // matcher on their own portfolio and would become every user's counterparty.
+  // Curated markets may pin the address in PLAYGROUND_SLAB_META (a cheap first try that
+  // must still pass every rule).
+  const known = PLAYGROUND_SLAB_META[slabPk.toBase58()]?.lp_portfolio_address;
+  let knownPk: PublicKey | null = null;
+  try {
+    knownPk = known ? new PublicKey(known) : null;
+  } catch {
+    knownPk = null;
   }
-
-  if (!lpPortfolioPk || !lpPortfolioData) {
-    // v17 LP portfolios are standalone keypair-addressed accounts (NOT PDAs);
-    // scan all portfolios for this market and select the first with an active
-    // matcher config. Intentionally NOT owner-filtered — the LP owner is a
-    // separate wallet, not the taker.
-    let allPortfolios;
-    try {
-      allPortfolios = await connection.getProgramAccounts(programId, {
-        filters: [
-          { memcmp: { offset: 0, bytes: V17_PORTFOLIO_MAGIC.toString("base64"), encoding: "base64" } },
-          { memcmp: { offset: PORTFOLIO_PROVENANCE_MARKET_GROUP_OFF, bytes: slabPk.toBase58() } },
-        ],
-      });
-    } catch (scanErr) {
-      throw new Error(
-        `Failed to scan LP portfolio accounts on-chain: ${scanErr instanceof Error ? scanErr.message : String(scanErr)}`,
-      );
-    }
-    for (const { pubkey, account } of allPortfolios) {
-      const data = Buffer.from(account.data);
-      const cfg = readPortfolioMatcherConfig(data);
-      if (cfg) {
-        lpPortfolioData = data;
-        lpPortfolioPk = pubkey;
-        break;
-      }
-    }
+  let lp;
+  try {
+    lp = await resolveMarketLp(connection, programId, slabPk, knownPk);
+  } catch (scanErr) {
+    throw new Error(
+      `Failed to scan LP portfolio accounts on-chain: ${scanErr instanceof Error ? scanErr.message : String(scanErr)}`,
+    );
   }
-
-  if (!lpPortfolioPk || !lpPortfolioData) {
+  if (!lp) {
     throw new Error(
       "No LP portfolio with an active matcher config found for this market. " +
       "The LP must call SetMatcherConfig before trading.",
     );
   }
-
-  const matcherCfg = readPortfolioMatcherConfig(lpPortfolioData)!;
-  const matcherProg = matcherCfg.matcherProgram;
-  const matcherCtx = matcherCfg.matcherContext;
-  // SEC: matcherProg/matcherCtx come from the LP portfolio's on-chain matcher
-  // config — attacker-controlled for an attacker-created market. The trade ix
-  // places matcherProg as the executable CPI target [4] and matcherCtx as a
-  // writable account [5], so pin the matcher to the canonical one before we
-  // build a signable tx around it. Runs on every resolution, so cached values
-  // have passed this gate too.
-  assertCanonicalMatcher(matcherProg);
-
-  // Read LP owner from provenance header; derive matcherDelegate to match
-  // what SetMatcherConfig stored.
-  const lpOwner = readPortfolioOwner(lpPortfolioData);
-  const [matcherDelegate] = deriveMatcherDelegate(
-    programId, slabPk, lpPortfolioPk, lpOwner, matcherProg, matcherCtx,
-  );
-  return { accountB: lpPortfolioPk, matcherProg, matcherCtx, matcherDelegate };
+  // SEC: matcherProg/matcherCtx come from the LP portfolio's on-chain matcher config —
+  // attacker-controlled for an attacker-created market. The trade ix places matcherProg as
+  // the executable CPI target [4] and matcherCtx as a writable account [5], so pin the
+  // matcher to the canonical one before we build a signable tx around it. Runs on every
+  // resolution, so cached values have passed this gate too.
+  assertCanonicalMatcher(lp.matcherProg);
+  return {
+    accountB: lp.pubkey,
+    matcherProg: lp.matcherProg,
+    matcherCtx: lp.matcherCtx,
+    // Bound to the ctx by resolveMarketLp (== deriveMatcherDelegate(..., lp.owner, ...)).
+    matcherDelegate: lp.matcherDelegate,
+  };
 }
 
 export async function resolveV17TradeAccounts(
