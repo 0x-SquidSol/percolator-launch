@@ -1,65 +1,32 @@
 import { NextResponse } from "next/server";
-import { getBackendUrl } from "@/lib/config";
 import * as Sentry from "@sentry/nextjs";
+import { loadMergedMarketRows } from "@/lib/market-registry";
 
 export const dynamic = "force-dynamic";
 
 const NO_STORE = { "Cache-Control": "private, no-store" } as const;
 
 /**
- * GET /api/prices/markets
+ * GET /api/prices/markets — { [slabAddress]: { priceE6: string } }.
  *
- * Proxies the backend /prices/markets endpoint and transforms the response
- * into the map format expected by useTrade.ts and useWithdraw.ts:
- *
- *   { [slabAddress]: { priceE6: string } }
- *
- * Backend returns: { markets: [{ slab_address, last_price, mark_price, ... }] }
- * where last_price is in USD (e.g. 100.50). We convert to e6 integer strings.
+ * Was a proxy to the retired percolator-api /prices/markets. Now built from the same registry +
+ * live on-chain read /api/markets uses (lib/market-registry.ts loadMergedMarketRows: only the
+ * current wrapper's markets, mark price read from each slab). Price preference unchanged:
+ * mark, then last, then index; USD -> e6 integer string.
  */
 export async function GET() {
   try {
-    const backendUrl = getBackendUrl();
-    const res = await fetch(`${backendUrl}/prices/markets`, {
-      headers: { "Content-Type": "application/json" },
-      // Short timeout — this is called inline during trades
-      signal: AbortSignal.timeout(5000),
-    });
-
-    if (!res.ok) {
-      return NextResponse.json(
-        { error: `Backend returned ${res.status}` },
-        { status: res.status, headers: NO_STORE },
-      );
-    }
-
-    const data = await res.json() as {
-      markets?: Array<{
-        slab_address: string;
-        last_price: number | null;
-        mark_price: number | null;
-        index_price: number | null;
-      }>;
-    };
-
-    // Transform array → map keyed by slab address
-    // Prefer mark_price (real-time) over last_price (indexed), fall back to index_price
+    const rows = await loadMergedMarketRows();
+    if (rows === null) return NextResponse.json({ error: "Market registry unavailable" }, { status: 503, headers: NO_STORE });
     const result: Record<string, { priceE6: string }> = {};
-    for (const market of data.markets ?? []) {
-      const usdPrice = market.mark_price ?? market.last_price ?? market.index_price;
-      if (usdPrice != null && usdPrice > 0) {
-        // Convert USD float → e6 integer string (e.g. 100.5 → "100500000")
-        const priceE6 = Math.round(usdPrice * 1_000_000).toString();
-        result[market.slab_address] = { priceE6 };
-      }
+    for (const m of rows) {
+      const slab = typeof m.slab_address === "string" ? m.slab_address : null;
+      const usd = [m.mark_price, m.last_price, m.index_price].map((v) => (v == null ? null : Number(v))).find((v) => v != null && Number.isFinite(v) && v > 0);
+      if (slab && usd != null) result[slab] = { priceE6: Math.round(usd * 1_000_000).toString() };
     }
-
     return NextResponse.json(result, { headers: NO_STORE });
   } catch (err) {
     Sentry.captureException(err, { tags: { endpoint: "/api/prices/markets" } });
-    return NextResponse.json(
-      { error: "Failed to fetch prices" },
-      { status: 502, headers: NO_STORE },
-    );
+    return NextResponse.json({ error: "Failed to load prices" }, { status: 500, headers: NO_STORE });
   }
 }

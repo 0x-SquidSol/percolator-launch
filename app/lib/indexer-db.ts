@@ -723,3 +723,16 @@ export interface FundingGlobalLocalEntry {
 export async function queryFundingGlobal(): Promise<FundingGlobalLocalEntry[]> {
   return [];
 }
+
+/** Liveness probe for /api/health: one trivial query, bounded. */
+export async function pingIndexerDb(timeoutMs = 3000): Promise<boolean> {
+  try {
+    await Promise.race([
+      getSql()`select 1`,
+      new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), timeoutMs)),
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
+}
