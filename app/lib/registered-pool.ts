@@ -12,6 +12,14 @@ import { PublicKey } from "@solana/web3.js";
 import { getServiceClient, getServerNetwork } from "@/lib/supabase";
 import { readRegisteredMarkets } from "@/lib/playground-registered-markets";
 
+/** The lookup itself failed (DB error / exception): NOT "unregistered", and never cached. */
+export class RegisteredPoolLookupError extends Error {
+  constructor(cause: unknown) {
+    super("registered pool lookup failed", { cause });
+    this.name = "RegisteredPoolLookupError";
+  }
+}
+
 export interface RegisteredPool {
   slabAddress: string;
   pool: string;
@@ -50,39 +58,44 @@ async function dexTypeFor(slab: string): Promise<string | null> {
 
 /**
  * The registered pool of the market at `slab`. When `mint` is given the row's mainnet CA must
- * match it (a slab can only vouch for its own token). null = not registered / unknown.
+ * match it (a slab can only vouch for its own token). null = not registered. Throws
+ * RegisteredPoolLookupError when the lookup fails (supabase-js RETURNS errors; never cached).
  */
 export async function registeredPoolForSlab(slab: string, mint?: string): Promise<RegisteredPool | null> {
   if (!validPubkey(slab)) return null;
   const key = `${slab}|${mint ?? ""}`;
   const hit = bySlab.get(key);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.v;
+  let data: unknown;
   try {
-    const { data, error } = await getServiceClient()
+    const res = await getServiceClient()
       .from("markets")
       .select("slab_address,dex_pool_address,mainnet_ca")
       .eq("slab_address", slab)
       .eq("network", getServerNetwork())
       .maybeSingle();
-    const row = data as { slab_address: string; dex_pool_address: string | null; mainnet_ca: string | null } | null;
-    if (error || !row || !validPubkey(row.dex_pool_address)) return remember(bySlab, key, null);
-    if (mint && row.mainnet_ca !== mint) return remember(bySlab, key, null);
-    return remember(bySlab, key, { slabAddress: slab, pool: row.dex_pool_address, dexType: await dexTypeFor(slab) });
-  } catch {
-    return null; // not cached: a transient DB failure must not pin "unregistered"
+    if (res.error) throw res.error;
+    data = res.data;
+  } catch (e) {
+    throw new RegisteredPoolLookupError(e); // not cached: a DB blip must not pin "unregistered"
   }
+  const row = data as { slab_address: string; dex_pool_address: string | null; mainnet_ca: string | null } | null;
+  if (!row || !validPubkey(row.dex_pool_address)) return remember(bySlab, key, null);
+  if (mint && row.mainnet_ca !== mint) return remember(bySlab, key, null);
+  return remember(bySlab, key, { slabAddress: slab, pool: row.dex_pool_address, dexType: await dexTypeFor(slab) });
 }
 
 /**
  * The registered pool of the live (keeper-active) market for mainnet token `mint`, newest first.
- * null when no market is registered for it.
+ * null when no market is registered for it. Throws RegisteredPoolLookupError on a failed lookup.
  */
 export async function registeredPoolForMint(mint: string): Promise<RegisteredPool | null> {
   if (!validPubkey(mint)) return null;
   const hit = byMint.get(mint);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.v;
+  let data: unknown;
   try {
-    const { data, error } = await getServiceClient()
+    const res = await getServiceClient()
       .from("markets")
       .select("slab_address,dex_pool_address,created_at")
       .eq("mainnet_ca", mint)
@@ -90,12 +103,14 @@ export async function registeredPoolForMint(mint: string): Promise<RegisteredPoo
       .eq("keeper_status", "active")
       .order("created_at", { ascending: false })
       .limit(1);
-    const row = (data as Array<{ slab_address: string; dex_pool_address: string | null }> | null)?.[0];
-    if (error || !row || !validPubkey(row.dex_pool_address)) return remember(byMint, mint, null);
-    return remember(byMint, mint, { slabAddress: row.slab_address, pool: row.dex_pool_address, dexType: await dexTypeFor(row.slab_address) });
-  } catch {
-    return null;
+    if (res.error) throw res.error;
+    data = res.data;
+  } catch (e) {
+    throw new RegisteredPoolLookupError(e);
   }
+  const row = (data as Array<{ slab_address: string; dex_pool_address: string | null }> | null)?.[0];
+  if (!row || !validPubkey(row.dex_pool_address)) return remember(byMint, mint, null);
+  return remember(byMint, mint, { slabAddress: row.slab_address, pool: row.dex_pool_address, dexType: await dexTypeFor(row.slab_address) });
 }
 
 /** Test seam. */

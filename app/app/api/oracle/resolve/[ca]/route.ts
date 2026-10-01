@@ -209,7 +209,14 @@ export async function GET(
   const [jupResult, dexResult] = await sourceLookup;
   // A token that already has a live market resolves to THAT market's registered pool (the venue
   // the keeper prices it from), never a re-ranked "best" pair (lib/registered-pool.ts).
-  const registered = await registeredPoolForMint(ca);
+  // A failed lookup is not "unregistered": answer from the pairs for THIS request, uncached.
+  let registered: Awaited<ReturnType<typeof registeredPoolForMint>> = null;
+  let cacheable = true;
+  try {
+    registered = await registeredPoolForMint(ca);
+  } catch {
+    cacheable = false;
+  }
 
   // Best price: prefer DexScreener for memecoins, Jupiter as fallback
   const priceSource = dexResult ?? jupResult;
@@ -230,6 +237,7 @@ export async function GET(
     if (!bestDexType) {
       const classes = await classifyPoolsByOwner([registered.pool]);
       bestDexType = classes && isOfferable(classes[registered.pool]) ? (classes[registered.pool] as KeeperDexType) : null;
+      if (!classes) cacheable = false; // transient RPC failure: don't pin a null dexType
     }
   } else if (candidates.length > 0) {
     const classes = await classifyPoolsByOwner(candidates);
@@ -268,7 +276,7 @@ export async function GET(
     );
   }
 
-  // Cache and return
-  cache.set(ca, result);
+  // Cache and return (never a result built on a failed lookup)
+  if (cacheable) cache.set(ca, result);
   return NextResponse.json({ ...result, cached: false });
 }

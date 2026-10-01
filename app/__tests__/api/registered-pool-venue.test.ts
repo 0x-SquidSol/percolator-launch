@@ -12,15 +12,28 @@ const MINT = "9aqmJjCnnMQv42TXLk921ceUkN35nea2QP969n1caqjj";
 const REGISTERED = "21bzHy2kRoVKgtYZ8hFoetki2134MG2jyWGC49UV5pyi";
 const BEST = "7Nj7mBE7oGPRWCEoUzfbNVPgq12w3V5egHkfd4nvGkr6";
 
-const h = vi.hoisted(() => ({ row: null as null | { slab_address: string; dex_pool_address: string; mainnet_ca: string } }));
+const h = vi.hoisted(() => ({
+  row: null as null | { slab_address: string; dex_pool_address: string; mainnet_ca: string },
+  /** Next N queries return supabase-js's {data:null, error} shape (it does not throw). */
+  failNext: 0,
+  calls: 0,
+}));
 
 vi.mock("@/lib/supabase", () => {
   const q: Record<string, unknown> = {};
   const chain = () => q;
   Object.assign(q, {
     select: chain, eq: chain, order: chain,
-    maybeSingle: async () => ({ data: h.row, error: null }),
-    limit: async () => ({ data: h.row ? [h.row] : [], error: null }),
+    maybeSingle: async () => {
+      h.calls += 1;
+      if (h.failNext > 0) { h.failNext -= 1; return { data: null, error: { message: "timeout" } }; }
+      return { data: h.row, error: null };
+    },
+    limit: async () => {
+      h.calls += 1;
+      if (h.failNext > 0) { h.failNext -= 1; return { data: null, error: { message: "timeout" } }; }
+      return { data: h.row ? [h.row] : [], error: null };
+    },
   });
   return { getServerNetwork: () => "devnet", getServiceClient: () => ({ from: () => q }) };
 });
@@ -46,11 +59,13 @@ vi.mock("@/lib/gecko-fetch", () => ({
 
 import { GET as chartGET } from "@/app/api/chart/[mint]/route";
 import { GET as resolveGET } from "@/app/api/oracle/resolve/[ca]/route";
-import { __clearRegisteredPoolCache } from "@/lib/registered-pool";
+import { __clearRegisteredPoolCache, registeredPoolForSlab, registeredPoolForMint } from "@/lib/registered-pool";
 
 beforeEach(() => {
   __clearRegisteredPoolCache();
   h.row = { slab_address: SLAB, dex_pool_address: REGISTERED, mainnet_ca: MINT };
+  h.failNext = 0;
+  h.calls = 0;
   globalThis.fetch = vi.fn(async () =>
     new Response(JSON.stringify({ pairs: [
       { chainId: "solana", dexId: "meteora", pairAddress: BEST, priceUsd: "0.0050", liquidity: { usd: 900_000 }, baseToken: { symbol: "SI" } },
@@ -78,5 +93,21 @@ describe("registered market => registered pool", () => {
     expect(r.dexPoolAddress).toBe(REGISTERED);
     expect(r.dexType).toBe("meteora-dlmm");
     expect(r.price).toBe(0.0045);
+  });
+
+  it("REVIEW #2735: a DB error is NOT cached as 'unregistered' (supabase-js returns errors)", async () => {
+    h.failNext = 1;
+    await expect(registeredPoolForSlab(SLAB, MINT)).rejects.toThrow(/lookup failed/);
+    expect((await registeredPoolForSlab(SLAB, MINT))?.pool).toBe(REGISTERED);
+    h.failNext = 1;
+    await expect(registeredPoolForMint(MINT)).rejects.toThrow(/lookup failed/);
+    expect((await registeredPoolForMint(MINT))?.pool).toBe(REGISTERED);
+  });
+  it("REVIEW #2735: chart with a slab answers 503 no-store on a failed lookup, never the top pool", async () => {
+    h.failNext = 1;
+    const res = await chartGET(new NextRequest(`http://x/api/chart/${MINT}?timeframe=hour&limit=5&slab=${SLAB}`), { params: Promise.resolve({ mint: MINT }) });
+    expect(res.status).toBe(503);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(((await res.json()) as { poolAddress: string | null }).poolAddress).toBeNull();
   });
 });

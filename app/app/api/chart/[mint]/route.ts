@@ -264,7 +264,19 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ mint
   const slabParam = sp.get("slab");
 
   try {
-    const registered = slabParam ? await registeredPoolForSlab(slabParam, canonicalMint) : null;
+    let registered: Awaited<ReturnType<typeof registeredPoolForSlab>> = null;
+    if (slabParam) {
+      try {
+        registered = await registeredPoolForSlab(slabParam, canonicalMint);
+      } catch {
+        // Can't tell which venue this market uses right now: never fall back to a different pool
+        // (that IS the mismatch), and never let the CDN keep this answer.
+        return NextResponse.json(
+          { candles: [], poolAddress: null, cached: false, error: "Market venue lookup failed; try again shortly." },
+          { status: 503, headers: { "Cache-Control": "no-store", "Retry-After": "5" } },
+        );
+      }
+    }
     const pool = registered?.pool ?? (await resolveTopPool(canonicalMint));
     if (!pool) return emptyResponse();
 
