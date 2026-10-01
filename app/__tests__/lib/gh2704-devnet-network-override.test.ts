@@ -9,8 +9,10 @@ import * as fs from "fs";
 import * as path from "path";
 import { getNetwork, getConfig } from "@/lib/config";
 import { assertCanonicalMatcher } from "@/lib/programAllowlist";
+import { DEVNET_PROGRAM_IDS, MAINNET_PROGRAM_IDS } from "@/lib/program-ids";
 
-const DEVNET_MATCHER = "4seJWjv3R5qfXY8R5ntuPHWsoqcVvaxvfFSnU2AnGMhT";
+// Read from program-ids so a relaunch to new addresses does not break this test.
+const DEVNET_MATCHER = DEVNET_PROGRAM_IDS.matcher;
 const KEY = "percolator-network";
 
 describe("GH#2704: deployment network pins getNetwork()", () => {
@@ -24,6 +26,7 @@ describe("GH#2704: deployment network pins getNetwork()", () => {
     localStorage.setItem(KEY, "mainnet");
     expect(getNetwork()).toBe("devnet");
     expect(getConfig().matcherProgramId).toBe(DEVNET_MATCHER);
+    expect(getConfig().matcherProgramId).not.toBe(MAINNET_PROGRAM_IDS.matcher);
     expect(() => assertCanonicalMatcher(DEVNET_MATCHER)).not.toThrow();
   });
 
