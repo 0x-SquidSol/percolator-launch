@@ -88,6 +88,9 @@ export const TAG_REBALANCE_REDUCE = 44;
 export const REBALANCE_REDUCE_DATA_LEN = 35;
 export const A_OI_EFF_LONG_Q = 289;
 export const A_OI_EFF_SHORT_Q = 305;
+/** Side reset epochs (u64; AssetStateV16Account epoch_long @497, epoch_short @505 — just before mode_long). */
+export const A_EPOCH_LONG = 497;
+export const A_EPOCH_SHORT = 505;
 export const A_MODE_LONG = 513;
 export const A_MODE_SHORT = 514;
 

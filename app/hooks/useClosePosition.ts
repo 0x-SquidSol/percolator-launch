@@ -8,7 +8,10 @@ import { useConnectionCompat } from "@/hooks/useWalletCompat";
 import { AccountKind, isV17Account, parsePortfolioV17 } from "@percolatorct/sdk";
 import { useTrade, prewarmTradeSubmission } from "@/hooks/useTrade";
 import { useUserAccount } from "@/hooks/useUserAccount";
-import { getPortfolioRawSnapshot, isLpPortfolio, makePortfolioScanKey } from "@/lib/userAccountScan";
+import { getPortfolioRawSnapshot, makePortfolioScanKey } from "@/lib/userAccountScan";
+import { pickOwnerPortfolio, scanOwnerPortfolios } from "@/lib/owner-portfolio";
+import { effectiveLeg } from "@/lib/limits/effective-quantity";
+import { isPartialLegSendError } from "@/lib/trade-leg-groups";
 import { getLivePriceSnapshot } from "@/lib/priceStore/priceStore";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { humanizeError, withTransientRetry } from "@/lib/errorMessages";
@@ -24,12 +27,16 @@ import { takeFillResult } from "@/lib/limits/fill-check";
 import { ZeroFillError, closeOutcome, isZeroFillError, type FillResult } from "@/lib/limits/fill-result";
 import { COPY } from "@/lib/limits/copy";
 import { fmtQ } from "@/lib/limits/format";
-import { decodeMarketEngineView } from "@/lib/limits/decode";
+import { decodeMarketEngineView, type MarketEngineView } from "@/lib/limits/decode";
 import { closeRouteFor, isAdlReduceOnly, rebalanceReduceQ } from "@/lib/limits/adl-reduce-only";
 import { closeViaRebalanceReduce } from "@/lib/limits/rebalance-close";
 import { isReduceOnlyLock21 } from "@/lib/limits/reduce-only-fallback";
 import { pythCrankAccount } from "@/lib/limits/oracle-tail";
 import { findV17Portfolio } from "@/hooks/useTrade";
+
+/** M-3: the leg is a prior-reset obligation (owns 0 effective quantity). */
+export const COPY_RESET_LEG =
+  "This position was already closed out when the market reset, so there's nothing left to close. It clears from your account automatically.";
 
 export interface ClosePositionResult {
   signature: string | null;
@@ -49,17 +56,6 @@ export interface UseClosePositionReturn {
    *  click reaches the wallet popup with zero blocking RPC round-trips. */
   prewarmClose: () => void;
 }
-
-// ---------------------------------------------------------------------------
-// v17 portfolio magic + offset constants — mirrors useDeposit/useTrade.
-// Mutable owner (SDK PF_OWNER_OFF) is offset 116, NOT offset 80 (provenanceOwner,
-// IMMUTABLE). MintPositionNft moves the mutable owner to the escrow PDA on wrap
-// but leaves provenance pointing at the original wallet, so filtering on 80 would
-// still match a wrapped (NFT-escrowed) portfolio.
-// ---------------------------------------------------------------------------
-const V17_PORTFOLIO_MAGIC_CP = Buffer.from([0x00, 0x36, 0x31, 0x56, 0x43, 0x52, 0x45, 0x50]);
-const V17_PF_MARKET_OFF_CP = 16;
-const V17_PF_OWNER_OFF_CP = 116;
 
 // ---------------------------------------------------------------------------
 // Prewarmable fresh-portfolio read.
@@ -104,20 +100,11 @@ async function readFreshPortfolioData(
     if (info) return Buffer.from(info.data);
     // account gone or unreadable → fall through to the scan
   }
-  const results = await connection.getProgramAccounts(programId, {
-    filters: [
-      { memcmp: { offset: 0, bytes: V17_PORTFOLIO_MAGIC_CP.toString("base64"), encoding: "base64" } },
-      { memcmp: { offset: V17_PF_MARKET_OFF_CP, bytes: slabPk.toBase58() } },
-      { memcmp: { offset: V17_PF_OWNER_OFF_CP, bytes: owner.toBase58() } },
-    ],
-  });
-  // Drop the market's LP portfolio (owner == this wallet only when this
-  // wallet is the market's CREATOR) BEFORE picking a result — closing a
-  // position must never target the LP. See isLpPortfolio's doc comment.
-  const nonLpResults = results.filter(({ account }) => !isLpPortfolio(account.data));
-  if (nonLpResults.length === 0) return null;
-  const data = nonLpResults[0].account.data;
-  return data instanceof Buffer ? data : Buffer.from(data);
+  // M-4: the shared scan + selector (lib/owner-portfolio.ts) — the SAME
+  // portfolio trade/deposit/display pick (LP dropped, decoded owner verified,
+  // lowest pubkey), never `results[0]` in RPC order. An RPC failure throws.
+  const results = await scanOwnerPortfolios(connection, programId, slabPk, owner);
+  return pickOwnerPortfolio(results, owner)?.data ?? null;
 }
 
 /** Cache-or-read with in-flight dedup. `maxAgeMs` bounds how old an accepted
@@ -203,6 +190,11 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
     // the actual position and unintentionally open exposure in the
     // opposite direction.
     let freshPositionSize: bigint | null = null;
+    // M-3: `freshPositionSize` is the ADL-EFFECTIVE signed quantity (what a trade acts on,
+    // engine plan_delta); `freshBasisQ` is the raw signed basis the fill check compares.
+    let freshBasisQ: bigint | null = null;
+    let freshEngine: MarketEngineView | null = null;
+    let resetLeg = false;
 
     if (isV17Market) {
       // v17: re-fetch via a FRESH on-chain read + parsePortfolioV17.
@@ -224,9 +216,11 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
         // old (see the cache's doc comment for why that preserves the safety
         // property); otherwise this performs a live read right now, exactly
         // as before the prewarm existed.
-        const freshData = await getFreshPortfolioData(
-          connection, programId, slabAddress, publicKey, FRESH_READ_TTL_MS,
-        );
+        const [freshData, freshSlab] = await Promise.all([
+          getFreshPortfolioData(connection, programId, slabAddress, publicKey, FRESH_READ_TTL_MS),
+          connection.getAccountInfo(new PublicKey(slabAddress), "confirmed"),
+        ]);
+        freshEngine = freshSlab ? decodeMarketEngineView(new Uint8Array(freshSlab.data)) : null;
 
         if (!freshData) {
           // The query completed successfully and found no current
@@ -247,7 +241,23 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
           }
 
           const activeLeg = portfolio.legs.find((leg) => leg.active);
-          freshPositionSize = activeLeg ? activeLeg.basisPosQ : 0n;
+          if (!activeLeg) {
+            freshPositionSize = 0n;
+          } else {
+            const basisMag = activeLeg.basisPosQ < 0n ? -activeLeg.basisPosQ : activeLeg.basisPosQ;
+            freshBasisQ = activeLeg.side === 0 ? basisMag : -basisMag;
+            if (!freshEngine) {
+              // Only a v18 market decodes; a legacy v17 slab has no ADL index to scale by.
+              if (freshSlab) throw new Error("Market layout could not be decoded for the close.");
+              throw new Error("Market account could not be read for the close.");
+            }
+            const eff = effectiveLeg(freshEngine, activeLeg);
+            if (eff.kind === "invalid") {
+              throw new Error("The engine would refuse this leg (epoch / ADL index mismatch).");
+            }
+            if (eff.kind === "reset") resetLeg = true;
+            freshPositionSize = eff.signedQ;
+          }
         }
       } catch (cause) {
         console.warn(
@@ -293,6 +303,17 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
         "Could not verify current on-chain position. Please try again.",
       );
     }
+
+    if (resetLeg) {
+          // A prior-reset obligation owns no position (engine effective_abs_quantity_for_leg
+          // = 0): closing it would trade nothing. It is cleared by the next refresh of the
+          // account, so there is nothing for the user to sign.
+          setError(COPY_RESET_LEG);
+          setPhase("idle");
+          inflightRef.current = false;
+          setLoading(false);
+          return { signature: null };
+        }
 
     if (freshPositionSize === 0n) {
           setPhase("idle");
@@ -350,7 +371,9 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
         // exactly the pre-existing behavior — rather than blocking the close.
         let closeLegs: bigint[] | undefined;
         // F-3: tag 44 does not go through the matcher, so its caps/inventory do not apply.
-        const reduceOnlyNow = isV17Market && raw ? isAdlReduceOnly(decodeMarketEngineView(raw)) : false;
+        const reduceOnlyNow = isV17Market
+          ? isAdlReduceOnly(freshEngine ?? (raw ? decodeMarketEngineView(raw) : null))
+          : false;
         if (programId && !reduceOnlyNow) {
           try {
             const slabPk = new PublicKey(slabAddress);
@@ -414,7 +437,7 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
             market: slabPk,
             owner: publicKey,
             portfolio,
-            beforeQ: freshPositionSize as bigint,
+            beforeQ: freshBasisQ ?? (freshPositionSize as bigint),
             reduceQ: rebalanceReduceQ(freshPositionSize as bigint, closePercent),
             marketId: eng.marketId,
             pythCrankAccount: pythCrankAccount(slabConfig, wrapperConfigV17?.oracleMode),
@@ -475,6 +498,13 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
         return { signature: sig ?? null, fill };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
+        if (isPartialLegSendError(e)) {
+          // M-2: some of the close's transactions landed. Say what happened, plainly.
+          setError(msg);
+          invalidatePortfolio();
+          setPhase("idle");
+          throw e;
+        }
         if (isZeroFillError(e)) {
           // Not a tx failure: the close landed and filled nothing. Plain copy, no diagnosis.
           setError(msg);

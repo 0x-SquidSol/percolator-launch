@@ -91,7 +91,9 @@ describe("useClosePosition — F-3 reduce-only routing (real ANSEM bytes)", () =
     expect(result.current.error).toBeNull();
   });
 
-  it("stale poll (healthy) but the chain is reduce-only: matcher close fails wrapper-21 => falls back to tag 44", async () => {
+  it("stale poll (healthy) but the chain is reduce-only: the close's FRESH market read routes to tag 44 directly", async () => {
+    // M-3: the close now reads the market fresh (it needs a_side / epoch for the effective
+    // quantity), so a lagging poll no longer sends a doomed matcher close first.
     slabRaw = MARKET;
     chainMarket = F3_MARKET;
     tradeMock.mockRejectedValue(new Error(`Program ${PROGRAM.toBase58()} failed: custom program error: 0x15`));
@@ -99,7 +101,7 @@ describe("useClosePosition — F-3 reduce-only routing (real ANSEM bytes)", () =
     await act(async () => {
       await result.current.closePosition(50);
     });
-    expect(tradeMock).toHaveBeenCalled();
+    expect(tradeMock).not.toHaveBeenCalled();
     expect(rebalanceMock).toHaveBeenCalledTimes(1);
     expect((rebalanceMock.mock.calls[0][0] as Record<string, unknown>).reduceQ).toBe(11_368_478n);
   });

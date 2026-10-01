@@ -1,5 +1,6 @@
 import { resolveDevnetProgramIds } from "@/lib/program-ids";
 import { P2_ERROR_COPY } from "@/lib/limits/copy";
+import { PORTFOLIO_LOOKUP_COPY } from "@/lib/owner-portfolio";
 /**
  * Percolator on-chain program error code to human-readable message mappings.
  * 
@@ -385,6 +386,8 @@ export function humanizeError(rawMsg: string, context?: "trade"): string {
   if (rawMsg.includes("The playground is in maintenance")) {
     return rawMsg.slice(rawMsg.indexOf("The playground is in maintenance"));
   }
+  // M-4: lib/owner-portfolio.ts PortfolioLookupError — already calm, user-facing copy.
+  if (rawMsg.includes(PORTFOLIO_LOOKUP_COPY)) return PORTFOLIO_LOOKUP_COPY;
   const walletErr = detectWalletError(rawMsg);
   if (walletErr === "locked") return WALLET_LOCKED_MESSAGE;
   if (walletErr === "rejected") return "Transaction cancelled.";
