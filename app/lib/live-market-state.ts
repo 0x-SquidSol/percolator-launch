@@ -167,10 +167,22 @@ function parseLiveState(data: Uint8Array, slabKey: PublicKey): LiveMarketState |
     // Real per-market leverage cap from the engine's initialMarginBps — the same
     // derivation /api/markets' on-chain discovery path uses (computeMaxLeverage
     // -> leverageFromMarginBps). Parsed from the SAME bytes already in hand.
-    const risk = parseV17RiskParams(data, cfg.tradeFeeBps);
-    if (risk && risk.initialMarginBps > 0n) {
-      const lev = leverageFromMarginBps(Number(risk.initialMarginBps));
-      if (Number.isFinite(lev) && lev > 0) maxLeverage = lev;
+    //
+    // Isolated in its OWN try so a leverage-parse failure degrades only
+    // maxLeverage (to null → caller keeps the DB value) and can never reach the
+    // outer catch, which fails isComplete CLOSED and thereby HIDES the market
+    // from the list — a leverage read has no business doing that. Mirrors how the
+    // OI and vault reads below are each isolated. parseV17RiskParams is throw-free
+    // today (it length-guards and every field read lands inside CONFIG_READ_LEN),
+    // so this is defence-in-depth against a future edit that reads past that guard.
+    try {
+      const risk = parseV17RiskParams(data, cfg.tradeFeeBps);
+      if (risk && risk.initialMarginBps > 0n) {
+        const lev = leverageFromMarginBps(Number(risk.initialMarginBps));
+        if (Number.isFinite(lev) && lev > 0) maxLeverage = lev;
+      }
+    } catch {
+      // Leverage unreadable — leave maxLeverage null; isComplete/price stand.
     }
   } catch {
     // Config unreadable — the row keeps a null price rather than a wrong one.
