@@ -313,6 +313,7 @@ export interface MatcherCtxView {
   maxFillAbs: bigint;
   inventoryBase: bigint;
   maxInventoryAbs: bigint;
+  feeToInsuranceBps: number;
   skewSpreadMultBps: number;
   /** null = no v2 block (every v1 context; marker byte 0). */
   v2: V2BlockView | null;
@@ -356,6 +357,7 @@ export function decodeMatcherCtx(d: Uint8Array): MatcherCtxView | null {
     maxFillAbs: u128(d, C.MC_MAX_FILL_ABS),
     inventoryBase: i128(d, C.MC_INVENTORY_BASE),
     maxInventoryAbs: u128(d, C.MC_MAX_INVENTORY_ABS),
+    feeToInsuranceBps: u16(d, C.MC_FEE_TO_INSURANCE_BPS),
     skewSpreadMultBps: u16(d, C.MC_SKEW_SPREAD_MULT_BPS),
     v2,
   };

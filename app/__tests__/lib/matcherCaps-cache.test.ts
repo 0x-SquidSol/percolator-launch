@@ -35,6 +35,7 @@ const PROGRAM = Keypair.generate().publicKey;
 function makeLpPortfolio(matcherCtx: PublicKey): Buffer {
   const buf = Buffer.alloc(V17_PORTFOLIO_ACCOUNT_LEN);
   Buffer.from([0x00, 0x36, 0x31, 0x56, 0x43, 0x52, 0x45, 0x50]).copy(buf, 0);
+  buf[10] = 2; // F-3: header kind = portfolio
   const off = buf.length - 104 - V17_PORTFOLIO_IDENTITY_TRAILER_LEN;
   matcherCtx.toBuffer().copy(buf, off + 32); // matcher_context
   buf.writeBigUInt64LE(1n, off + 96); // control: bit 0 (enabled) = 1

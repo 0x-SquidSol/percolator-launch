@@ -10,6 +10,7 @@ import { PublicKey } from "@solana/web3.js";
 
 vi.mock("@percolatorct/sdk", () => ({
   V17_PORTFOLIO_IDENTITY_TRAILER_LEN: 0,
+  V17_PORTFOLIO_ACCOUNT_LEN: 9563,
   decodePortfolioMatcherControl: () => ({ enabled: true }),
 }));
 
@@ -24,9 +25,12 @@ const nextSlab = () => new PublicKey(new Uint8Array(32).fill(n++)); // fresh key
 
 /** Portfolio bytes whose trailing 104-byte matcher config points at CTX. */
 function portfolioWithCtx(): Buffer {
-  const b = Buffer.alloc(200);
-  const off = b.length - 104;
+  // v18 + F-3 shape: full portfolio length, header kind 2, enabled config before the 24-B trailer.
+  const b = Buffer.alloc(9563);
+  b[10] = 2;
+  const off = b.length - 104; // the mock's trailer length is 0
   Buffer.from(CTX.toBytes()).copy(b, off + 32);
+  b.writeBigUInt64LE(1n, off + 96);
   return b;
 }
 

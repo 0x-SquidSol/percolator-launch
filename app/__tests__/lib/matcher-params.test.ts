@@ -143,14 +143,15 @@ describe("deriveMatcherLimits — never 0, never overflows (negative controls)",
 
 describe("InitMatcherCtx bytes vs the deployed matcher decode", () => {
   for (const [name, lev, lp, px] of CASES) {
-    it(`kind 1 + skew + finite caps accepted by process_init: ${name}`, () => {
+    it(`kind 1 + skew OFF + finite caps accepted by process_init: ${name}`, () => {
       const d = deriveMarketParams(lev, lp, px);
       const data = encodeInitMatcherCtx(buildInitMatcherCtxArgs(10, d.matcher));
       expect(data.length).toBe(70);
       const wrapped = wrapperDecode83(data);
       const ctx = matcherProcessInit(matcherInit(wrapped));
       expect(ctx.kind).toBe(MATCHER_KIND_VAMM);
-      expect(ctx.skew).toBeGreaterThan(0);
+      // 2026-10-01: new LPs launch with skew 0 (deployed matcher skew units bug, WIZARD_SKEW_SPREAD_MULT_BPS).
+      expect(ctx.skew).toBe(0);
       expect(ctx.maxFill).toBeGreaterThan(0n);
       expect(ctx.maxInv).toBeGreaterThan(0n);
       expect(ctx.maxFill).toBeLessThan(I128_MAX + 1n);
@@ -176,7 +177,7 @@ describe("InitMatcherCtx bytes vs the deployed matcher decode", () => {
     expect(r128(34)).toBe(d.matcher.maxFillAbs);
     expect(r128(50)).toBe(d.matcher.maxInventoryAbs);
     expect(dv.getUint16(66, true)).toBe(0);
-    expect(dv.getUint16(68, true)).toBe(d.matcher.skewSpreadMultBps);
+    expect(dv.getUint16(68, true)).toBe(0); // skew written as 0 (WIZARD_SKEW_SPREAD_MULT_BPS)
   });
 
   it("NEGATIVE CONTROL: the old kind-0-shaped payload flipped to kind 1 is rejected by the matcher", () => {

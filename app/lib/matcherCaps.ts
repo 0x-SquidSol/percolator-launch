@@ -40,6 +40,7 @@ import {
   decodePortfolioMatcherControl,
 } from "@percolatorct/sdk";
 import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
+import { isPortfolioAccount } from "@/lib/portfolio-account";
 
 /** v17 portfolio account magic (first 8 bytes, little-endian): PERCV16\0 */
 const V17_PORTFOLIO_MAGIC = Buffer.from([0x00, 0x36, 0x31, 0x56, 0x43, 0x52, 0x45, 0x50]);
@@ -113,6 +114,7 @@ export function parseMatcherCaps(data: Buffer): MatcherCaps | null {
  *  v18: an identity trailer follows the config, so anchor off the end minus BOTH
  *  the trailer and the config; the trailing u64 is a packed control word. */
 function readMatcherContext(data: Buffer): PublicKey | null {
+  if (!isPortfolioAccount(data)) return null; // F-3
   const trailerLen = V17_PORTFOLIO_IDENTITY_TRAILER_LEN;
   if (data.length < PORTFOLIO_MATCHER_CONFIG_LEN + trailerLen) return null;
   const off = data.length - PORTFOLIO_MATCHER_CONFIG_LEN - trailerLen;

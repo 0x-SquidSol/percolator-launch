@@ -62,6 +62,16 @@ export const IMPACT_K_BPS = 200;
 /** Target skew surcharge (bps) when |inventory| == max_inventory_abs. */
 export const SKEW_TARGET_BPS_AT_FULL_INVENTORY = 100n;
 
+/**
+ * Skew written into NEW markets' matcher contexts: 0 (disabled). The deployed matcher (EDKK,
+ * 4a0f696) has a units bug in the v1 skew term (raw q inventory * mult / 1e4): any
+ * inventory-worsening fill saturates to max_total_bps (200 bps), so a market traded only one
+ * way quoted the full cap. Until the matcher fix ships, new LPs launch without skew; existing
+ * LPs can drop it from the trade page ("Improve pricing", matcher tag 5 SetParams).
+ * deriveMatcherLimits still reports the derived value for when skew is re-enabled.
+ */
+export const WIZARD_SKEW_SPREAD_MULT_BPS = 0;
+
 /** Wizard pricing envelope (unchanged from the kind-0 wizard). */
 export const WIZARD_BASE_SPREAD_BPS = 50;
 export const WIZARD_MAX_TOTAL_BPS = 200;
@@ -147,6 +157,6 @@ export function buildInitMatcherCtxArgs(
     maxFillAbs: limits.maxFillAbs,
     maxInventoryAbs: limits.maxInventoryAbs,
     feeToInsuranceBps: 0,
-    skewSpreadMultBps: limits.skewSpreadMultBps,
+    skewSpreadMultBps: WIZARD_SKEW_SPREAD_MULT_BPS,
   };
 }

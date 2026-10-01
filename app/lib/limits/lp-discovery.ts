@@ -11,6 +11,7 @@
 import { Connection, PublicKey } from "@solana/web3.js";
 import { V17_PORTFOLIO_IDENTITY_TRAILER_LEN, decodePortfolioMatcherControl } from "@percolatorct/sdk";
 import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
+import { isPortfolioAccount } from "@/lib/portfolio-account";
 
 const V17_PORTFOLIO_MAGIC = new Uint8Array([0x00, 0x36, 0x31, 0x56, 0x43, 0x52, 0x45, 0x50]);
 const PORTFOLIO_PROVENANCE_MARKET_GROUP_OFF = 16;
@@ -24,6 +25,7 @@ export interface LpAccounts {
 
 /** Matcher ctx from an ENABLED portfolio matcher config, else null. */
 export function matcherCtxOfPortfolio(data: Uint8Array): PublicKey | null {
+  if (!isPortfolioAccount(data)) return null; // F-3
   const trailer = V17_PORTFOLIO_IDENTITY_TRAILER_LEN;
   if (data.length < PORTFOLIO_MATCHER_CONFIG_LEN + trailer) return null;
   const off = data.length - PORTFOLIO_MATCHER_CONFIG_LEN - trailer;

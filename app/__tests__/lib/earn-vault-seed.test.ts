@@ -81,7 +81,7 @@ describe("earn vault seed step list (bug C-1)", () => {
     const dv = new DataView(c.data.buffer, c.data.byteOffset);
     // v16_program.rs:6794-6799: fee_share u16, cooldown u64, oi_res u16, domain u16
     expect(dv.getUint16(1, true)).toBe(1000);
-    expect(dv.getBigUint64(3, true)).toBe(5n);
+    expect(dv.getBigUint64(3, true)).toBe(150n); // C-1: relaunch floor (was 5)
     expect(dv.getUint16(11, true)).toBe(8000);
     expect(dv.getUint16(13, true)).toBe(0);
   });

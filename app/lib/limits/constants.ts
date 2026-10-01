@@ -166,6 +166,7 @@ export const MC_LIQUIDITY_NOTIONAL_E6 = CTX_VAMM_OFFSET + 64; // u128
 export const MC_MAX_FILL_ABS = CTX_VAMM_OFFSET + 80; //        u128
 export const MC_INVENTORY_BASE = CTX_VAMM_OFFSET + 96; //      i128 (LP position; taker buy => decreases)
 export const MC_MAX_INVENTORY_ABS = CTX_VAMM_OFFSET + 128; //  u128
+export const MC_FEE_TO_INSURANCE_BPS = CTX_VAMM_OFFSET + 152; // u16 (vamm.rs layout)
 export const MC_SKEW_SPREAD_MULT_BPS = CTX_VAMM_OFFSET + 154; // u16
 /** V2 block: MatcherCtx._reserved (ctx offset 178), 78 bytes. */
 export const MC_V2_BLOCK = CTX_VAMM_OFFSET + 178;

@@ -109,6 +109,7 @@ import {
   EARN_VAULT_SEED_COMPUTE_UNITS,
   EARN_VAULT_BUCKET_NOT_EMPTY_MESSAGE,
   LP_VAULT_BACKING_BUCKET_NOT_EMPTY_CODE,
+  STAKE_POOL_COOLDOWN_SLOTS,
 } from "@/lib/earn-vault-seed";
 import {
   freshLaunchAuthorityEpoch,
@@ -1134,7 +1135,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
         admin: walletPk, slab: slabPk, pool: stakePoolPda, lpMint: stakeLpMintKp.publicKey,
         vault: stakeVaultKp.publicKey, vaultAuth: stakeVaultAuth, collateralMint: params.mint, percolatorProgram: programId,
       }),
-      data: encodeStakeInitPool(5n, 0n),
+      data: encodeStakeInitPool(STAKE_POOL_COOLDOWN_SLOTS, 0n), // C-1: relaunch floor, 150 slots
     });
     // UpdateFeeSplit (wrapper tag 86) — creator-chosen split, MARKETAUTH-GATED, so it
     // MUST land BEFORE initPoolIx (StakeInitPool irreversibly rotates cfg.marketauth to
@@ -3692,8 +3693,8 @@ export function useCreateMarket() {
                 collateralMint: params.mint,
                 percolatorProgram: programId,
               }),
-              // cooldown=5 slots, depositCap=0 (uncapped) — matches the 5 seeded markets
-              data: encodeStakeInitPool(5n, 0n),
+              // cooldown = the relaunch floor (C-1, 150 slots), depositCap=0 (uncapped)
+              data: encodeStakeInitPool(STAKE_POOL_COOLDOWN_SLOTS, 0n),
             });
 
             // UpdateFeeSplit (wrapper tag 86) — MARKETAUTH-GATED, so it MUST land
