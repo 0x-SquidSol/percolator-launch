@@ -27,7 +27,6 @@ export const KEEPER_REGISTER_COPY = {
   slow: "Your market is created but its live price isn't connected yet. We'll keep trying; you can close this page.",
   ready: "Live price connected.",
   tryNow: "Try now",
-  almostReady: "Almost ready",
   noProof: "This market's creation transaction isn't known on this device, so the live price can't be connected from here.",
   serverTrouble: "Live price couldn't connect just now. Your market is live; try again in a moment.",
   generic: "Live price couldn't connect for this market. Your market is live; try again in a moment.",

@@ -16,41 +16,6 @@ import { useTokenMeta } from "@/hooks/useTokenMeta";
 import { readV17MaxAbsFunding } from "@/lib/v17-engine-config";
 import { pollWhenVisible } from "@/lib/pollWhenVisible";
 
-/** P3-4: Mini bar chart showing last N 8h funding rate periods */
-function FundingMiniChart({ rates }: { rates: number[] }) {
-  if (!rates.length) return null;
-  // Guard against Infinity/NaN from overflow data slipping through
-  const safeRates = rates.filter(r => Number.isFinite(r));
-  if (!safeRates.length) return null;
-  const max = Math.max(...safeRates.map(Math.abs), 0.0001);
-  return (
-    <div className="flex items-end gap-1 h-8">
-      {safeRates.map((r, i) => {
-        const heightPct = Math.max(10, (Math.abs(r) / max) * 100);
-        const isPos = r >= 0;
-        return (
-          <div
-            key={i}
-            title={`${r >= 0 ? "+" : ""}${r.toFixed(4)}%`}
-            // #2368: semantic colours come from the design tokens, not Tailwind's
-            // palette — `bg-green-500`/`bg-red-500` are fixed sRGB and do not follow a
-            // theme change, so this sparkline drifted from every other long/short
-            // surface.
-            //
-            // Direction matches THIS FILE's own convention for the same quantity: a
-            // POSITIVE funding rate is rendered with --short (`:365` for
-            // eightHourRatePercent, `:298` for userPays), because positive funding
-            // means longs pay. The old green/red pair read the opposite way round,
-            // so the sparkline disagreed with the headline rate directly above it.
-            className={`w-6 rounded-sm ${isPos ? "bg-[var(--short)]/60" : "bg-[var(--long)]/60"}`}
-            style={{ height: `${heightPct}%` }}
-          />
-        );
-      })}
-    </div>
-  );
-}
-
 interface FundingData {
   currentRateBpsPerSlot: number;
   hourlyRatePercent: number;
@@ -105,8 +70,6 @@ export const FundingRateCard: FC<{ slabAddress: string }> = ({ slabAddress }) =>
   const [error, setError] = useState<string | null>(null);
   const [showExplainer, setShowExplainer] = useState(false);
   const [countdown, setCountdown] = useState(0);
-  // P3-4: last 4 funding rate periods for mini bar chart (8h rates in %)
-  const [miniChartRates, setMiniChartRates] = useState<number[]>([]);
 
   // Fetch funding data from API, fall back to on-chain data.
   // GH#1832: AbortController prevents stale responses from a previous market
@@ -150,28 +113,6 @@ export const FundingRateCard: FC<{ slabAddress: string }> = ({ slabAddress }) =>
           netLpPosition: BigInt(data.netLpPosition ?? 0),
           currentSlot: 0,
         });
-        // P3-4: fetch last 4 funding history points for mini bar chart
-        // /history returns { rateBpsPerSlot } — convert to 8h rate%:
-        // 8h rate% = (rateBpsPerSlot * 9000 * 8) / 100
-        // GH#1943: was (raw / 10000) * 9000 * 8 — 10,000x underreport, fixed.
-        try {
-          const histRes = await fetch(`/api/funding/${slabAddress}/history?limit=4`, { signal });
-          if (histRes.ok && !cancelled) {
-            const histData = await histRes.json();
-            const pts: { rateBpsPerSlot?: number }[] = histData.history ?? [];
-            // Clamp outlier values before display — legacy on-chain data can have overflowed
-            // rateBpsPerSlot (e.g. from unchecked i64 arithmetic). Guard: ±10_000 bps max.
-            const RATE_BPS_MAX = 10_000;
-            const rates = pts
-              .map(p => {
-                const raw = p.rateBpsPerSlot ?? 0;
-                if (!Number.isFinite(raw) || Math.abs(raw) > RATE_BPS_MAX) return null;
-                return (raw * 9000 * 8) / 100;
-              })
-              .filter((r): r is number => r !== null);
-            if (!cancelled) setMiniChartRates(rates);
-          }
-        } catch { /* silently skip — mini chart is optional */ }
         if (!cancelled) setError(null);
       } catch (err) {
         // Ignore AbortError — this is expected when switching markets
@@ -193,8 +134,6 @@ export const FundingRateCard: FC<{ slabAddress: string }> = ({ slabAddress }) =>
             currentSlot: 0,
           });
           setError(null); // Clear error — on-chain data is valid
-          // Mini chart fallback: repeat current rate 4x
-          setMiniChartRates([hourly * 8, hourly * 8, hourly * 8, hourly * 8]);
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -366,14 +305,6 @@ export const FundingRateCard: FC<{ slabAddress: string }> = ({ slabAddress }) =>
             {(fundingData.aprPercent ?? 0) >= 0 ? "+" : ""}{(fundingData.aprPercent ?? 0).toFixed(1)}% APR
           </span>
         </div>
-
-        {/* P3-4: Mini bar chart — last 4 periods */}
-        {miniChartRates.length > 0 && (
-          <div className="mb-1 flex items-center justify-between">
-            <span className="text-[9px] text-[var(--text)] uppercase tracking-[0.1em]">Last {miniChartRates.length} periods</span>
-            <FundingMiniChart rates={miniChartRates} />
-          </div>
-        )}
 
         {/* Position-Specific Estimate */}
         {positionDirection && estimatedFunding24h !== null && (
