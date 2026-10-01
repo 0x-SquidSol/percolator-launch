@@ -13,8 +13,6 @@ import { useMarketDiscovery } from "@/hooks/useMarketDiscovery";
 import { computeMarketHealth, computeMarketHealthFromStats, sanitizeOnChainValue } from "@/lib/health";
 import { HealthBadge } from "@/components/market/HealthBadge";
 import { formatTokenAmount } from "@/lib/format";
-import { isZombieMarket } from "@/lib/activeMarketFilter";
-import { BLOCKED_SLAB_ADDRESSES } from "@/lib/blocklist";
 import type { Database } from "@/lib/database.types";
 
 type MarketWithStats = Database['public']['Views']['markets_with_stats']['Row'];
@@ -36,11 +34,8 @@ import { LiveRowPrice } from "@/components/market/LiveRowPrice";
 import { formatStatValue } from "@/lib/format";
 import { qToUsd, Q_DECIMALS, rowVolumeUsd } from "@/lib/q-usd";
 import { MIN_VAULT_FOR_OI } from "@/lib/phantom-oi";
+import { isListedMarketRow, MAX_SANE_PRICE_USD } from "@/lib/listed-markets";
 
-/** Max sane price (USD) for both active-market filtering and display capping.
- *  Mirrors /api/stats sanitizePrice() cap. Corrupt oracle prices (e.g. $7.9T)
- *  exceed this and are nulled/excluded. */
-const MAX_SANE_PRICE_USD = 1_000_000;
 
 /** GH#1483: Upper bound for UI leverage display. The Solana program enforces margin
  *  requirements at execution time, so this is display-only protection against corrupt
@@ -398,39 +393,13 @@ function MarketsPageInner() {
   //   3. Duplicate of shared isZombieMarket() logic, creating drift risk.
   // Fix: use isZombieMarket() from activeMarketFilter.ts with explicit Number() coercion.
   const activeMarkets = useMemo(() => {
-    // GH#1536: Coerce NUMERIC (string from Supabase) → number | null before
-    // isZombieMarket(). TypeScript's `as number | null` is compile-time only.
-    const numericOrNull = (v: unknown): number | null => {
-      if (v == null) return null;
-      const n = Number(v);
-      return Number.isFinite(n) ? n : null;
-    };
-    // GH#1536: Use sanitizedPrice for zombie check (mirrors /api/markets GH#1506 fix).
-    // Raw DB prices > $1M are stale garbage; sanitizePrice nulls them for output but
-    // passing raw to isZombieMarket() can make hasActivity=true → not zombie (wrong).
-    const sanitizePrice = (v: unknown): number | null => {
-      const n = numericOrNull(v);
-      if (n == null || n <= 0 || n > MAX_SANE_PRICE_USD) return null;
-      return n;
-    };
     return effectiveMarkets.filter((m) => {
       // GH#1539: Exclude blocked markets — mirrors /api/markets BLOCKED_MARKET_ADDRESSES filter.
       // Without this, blocked slab addresses (from lib/blocklist.ts) appear in the UI count
       // but not the API total, causing a 2-market discrepancy (170 vs 168).
-      if (BLOCKED_SLAB_ADDRESSES.has(m.slabAddress)) return false;
-
       // GH#1531: Show all non-zombie Supabase markets — counter matches /api/markets total.
-      if (m.supabase) {
-        const zombie = isZombieMarket({
-          vault_balance: numericOrNull(m.supabase.vault_balance),
-          c_tot: numericOrNull(m.supabase.c_tot),
-          last_price: sanitizePrice(m.supabase.last_price),
-          volume_24h: numericOrNull(m.supabase.volume_24h),
-          total_open_interest: numericOrNull(m.supabase.total_open_interest),
-          total_accounts: numericOrNull(m.supabase.total_accounts),
-        });
-        return !zombie;
-      }
+      // isListedMarketRow is shared with the landing rail (blocklist + zombie, coerced).
+      if (m.supabase) return isListedMarketRow(m.slabAddress, m.supabase);
 
       // GH#1346: On-chain-only markets (no Supabase stats) are NOT shown —
       // /api/markets only sees Supabase data, so including them inflates the count.
