@@ -136,16 +136,16 @@ function unavailableAtoms(b: BackingBucket): bigint {
 export function syncedLedger(dom: DomainState): DomainLedger {
   const b = dom.bucket;
   if (!dom.ledger) {
-    // seed_legacy_backing_domain_ledger
-    const unavailable = unavailableAtoms(b);
+    // new_backing_domain_ledger (what 77 / 91 read for a ledger that does not exist yet): zero
+    // principal, watermarks pinned to the bucket, so the sync below books nothing.
     return {
-      totalPrincipal: (b.freshUnliened + b.validLiened + b.consumed + b.impaired) / BS,
-      totalEarnings: b.utilFeeEarnings,
+      totalPrincipal: 0n,
+      totalEarnings: 0n,
       totalEarningsWithdrawn: 0n,
       lastObsBucketEarnings: b.utilFeeEarnings,
-      cumulativeLoss: unavailable,
+      cumulativeLoss: 0n,
       cumulativeRecovery: 0n,
-      lastObsUnavailable: unavailable,
+      lastObsUnavailable: unavailableAtoms(b),
     };
   }
   const l = { ...dom.ledger };
@@ -243,19 +243,41 @@ export function planSplitPotRedemption(p: {
   if (!v) return null;
   const lo = syncedLedger(p.own);
   const principalFor = (s: bigint) => (s * v.available) / p.totalShares;
-  const atoms = (p.shares * v.nav) / p.totalShares;
+  const atomsFor = (s: bigint) => (s * v.nav) / p.totalShares;
+  const atoms = atomsFor(p.shares);
   const principal = principalFor(p.shares);
 
-  // Most principal the payout pot can release, with `r` moved in by 91.
+  // Most principal the payout pot can release, with `r` moved in by 91. Every term grows by r.
   const ownCap = (r: bigint) =>
     pos(min(lo.totalPrincipal + r, (p.own.bucket.freshUnliened + r * BS) / BS, creditRoomAtoms({ ...p.own.source, freshReserved: p.own.source.freshReserved + r * BS })));
+  // 77's earnings gate: the LP earnings slice is drawn from the PAYOUT pot's bucket only
+  // (gross_consumed = ceil(earnings * 10_000 / fee_share_bps) <= utilization_fee_earnings). 91 moves
+  // principal, never earnings, so this cannot be repaired here; it only lowers the cap.
+  const earningsOk = (s: bigint) => {
+    const earnings = atomsFor(s) - principalFor(s);
+    if (earnings <= 0n) return true;
+    if (p.feeShareBps <= 0) return false;
+    const fee = BigInt(p.feeShareBps);
+    const gross = (earnings * 10_000n + fee - 1n) / fee;
+    return gross <= p.own.bucket.utilFeeEarnings;
+  };
 
-  const needs = principal > ownCap(0n);
-  const rebalance = needs ? movablePrincipal(p.sib) : 0n;
-  const cap = ownCap(rebalance);
-  // Largest s with floor(s * available / total) <= cap.
-  const maxShares = v.available === 0n ? p.totalShares : ((cap + 1n) * p.totalShares - 1n) / v.available;
-  return { rebalance, atoms, principal, maxShares, payable: principal <= cap };
+  const movable = movablePrincipal(p.sib);
+  const capMax = ownCap(movable);
+  const payableFor = (s: bigint) => principalFor(s) <= capMax && earningsOk(s);
+  // Move only what this payout needs (the sibling keeps the rest of its headroom).
+  const need = principal - ownCap(0n);
+  const rebalance = need > 0n ? (need < movable ? need : movable) : 0n;
+
+  // Largest payable share count (both gates are monotone in s, up to floor wobble): binary search.
+  let lo_ = 0n;
+  let hi = p.totalShares;
+  while (lo_ < hi) {
+    const mid = (lo_ + hi + 1n) / 2n;
+    if (payableFor(mid)) lo_ = mid;
+    else hi = mid - 1n;
+  }
+  return { rebalance, atoms, principal, maxShares: lo_, payable: payableFor(p.shares) && principal <= ownCap(rebalance) };
 }
 
 /** The share count to re-request when the full amount cannot pay: the cap less the safety margin. */

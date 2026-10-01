@@ -45,8 +45,10 @@ describe("split-pot Earn payout (SI live fixture, fork-verified)", () => {
     expect(movablePrincipal(SI_SIB)).toBe(999_967_024n);
   });
 
-  it("moves the sibling pot in with 91 and refuses the full exit before signing", () => {
+  it("moves only what the payout needs in with 91, and refuses the full exit before signing", () => {
     const p = plan(HELD);
+    // need = principal - own cap = 2,602,791,185 - 1,602,775,782 (d0 credit room) = 1,000,015,403,
+    // more than the sibling can move (999,967,024): move all of it, and still not payable.
     expect(p.rebalance).toBe(999_967_024n);
     expect(p.payable).toBe(false);
     expect(p.maxShares).toBe(2_599_943_471n);
@@ -57,7 +59,7 @@ describe("split-pot Earn payout (SI live fixture, fork-verified)", () => {
     expect(capped).toBe(2_597_343_527n);
     const p = plan(capped);
     expect(p.payable).toBe(true);
-    expect(p.rebalance).toBe(999_967_024n);
+    expect(p.rebalance).toBe(997_364_281n); // the QA fork run: [91 need, 77] pays at exactly this
     expect(p.atoms).toBe(2_600_140_063n);
   });
 
@@ -81,10 +83,24 @@ describe("split-pot Earn payout (SI live fixture, fork-verified)", () => {
     expect(p.payable).toBe(true);
   });
 
-  it("a missing ledger is seeded from the bucket, as the program does", () => {
+  it("a missing ledger reads as new_backing_domain_ledger: zero principal, no loss booked", () => {
     const l = syncedLedger({ bucket: bucket(500n, 20n), source: source(500n), ledger: null });
-    expect(l.totalPrincipal).toBe(520n);
-    expect(l.cumulativeLoss).toBe(20n);
+    expect(l.totalPrincipal).toBe(0n);
+    expect(l.cumulativeLoss).toBe(0n);
+    expect(l.lastObsUnavailable).toBe(20n);
+  });
+
+  it("77's earnings gate: LP earnings are drawn from the payout pot's bucket only, so they cap the exit", () => {
+    // 100 atoms of LP earnings (fee share 10%: 1,000 gross) recorded on the SIBLING's ledger; the
+    // payout pot's bucket holds none, so a full exit cannot pay its earnings slice.
+    const sib: DomainState = { ...SI_SIB, ledger: { ...ledger(1_000_000_000n), totalEarnings: 1_000n } };
+    const full = planSplitPotRedemption({ own: SI_OWN, sib, totalShares: TOTAL, shares: 1_000_000_000n, feeShareBps: 1000 })!;
+    expect(full.atoms - full.principal).toBeGreaterThan(0n);
+    expect(full.payable).toBe(false);
+    // With the earnings in the payout pot's bucket it pays.
+    const own: DomainState = { ...SI_OWN, bucket: { ...SI_OWN.bucket, utilFeeEarnings: 1_000n } };
+    const ok = planSplitPotRedemption({ own, sib, totalShares: TOTAL, shares: 1_000_000_000n, feeShareBps: 1000 })!;
+    expect(ok.payable).toBe(true);
   });
 
   it("decodes the ledger layout read live (principal, earnings, loss/recovery, watermark)", () => {
