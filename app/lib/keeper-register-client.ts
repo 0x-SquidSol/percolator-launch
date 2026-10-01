@@ -144,3 +144,139 @@ export function loadProofPayload(slab: string): MarketRegistrationPayload | null
     return null;
   }
 }
+
+// ── Resume on a later visit ────────────────────────────────────────────────────────────────────
+// The launch-time loop stops when the creator closes the page. A registration that failed there
+// (2026-10-01: every fractional-leverage launch got a 500 from the markets write) left the market
+// unpriced with no way back short of a database edit. The proof (the creation tx) and the bound
+// payload are already on this device, so the app re-sends them on the creator's next visit.
+
+const REQUEST_KEY = (slab: string) => `perc.keeperRequest.${slab}`;
+const REGISTERED_KEY = (slab: string) => `perc.keeperRegistered.${slab}`;
+const PROOF_PREFIX = "perc.keeperProofTx.";
+
+/** Minimal Storage surface (window.localStorage in the app; a Map-backed fake in tests). */
+export interface KeyStore {
+  readonly length: number;
+  key(i: number): string | null;
+  getItem(k: string): string | null;
+  setItem(k: string, v: string): void;
+}
+
+const browserStore = (): KeyStore | null => {
+  try {
+    return typeof window === "undefined" ? null : window.localStorage;
+  } catch {
+    return null;
+  }
+};
+
+/** The exact request the launch sent (without the proof), so a resume sends the same bytes. */
+export function saveRegisterRequest(req: Omit<KeeperRegisterRequest, "proofTx" | "payload">, store: KeyStore | null = browserStore()): void {
+  try {
+    store?.setItem(REQUEST_KEY(req.slabAddress), JSON.stringify(req));
+  } catch {
+    /* private mode */
+  }
+}
+
+export function markRegistered(slab: string, store: KeyStore | null = browserStore()): void {
+  try {
+    store?.setItem(REGISTERED_KEY(slab), "1");
+  } catch {
+    /* private mode */
+  }
+}
+
+const KEEPER_DEX_TYPE_CANDIDATES: readonly (string | null)[] = ["raydium-clmm", "meteora-dlmm", "pumpswap", null];
+
+/**
+ * Candidate requests for one slab. With the saved request there is exactly one. A launch from
+ * before the request was saved has only the payload, which carries the pool, the CA and the
+ * symbol but not the dex type the memo bound, so each keeper dex type is a candidate (a wrong
+ * one is a cheap, final 400 "no matching registration memo"; nothing is written).
+ */
+export function registrationCandidates(slab: string, store: KeyStore): KeeperRegisterRequest[] {
+  const proofTx = store.getItem(`${PROOF_PREFIX}${slab}`);
+  if (!proofTx) return [];
+  let payload: MarketRegistrationPayload | null = null;
+  try {
+    const raw = store.getItem(`perc.keeperPayload.${slab}`);
+    const v: unknown = raw ? JSON.parse(raw) : null;
+    payload = v && typeof v === "object" && !Array.isArray(v) ? (v as MarketRegistrationPayload) : null;
+  } catch {
+    payload = null;
+  }
+  try {
+    const raw = store.getItem(REQUEST_KEY(slab));
+    if (raw) {
+      const req = JSON.parse(raw) as Omit<KeeperRegisterRequest, "proofTx" | "payload">;
+      if (req && req.slabAddress === slab && typeof req.dexPoolAddress === "string") return [{ ...req, payload, proofTx }];
+    }
+  } catch {
+    /* fall through to the payload */
+  }
+  const pool = payload && typeof payload.dex_pool_address === "string" ? payload.dex_pool_address : null;
+  if (!payload || !pool) return [];
+  const sym = typeof payload.symbol === "string" && payload.symbol !== "UNKNOWN" ? payload.symbol : null;
+  const ca = typeof payload.mainnet_ca === "string" ? payload.mainnet_ca : null;
+  return KEEPER_DEX_TYPE_CANDIDATES.map((dexType) => ({ slabAddress: slab, mainnetCA: ca, dexPoolAddress: pool, dexType, symbol: sym, payload, proofTx }));
+}
+
+/** Slabs on this device with a creation proof and no confirmed registration. */
+export function pendingRegistrationSlabs(store: KeyStore): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < store.length; i++) {
+    const k = store.key(i);
+    if (!k || !k.startsWith(PROOF_PREFIX)) continue;
+    const slab = k.slice(PROOF_PREFIX.length);
+    // "1" = registered, "refused" = every candidate refused (final): both are done.
+    if (store.getItem(REGISTERED_KEY(slab)) === null) out.push(slab);
+  }
+  return out;
+}
+
+export interface ResumeResult {
+  registered: string[];
+  /** Server / network trouble: tried again on the next visit. */
+  retryLater: string[];
+  /** Every candidate refused (final). */
+  refused: string[];
+}
+
+/**
+ * One pass over this device's unregistered launches. A candidate refused with a final error
+ * moves to the next candidate; a retryable failure stops that slab until the next visit.
+ */
+export async function resumePendingRegistrations(d: {
+  store: KeyStore;
+  post?: (req: KeeperRegisterRequest) => Promise<KeeperRegisterAttempt>;
+}): Promise<ResumeResult> {
+  const post = d.post ?? ((req: KeeperRegisterRequest) => postKeeperRegistration(req));
+  const r: ResumeResult = { registered: [], retryLater: [], refused: [] };
+  for (const slab of pendingRegistrationSlabs(d.store)) {
+    let outcome: "registered" | "later" | "refused" = "refused";
+    for (const req of registrationCandidates(slab, d.store)) {
+      const a = await post(req);
+      if (a.registered) {
+        markRegistered(slab, d.store);
+        if (req.dexType !== undefined) saveRegisterRequest({ slabAddress: req.slabAddress, mainnetCA: req.mainnetCA, dexPoolAddress: req.dexPoolAddress, dexType: req.dexType, symbol: req.symbol }, d.store);
+        outcome = "registered";
+        break;
+      }
+      if (a.retryable) {
+        outcome = "later";
+        break;
+      }
+    }
+    if (outcome === "refused") {
+      try {
+        d.store.setItem(REGISTERED_KEY(slab), "refused");
+      } catch {
+        /* private mode */
+      }
+    }
+    (outcome === "registered" ? r.registered : outcome === "later" ? r.retryLater : r.refused).push(slab);
+  }
+  return r;
+}

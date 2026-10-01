@@ -280,3 +280,51 @@ describe("upsertRegisteredMarketRow (proof path)", () => {
     expect(f.captured?.op).toBe("insert");
   });
 });
+
+describe("integer columns (2026-10-01: slab 9EPm, max_leverage 5.4 -> 22P02 -> 500, never enrolled)", () => {
+  /** Postgres-faithful on the integer columns: a fraction is 22P02 (verified on the live DB). */
+  const strictFake = () => {
+    let written: Record<string, unknown> | null = null;
+    const reject = (p: Record<string, unknown>) =>
+      ["decimals", "max_leverage", "trading_fee_bps"].some((k) => typeof p[k] === "number" && !Number.isInteger(p[k] as number))
+        ? { code: "22P02", message: 'invalid input syntax for type integer: "5.4"' }
+        : null;
+    const client = {
+      from() {
+        return {
+          select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }) }),
+          insert: async (p: Record<string, unknown>) => {
+            const e = reject(p);
+            if (!e) written = p;
+            return { error: e };
+          },
+        };
+      },
+    };
+    return { client, get written() { return written; } };
+  };
+
+  it("a fractional leverage registers, stored rounded DOWN (never above the engine's cap)", async () => {
+    const f = strictFake();
+    const res = await upsertRegisteredMarketRow(f.client as never, row({ max_leverage: 5.4, trading_fee_bps: 30 }), "proof");
+    expect(res).toEqual({ ok: true, action: "inserted", keeperActive: true });
+    expect(f.written?.max_leverage).toBe(5);
+    expect(f.written?.keeper_status).toBe("active");
+  });
+
+  it("a sub-1x figure is stored as 1, a non-finite one is left to the column default", async () => {
+    const f = strictFake();
+    await upsertRegisteredMarketRow(f.client as never, row({ max_leverage: 0.7 }), "proof");
+    expect(f.written?.max_leverage).toBe(1);
+    const g = strictFake();
+    await upsertRegisteredMarketRow(g.client as never, row({ max_leverage: Number.NaN }), "proof");
+    expect(g.written).not.toBeNull();
+    expect("max_leverage" in (g.written ?? {})).toBe(false);
+  });
+
+  it("NEGATIVE CONTROL: the strict double does reject the raw fraction (what production saw)", async () => {
+    const f = strictFake();
+    const { error } = await (f.client.from().insert as (p: Record<string, unknown>) => Promise<{ error: unknown }>)({ max_leverage: 5.4 });
+    expect(error).toMatchObject({ code: "22P02" });
+  });
+});

@@ -125,6 +125,9 @@ function describe(err: { code?: string; message?: string; details?: string; hint
  * before that, what made POST /api/markets fail 100% of the time rather than
  * merely lose the race with the indexer. It sent this same unmapped value.
  */
+/** `markets` columns typed integer (information_schema, 2026-10-01). */
+export const INTEGER_COLUMNS = ["decimals", "max_leverage", "trading_fee_bps"] as const;
+
 function toDbOracleMode(mode: string): string {
   return mode === "keeper" ? "admin" : mode;
 }
@@ -183,6 +186,18 @@ async function upsertOnce(
     if (v !== null && v !== undefined) payload[k] = v;
   }
   payload.oracle_mode = toDbOracleMode(row.oracle_mode);
+  // The `markets` integer columns reject a fraction (Postgres 22P02). The wizard advertises the
+  // FLOORED-margin leverage, which is fractional (e.g. 5.4x for 1850 bps): every such registration
+  // failed the insert with a 500, so the market was never enrolled for the keeper (2026-10-01,
+  // slab 9EPm...). Stored rounded DOWN (never above what the engine allows); the live list reads
+  // the exact cap from the slab anyway (lib/live-market-state.ts).
+  for (const k of INTEGER_COLUMNS) {
+    const v = payload[k];
+    if (typeof v === "number") {
+      if (!Number.isFinite(v)) delete payload[k];
+      else payload[k] = k === "max_leverage" ? Math.max(1, Math.floor(v)) : Math.floor(v);
+    }
+  }
 
   if (!existing) {
     const { error } = await supabase.from("markets").insert(payload as never);
