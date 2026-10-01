@@ -39,6 +39,8 @@ import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 import { resolveDevnetProgramIds } from "@/lib/program-ids";
 import { readEarnP3Context } from "@/lib/limits/earn-p3-read";
 import { readEmptyCloseIxs, readViewerTopupIxs } from "@/lib/limits/resolved-exit-load";
+/** Bytes left free in a bundled Earn payout for sendTx self-heal / vault-LP repair instructions. */
+const SELF_HEAL_RESERVE_BYTES = 120;
 import { sendWithTopup } from "@/lib/limits/resolved-topup";
 import { computeBudgetPrefix, connectionSelfHealDeps } from "@/lib/self-heal";
 import { readTxDrawSummary, type DrawSummary } from "@/lib/limits/p3-draw-logs";
@@ -835,6 +837,8 @@ export function useInsuranceLP() {
           topup,
           base: instructions,
           isPreSignRefusal: (e) => e instanceof SimulationRefusal,
+          // The closes are optional; sendTx's self-heal / vault-LP repair may add instructions.
+          packet: { feePayer: wallet.publicKey!, droppable: emptyCloses.length, reserveBytes: SELF_HEAL_RESERVE_BYTES },
           send: (ixs, bundled) =>
             sendTx({
               connection,

@@ -15,7 +15,7 @@
  * "Ready" is the planner's word, not a guess: planResolvedExit emits a claim-topup step for a
  * portfolio only once no vault LP is still materialized and the owners' window has passed.
  */
-import { PublicKey, type TransactionInstruction } from "@solana/web3.js";
+import { ComputeBudgetProgram, PublicKey, Transaction, type TransactionInstruction } from "@solana/web3.js";
 import type { ExitPortfolio, ExitStep, ResolvedExitPlan } from "./resolved-exit";
 
 export type ViewerReceipt = "none" | "partial-waiting" | "partial-ready";
@@ -55,16 +55,61 @@ export function viewerReceiptStatus(plan: ResolvedExitPlan | null, portfolios: r
  * never opened) is dropped and the user's own tx is sent alone, so bundling can never cost the
  * user their tx; if that refuses too, the bundled refusal is the one reported.
  */
+/** Solana's packet limit for a serialized transaction. */
+export const PACKET_DATA_SIZE = 1232;
+
+/**
+ * Serialized size of `ixs` as sendTx will finally send them: heap frame + CU limit + CU price
+ * (the gate simulation only carries two of these, so it can pass a tx the wallet then can't sign).
+ */
+export function finalTxWireSize(ixs: readonly TransactionInstruction[], feePayer: PublicKey): number {
+  const tx = new Transaction();
+  tx.add(
+    ComputeBudgetProgram.requestHeapFrame({ bytes: 256 * 1024 }),
+    ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000_000 }),
+    ...ixs,
+  );
+  tx.feePayer = feePayer;
+  tx.recentBlockhash = PublicKey.default.toBase58();
+  const msg = tx.serializeMessage();
+  const numSigners = msg[0];
+  return 1 + 64 * numSigners + msg.length; // shortvec sig count (< 128) + signatures + message
+}
+
+/**
+ * Review of #2721: the first `droppable` topup ixs (the empty-portfolio closes) are optional. Drop
+ * trailing ones until the FINAL tx (+ `reserveBytes` for self-heal repairs) fits the packet; if even
+ * the bare topup does not fit, return null (send the user's tx alone).
+ */
+export function fitTopupToPacket(
+  topup: readonly TransactionInstruction[],
+  base: readonly TransactionInstruction[],
+  droppable: number,
+  feePayer: PublicKey,
+  reserveBytes = 0,
+): TransactionInstruction[] | null {
+  const keep = topup.slice(droppable);
+  for (let n = Math.min(droppable, topup.length); n >= 0; n -= 1) {
+    const candidate = [...topup.slice(0, n), ...keep];
+    if (finalTxWireSize([...candidate, ...base], feePayer) + reserveBytes <= PACKET_DATA_SIZE) return candidate;
+  }
+  return null;
+}
+
 export async function sendWithTopup<T>(p: {
   topup: readonly TransactionInstruction[];
   base: TransactionInstruction[];
   send: (ixs: TransactionInstruction[], bundled: boolean) => Promise<T>;
   isPreSignRefusal: (e: unknown) => boolean;
+  /** Packet gate (review of #2721): fee payer, leading droppable topup ixs, bytes reserved for repairs. */
+  packet?: { feePayer: PublicKey; droppable: number; reserveBytes?: number };
 }): Promise<T> {
-  if (p.topup.length === 0) return p.send(p.base, false);
+  const topup = p.packet ? fitTopupToPacket(p.topup, p.base, p.packet.droppable, p.packet.feePayer, p.packet.reserveBytes) ?? [] : p.topup;
+  if (topup.length === 0) return p.send(p.base, false);
   let bundledErr: unknown;
   try {
-    return await p.send([...p.topup, ...p.base], true);
+    return await p.send([...topup, ...p.base], true);
   } catch (e) {
     if (!p.isPreSignRefusal(e)) throw e;
     bundledErr = e;

@@ -136,6 +136,7 @@ export function useJuniorTranche(slabAddress: string | null) {
           topup: closes,
           base: ixs,
           isPreSignRefusal: (e) => e instanceof SimulationRefusal,
+          packet: { feePayer: c.owner, droppable: closes.length },
           send: (instructions, bundled) =>
             sendTx({ connection, wallet, instructions, ...(bundled ? { computeUnitsFromSim: { cap: EMPTY_CLOSE_BUNDLE_CU_CAP } } : {}) }),
         });
