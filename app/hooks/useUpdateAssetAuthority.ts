@@ -25,10 +25,9 @@ import {
   encodeUpdateAssetAuthority,
   ASSET_AUTH_KIND,
   type AssetAuthKind,
-  ACCOUNTS_UPDATE_AUTHORITY,
-  buildAccountMetas,
   buildIx,
 } from "@percolatorct/sdk";
+import { updateAssetAuthorityKeys } from "@/lib/update-asset-authority-keys";
 import { sendTx } from "@/lib/tx";
 import { assertKnownProgram } from "@/lib/programAllowlist";
 import { readAssetMarketId, readAssetControlSeqs } from "@/lib/v18-wire";
@@ -45,7 +44,7 @@ export interface UpdateAssetAuthorityParams {
   assetIndex: number;
   /** Authority kind — use ASSET_AUTH_KIND constants */
   kind: AssetAuthKind;
-  /** New pubkey to install. Zero = burn (only valid for AssetAdmin on asset != 0). */
+  /** New pubkey to install. Zero = burn (only AssetAdmin may be burned; the admin alone signs). */
   newPubkey: string;
 }
 
@@ -86,15 +85,11 @@ export function useUpdateAssetAuthority() {
           newPubkey,
           authorityEpoch: readAssetControlSeqs(slabData, params.assetIndex).authorityEpoch,
         });
-        // v17: UpdateAssetAuthority (tag 65) uses the 3-account shape of ACCOUNTS_UPDATE_AUTHORITY:
+        // UpdateAssetAuthority (tag 65) accounts:
         // [0] currentAuthority (signer) — asset_admin or current holder of the authority
-        // [1] newAuthority (signer or read-only) — the new pubkey being installed
+        // [1] newAuthority — co-signs for a non-zero key; read-only for a burn to 0
         // [2] slab (writable)
-        const keys = buildAccountMetas(ACCOUNTS_UPDATE_AUTHORITY, [
-          wallet.publicKey,
-          newPubkey,
-          slabPk,
-        ]);
+        const keys = updateAssetAuthorityKeys(wallet.publicKey, newPubkey, slabPk);
         const ix = buildIx({ programId: params.programId, keys, data });
         return await sendTx({ connection, wallet, instructions: [ix] });
       } catch (e) {

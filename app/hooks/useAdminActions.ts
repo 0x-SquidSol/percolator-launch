@@ -12,8 +12,8 @@ import {
   buildIx,
   deriveVaultAuthority,
   ACCOUNTS_TOPUP_INSURANCE,
-  ACCOUNTS_UPDATE_AUTHORITY,
 } from "@percolatorct/sdk";
+import { updateAssetAuthorityKeys, ZERO_PUBKEY } from "@/lib/update-asset-authority-keys";
 // oracle-push instructions (IX 16/17) were removed on-chain in Phase G (beta.29).
 // setOracleAuthority and pushPrice now throw INLINE_ORACLE_ADMIN_REMOVED_ERROR immediately.
 // sdk-compat stubs are no longer imported here.
@@ -179,7 +179,7 @@ export function useAdminActions() {
       if (!wallet.publicKey || !wallet.signTransaction) throw new Error("Wallet not connected");
       setLoading("renounceAdmin");
       try {
-        const zeroPk = new PublicKey(new Uint8Array(32));
+        const zeroPk = ZERO_PUBKEY;
         const info = await connection.getAccountInfo(market.slabAddress, "confirmed");
         if (!info?.data) throw new Error("Market account not found");
         const slabData = new Uint8Array(info.data);
@@ -207,11 +207,9 @@ export function useAdminActions() {
           newPubkey: zeroPk,
           authorityEpoch,
         });
-        const keys = buildAccountMetas(ACCOUNTS_UPDATE_AUTHORITY, [
-          wallet.publicKey,
-          zeroPk,
-          market.slabAddress,
-        ]);
+        // A burn needs only the current admin's signature; the zero key rides
+        // along read-only (see lib/update-asset-authority-keys.ts).
+        const keys = updateAssetAuthorityKeys(wallet.publicKey, zeroPk, market.slabAddress);
         const ix = buildIx({ programId: market.programId, keys, data });
         return await sendTx({ connection, wallet, instructions: [ix] });
       } finally {
