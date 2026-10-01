@@ -114,9 +114,12 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
 
   // Report the resolved deposit up so the table's "Your Deposit" column fills in
   // for this row as the user browses vaults.
+  // Only once this vault's first read has landed: reporting the pre-load 0 would overwrite the
+  // table's chain-read position (incl. a creator's seed) with "$—".
   useEffect(() => {
+    if (!everLoaded) return;
     onPositionResolved?.(slab, positionUsd);
-  }, [slab, positionUsd, onPositionResolved]);
+  }, [slab, positionUsd, onPositionResolved, everLoaded]);
 
   const handleDeposit = useCallback(
     async (amount: bigint) => {
