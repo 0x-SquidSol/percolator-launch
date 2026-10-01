@@ -40,8 +40,8 @@ export interface TradeCpiIxParams {
  * oracle price) and aggregate taker fee; 0/0 refuses every fill (Custom 9). Caps for a batch the
  * taker signed with per-leg `limitPriceE6`: slippage = sum |q| * |limit - mark| / 1e6 (the most the
  * per-leg limits already allow); fee = sum |q| * worst price * feeBps / 1e4, where the worst price
- * is max(limit, mark) raised by the fallback slippage margin (the fee is charged on the EXEC
- * notional, which moves with every tick: pricing it at the app's mark left ~1 atom of headroom and
+ * is max(limit, mark) raised by the fallback slippage margin (the charged fee moves with the
+ * price the engine values the fill at: pricing it at the app's mark left ~1 atom of headroom and
  * failed Custom 9 on a one-tick move in devnet sims, QA of #2731). Rounded up, +1 atom/leg.
  * With no limit (0) the slippage budget falls back to `fallbackSlippageBps` of notional.
  */
