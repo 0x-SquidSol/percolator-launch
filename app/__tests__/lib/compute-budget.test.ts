@@ -18,9 +18,9 @@ import { sizeComputeUnitLimit, tradeCuCap, MAX_TX_COMPUTE_UNITS, CU_PER_LEG_CAP 
 import { sendTx } from "@/lib/tx";
 
 describe("sizeComputeUnitLimit", () => {
-  it("the P1-reported single-leg batch (216,269 CU) gets 216,269 * 1.15 + 5,000, under the 400k cap and over the 200k default", () => {
+  it("the P1-reported single-leg batch (216,269 CU) gets 216,269 * 1.30 + 50,000, under the 400k cap and over the 200k default", () => {
     const l = sizeComputeUnitLimit(216_269, { cap: tradeCuCap(1) });
-    expect(l).toBe(Math.ceil(216_269 * 1.15) + 5_000);
+    expect(l).toBe(Math.ceil(216_269 * 1.3) + 50_000);
     expect(l).toBeGreaterThan(200_000);
     expect(l).toBeLessThanOrEqual(CU_PER_LEG_CAP);
   });
@@ -29,9 +29,13 @@ describe("sizeComputeUnitLimit", () => {
     expect(sizeComputeUnitLimit(0, { cap: 400_000 })).toBe(400_000);
   });
   it("small txs keep a floor; a need above the cap follows the need, never past 1.4M", () => {
-    expect(sizeComputeUnitLimit(1_000, { cap: 400_000 })).toBe(50_000);
-    expect(sizeComputeUnitLimit(500_000, { cap: 400_000 })).toBe(Math.ceil(500_000 * 1.15) + 5_000);
+    expect(sizeComputeUnitLimit(1_000, { cap: 400_000 })).toBe(Math.ceil(1_000 * 1.3) + 50_000);
+    expect(sizeComputeUnitLimit(500_000, { cap: 400_000 })).toBe(Math.ceil(500_000 * 1.3) + 50_000);
     expect(sizeComputeUnitLimit(1_300_000, { cap: 400_000 })).toBe(MAX_TX_COMPUTE_UNITS);
+  });
+  it("live regression: a ~248k simulated add that landed needing >290,368 CU gets enough headroom", () => {
+    // 2026-10-01 PERC add: limit 290,392 (= 248k * 1.15 + 5k) was exhausted at 290,368 consumed.
+    expect(sizeComputeUnitLimit(248_150, { cap: tradeCuCap(1) })).toBeGreaterThan(290_392 + 50_000);
   });
   it("cap scales per leg and stops at the tx maximum", () => {
     expect([1, 2, 3, 4].map(tradeCuCap)).toEqual([400_000, 800_000, 1_200_000, 1_400_000]);
@@ -70,11 +74,11 @@ describe("sendTx computeUnitsFromSim", () => {
     const ix = new TransactionInstruction({ programId: PROGRAM, keys: [{ pubkey: MARKET, isSigner: false, isWritable: true }], data: Buffer.from([10]) });
     return { conn, wallet, signed, seen, ix };
   }
-  it("the SIGNED tx carries the simulation-sized limit (216,269 -> 253,710)", async () => {
+  it("the SIGNED tx carries the simulation-sized limit (216,269 -> 331,150)", async () => {
     const r = run(216_269);
     await sendTx({ connection: r.conn as never, wallet: r.wallet as never, instructions: [r.ix], computeUnitsFromSim: { cap: tradeCuCap(1) }, onComputeUnits: (x) => r.seen.push(x) });
-    expect(r.seen).toEqual([{ limit: 253_710, consumed: 216_269 }]);
-    expect(limitOf(r.signed[0])).toBe(253_710);
+    expect(r.seen).toEqual([{ limit: 331_150, consumed: 216_269 }]);
+    expect(limitOf(r.signed[0])).toBe(331_150);
   });
   it("simulation unavailable => the explicit cap, not the 200k default", async () => {
     const r = run(undefined);

@@ -14,8 +14,11 @@
  */
 export const MAX_TX_COMPUTE_UNITS = 1_400_000;
 export const CU_PER_LEG_CAP = 400_000;
-export const DEFAULT_CU_MARGIN_BPS = 1_500; // +15%
-export const DEFAULT_CU_PAD = 5_000;
+// Live 2026-10-01 (PERC add, sig 632JyLFS…): simulated ~248k, landed needing >290k (+17%) — the
+// engine accrues/refreshes in-tx when the slot moves between the sizing simulation and landing,
+// so +15% / 5k ran out of CU (ProgramFailedToComplete). +30% / 50k covers that drift.
+export const DEFAULT_CU_MARGIN_BPS = 3_000; // +30%
+export const DEFAULT_CU_PAD = 50_000;
 export const DEFAULT_CU_MIN = 50_000;
 
 export interface CuSizing {
