@@ -25,7 +25,8 @@ import {
   encodePushOraclePrice,
   ACCOUNTS_PUSH_ORACLE_PRICE,
 } from "@/lib/sdk-compat";
-import { sendTx, sendTxWaiting, prewarmTxLanding } from "@/lib/tx";
+import { sendTx, sendTxWaiting, prewarmTxLanding, simulateForGate } from "@/lib/tx";
+import { planTakerCrank } from "@/lib/taker-crank";
 import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
 import { applyConfirmedFill, getPortfolioRawSnapshot, isLpPortfolio, makePortfolioScanKey } from "@/lib/userAccountScan";
 import { limitsFlags } from "@/lib/limits/flags";
@@ -619,11 +620,13 @@ export function useTrade(slabAddress: string) {
           feeBps: params.feeBps,
           marketTradeFeeBps: wrapperConfigV17?.tradeFeeBps,
         });
-        // v17 PermissionlessCrank (tag 5): [owner(s,w), market(w), portfolio(w)] + oracle tail.
-        // Build after accountA is resolved — portfolio = accountA (taker's portfolio).
-        // Only prepend PermissionlessCrank(FeeSweep) when the taker already has active legs.
-        // Cranking an empty portfolio returns EngineNonProgress (0x16) and aborts the tx.
-        // Bug fix: do NOT unconditionally prepend the crank instruction.
+        // v17 PermissionlessCrank (tag 5) on the TAKER's portfolio: [owner(s,w), market(w),
+        // portfolio(w)] + oracle tail. NEVER in the trade's own transaction: crank + trade in
+        // one tx fails the trade with Custom(21) EngineLockActive most of the time while the
+        // trade alone is clean (lib/taker-crank.ts has the measurements). Only when the trade
+        // alone is refused and the crank alone is clean is it sent, as a separate prior tx.
+        // Cranking an empty portfolio returns EngineNonProgress (0x16), so it is only
+        // considered when the taker already has active legs.
         let hasActiveLegs = false;
         // P1 (flag-gated): a confirmed TradeCpi can be a partial or ZERO fill.
         const limitsMarketId =
@@ -641,18 +644,14 @@ export function useTrade(slabAddress: string) {
               }
             }
           } catch {
-            // If portfolio read fails, skip the crank rather than aborting the trade
+            // If the portfolio read fails, skip the crank rather than aborting the trade.
             hasActiveLegs = false;
           }
-        } else {
-          // v12: always include the crank (v12 crank is on the slab, not the portfolio)
-          hasActiveLegs = true;
         }
 
         if (hasActiveLegs) {
-          const crankPortfolio = isV17Market ? accountA : slabPk;
           const crankKeys = buildAccountMetas(ACCOUNTS_PERMISSIONLESS_CRANK_BASE, [
-            wallet.publicKey, slabPk, crankPortfolio,
+            wallet.publicKey, slabPk, accountA,
           ]);
           // For Pyth mode, append oracle feed account as tail
           if (!useAdminOracle) {
@@ -661,12 +660,34 @@ export function useTrade(slabAddress: string) {
           const crankIx = buildIx({
             programId,
             keys: crankKeys,
-            // v18: PermissionlessCrank payload is now { nowSlot, observations }.
-            // A plain maintenance/fee-sweep crank passes one asset-0 hint with no
-            // oracle-account push (gate market.ts default).
+            // v18: PermissionlessCrank payload is { nowSlot, observations }. A plain
+            // maintenance crank passes one asset-0 hint with no oracle-account push.
             data: encodePermissionlessCrank({ nowSlot: 0n, observations: defaultCrankObservations(0) }),
           });
-          instructions.unshift(crankIx);
+          const takerWallet = wallet.publicKey;
+          const plan = await planTakerCrank(
+            (ixs) => simulateForGate(connection, takerWallet, ixs),
+            tradeIxs,
+            crankIx,
+            2, // simulateForGate's heap-frame + CU-limit prefix
+          );
+          if (plan === "separate-tx") {
+            console.info("[useTrade] taker portfolio needs a maintenance crank first; sending it as its own tx");
+            await sendTx({ connection, wallet, instructions: [crankIx], computeUnitsFromSim: { cap: 200_000 } });
+          }
+        } else if (!isV17Market) {
+          // v12: the crank is on the slab, not the portfolio (legacy path, unchanged).
+          const crankKeys = buildAccountMetas(ACCOUNTS_PERMISSIONLESS_CRANK_BASE, [
+            wallet.publicKey, slabPk, slabPk,
+          ]);
+          if (!useAdminOracle) {
+            crankKeys.push({ pubkey: oracleAccount, isSigner: false, isWritable: false });
+          }
+          instructions.unshift(buildIx({
+            programId,
+            keys: crankKeys,
+            data: encodePermissionlessCrank({ nowSlot: 0n, observations: defaultCrankObservations(0) }),
+          }));
         }
         instructions.push(...tradeIxs);
 
