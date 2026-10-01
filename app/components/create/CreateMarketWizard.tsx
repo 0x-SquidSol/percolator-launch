@@ -578,15 +578,21 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
   const oracleSettled = !quickLaunch.oracleResolving && matchesDetected(wizard);
 
 
-  const allValid =
+  // Everything a launch or a Retry needs from the wizard's own fields.
+  const configValid =
     // Never let an unregistrable market reach the launch button.
     registrable &&
     step1Valid &&
     paramsValid &&
     oraclePriceValid &&
     (skipTokenBalanceCheck || (hasTokens && hasSufficientTokensForSeed)) &&
-    !devnetFaucetCeilingExceeded &&
-    (mockBypass || hasSufficientSol);
+    !devnetFaucetCeilingExceeded;
+  // A fresh launch must also hold the FULL launch cost in SOL. Retry does not:
+  // the steps already landed spent part of that SOL, so a live balance (kept
+  // current by useSolBalance) sits below requiredSol after a partial launch and
+  // would silently block resuming it. A step that is really short of SOL fails
+  // with its own error and Retry can be pressed again after an airdrop.
+  const allValid = configValid && (mockBypass || hasSufficientSol);
 
   // P3 wizard: the junior tranche requirement (floor range, junior >= floor of the Earn seed).
   const p3Issue = useMemo(() => {
@@ -884,7 +890,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
 
   // Retry from failed step
   const handleRetry = () => {
-    if (!allValid || !publicKey) return;
+    if (!configValid || !publicKey) return;
     // For step > 0, slab address must be known to resume the transaction chain.
     // Step 0 generates a fresh keypair, so slabAddress is not required for step 0 retry.
     // Without this guard, a blockhash-expiry error on step 0 would silently no-op when
