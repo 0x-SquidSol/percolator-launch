@@ -21,6 +21,7 @@ import {
   V17_WRAPPER_CONFIG_LEN,
   V17_MARKET_GROUP_OFF,
   V17_MARKET_GROUP_LEN,
+  V17_MARKET_ASSET_SLOT_LEN,
 } from "@percolatorct/sdk";
 import { parseV17RiskParams, V17_ENGINE_CONFIG_OFF } from "@/lib/v17-engine-config";
 
@@ -48,14 +49,25 @@ describe("fixture is a real fresh-wrapper market", () => {
     expect(fixture.owner).toBe("DhSkE7uTb8HBUYYWF1xkxMYBGtLYJEoDq1tfBD7SnHcj");
   });
 
-  it("account length equals v17MarketAccountLen(4) = 8538 (capacity solves exactly at 576)", () => {
+  // The fixture predates v18: its asset slot is the v17 1,797 bytes. SDK 6+ (24d5d19d,
+  // pinned 8.0.0) sizes markets with the v18 slot (V17_MARKET_ASSET_SLOT_LEN = 2,325), so
+  // v17MarketAccountLen no longer describes this historical account — it describes the
+  // deployed wrapper's. The header/config offsets this file pins are unchanged in v18.
+  it("account length is the v17-era 4-asset size, 8538 (capacity solves exactly at 576)", () => {
     expect(data.length).toBe(fixture.dataLen);
-    expect(data.length).toBe(v17MarketAccountLen(4));
     expect(data.length).toBe(8538);
     // The capacity only solves to an integer with the 576-byte config:
     const cap = (data.length - V17_MARKET_GROUP_OFF - V17_MARKET_GROUP_LEN) / 1797;
     expect(Number.isInteger(cap)).toBe(true);
     expect(cap).toBe(4);
+  });
+
+  it("SDK v17MarketAccountLen uses the v18 slot and matches the deployed wrapper's markets", () => {
+    expect(V17_MARKET_ASSET_SLOT_LEN).toBe(2325);
+    expect(v17MarketAccountLen(4)).toBe(V17_MARKET_GROUP_OFF + V17_MARKET_GROUP_LEN + 4 * 2325); // 10650
+    // Devnet read 2026-10-02: all 12 sampled kind-1 accounts of wrapper ETDLAdi… are
+    // 33,900 bytes, version 18 — exactly 14 v18 asset slots on the same 576-byte config.
+    expect(v17MarketAccountLen(14)).toBe(33_900);
   });
 });
 

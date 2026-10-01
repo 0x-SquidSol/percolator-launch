@@ -14,11 +14,15 @@ const src = fs.readFileSync(path.resolve(__dirname, "../../app/markets/page.tsx"
 describe("/markets vault column", () => {
   it("is headed 'vault', with a tooltip saying what it holds", () => {
     expect(src).not.toMatch(/>liquidity</);
-    expect(src).toMatch(/title="All collateral this market holds: LP capital, trader margin and insurance\.[^"]*">vault</);
+    // §5.1: no "LP" in rendered copy (banned-terms-jsx-guard) — the tooltip says "liquidity".
+    expect(src).toMatch(/title="All collateral this market holds: liquidity, trader margin and insurance\.">vault</);
   });
 
   it("the cell renders the vault value with the same tooltip", () => {
-    expect(src).toMatch(/title="All collateral this market holds[^"]*">\{vaultDisplay\}</);
+    expect(src).toMatch(/title="All collateral this market holds: liquidity, trader margin and insurance\.">\{vaultDisplay\}</);
+    // The cell's title sits inside the rows' .map callback, which the JSX banned-terms sweep
+    // does not descend into — pin it here instead.
+    expect(src).not.toMatch(/title="[^"]*\bLPs?\b[^"]*">(vault|\{vaultDisplay\})</);
     expect(src).not.toMatch(/marketLp(Display|Val|TokensRaw)/);
   });
 });

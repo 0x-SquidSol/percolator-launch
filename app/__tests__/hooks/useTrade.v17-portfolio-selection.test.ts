@@ -1,3 +1,14 @@
+/**
+ * Taker (accountA) portfolio selection in useTrade.
+ *
+ * 2026-10-02 (fix/preexisting-test-failures): since 18526d86 the LP side (accountB) is
+ * resolved by on-chain identity in lib/market-lp.ts (its own suite, incl. a negative
+ * control) — it reads the market + ctx accounts, which this suite never served, so the
+ * resolver is stubbed here and the ONLY program scan left is the taker's owner scan.
+ * The v17 trade is sent with sendTxWaiting (not sendTx) and binds both portfolios'
+ * identity via lib/v18-wire (0d975d00) — stubbed as well. Since F-3 (fb7700c6) an
+ * "LP-shaped" account must be a full portfolio (kind 2, 9,563 B) to count as an LP.
+ */
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicKey } from "@solana/web3.js";
@@ -24,6 +35,33 @@ vi.mock("@/components/providers/SlabProvider", () => ({
 
 vi.mock("@/lib/tx", () => ({
   sendTx: mocks.sendTx,
+  sendTxWaiting: mocks.sendTx,
+  prewarmTxLanding: vi.fn(),
+  simulateForGate: vi.fn(),
+  SimulationRefusal: class SimulationRefusal extends Error {},
+  buildBatchTx: vi.fn(),
+  signAllCompat: vi.fn(),
+  broadcastSignedTx: vi.fn(),
+  getPriorityFee: vi.fn(),
+}));
+
+vi.mock("@/lib/market-lp", () => ({
+  resolveMarketLp: vi.fn(async () => ({
+    pubkey: new PublicKey(new Uint8Array(32).fill(13)),
+    data: new Uint8Array(0),
+    owner: new PublicKey(new Uint8Array(32).fill(14)),
+    portfolioId: 1n,
+    matcherProg: new PublicKey(new Uint8Array(32).fill(15)),
+    matcherCtx: new PublicKey(new Uint8Array(32).fill(16)),
+    matcherDelegate: new PublicKey(new Uint8Array(32).fill(17)),
+    reason: "asset-admin",
+  })),
+}));
+
+vi.mock("@/lib/v18-wire", async (orig) => ({
+  ...((await orig()) as Record<string, unknown>),
+  fetchPortfolioIdentity: vi.fn(async () => ({ portfolioId: 2n, matcherSequence: 0n, positionEpoch: 0n })),
+  fetchAssetMarketId: vi.fn(async () => 1n),
 }));
 
 vi.mock("@/lib/programAllowlist", () => ({
@@ -210,16 +248,7 @@ describe("useTrade v17 portfolio selection", () => {
     rpcPortfolioOrder: PublicKey[],
   ): Promise<PublicKey> {
     connection.getProgramAccounts
-      // First GPA call: LP portfolio discovery.
-      .mockResolvedValueOnce([
-        {
-          pubkey: lpPortfolioPk,
-          account: {
-            data: createLpPortfolioData(),
-          },
-        },
-      ])
-      // Second GPA call: taker portfolio discovery.
+      // The only GPA call: taker portfolio discovery (the LP is resolved by identity).
       .mockResolvedValueOnce(
         rpcPortfolioOrder.map((pubkey, index) => ({
           pubkey,
@@ -307,10 +336,7 @@ describe("useTrade v17 portfolio selection", () => {
      *  the TAKER's own owner+market scan (findV17Portfolio / accountA),
      *  simulating a market CREATOR whose wallet is also the LP's owner. */
     function createOwnerScanLpShapedData(): Buffer {
-      const data = Buffer.alloc(120);
-      const matcherConfigOffset = data.length - 104;
-      data.writeBigUInt64LE(1n, matcherConfigOffset + 96); // enabled = 1
-      return data;
+      return createLpPortfolioData();
     }
 
     // useTrade caches resolved trade accounts per (programId, slabPk, taker)
@@ -326,11 +352,7 @@ describe("useTrade v17 portfolio selection", () => {
 
     it("never resolves accountA to the market's own LP portfolio, even when it matches the owner+market filter", async () => {
       connection.getProgramAccounts
-        // First GPA call: LP portfolio discovery (accountB) — a normal LP.
-        .mockResolvedValueOnce([
-          { pubkey: lpPortfolioPk, account: { data: createLpPortfolioData() } },
-        ])
-        // Second GPA call: taker portfolio discovery (accountA) — the ONLY
+        // Taker portfolio discovery (accountA) — the ONLY
         // match is the market's own LP (this wallet is the creator, whose
         // wallet is the LP's mutable owner too).
         .mockResolvedValueOnce([
@@ -350,9 +372,6 @@ describe("useTrade v17 portfolio selection", () => {
 
     it("selects the genuine (non-LP) portfolio when both it and the LP-shaped one match the owner+market filter", async () => {
       connection.getProgramAccounts
-        .mockResolvedValueOnce([
-          { pubkey: lpPortfolioPk, account: { data: createLpPortfolioData() } },
-        ])
         .mockResolvedValueOnce([
           { pubkey: portfolioOne, account: { data: createOwnerScanLpShapedData() } },
           { pubkey: portfolioTwo, account: { data: Buffer.from([1]) } }, // genuine, non-LP-shaped

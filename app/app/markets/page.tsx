@@ -954,7 +954,7 @@ function MarketsPageInner() {
                   <div className="text-right">price</div>
                   <div className="hidden sm:block text-right">OI</div>
                   <div className="hidden sm:block text-right">vol</div>
-                  <div className="hidden sm:block text-right" title="All collateral this market holds: LP capital, trader margin and insurance. Market LP on the trade page is the LP's part.">vault</div>
+                  <div className="hidden sm:block text-right" title="All collateral this market holds: liquidity, trader margin and insurance.">vault</div>
                   <div className="text-right"><span className="sm:hidden">lev</span><span className="hidden sm:inline">max lev</span></div>
                   <div className="text-right">health</div>
                 </div>
@@ -1193,7 +1193,7 @@ function MarketsPageInner() {
                       <div className="hidden sm:block text-right text-sm text-[var(--text-secondary)] truncate tabular-nums" style={{ fontFamily: "var(--font-jetbrains-mono)", fontVariantNumeric: "tabular-nums" }}>
                         {volumeDisplay ?? "\u2014"}
                       </div>
-                      <div className="hidden sm:block text-right text-sm text-[var(--text)] truncate tabular-nums" style={{ fontFamily: "var(--font-jetbrains-mono)", fontVariantNumeric: "tabular-nums" }} title="All collateral this market holds: LP capital, trader margin and insurance. Market LP on the trade page is the LP's part.">{vaultDisplay}</div>
+                      <div className="hidden sm:block text-right text-sm text-[var(--text)] truncate tabular-nums" style={{ fontFamily: "var(--font-jetbrains-mono)", fontVariantNumeric: "tabular-nums" }} title="All collateral this market holds: liquidity, trader margin and insurance.">{vaultDisplay}</div>
                       <div className="text-right text-sm text-[var(--text-secondary)] tabular-nums" style={{ fontVariantNumeric: "tabular-nums" }}>{m.maxLeverage}x</div>
                       <div className="text-right"><HealthBadge level={effectiveHealth.level} /></div>
                       </div>
