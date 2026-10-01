@@ -13,30 +13,8 @@ import { isMockMode } from "@/lib/mock-mode";
 import { isMockSlab } from "@/lib/mock-trade-data";
 import { sanitizeFundingRateBps } from "@/lib/health";
 import { useTokenMeta } from "@/hooks/useTokenMeta";
-import { V17_ENGINE_CONFIG_OFF } from "@/lib/v17-engine-config";
+import { readV17MaxAbsFunding } from "@/lib/v17-engine-config";
 import { pollWhenVisible } from "@/lib/pollWhenVisible";
-
-/**
- * M19: `max_abs_funding_e9_per_slot` — a V16ConfigAccount field (u64) at
- * relative offset 126 (fully-packed repr(C) Pod struct, no padding — same
- * derivation lib/v17-engine-config.ts already uses for the fields it reads:
- * maxPortfolioAssets(2)+maxMarketSlots(4)+minNonzeroMmReq(16)+
- * minNonzeroImReq(16)+hMin(8)+hMax(8)+maintenanceMarginBps(8)+
- * initialMarginBps(8)+maxTradingFeeBps(8)+liquidationFeeBps(8)+
- * liquidationFeeCap(16)+minLiquidationAbs(16)=118, then
- * maxAccrualDtSlots(8)=126). When this is 0, the engine's accrue clamps the
- * *applied* funding rate to exactly 0 on every crank — funding is
- * structurally OFF for the market, not just quiet. Verified 0 on all 5 live
- * devnet markets (DEFINITIVE-PLAN-2026-07-08.md, finding M19).
- */
-const V17_MAX_ABS_FUNDING_REL = 126;
-
-function readV17MaxAbsFunding(data: Uint8Array): bigint | null {
-  const off = V17_ENGINE_CONFIG_OFF + V17_MAX_ABS_FUNDING_REL;
-  if (off + 8 > data.length) return null;
-  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  return dv.getBigUint64(off, true);
-}
 
 /** P3-4: Mini bar chart showing last N 8h funding rate periods */
 function FundingMiniChart({ rates }: { rates: number[] }) {
