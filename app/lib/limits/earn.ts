@@ -112,3 +112,22 @@ export function earnPanelPricing(
 export function earnDepositPause(block: EarnDepositBlock | null): "senior-impaired" | null {
   return block === "senior-impaired" ? block : null;
 }
+
+/**
+ * The panel pricing for ANY vault: the P3 pricing when the vault is bound, else (a two-pot vault)
+ * the program's own registry shares and combined NAV, with the split-pot max-now (useInsuranceLP
+ * `state.splitPot`). null only when neither is known (the panel then falls back to mint supply).
+ */
+export function withSplitPotPricing(
+  p3: ReturnType<typeof earnPanelPricing>,
+  splitPot: { totalShares: bigint; navAtoms: bigint; maxNowAtoms: bigint | null } | null,
+): ReturnType<typeof earnPanelPricing> {
+  if (p3) return p3;
+  if (!splitPot) return null;
+  return {
+    totalShares: splitPot.totalShares,
+    depositSeniorValue: splitPot.navAtoms,
+    withdrawSeniorValue: splitPot.navAtoms,
+    maxNowAtoms: splitPot.maxNowAtoms,
+  };
+}

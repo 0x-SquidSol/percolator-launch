@@ -8,6 +8,7 @@ import { drawNoticeText, type DrawSummary } from "@/lib/limits/p3-draw-logs";
 import { GlowButton } from '@/components/ui/GlowButton';
 import { StatusLine } from '@/components/ui/StatusLine';
 import { EarnPendingWithdrawal } from '@/components/earn/EarnPendingWithdrawal';
+import { EarnPayoutCapError } from '@/lib/limits/earn-split-pot';
 import {
   EARN_WITHDRAW_COPY as WC,
   cooldownPhrase,
@@ -99,6 +100,11 @@ interface DepositWithdrawPanelProps {
   } | null;
   /** UX WP-4: re-read the ticket when the countdown reaches 0. */
   onRefresh?: () => Promise<void> | void;
+  /**
+   * Two-pot vault: the pending withdrawal is more than the vault can pay right now. Re-request
+   * `shares` (cancel + request in one transaction); the payout then collects by itself.
+   */
+  onResizeRedemption?: (shares: bigint) => Promise<void>;
 }
 
 export function DepositWithdrawPanel({
@@ -123,6 +129,7 @@ export function DepositWithdrawPanel({
   drawSummary = null,
   pricing = null,
   onRefresh,
+  onResizeRedemption,
 }: DepositWithdrawPanelProps) {
   const { connected } = useWalletCompat();
   const [tab, setTab] = useState<Tab>('deposit');
@@ -139,6 +146,8 @@ export function DepositWithdrawPanel({
   const [withdrawUnit, setWithdrawUnit] = useState<'usdc' | 'shares'>('usdc');
   // Requested in this page session: the payout prompt opens by itself when the cooldown ends.
   const [armed, setArmed] = useState(false);
+  // The payout was refused before signing because the vault can pay only part of it right now.
+  const [resizeOffer, setResizeOffer] = useState<{ shares: bigint; atoms: bigint } | null>(null);
 
   const divisor = 10n ** BigInt(decimals);
 
@@ -266,11 +275,31 @@ export function DepositWithdrawPanel({
       );
     } catch (e) {
       setArmed(false);
+      if (e instanceof EarnPayoutCapError && onResizeRedemption && e.maxShares > 0n) {
+        setResizeOffer({ shares: e.maxShares, atoms: e.maxAtoms });
+        return;
+      }
       setClaimError(earnErrorMessage(e, 'claim', { p3Bound }));
     } finally {
       setClaimSubmitting(false);
     }
-  }, [claimSubmitting, loading, vaultAvailable, cooldownElapsed, onWithdraw, pendingRedemptionShares, pendingAtoms, decimals, collateralSymbol, p3Bound]);
+  }, [claimSubmitting, loading, vaultAvailable, cooldownElapsed, onWithdraw, pendingRedemptionShares, pendingAtoms, decimals, collateralSymbol, p3Bound, onResizeRedemption]);
+
+  const handleResize = useCallback(async () => {
+    if (!resizeOffer || !onResizeRedemption || claimSubmitting) return;
+    setClaimSubmitting(true);
+    setClaimError(null);
+    try {
+      await onResizeRedemption(resizeOffer.shares);
+      setResizeOffer(null);
+      // The cooldown restarts; collect by itself when it ends (one flow).
+      setArmed(true);
+    } catch (e) {
+      setClaimError(earnErrorMessage(e, 'claim', { p3Bound }));
+    } finally {
+      setClaimSubmitting(false);
+    }
+  }, [resizeOffer, onResizeRedemption, claimSubmitting, p3Bound]);
 
   // Validation
   const isValid = useMemo(() => {
@@ -351,6 +380,15 @@ export function DepositWithdrawPanel({
           onCollect={handleClaimRedemption}
           onRefresh={onRefresh}
           error={claimError}
+          resize={
+            resizeOffer
+              ? {
+                  label: WC.maxAvailableAction(`${formatUsdc(resizeOffer.atoms, decimals)} ${collateralSymbol}`),
+                  body: WC.maxAvailableBody,
+                  onResize: handleResize,
+                }
+              : null
+          }
         />
       )}
       {claimSuccess && (

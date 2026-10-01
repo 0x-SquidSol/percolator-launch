@@ -24,6 +24,8 @@ export interface EarnPendingWithdrawalProps {
   onRefresh?: () => Promise<void> | void;
   /** A plain-language failure from the last payout attempt. */
   error?: string | null;
+  /** The payout can only pay part right now: offer the max (re-request, then collect). */
+  resize?: { label: string; body: string; onResize: () => Promise<void> } | null;
 }
 
 export const EarnPendingWithdrawal: FC<EarnPendingWithdrawalProps> = ({
@@ -35,6 +37,7 @@ export const EarnPendingWithdrawal: FC<EarnPendingWithdrawalProps> = ({
   onCollect,
   onRefresh,
   error = null,
+  resize = null,
 }) => {
   const [now, setNow] = useState(() => Date.now());
   const [deadline, setDeadline] = useState(() => Date.now() + Number(cooldownRemainingSlots) * SLOT_MS);
@@ -105,7 +108,15 @@ export const EarnPendingWithdrawal: FC<EarnPendingWithdrawalProps> = ({
           <StatusLine message={{ kind: 'earn-payout-refused', variant: 'error', title: 'Payout not sent', body: error }} legacyTestId="earn-error" />
         </div>
       )}
-      {phase === 'ready' && (
+      {resize && (
+        <div className="mt-2">
+          <StatusLine
+            message={{ kind: 'earn-max-available', variant: 'paused', title: C.maxAvailableTitle, body: resize.body, action: { id: 'use-max', label: resize.label } }}
+            onAction={() => void resize.onResize()}
+          />
+        </div>
+      )}
+      {phase === 'ready' && !resize && (
         <button
           type="button"
           data-testid="earn-withdraw-execute"

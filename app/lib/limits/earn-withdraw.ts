@@ -87,4 +87,8 @@ export const EARN_WITHDRAW_COPY = {
     `Part of this vault's money is in use by open trades right now. You can withdraw up to ${max} now, or the rest once those trades close.`,
   maxNowAction: (max: string) => `Withdraw ${max}`,
   depositPreview: (shares: string, pct: string) => `You'll get ≈ ${shares} shares (${pct} of the vault)`,
+  /** Two-pot vault: the full pending amount can't be paid in one go right now (Custom 21 / 25 before signing). */
+  maxAvailableTitle: "Partly available now",
+  maxAvailableBody: "The full amount can't be paid in one go right now. Nothing moved. You can withdraw the max available now; the rest stays in the vault.",
+  maxAvailableAction: (max: string) => `Withdraw max available now: ${max}`,
 } as const;

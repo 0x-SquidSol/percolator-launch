@@ -12,7 +12,7 @@ import { earnExitProps } from '@/lib/limits/resolved-finish';
 import { useWalletCompat } from '@/hooks/useWalletCompat';
 import { LoadingValue } from '@/components/ui/LoadingValue';
 import { useMarketLimits } from '@/hooks/useMarketLimits';
-import { earnDepositPause, earnGateShares, earnViewFromLimits, earnPanelPricing } from '@/lib/limits/earn';
+import { earnDepositPause, earnGateShares, earnViewFromLimits, earnPanelPricing, withSplitPotPricing } from '@/lib/limits/earn';
 import { earnDepositBlock } from '@/lib/limits/vault-tranche';
 import { COPY } from '@/lib/limits/copy';
 import { chargedTradeFeeLabel } from '@/lib/limits/format';
@@ -70,7 +70,7 @@ export function VaultDepositRail({ slab, vault, onTxSuccess, onPositionResolved 
 }
 
 function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }: VaultDepositRailProps & { slab: string }) {
-  const { state, loading, deposit, withdraw, refreshState, lastDrawSummary } = useInsuranceLP();
+  const { state, loading, deposit, withdraw, resizeRedemption, refreshState, lastDrawSummary } = useInsuranceLP();
   const { config, raw: slabRaw } = useSlabState();
   const wallet = useWalletCompat();
   const vaultAvailable = state.registryExists && state.mintExists;
@@ -91,7 +91,8 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
 
   const vaultUsd = Number(state.vaultTotalAtoms) / collDivisor;
   const positionUsd = Number(state.userVaultValueAtoms) / collDivisor;
-  const hasPosition = state.userLpBalance > 0n;
+  // A pending withdrawal keeps its shares in escrow until paid: still the user's deposit.
+  const hasPosition = state.userLpBalance > 0n || state.pendingRedemptionShares > 0n;
 
   const symbol = vault?.symbol ?? `${slab.slice(0, 4)}…`;
 
@@ -101,7 +102,7 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
   // UX WP-5 (§3.7): a stale LP certificate is valued by a simulated crank, never "Needs refresh".
   const lpValuation = useVaultLpValuation(slab, marketLimits);
   const trancheView = earnViewFromLimits(marketLimits, state.vaultTotalAtoms, state.userLpBalance, undefined, lpValuation.value);
-  const earnPricing = earnPanelPricing(marketLimits, state.vaultTotalAtoms, lpValuation.sim ?? lpValuation.value);
+  const earnPricing = withSplitPotPricing(earnPanelPricing(marketLimits, state.vaultTotalAtoms, lpValuation.sim ?? lpValuation.value), state.splitPot);
   const gateShares = earnGateShares(marketLimits);
   // Genesis with fees pending (P3-L1) is NOT a block any more: the deposit tx bundles tag 78
   // first (lib/limits/earn-ixs.ts earnTxPlan), so only a real refusal disables the button.
@@ -222,6 +223,10 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
         drawSummary={lastDrawSummary}
         pricing={earnPricing}
         onRefresh={refreshState}
+        onResizeRedemption={async (shares) => {
+          await resizeRedemption(shares);
+          await refreshState();
+        }}
       />
     </div>
   );

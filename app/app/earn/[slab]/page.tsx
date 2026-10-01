@@ -14,7 +14,7 @@ import { earnExitProps } from '@/lib/limits/resolved-finish';
 import { EarnTrancheCardView } from '@/components/limits/EarnTrancheCard';
 import { useVaultLpValuation } from '@/hooks/useVaultLpValuation';
 import { useMarketLimits } from '@/hooks/useMarketLimits';
-import { earnViewFromLimits, earnPanelPricing } from '@/lib/limits/earn';
+import { earnViewFromLimits, earnPanelPricing, withSplitPotPricing } from '@/lib/limits/earn';
 import { cooldownPhrase, previewWithdrawAtoms } from '@/lib/limits/earn-withdraw';
 import { formatTokenAmount } from '@/lib/format';
 import { chargedTradeFeeLabel } from '@/lib/limits/format';
@@ -130,6 +130,7 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
     loading: lpVaultLoading,
     deposit: lpVaultDeposit,
     withdraw: lpVaultWithdraw,
+    resizeRedemption: lpVaultResizeRedemption,
     refreshState,
     lastDrawSummary,
   } = useInsuranceLP();
@@ -144,7 +145,7 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
   // UX WP-5 (§3.7): a stale LP certificate is valued by a simulated crank, never "Needs refresh".
   const lpValuation = useVaultLpValuation(slabAddress, earnLimits);
   const earnTrancheView = earnViewFromLimits(earnLimits, lpVaultState.vaultTotalAtoms, lpVaultState.userLpBalance, undefined, lpValuation.value);
-  const earnPricing = earnPanelPricing(earnLimits, lpVaultState.vaultTotalAtoms, lpValuation.sim ?? lpValuation.value);
+  const earnPricing = withSplitPotPricing(earnPanelPricing(earnLimits, lpVaultState.vaultTotalAtoms, lpValuation.sim ?? lpValuation.value), lpVaultState.splitPot);
   const { engine, totalOI, vault: engineVault } = useEngineState();
 
   // BUG-5 FIX: resolve actual collateral mint from on-chain slab data.
@@ -386,8 +387,10 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
           {/* LP Position dashboard */}
           <ScrollReveal>
             <LpPositionDashboard
-              userLpBalance={lpVaultState.userLpBalance}
-              lpSupply={lpVaultState.lpSupply}
+              // Escrowed (pending-withdrawal) shares are still the user's until paid; priced at
+              // the program's NAV over registry shares on a two-pot vault (state.splitPot).
+              userLpBalance={lpVaultState.userLpBalance + lpVaultState.pendingRedemptionShares}
+              lpSupply={lpVaultState.splitPot?.totalShares ?? lpVaultState.lpSupply}
               vaultBalance={lpVaultState.vaultTotalAtoms}
               decimals={collateralDecimals}
               lpDecimals={lpVaultState.lpDecimals}
@@ -444,6 +447,10 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
               drawSummary={lastDrawSummary}
               pricing={earnPricing}
               onRefresh={refreshState}
+              onResizeRedemption={async (shares) => {
+                await lpVaultResizeRedemption(shares);
+                await refreshState();
+              }}
             />
           </ScrollReveal>
         </div>

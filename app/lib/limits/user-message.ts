@@ -240,6 +240,11 @@ export function resolveUserMessage(err: unknown, ctx: MessageContext): UserMessa
         action: { id: "get-funds", label: "Get test funds" },
       });
     }
+    if (/earn payout above what the vault can pay now/i.test(p.raw)) {
+      return m("earn-max-now", "paused", "Partly available now", "The full amount can't be paid in one go right now. Nothing moved. Withdraw the max available now; the rest stays in the vault.", {
+        action: { id: "use-max", label: "Use max available" },
+      });
+    }
     if (/live mark price unavailable/i.test(p.raw)) {
       return m("price-wait", "wait", "Waiting for price", "Waiting for a live price. Try again in a few seconds. Nothing was sent.");
     }
@@ -263,6 +268,12 @@ export function resolveUserMessage(err: unknown, ctx: MessageContext): UserMessa
       case W.OracleStale:
       case W.OracleInvalid:
         return m("price-wait", "wait", "Waiting for price", "Waiting for a fresh price. This usually takes a few seconds.", { autoRetry: true });
+      case W.EngineCounterUnderflow:
+        // Two-pot Earn vault: 77 priced the payout on both pots but one pot could not fund it
+        // (the app now moves the other pot in first; this is the fallback line).
+        if (ctx.surface === "earn-withdraw")
+          return m("earn-pots-split", "paused", "Partly available now", "This vault can't pay that amount in one go right now. Nothing moved. Withdraw the max available now; the rest stays in the vault.");
+        break;
       case W.EngineLockActive: {
         const h = ctx.health ?? {};
         if (h.resolved) return m("market-settled", "info", "Market settled", "Close any position and withdraw. There's nothing else to do.");

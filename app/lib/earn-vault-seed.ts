@@ -25,6 +25,14 @@
  *
  * Markets created by the OLD flow (MAX-1 buckets present) can never get a vault:
  * see EARN_VAULT_BUCKET_NOT_EMPTY_MESSAGE.
+ *
+ * ONE DOMAIN (live investigation 2026-10-01b, SI "Payout not sent"): the two deposits above split
+ * the vault across two pots, and a non-bound vault's ExecuteRedemption (77) prices the payout on
+ * BOTH pots but draws it from ONE (Custom 25 EngineCounterUnderflow once a redemption exceeds one
+ * pot). Every wizard market hit it. The seed is now ONE DepositToLpVault into domain 0 for the
+ * same total (2 x seedPerDomain), so a new vault never splits. Trading does not need backing in
+ * domain 1: a devnet simulation of SI with domain 1's backing moved into domain 0 (tag 91) opened
+ * $10 and $100 longs AND shorts exactly as before.
  */
 import { PublicKey, SystemProgram, type TransactionInstruction } from "@solana/web3.js";
 import {
@@ -58,7 +66,7 @@ export const RELAUNCH_MIN_COOLDOWN_SLOTS = 150n;
 export const EARN_VAULT_COOLDOWN_SLOTS = RELAUNCH_MIN_COOLDOWN_SLOTS;
 export const STAKE_POOL_COOLDOWN_SLOTS = RELAUNCH_MIN_COOLDOWN_SLOTS;
 
-/** CreateLpVault + ATA + 2 deposits in one tx (devnet sim: ~151k CU measured; 500k leaves 3x headroom). */
+/** CreateLpVault + ATA + deposit in one tx (devnet sim with 2 deposits: ~151k CU; 500k leaves >3x headroom). */
 export const EARN_VAULT_SEED_COMPUTE_UNITS = 500_000;
 
 export const EARN_VAULT_BUCKET_NOT_EMPTY_MESSAGE =
@@ -75,13 +83,14 @@ export interface EarnVaultSeedArgs {
   lpMint: PublicKey;
   userAta: PublicKey;
   vaultAta: PublicKey;
-  /** Collateral to put into EACH of the two domains (backingSeedPerDomain). */
+  /** backingSeedPerDomain: the seed deposits 2x this, all into domain 0 (same total as before). */
   seedPerDomain: bigint;
   /** false when the registry already exists (resume) — then only ATA + deposits. */
   includeCreate: boolean;
 }
 
-/** Ordered instructions; never contains a direct TopUpBackingBucket. */
+/** Ordered instructions [CreateLpVault?, ATA, DepositToLpVault(domain 0, 2 x seedPerDomain)];
+ *  never a direct TopUpBackingBucket, never a domain-1 deposit. */
 export function buildEarnVaultSeedInstructions(a: EarnVaultSeedArgs): TransactionInstruction[] {
   if (a.seedPerDomain <= 0n) throw new Error("Earn vault seed must be > 0 per domain");
   const ixs: TransactionInstruction[] = [];
@@ -109,18 +118,16 @@ export function buildEarnVaultSeedInstructions(a: EarnVaultSeedArgs): Transactio
   // ledger = registry.domain's (0); siblingLedger = domain 1; `domain` arg picks the pot.
   const [ledger0] = deriveLpBackingLedger(a.programId, a.market, 0);
   const [ledger1] = deriveLpBackingLedger(a.programId, a.market, 1);
-  for (const domain of [0, 1]) {
-    ixs.push(
-      buildIx({
-        programId: a.programId,
-        keys: buildAccountMetas(ACCOUNTS_LP_VAULT_DEPOSIT, {
-          depositor: a.wallet, market: a.market, registry: a.registry, lpMint: a.lpMint,
-          depositorLpAta: lpAta, sourceToken: a.userAta, vaultToken: a.vaultAta, ledger: ledger0,
-          tokenProgram: WELL_KNOWN.tokenProgram, systemProgram: SystemProgram.programId, siblingLedger: ledger1,
-        }),
-        data: encodeDepositToLpVault({ amount: a.seedPerDomain.toString(), domain }),
+  ixs.push(
+    buildIx({
+      programId: a.programId,
+      keys: buildAccountMetas(ACCOUNTS_LP_VAULT_DEPOSIT, {
+        depositor: a.wallet, market: a.market, registry: a.registry, lpMint: a.lpMint,
+        depositorLpAta: lpAta, sourceToken: a.userAta, vaultToken: a.vaultAta, ledger: ledger0,
+        tokenProgram: WELL_KNOWN.tokenProgram, systemProgram: SystemProgram.programId, siblingLedger: ledger1,
       }),
-    );
-  }
+      data: encodeDepositToLpVault({ amount: (a.seedPerDomain * 2n).toString(), domain: 0 }),
+    }),
+  );
   return ixs;
 }
