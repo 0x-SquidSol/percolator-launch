@@ -313,11 +313,13 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
 
   // PnL: prefer mark-to-market from entry price (on-chain or saved),
   // fall back to on-chain realized PnL if neither is available.
+  // M-6: with no cached entry, `entryPriceE6` is the entry back-solved from the
+  // on-chain `pnl` (collateral atoms). Use it here instead of the raw `pnl`,
+  // which is already collateral-scale and would be scaled by the mark again
+  // below. An "unknown" source resolves to the mark: a 0 placeholder shown as "--".
   const pnlTokens = hasValidMark
-    ? (resolvedEntryPrice > 0n
-        // Effective, not nominal — a deleveraged leg moves at the reduced rate.
-        ? computeMarkPnl(effectiveSize, resolvedEntryPrice, currentPriceE6)
-        : (isSentinelValue(account.pnl) ? 0n : account.pnl))
+    // Effective, not nominal — a deleveraged leg moves at the reduced rate.
+    ? computeMarkPnl(effectiveSize, entryPriceE6, currentPriceE6)
     : 0n;
   const pnlUsdRaw =
     priceUsd !== null && hasValidMark ? (Number(pnlTokens) / 10 ** decimals) * priceUsd : null;

@@ -278,7 +278,7 @@ const CreatorTranchePanelLive: FC<{ slab: string; decimals: number; collateralSy
   const lpValuation = useVaultLpValuation(slab, limits);
   const vs = limits.flags.p3 ? limits.vaultState : null;
   const isJuniorOwner = !!vs && !!wallet.publicKey && new PublicKey(vs.juniorOwner).equals(wallet.publicKey);
-  const view = earnViewFromLimits(limits, lpState.vaultTotalAtoms, 0n, undefined, lpValuation.value);
+  const view = earnViewFromLimits(limits, lpState.backingNavAtoms, 0n, undefined, lpValuation.value);
   const stake =
     view && vs
       ? creatorStakeState({
@@ -323,7 +323,7 @@ const CreatorTranchePanelLive: FC<{ slab: string; decimals: number; collateralSy
       <CreatorTranchePanelView
       limits={limits}
       slab={slab}
-      backingNavAtoms={lpState.vaultTotalAtoms}
+      backingNavAtoms={lpState.backingNavAtoms}
       creatorFeesAtoms={assetProfile?.creatorFeeClaimableAtoms ?? null}
       decimals={decimals}
       collateralSymbol={collateralSymbol}

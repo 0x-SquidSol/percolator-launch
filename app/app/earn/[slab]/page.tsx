@@ -146,8 +146,8 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
   const earnLimits = useMarketLimits(slabAddress);
   // UX WP-5 (§3.7): a stale LP certificate is valued by a simulated crank, never "Needs refresh".
   const lpValuation = useVaultLpValuation(slabAddress, earnLimits);
-  const earnTrancheView = earnViewFromLimits(earnLimits, lpVaultState.vaultTotalAtoms, lpVaultState.userLpBalance, undefined, lpValuation.value);
-  const earnPricing = withSplitPotPricing(earnPanelPricing(earnLimits, lpVaultState.vaultTotalAtoms, lpValuation.sim ?? lpValuation.value), lpVaultState.splitPot);
+  const earnTrancheView = earnViewFromLimits(earnLimits, lpVaultState.backingNavAtoms, lpVaultState.userLpBalance, undefined, lpValuation.value);
+  const earnPricing = withSplitPotPricing(earnPanelPricing(earnLimits, lpVaultState.backingNavAtoms, lpValuation.sim ?? lpValuation.value), lpVaultState.splitPot);
   const { engine, totalOI, vault: engineVault } = useEngineState();
 
   // percolator-indexer#207: exact earned = value − indexed cost basis (+ realized), priced on

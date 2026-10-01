@@ -215,6 +215,30 @@ export function combinedVault(own: DomainState, sib: DomainState, feeShareBps: n
   return { nav: no + ns, available: ao + as };
 }
 
+/**
+ * BOUND (P3) vault backing NAV, as 75 / 77 price it: wrapper `lp_vault_combined_nav_parts_p3` ->
+ * `vault_lp_v18::bound_vault_nav` (deployed 553d76f0). Per pot the vault owns
+ * `min(principal, held)` with `held = (fresh_unliened + valid_liened) / BOUND_SCALE` (backing
+ * above principal is the vault LP's settled loss reserved for winners; below it is a real loss),
+ * plus each pot's LP earnings `floor((earnings - withdrawn) * fee_share / 10_000)` from its synced
+ * ledger. The ledgers' impairment counters are deliberately NOT used (B24).
+ */
+export function boundVaultNav(own: DomainState, sib: DomainState, feeShareBps: number): { nav: bigint; available: bigint } | null {
+  if (feeShareBps < 0 || feeShareBps > 10_000) return null;
+  const pot = (d: DomainState) => {
+    const l = syncedLedger(d);
+    const held = (d.bucket.freshUnliened + d.bucket.validLiened) / BS;
+    const owned = l.totalPrincipal < held ? l.totalPrincipal : held;
+    const net = l.totalEarnings - l.totalEarningsWithdrawn;
+    const earnings = net > 0n ? (net * BigInt(feeShareBps)) / 10_000n : 0n;
+    return { owned, earnings };
+  };
+  const a = pot(own);
+  const b = pot(sib);
+  const available = a.owned + b.owned;
+  return { available, nav: available + a.earnings + b.earnings };
+}
+
 /** The most principal 91 can move out of `sib` (0 when nothing can move). */
 export function movablePrincipal(sib: DomainState): bigint {
   if (sib.bucket.status !== BUCKET_STATUS_FRESH) return 0n;
@@ -505,17 +529,10 @@ export async function readSplitPotState(
   programId: PublicKey,
   market: PublicKey,
 ): Promise<SplitPotState | null> {
-  try {
-    const [registry] = deriveLpVaultRegistry(programId, market);
-    const r = await connection.getAccountInfo(registry, "confirmed");
-    if (!r || !r.owner.equals(programId)) return null;
-    const keys = splitPotLedgerKeys(programId, market, r.data);
-    if (!keys) return null;
-    const [m, lo, ls] = await connection.getMultipleAccountsInfo([market, keys.ownLedger, keys.sibLedger], "confirmed");
-    return splitPotStateFromAccounts(programId, market, r.data, m?.data ?? null, lo?.data ?? null, ls?.data ?? null);
-  } catch {
-    return null;
-  }
+  const st = await readVaultPotState(connection, programId, market);
+  if (!st || st.bound) return null;
+  const { bound: _bound, ...rest } = st;
+  return rest;
 }
 
 /** The two pot ledgers a two-pot vault's state needs; null = BOUND vault or unreadable registry. */
@@ -524,13 +541,25 @@ export function splitPotLedgerKeys(
   market: PublicKey,
   registryData: Uint8Array | Buffer,
 ): { ownLedger: PublicKey; sibLedger: PublicKey } | null {
+  const k = vaultPotLedgerKeys(programId, market, registryData);
+  return k && !k.bound ? { ownLedger: k.ownLedger, sibLedger: k.sibLedger } : null;
+}
+
+/** Both pot ledgers of ANY vault, with its bound flag; null = unreadable or invalid registry. */
+export function vaultPotLedgerKeys(
+  programId: PublicKey,
+  market: PublicKey,
+  registryData: Uint8Array | Buffer,
+): { ownLedger: PublicKey; sibLedger: PublicKey; bound: boolean } | null {
   try {
     const rd = new Uint8Array(registryData);
-    if (decodeLpVaultRegistryBound(rd) !== false) return null;
+    const bound = decodeLpVaultRegistryBound(rd);
+    if (bound !== true && bound !== false) return null;
     const ownDomain = Number(parseLpVaultRegistry(rd).domain);
     return {
       ownLedger: deriveLpBackingLedger(programId, market, ownDomain)[0],
       sibLedger: deriveLpBackingLedger(programId, market, ownDomain ^ 1)[0],
+      bound,
     };
   } catch {
     return null;
@@ -549,8 +578,23 @@ export function splitPotStateFromAccounts(
   ownLedgerData: Uint8Array | Buffer | null,
   sibLedgerData: Uint8Array | Buffer | null,
 ): SplitPotState | null {
+  const st = vaultPotStateFromAccounts(programId, market, registryData, marketData, ownLedgerData, sibLedgerData);
+  if (!st || st.bound) return null;
+  const { bound: _bound, ...rest } = st;
+  return rest;
+}
+
+/** Both pots of ANY vault (bound or not) from fetched accounts; null = unreadable. */
+export function vaultPotStateFromAccounts(
+  programId: PublicKey,
+  market: PublicKey,
+  registryData: Uint8Array | Buffer,
+  marketData: Uint8Array | Buffer | null,
+  ownLedgerData: Uint8Array | Buffer | null,
+  sibLedgerData: Uint8Array | Buffer | null,
+): (SplitPotState & { bound: boolean }) | null {
   try {
-    const keys = splitPotLedgerKeys(programId, market, registryData);
+    const keys = vaultPotLedgerKeys(programId, market, registryData);
     if (!keys || !marketData) return null;
     const reg = parseLpVaultRegistry(new Uint8Array(registryData));
     const ownDomain = Number(reg.domain);
@@ -563,7 +607,41 @@ export function splitPotStateFromAccounts(
     const own = dom(ownDomain, ownLedgerData);
     const sib = dom(ownDomain ^ 1, sibLedgerData);
     if (!own || !sib) return null;
-    return { own, sib, ownDomain, totalShares: BigInt(reg.totalLpSharesOutstanding), feeShareBps: Number(reg.feeShareBps), ...keys };
+    return {
+      own,
+      sib,
+      ownDomain,
+      totalShares: BigInt(reg.totalLpSharesOutstanding),
+      feeShareBps: Number(reg.feeShareBps),
+      ownLedger: keys.ownLedger,
+      sibLedger: keys.sibLedger,
+      bound: keys.bound,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** The backing NAV the program prices a vault at: bound -> boundVaultNav, two-pot -> combinedVault. */
+export function vaultBackingNav(st: SplitPotState & { bound: boolean }): bigint | null {
+  const v = st.bound ? boundVaultNav(st.own, st.sib, st.feeShareBps) : combinedVault(st.own, st.sib, st.feeShareBps);
+  return v ? v.nav : null;
+}
+
+/** Both pots of ANY vault (bound or not) in one round trip; null = unreadable. */
+export async function readVaultPotState(
+  connection: Connection,
+  programId: PublicKey,
+  market: PublicKey,
+): Promise<(SplitPotState & { bound: boolean }) | null> {
+  try {
+    const [registry] = deriveLpVaultRegistry(programId, market);
+    const r = await connection.getAccountInfo(registry, "confirmed");
+    if (!r || !r.owner.equals(programId)) return null;
+    const keys = vaultPotLedgerKeys(programId, market, r.data);
+    if (!keys) return null;
+    const [m, lo, ls] = await connection.getMultipleAccountsInfo([market, keys.ownLedger, keys.sibLedger], "confirmed");
+    return vaultPotStateFromAccounts(programId, market, r.data, m?.data ?? null, lo?.data ?? null, ls?.data ?? null);
   } catch {
     return null;
   }

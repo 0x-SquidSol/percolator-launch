@@ -101,8 +101,8 @@ function VaultDepositRailInner({ slab, vault, onTxSuccess, onPositionResolved }:
   const marketLimits = useMarketLimits(slab);
   // UX WP-5 (§3.7): a stale LP certificate is valued by a simulated crank, never "Needs refresh".
   const lpValuation = useVaultLpValuation(slab, marketLimits);
-  const trancheView = earnViewFromLimits(marketLimits, state.vaultTotalAtoms, state.userLpBalance, undefined, lpValuation.value);
-  const earnPricing = withSplitPotPricing(earnPanelPricing(marketLimits, state.vaultTotalAtoms, lpValuation.sim ?? lpValuation.value), state.splitPot);
+  const trancheView = earnViewFromLimits(marketLimits, state.backingNavAtoms, state.userLpBalance, undefined, lpValuation.value);
+  const earnPricing = withSplitPotPricing(earnPanelPricing(marketLimits, state.backingNavAtoms, lpValuation.sim ?? lpValuation.value), state.splitPot);
   const gateShares = earnGateShares(marketLimits);
   // Genesis with fees pending (P3-L1) is NOT a block any more: the deposit tx bundles tag 78
   // first (lib/limits/earn-ixs.ts earnTxPlan), so only a real refusal disables the button.

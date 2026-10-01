@@ -50,6 +50,9 @@ import {
   combinedVault,
   planSplitPotRedemption,
   readSplitPotState,
+  readVaultPotState,
+  vaultBackingNav,
+  type SplitPotState,
   repairUnderwaterPot,
   splitPotPrefixIxs,
 } from "@/lib/limits/earn-split-pot";
@@ -130,6 +133,13 @@ export interface InsuranceLPState {
   userCollateralBalance: bigint;
   /** Total atoms currently backing the LP vault: shares outstanding + distributed fee atoms. */
   vaultTotalAtoms: bigint;
+  /**
+   * The backing NAV the program prices 75 / 77 against (feeds the Earn previews, max-now and the
+   * deposit gate). Two-pot vault: the combined NAV (== vaultTotalAtoms). BOUND (P3) vault:
+   * `bound_vault_nav` over both pots (lib/limits/earn-split-pot.ts boundVaultNav), NOT the
+   * shares + distributed-fees proxy. Falls back to vaultTotalAtoms when the pots are unreadable.
+   */
+  backingNavAtoms: bigint;
   /** Share price = vaultTotalAtoms / lpSupply, scaled by 1e6 (1_000_000n = 1:1). */
   vaultSharePriceE6: bigint;
   /** User's LP position value in underlying collateral atoms (derived from vaultTotalAtoms, not insuranceBalance). */
@@ -198,6 +208,7 @@ export function useInsuranceLP() {
     lpVaultDomain: 0,
     userCollateralBalance: 0n,
     vaultTotalAtoms: 0n,
+    backingNavAtoms: 0n,
     vaultSharePriceE6: 1_000_000n,
     userVaultValueAtoms: 0n,
     redemptionCooldownSlots: 0n,
@@ -490,11 +501,18 @@ export function useInsuranceLP() {
       // registry's shares (what 77 pays), count the escrowed pending shares as the user's, and
       // work out what the whole position can be paid right now (Custom 21 / 25 before signing).
       let splitPot: InsuranceLPState['splitPot'] = null;
+      let backingNavAtoms: bigint | null = null;
       if (registryExists && programId && slabAddress) {
-        const read = await readSplitPotState(connection, new PublicKey(programId), new PublicKey(slabAddress));
+        const vp = await readVaultPotState(connection, new PublicKey(programId), new PublicKey(slabAddress));
         if (stale()) return;
-        // Priced as the program will see it once the app's own repair (an underwater pot) lands.
-        const sp = read ? repairUnderwaterPot(read)?.state ?? null : null;
+        // M-9: a BOUND (P3) vault is priced on `bound_vault_nav` (per pot min(principal, held) +
+        // LP earnings), not shares + distributed fees. Its per-share pricing stays with the P3
+        // tranche model (earnPanelPricing), which takes this as its backing NAV.
+        if (vp?.bound) backingNavAtoms = vaultBackingNav(vp);
+        // Non-bound: priced as the program will see it once the app's own repair (an underwater
+        // pot, #2853) lands.
+        const rawSp: SplitPotState | null = vp && !vp.bound ? vp : null;
+        const sp = rawSp ? repairUnderwaterPot(rawSp)?.state ?? null : null;
         const v = sp ? combinedVault(sp.own, sp.sib, sp.feeShareBps) : null;
         if (sp && v && sp.totalShares > 0n) {
           const held = userLpBalance + pendingRedemptionShares;
@@ -530,6 +548,7 @@ export function useInsuranceLP() {
         lpVaultDomain,
         userCollateralBalance,
         vaultTotalAtoms,
+        backingNavAtoms: backingNavAtoms ?? vaultTotalAtoms,
         vaultSharePriceE6,
         userVaultValueAtoms,
         redemptionCooldownSlots,
