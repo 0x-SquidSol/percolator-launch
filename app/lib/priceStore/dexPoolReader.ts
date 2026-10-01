@@ -47,6 +47,43 @@ export interface PriceReadResult {
 
 const MAX_RETRIES = 4;
 
+/**
+ * Mainnet USD-stable mints. Same list as the keeper's price-reader.ts: a price
+ * is USD only when the pool's QUOTE side is one of these, or WSOL where the
+ * branch converts it with solPriceE6.
+ */
+const USD_STABLE_MINTS: ReadonlySet<string> = new Set([
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
+  "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", // USDT
+]);
+
+/**
+ * Raydium CLMM returns mint1-per-mint0 with the mints ordered by pubkey, so
+ * only a USD-stable mint1 gives a USD price (keeper: raydiumPriceIsNotUsd).
+ */
+export function raydiumPriceIsNotUsd(quoteMint: PublicKey): boolean {
+  return !USD_STABLE_MINTS.has(quoteMint.toBase58());
+}
+
+/**
+ * PumpSwap and Meteora return the price in the quote token and only WSOL is
+ * converted to USD. Any other non-stable quote (COLLECT/CARDS, Murphy/DOGE)
+ * would be shown as USD in quote-token units (keeper: quoteIsNotUsdOrWsol).
+ */
+export function quoteIsNotUsdOrWsol(quoteMint: PublicKey): boolean {
+  return !quoteMint.equals(WSOL_MINT) && raydiumPriceIsNotUsd(quoteMint);
+}
+
+function notUsdSkip(dex: string, quoteMint: PublicKey, source: string): PriceReadResult {
+  const allowed = dex === "Raydium CLMM" ? "a USD stable" : "WSOL or a USD stable";
+  return {
+    priceE6: 0n,
+    source,
+    skipped: true,
+    skipReason: `${dex}: quote mint ${quoteMint.toBase58()} is not ${allowed}, so this pool's price is not USD`,
+  };
+}
+
 function is429(err: unknown): boolean {
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
   return msg.includes("429") || msg.includes("too many requests");
@@ -113,6 +150,8 @@ export async function readPoolPriceE6(
   }
 
   if (entry.dexType === "raydium-clmm") {
+    const { quoteMint } = parseDexPool("raydium-clmm", poolPk, data);
+    if (raydiumPriceIsNotUsd(quoteMint)) return notUsdSkip("Raydium CLMM", quoteMint, source);
     const priceE6 = computeDexSpotPriceE6("raydium-clmm", data);
     if (priceE6 === 0n) {
       return { priceE6: 0n, source, skipped: true, skipReason: "Raydium CLMM: sqrtPriceX64=0 (pool not initialised or live)" };
@@ -124,6 +163,7 @@ export async function readPoolPriceE6(
     // Parsed unconditionally (pure byte parsing, no RPC): the quote mint is what
     // decides whether this pool prices in USD or in SOL.
     const poolParsed = parseDexPool("meteora-dlmm", poolPk, data);
+    if (quoteIsNotUsdOrWsol(poolParsed.quoteMint)) return notUsdSkip("Meteora DLMM", poolParsed.quoteMint, source);
     if (!decimalsCache.has(entry.poolAddress)) {
       const [baseDecimals, quoteDecimals] = await Promise.all([
         withRpcBackoff(() => fetchMintDecimals(mainnetConn, poolParsed.baseMint)),
@@ -176,6 +216,7 @@ export async function readPoolPriceE6(
 
   if (entry.dexType === "pumpswap") {
     const poolParsed = parseDexPool("pumpswap", poolPk, data);
+    if (quoteIsNotUsdOrWsol(poolParsed.quoteMint)) return notUsdSkip("PumpSwap", poolParsed.quoteMint, source);
     if (!poolParsed.baseVault || !poolParsed.quoteVault) {
       return { priceE6: 0n, source, skipped: true, skipReason: "PumpSwap: vault addresses missing from pool data" };
     }
@@ -228,9 +269,24 @@ export async function readPoolPriceE6(
       };
     }
 
+    // Precision: the SDK floors quote-per-base to whole micro-units BEFORE the
+    // SOL/USD multiply, so a token at 1.8e-6 SOL read as exactly 1 x SOL/USD
+    // (-45%) and one under 1e-6 SOL read 0. Same fix as the Meteora branch
+    // above (and percolator-oracle-keeper #114): ask for 6 EXTRA base decimals
+    // so the price comes back at e12, then divide once at the end. Capped so
+    // base never exceeds the SDK's 24-decimal limit (it would throw).
+    const extra = Math.max(0, Math.min(6, 24 - dec.base));
     let priceE6: bigint;
     try {
-      priceE6 = computeDexSpotPriceE6("pumpswap", data, { base: baseVaultData, quote: quoteVaultData }, dec, solPriceE6);
+      priceE6 =
+        computeDexSpotPriceE6(
+          "pumpswap",
+          data,
+          { base: baseVaultData, quote: quoteVaultData },
+          { base: dec.base + extra, quote: dec.quote },
+          solPriceE6,
+        ) /
+        10n ** BigInt(extra);
     } catch (err) {
       return { priceE6: 0n, source, skipped: true, skipReason: `PumpSwap: ${err instanceof Error ? err.message : String(err)}` };
     }

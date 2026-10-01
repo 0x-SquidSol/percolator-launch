@@ -28,7 +28,7 @@ import { getPortfolioRawSnapshot, isLpPortfolio, makePortfolioScanKey } from "@/
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { detectOracleMode, sanitizePriceE6, applyInvert } from "@/lib/oraclePrice";
 import { assertKnownProgram } from "@/lib/programAllowlist";
-import { humanizeError } from "@/lib/errorMessages";
+import { humanizeError, UserFacingError, userFacingMessage } from "@/lib/errorMessages";
 import { fetchPortfolioIdentity, defaultCrankObservations } from "@/lib/v18-wire";
 import { computePositionInitialMargin, estimateEntryFromPnl } from "@/lib/trading";
 import { getEntryPrice } from "@/lib/entry-price";
@@ -110,7 +110,7 @@ export function useWithdraw(slabAddress: string) {
           try {
             const slabInfo = await connection.getAccountInfo(new PublicKey(slabAddress));
             if (!slabInfo) {
-              throw new Error("Market not found on current network. Please switch networks in your wallet and refresh.");
+              throw new UserFacingError("Market not found on current network. Please switch networks in your wallet and refresh.");
             }
           } catch (e) {
             if (e instanceof Error && e.message.includes("Market not found")) throw e;
@@ -259,7 +259,7 @@ export function useWithdraw(slabAddress: string) {
           } catch { /* fall through — portfolio lookup is best-effort */ }
 
           if (!portfolioPk) {
-            throw new Error("v17: No portfolio account found for this wallet. Please deposit first to create your portfolio.");
+            throw new UserFacingError("No account found for this wallet on this market. Deposit first to create one.");
           }
 
           // Over-withdraw pre-check (defense-in-depth). The DepositWithdrawCard UI
@@ -292,7 +292,7 @@ export function useWithdraw(slabAddress: string) {
               // position is closed. Block the doomed tx up front with the true
               // reason instead of letting it revert Custom(19) on-chain.
               if (hasActiveLegs) {
-                throw new Error(OPEN_POSITION_WITHDRAW_MESSAGE);
+                throw new UserFacingError(OPEN_POSITION_WITHDRAW_MESSAGE);
               }
               const positionSize = activeLeg ? activeLeg.basisPosQ : 0n;
               // D: mirror OrderTicket/DepositWithdrawCard's 3-step entry-price
@@ -324,7 +324,7 @@ export function useWithdraw(slabAddress: string) {
                   connectionQuoteDeps(connection, wallet.publicKey),
                 );
               } else if (params.amount > freeMargin) {
-                throw new Error(
+                throw new UserFacingError(
                   hasActiveLegs
                     ? "Withdrawal amount exceeds your free margin. Part of your balance backs an open position — reduce the amount or close the position first."
                     : "Withdrawal amount exceeds your account balance. Reduce the amount and try again.",
@@ -419,14 +419,14 @@ export function useWithdraw(slabAddress: string) {
         const rawMsg = e instanceof Error ? e.message : String(e);
         // M7: don't let a withdraw-specific EngineStale(19) read as
         // transient/auto-fixable — see ENGINE_STALE_WITHDRAW_MESSAGE above.
-        setError(
-          e instanceof WithdrawRefusal
-            ? rawMsg
-            : usedConvertPrefix && isLockActiveError(rawMsg)
-              ? settlingProfitMessage(WRAPPER_ERR.EngineLockActive)
-              : isEngineStaleWithdrawError(rawMsg)
-              ? ENGINE_STALE_WITHDRAW_MESSAGE
-              : humanizeError(rawMsg),
+        setError(userFacingMessage(e) ??
+            (e instanceof WithdrawRefusal
+              ? rawMsg
+              : usedConvertPrefix && isLockActiveError(rawMsg)
+                ? settlingProfitMessage(WRAPPER_ERR.EngineLockActive)
+                : isEngineStaleWithdrawError(rawMsg)
+                  ? ENGINE_STALE_WITHDRAW_MESSAGE
+                  : humanizeError(rawMsg)),
         );
         throw e;
       } finally {

@@ -24,6 +24,7 @@ import { useLivePrice } from "@/hooks/useLivePrice";
 import { isSentinelValue } from "@/lib/health";
 import { useConvertibleProfit } from "@/hooks/useConvertibleProfit";
 import { settlingProfitMessage } from "@/lib/convert-released-pnl";
+import { useWalletBalanceRefreshKey } from "@/lib/wallet-balance-invalidation";
 
 interface DepositWithdrawCardProps {
   slabAddress: string;
@@ -32,6 +33,9 @@ interface DepositWithdrawCardProps {
    *  order-ticket footer's separate Deposit / Withdraw triggers). The in-card
    *  tabs still switch modes locally. */
   initialMode?: "deposit" | "withdraw";
+  /** The order ticket's "Get test funds": the wallet holds some collateral but less than the
+   *  order needs, so offer the faucet even though the balance is not 0. */
+  offerFaucet?: boolean;
 }
 
 function sanitizeDecimalInput(value: string): string {
@@ -41,7 +45,7 @@ function sanitizeDecimalInput(value: string): string {
   return cleaned.slice(0, dotIndex + 1) + cleaned.slice(dotIndex + 1).replace(/\./g, "");
 }
 
-export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress, isDevnetMirror = false, initialMode = "deposit" }) => {
+export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress, isDevnetMirror = false, initialMode = "deposit", offerFaucet = false }) => {
   const { connected: walletConnected, publicKey } = useWalletCompat();
   const { connection } = useConnectionCompat();
   const realUserAccount = useUserAccount();
@@ -68,6 +72,8 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
     if (!mockMode && walletConnected) prewarmTxLanding(connection);
   }, [connection, mockMode, walletConnected]);
   const [lastSig, setLastSig] = useState<string | null>(null);
+  // A faucet claim (inline button or the global modal) changes none of the deps above.
+  const walletBalanceKey = useWalletBalanceRefreshKey();
 
   type WalletBalanceSnapshot = {
     scopeKey: string;
@@ -173,7 +179,7 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
     return () => {
       cancelled = true;
     };
-  }, [mockMode, publicKey, mktConfig?.collateralMint, walletBalanceScopeKey, connection, lastSig]);
+  }, [mockMode, publicKey, mktConfig?.collateralMint, walletBalanceScopeKey, connection, lastSig, walletBalanceKey]);
 
   // Pre-fill deposit: the FIRST time this card is open for a brand-new
   // (0-capital) account with a known wallet balance, default the amount
@@ -216,6 +222,15 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
     );
   }
 
+  // "Get test funds" opens this card when the wallet holds some collateral but less than the order
+  // needs; the faucet blocks below only show at a 0 balance, which left that button a dead end.
+  const moreFundsFaucet = offerFaucet && walletBalance !== null && walletBalance > 0n && mktConfig?.collateralMint ? (
+    <div data-testid="more-funds-faucet" className="mb-2 border border-[var(--warning)]/20 bg-[var(--warning)]/[0.04] p-2 space-y-2">
+      <p className="text-[10px] text-[var(--warning)]">Need more {symbol} for this order.</p>
+      <DevnetTokenFaucetButton mintAddress={mktConfig.collateralMint.toBase58()} symbol={symbol} />
+    </div>
+  ) : null;
+
   if (!userAccount) {
     const hasTokens = walletBalance !== null && walletBalance > 0n;
     return (
@@ -226,6 +241,7 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
             Wallet: {formatTokenAmount(walletBalance, decimals, 3)} {symbol}
           </p>
         )}
+        {moreFundsFaucet}
         {!hasTokens && (
           <div className="mb-2 border border-[var(--warning)]/20 bg-[var(--warning)]/[0.04] p-2 space-y-2">
             <p className="text-[10px] text-[var(--warning)]">
@@ -411,6 +427,7 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
           <p className="text-sm font-medium text-[var(--text)]" style={{ fontFamily: "var(--font-mono)" }}>{walletBalance !== null ? formatTokenAmount(walletBalance, decimals, 3) : "—"} <span className="text-[10px] font-normal text-[var(--text-secondary)]">{symbol}</span></p>
         </div>
       </div>
+      {mode === "deposit" && moreFundsFaucet}
       {mode === "deposit" && walletBalance !== null && walletBalance === 0n && mktConfig?.collateralMint && (
         <div className="mb-2 border border-[var(--warning)]/20 bg-[var(--warning)]/[0.04] p-2 space-y-2">
           <p className="text-[10px] text-[var(--warning)]">

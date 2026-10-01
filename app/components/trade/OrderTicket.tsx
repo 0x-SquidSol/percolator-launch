@@ -36,6 +36,7 @@
  */
 
 import { FC, memo, useState, useMemo, useCallback, useEffect, useRef } from "react";
+import { useWalletBalanceRefreshKey } from "@/lib/wallet-balance-invalidation";
 import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { computeNotionalNative } from "@/lib/notional";
@@ -320,6 +321,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     worstFillPriceE6: bigint;
   } | null>(null);
   const [showInlineDeposit, setShowInlineDeposit] = useState(false);
+  // A faucet claim changes none of the wallet-balance effect's other deps.
+  const walletBalanceKey = useWalletBalanceRefreshKey();
   // Which tab the inline card opens on. Clicking the active trigger closes the
   // card; clicking the other trigger switches its tab in place.
   const [inlineDepositMode, setInlineDepositMode] = useState<"deposit" | "withdraw">("deposit");
@@ -503,7 +506,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     // signal for the inline DepositWithdrawCard's own deposit/withdraw/faucet-mint
     // (its tx signature isn't exposed to this component) — re-fetching on that
     // transition unfreezes the value instead of requiring a full page remount.
-  }, [publicKey, mktConfig?.collateralMint, connection, mockMode, capital, showInlineDeposit]);
+  }, [publicKey, mktConfig?.collateralMint, connection, mockMode, capital, showInlineDeposit, walletBalanceKey]);
 
   // Reset form state on market switch (mirrors TradeForm's bug #1a12dab5 fix).
   useEffect(() => {
@@ -957,7 +960,10 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       setEngineLockError(null);
       setMarginInput("");
       setSizeInput("");
-      if (livePriceE6 && livePriceE6 > 0n && userAccount) {
+      // A first fund-and-trade runs with no account in this closure (fundingMode allows it), and the
+      // portfolio it just created is a v17 one: idx 0, like every v17 account (lib/userAccountScan.ts).
+      const entryIdx = userAccount?.idx ?? (fundingMode ? 0 : null);
+      if (livePriceE6 && livePriceE6 > 0n && entryIdx !== null) {
         const wallet = publicKey?.toBase58();
         // BUG 9 fix: this fired unconditionally on every successful open, so
         // scaling INTO (or reducing/flipping through) an EXISTING position
@@ -971,9 +977,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
         // on-chain size/pnl (accurate once refreshSlab() below lands)
         // instead of showing this trade's fill price mislabeled as "Entry".
         if (existingPositionSize === 0n) {
-          saveEntryPrice(slabAddress, userAccount.idx, livePriceE6, leverage, wallet);
+          saveEntryPrice(slabAddress, entryIdx, livePriceE6, leverage, wallet);
         } else {
-          clearEntryPrice(slabAddress, userAccount.idx, wallet);
+          clearEntryPrice(slabAddress, entryIdx, wallet);
         }
       }
       // The site-wide PositionsBar reads usePortfolio, which refreshes its
@@ -1883,7 +1889,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       </div>
       {connected && showInlineDeposit && !((needsAccount || needsDeposit) && !walletHasTokens) && (
         <div className="mt-1.5" data-deposit-trigger>
-          <DepositWithdrawCard slabAddress={slabAddress} initialMode={inlineDepositMode} />
+          <DepositWithdrawCard slabAddress={slabAddress} initialMode={inlineDepositMode} offerFaucet={fundOverWallet} />
         </div>
       )}
 

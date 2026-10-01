@@ -152,6 +152,31 @@ describe("first trade, one approval", () => {
     expect(screen.getByTestId("deposit-card")).toBeTruthy();
   });
 
+  // The entry cache (lib/entry-price.ts) is the only source of Entry / PnL / ROE for a new position.
+  // The first fund-and-trade runs with no account in handleTrade's closure, and the save was gated
+  // on that account, so a new user's first position showed Entry "—" and PnL "--".
+  it("the first fund-and-trade records the entry (v17 idx 0, this wallet)", async () => {
+    localStorage.clear();
+    render(<OrderTicket slabAddress={SLAB} />);
+    await waitFor(() => expect(screen.queryByTestId("trade-submit")).not.toBeNull());
+    size("5");
+    await place();
+    expect(mocks.fund).toHaveBeenCalledTimes(1);
+    const rec = JSON.parse(localStorage.getItem(`perc:entry:${SLAB}:0:11111111111111111111111111111111`) ?? "null");
+    expect(rec?.entryPriceE6).toBe("1000000");
+  });
+
+  it("CONTROL: a returning user's fund-and-trade still keys the entry by their account idx", async () => {
+    localStorage.clear();
+    mocks.useUserAccount.mockReturnValue({ account: { capital: 1_000_000n, positionSize: 0n, entryPrice: 0n, pnl: 0n }, idx: 3 });
+    render(<OrderTicket slabAddress={SLAB} />);
+    await waitFor(() => expect(screen.queryByTestId("trade-submit")).not.toBeNull());
+    size("5");
+    await place();
+    expect(localStorage.getItem(`perc:entry:${SLAB}:3:11111111111111111111111111111111`)).not.toBeNull();
+    expect(localStorage.getItem(`perc:entry:${SLAB}:0:11111111111111111111111111111111`)).toBeNull();
+  });
+
   it("a returning user short of margin: 'Deposit {x} & Long' = one tx [Deposit, Trade]", async () => {
     mocks.useUserAccount.mockReturnValue({ account: { capital: 1_000_000n, positionSize: 0n, entryPrice: 0n, pnl: 0n }, idx: 3 });
     render(<OrderTicket slabAddress={SLAB} />);

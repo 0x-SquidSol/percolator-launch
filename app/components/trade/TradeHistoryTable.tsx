@@ -1,7 +1,7 @@
 "use client";
 
 import { useTradeHistory } from "@/hooks/useTradeHistory";
-import { formatTokenAmount, formatUsdFromNumber } from "@/lib/format";
+import { formatStatValue, formatTokenAmount, formatUsdFromNumber } from "@/lib/format";
 import { useEffect, useState } from "react";
 import { ShimmerSkeleton } from "@/components/ui/ShimmerSkeleton";
 import type { MarketWithStats } from "@/hooks/useAllMarketStats";
@@ -33,14 +33,10 @@ function formatPrice(priceNum: number): string {
   return formatUsdFromNumber(priceNum);
 }
 
-function formatFee(feeNum: number, decimals = 6): string {
+function formatFee(feeNum: number): string {
   if (!feeNum) return "—";
-  // fee is stored in token base units — formatTokenAmount expects bigint
-  try {
-    return formatTokenAmount(BigInt(Math.round(feeNum)), decimals);
-  } catch {
-    return (feeNum / Math.pow(10, decimals)).toFixed(decimals > 4 ? 6 : 4);
-  }
+  // The indexer records `fee` in USD (0.25 on a $500 fill at 5 bps), not token base units.
+  return formatStatValue(feeNum, "currency");
 }
 
 function formatSize(sizeStr: string, decimals = 6): string {
@@ -151,9 +147,9 @@ export function TradeHistoryTable({
   if (!loading && trades.length === 0) {
     return (
       <div className="border border-dashed border-[var(--border)] bg-[var(--panel-bg)]/50 p-8 text-center">
-        <p className="text-[13px] text-[var(--text)]">Trade history requires the indexer (currently unavailable)</p>
+        <p className="text-[13px] text-[var(--text)]">No trades yet</p>
         <p className="mt-1 text-[10px] text-[var(--text-secondary)]">
-          Your executed trades will appear here once the indexer has processed them.
+          Your executed trades will appear here.
         </p>
       </div>
     );
@@ -238,7 +234,7 @@ export function TradeHistoryTable({
                   className="text-[11px] text-[var(--text-secondary)]"
                   style={{ fontFamily: "var(--font-jetbrains-mono)", fontVariantNumeric: "tabular-nums" }}
                 >
-                  {formatFee(trade.fee, tradeDecimals)}
+                  {formatFee(trade.fee)}
                 </p>
               </div>
 
