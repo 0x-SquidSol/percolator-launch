@@ -25,6 +25,7 @@ import { Redis } from "@upstash/redis";
 import { Ratelimit } from "@upstash/ratelimit";
 import { BLOCKED_SLAB_ADDRESSES } from "@/lib/blocklist-edge";
 import { parseBlocklist, isIpBlocked } from "@/lib/ip-blocklist";
+import { gateDecision, LOCKED_PATH, SESSION_COOKIE } from "@/lib/playground-gate";
 
 // ── Rate limiter configuration ───────────────────────────────────────────────
 // Two tiers: RPC proxy gets a higher limit since Solana web3.js generates many calls per page load.
@@ -381,6 +382,37 @@ export async function middleware(request: NextRequest) {
     }
   }
 
+  // ── Devnet v2 waitlist lock (PLAYGROUND_GATE_ENABLED) ─────────────────────
+  // Off unless PLAYGROUND_GATE_ENABLED === "true" (kill switch: unset → this
+  // block is a no-op and everything below behaves exactly as before). On: no
+  // valid pg_access session cookie (minted by /enter from a percolator.trade
+  // handoff or the team bypass) → pages 307 to /locked, /api/* 401 JSON.
+  // Exemptions and why each is safe: lib/playground-gate.ts.
+  {
+    const decision = await gateDecision(
+      request.nextUrl.pathname,
+      request.method,
+      request.cookies.get(SESSION_COOKIE)?.value,
+    );
+    if (decision === "unauthorized") {
+      const res = new NextResponse(JSON.stringify({ error: "Playground access required" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+      addSecurityHeaders(res);
+      return res;
+    }
+    if (decision === "redirect-locked") {
+      const url = request.nextUrl.clone();
+      url.pathname = LOCKED_PATH;
+      url.search = "";
+      const res = NextResponse.redirect(url, { status: 307 });
+      res.headers.set("Cache-Control", "no-store");
+      addSecurityHeaders(res);
+      return res;
+    }
+  }
+
   // ── Slab blocklist guards (GH#1363, GH#1390) ─────────────────────────────
   // next.config.ts rewrites /api/funding/:slab, /api/open-interest/:slab, and
   // /api/insurance/:slab → Railway before route handlers run, making the
@@ -583,6 +615,9 @@ function addSecurityHeaders(response: NextResponse, nonce?: string) {
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+    // Image-extension skip is TOP-LEVEL only ([^/]+): a nested /trade/x.png used
+    // to skip middleware entirely and would render the [slab] page shell past
+    // the playground gate. public/ asset folders are skipped by name instead.
+    "/((?!_next/static|_next/image|favicon.ico|images/|icons/|audio/|token-metadata/|[^/]+\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 };
