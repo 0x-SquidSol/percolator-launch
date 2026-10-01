@@ -16,9 +16,10 @@ import {
 } from "@/lib/market-error";
 import { extractTxErrorMessage } from "@/lib/tx";
 import type { MarketHealthRow, LockReason } from "@/lib/market-health";
+import { DEVNET_PROGRAM_IDS } from "@/lib/program-ids";
 
-const WRAPPER = "GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ";
-const MATCHER = "4seJWjv3R5qfXY8R5ntuPHWsoqcVvaxvfFSnU2AnGMhT";
+const WRAPPER = DEVNET_PROGRAM_IDS.wrapper;
+const MATCHER = DEVNET_PROGRAM_IDS.matcher;
 
 // ── Shapes ──────────────────────────────────────────────────────────────────
 /** Our presimulateOrThrow (both wallets on devnet: we sign-then-submit). */

@@ -72,7 +72,8 @@ const EXPECT_DECODED: Record<string, Record<string, string | number>> = {
 
 describe("P3 final head: app encoders vs the real ix::Instruction::decode", () => {
   it("fixture is from the FINAL P3 head (4b1a5d30: senior draw, recall cap, pause code 89, on P1 3acb34ae)", () => {
-    expect(rust.p3Sha).toBe("4b1a5d30c5282dfbaae0ac91e6e6e3a696e064ea");
+    // Relaunch head 5544302a (all-fresh IDs; error 90 since 592286b4); layout and vectors identical to 4b1a5d30.
+    expect(rust.p3Sha).toBe("5544302ad689dd94cff300f50a2964c4a1c07ede");
     expect((rust as unknown as { p1Sha: string }).p1Sha).toBe("3acb34ae83b4038a88a02731d1aa023142ef6c11");
     // SDK 8's fixture was generated at 424fe7e4. Since then tag 94's ACCOUNT list changed twice
     // (path B removed; auto-pin tail [8] matcher / [9] ctx / [10] delegate added in 07a1d0eb) but
@@ -195,8 +196,8 @@ describe("P3 final head: layout (rustc offset_of!) and errors (by name)", () => 
     expect(BigInt(L["pin.maxInventoryUsd"])).toBe(C.PIN.maxInventoryUsd);
     expect(BigInt(L["pin.liquidityUsd"])).toBe(C.PIN.liquidityUsd);
     // the oracle compares the program's constant to this exact string
-    expect(C.CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET).toBe("4seJWjv3R5qfXY8R5ntuPHWsoqcVvaxvfFSnU2AnGMhT");
-    expect(L.canonicalMatcherIsDevnet4seJ).toBe(1);
+    expect(C.CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET).toBe("EDKKgRaVHna6FCxiY1kgMzegD9rpaN1nwJNSzAzeBUBX");
+    expect(L.canonicalMatcherIsDevnetEDKK).toBe(1);
   });
   it("the program's read_asset_vault_lp reads each asset's record at the app's offset (and not 1 off)", () => {
     expect(rust.assetVaultLpReads).toHaveLength(4);

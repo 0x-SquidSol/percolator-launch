@@ -74,10 +74,19 @@ describe("planResolvedExit", () => {
   it("live market => not-resolved", () => {
     expect(planResolvedExit({ ...base, market: decodeResolvedMarket(marketBytes({ mode: 0 }))!, portfolios: [] })).toEqual({ phase: "not-resolved" });
   });
-  it("vault LP first: traders are held until it settles (winner is progress-only before)", () => {
+  it("vault LP first, traders alongside: a vault LP that WON can only settle once traders detach", () => {
+    // 5544302a real BPF (limits_app_p3_partial_receipt_topup_after_101): holding traders until the
+    // vault LP settled never finished a market whose vault LP won (every 101 progress-only).
     const market = decodeResolvedMarket(marketBytes({ mode: 1, cTot: 10n, count: 2n }))!;
     const plan = planResolvedExit({ ...base, market, portfolios: [pf("V", { capital: 5n, bitmap: 1n }, { isVaultLp: true }), pf("T", { capital: 5n, bitmap: 1n })] });
-    expect(plan).toEqual({ phase: "sweep", steps: [{ kind: "settle-vault-lp", topup: 0, portfolio: "V" }], blockers: [] });
+    expect(plan).toEqual({
+      phase: "sweep",
+      steps: [
+        { kind: "settle-vault-lp", topup: 0, portfolio: "V" },
+        { kind: "close-resolved", portfolio: "T" },
+      ],
+      blockers: [],
+    });
   });
   it("then: empty vault LP closed (owner = registry), trader close-resolved; receipts get their top-up; empties close", () => {
     const market = decodeResolvedMarket(marketBytes({ mode: 1, cTot: 10n, count: 4n }))!;

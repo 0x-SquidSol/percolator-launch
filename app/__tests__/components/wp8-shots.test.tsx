@@ -74,4 +74,15 @@ describe("WP-8 screens", () => {
     expect(r.getByTestId("earn-resolved-exit-result").textContent).toContain("Your withdrawal is requested");
     await snap("finished", r.container.firstElementChild as HTMLElement);
   });
+  it("partial payout receipt: one calm line; NEGATIVE CONTROL none without a partial receipt", async () => {
+    const plan = { phase: "sweep" as const, steps: [{ kind: "settle-vault-lp" as const, topup: 0 as const, portfolio: "V" }], blockers: [] };
+    const r = render(<ResolvedExitPanelView {...base} plan={plan} viewerReceipt="partial-waiting" />);
+    const line = r.getByTestId("earn-resolved-exit-partial");
+    expect(line.textContent).toBe("Part of your payout is on its way — it completes automatically once the market finishes settling.");
+    expect(r.container.querySelectorAll('[data-testid="earn-resolved-exit-partial"]').length).toBe(1);
+    await snap("partial-receipt", r.container.firstElementChild as HTMLElement);
+    r.unmount();
+    const n = render(<ResolvedExitPanelView {...base} plan={plan} />);
+    expect(n.queryByTestId("earn-resolved-exit-partial")).toBeNull();
+  });
 });

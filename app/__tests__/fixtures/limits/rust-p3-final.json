@@ -1,5 +1,5 @@
 {
-    "p3Sha": "4b1a5d30c5282dfbaae0ac91e6e6e3a696e064ea",
+    "p3Sha": "5544302ad689dd94cff300f50a2964c4a1c07ede",
     "p1Sha": "3acb34ae83b4038a88a02731d1aa023142ef6c11",
     "engineSha": "35ddd692",
     "vectors": {
@@ -413,7 +413,8 @@
         "VaultLpMultiAssetMarket": 86,
         "VaultLpSeniorDrawRequired": 87,
         "VaultLpRedeemNeedsRecall": 88,
-        "VaultLpPausedForSeniorDraw": 89
+        "VaultLpPausedForSeniorDraw": 89,
+        "VaultLpBindRequiresFlatAsset": 90
     },
     "allErrors": {
         "InvalidMagic": 0,
@@ -505,7 +506,8 @@
         "VaultLpMultiAssetMarket": 86,
         "VaultLpSeniorDrawRequired": 87,
         "VaultLpRedeemNeedsRecall": 88,
-        "VaultLpPausedForSeniorDraw": 89
+        "VaultLpPausedForSeniorDraw": 89,
+        "VaultLpBindRequiresFlatAsset": 90
     },
     "layout": {
         "marketGroupOff": 592,
@@ -524,6 +526,8 @@
         "slot.backing_short": 1060,
         "bucket.fresh_unliened_backing_num": 8,
         "boundScaleLog10": 12,
+        "op.next_portfolio_id": 480,
+        "op.len": 512,
         "pf.owner": 100,
         "pf.capital": 132,
         "pf.pnl": 148,
@@ -562,50 +566,8 @@
         "pin.maxFillUsd": 5000,
         "pin.maxInventoryUsd": 25000,
         "pin.liquidityUsd": 250000,
-        "canonicalMatcherIsDevnet4seJ": 1,
-        "op.next_portfolio_id": 480,
-        "op.len": 512
+        "canonicalMatcherIsDevnetEDKK": 1
     },
-    "assetVaultLpReads": [
-        {
-            "asset": 0,
-            "appOffset": 2246,
-            "programReadsSame": true,
-            "offByOneReadsSame": false
-        },
-        {
-            "asset": 1,
-            "appOffset": 4571,
-            "programReadsSame": true,
-            "offByOneReadsSame": false
-        },
-        {
-            "asset": 2,
-            "appOffset": 6896,
-            "programReadsSame": true,
-            "offByOneReadsSame": false
-        },
-        {
-            "asset": 3,
-            "appOffset": 9221,
-            "programReadsSame": true,
-            "offByOneReadsSame": false
-        }
-    ],
-    "registryBound": [
-        {
-            "flag": 0,
-            "bound": false
-        },
-        {
-            "flag": 1,
-            "bound": true
-        },
-        {
-            "flag": 2,
-            "bound": "err"
-        }
-    ],
     "pricingClaimVectors": [
         [
             "1000",
@@ -711,5 +673,45 @@
             "635213",
             "9635213"
         ]
+    ],
+    "assetVaultLpReads": [
+        {
+            "asset": 0,
+            "appOffset": 2246,
+            "programReadsSame": true,
+            "offByOneReadsSame": false
+        },
+        {
+            "asset": 1,
+            "appOffset": 4571,
+            "programReadsSame": true,
+            "offByOneReadsSame": false
+        },
+        {
+            "asset": 2,
+            "appOffset": 6896,
+            "programReadsSame": true,
+            "offByOneReadsSame": false
+        },
+        {
+            "asset": 3,
+            "appOffset": 9221,
+            "programReadsSame": true,
+            "offByOneReadsSame": false
+        }
+    ],
+    "registryBound": [
+        {
+            "flag": 0,
+            "bound": false
+        },
+        {
+            "flag": 1,
+            "bound": true
+        },
+        {
+            "flag": 2,
+            "bound": "err"
+        }
     ]
 }

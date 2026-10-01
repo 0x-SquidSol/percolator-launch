@@ -145,8 +145,9 @@ describe("AC2 + AC4: one pre-signed list, only needed copies broadcast", () => {
       { key: "B", vault: false, chunks: 3, receipt: "none" },
     ]);
     const { items, run } = await finishOn(chain, true);
-    // pre-signed: per portfolio 3 copies + topup/claim + close-empty; harvest; request
-    expect(items).toHaveLength(5 + 5 + 5 + 1 + 1);
+    // pre-signed (blocks A-G, lib/limits/resolved-finish.ts): vault 101 x3 + 101(1) x2; traders 30 x3
+    // each; the 101 retry 2 + 2; per trader a 30 retry + a 46; three close-empties; harvest; request
+    expect(items).toHaveLength(5 + 3 + 3 + 4 + 4 + 3 + 1 + 1);
     // needed: V 2+1+1, A 1+1+1, B 3+1+1, harvest 1, request 1
     expect(run.broadcast).toBe(14);
     expect(run.skipped).toBe(items.length - 14);
@@ -172,14 +173,15 @@ describe("AC2 + AC4: one pre-signed list, only needed copies broadcast", () => {
         refused.push((e as Error).message);
       }
     }
-    expect(refused.length).toBe(FINISH_COPIES["close-resolved"] - 1);
+    // block C's copies + block E's retry copy, less the one the market needed
+    expect(refused.length).toBe(FINISH_COPIES["close-resolved"] + 1 - 1);
   });
 
   it("more chunks than copies: it stops without a failure and the keeper finishes the rest", async () => {
     const chain = new Chain([{ key: "B", vault: false, chunks: 5, receipt: "none" }]);
     const { run } = await finishOn(chain, true);
     expect(run.failed).toBe(0);
-    expect(run.broadcast).toBe(FINISH_COPIES["close-resolved"]);
+    expect(run.broadcast).toBe(FINISH_COPIES["close-resolved"] + 1); // + block E's retry copy
     expect(run.final.phase).toBe("sweep");
     expect(run.requested).toBe(false);
   });
@@ -248,7 +250,7 @@ describe("AC2: the pre-signed list is signable in one approval", () => {
     const msgs = txs.map((t) => t.serializeMessage().toString("base64"));
     expect(new Set(msgs).size).toBe(items.length);
     for (const t of txs) expect(t.serialize({ requireAllSignatures: false, verifySignatures: false }).length).toBeLessThanOrEqual(1232);
-    expect(items.map(finishItemCu)).toEqual([260_000, 260_000, 260_000, 200_000]);
+    expect(items.map(finishItemCu)).toEqual([400_000, 400_000, 400_000, 200_000]);
   });
   it("the request item needs the caller's 76", () => {
     const c = ctx();

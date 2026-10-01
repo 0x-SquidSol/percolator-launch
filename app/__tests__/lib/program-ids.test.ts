@@ -29,7 +29,7 @@ describe("program-ids: the single repoint point", () => {
   });
 
   it("env override repoints the wrapper everywhere on a devnet build (E2E / local fork)", async () => {
-    const forkId = "ETDLAdiAyWnEUngspYczTXUceT6X8f92eZQvr8nmSkWB";
+    const forkId = "4zopgi4NbdPbnBisYNMkWbVizGuWKHHuKYLpxXQoT5Hy";
     vi.stubEnv("NEXT_PUBLIC_DEFAULT_NETWORK", "devnet");
     vi.stubEnv("NEXT_PUBLIC_WRAPPER_PROGRAM_ID", forkId);
     vi.stubEnv("NEXT_PUBLIC_ALLOW_PROGRAM_ID_OVERRIDE", "1");
@@ -42,16 +42,16 @@ describe("program-ids: the single repoint point", () => {
 
   it("NEGATIVE CONTROL: an override without the explicit opt-in is ignored", () => {
     vi.stubEnv("NEXT_PUBLIC_DEFAULT_NETWORK", "devnet");
-    vi.stubEnv("NEXT_PUBLIC_WRAPPER_PROGRAM_ID", "ETDLAdiAyWnEUngspYczTXUceT6X8f92eZQvr8nmSkWB");
+    vi.stubEnv("NEXT_PUBLIC_WRAPPER_PROGRAM_ID", "4zopgi4NbdPbnBisYNMkWbVizGuWKHHuKYLpxXQoT5Hy");
     expect(resolveDevnetProgramIds().wrapper).toBe(DEVNET_PROGRAM_IDS.wrapper);
     vi.stubEnv("NEXT_PUBLIC_ALLOW_PROGRAM_ID_OVERRIDE", "1");
-    expect(resolveDevnetProgramIds().wrapper).toBe("ETDLAdiAyWnEUngspYczTXUceT6X8f92eZQvr8nmSkWB");
+    expect(resolveDevnetProgramIds().wrapper).toBe("4zopgi4NbdPbnBisYNMkWbVizGuWKHHuKYLpxXQoT5Hy");
   });
 
   it("NEGATIVE CONTROL: overrides are ignored on a mainnet build", () => {
     vi.stubEnv("NEXT_PUBLIC_ALLOW_PROGRAM_ID_OVERRIDE", "1");
     vi.stubEnv("NEXT_PUBLIC_DEFAULT_NETWORK", "mainnet");
-    vi.stubEnv("NEXT_PUBLIC_WRAPPER_PROGRAM_ID", "ETDLAdiAyWnEUngspYczTXUceT6X8f92eZQvr8nmSkWB");
+    vi.stubEnv("NEXT_PUBLIC_WRAPPER_PROGRAM_ID", "4zopgi4NbdPbnBisYNMkWbVizGuWKHHuKYLpxXQoT5Hy");
     expect(resolveDevnetProgramIds().wrapper).toBe(DEVNET_PROGRAM_IDS.wrapper);
   });
 

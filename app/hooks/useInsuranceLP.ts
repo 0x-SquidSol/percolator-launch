@@ -33,8 +33,14 @@ import { useParams } from 'next/navigation';
 import { pythCrankAccount } from "@/lib/limits/oracle-tail";
 import { limitsFlags } from "@/lib/limits/flags";
 import { earnVaultLpRepairOption } from "@/lib/limits/vault-lp-repair";
-import { buildEarnDepositIxs, buildEarnExecuteIxs, buildRequestRedeemIx, earnTxPlan, type EarnTxPlan } from "@/lib/limits/earn-ixs";
+import { buildEarnDepositIxs, buildEarnExecuteIxs, buildRequestRedeemIx, earnTxPlan, sendWithHarvestOn84, withForcedHarvest, type EarnTxPlan } from "@/lib/limits/earn-ixs";
+import { SimulationRefusal } from "@/lib/tx";
+import { WRAPPER_ERR } from "@/lib/wrapper-errors";
+import { resolveDevnetProgramIds } from "@/lib/program-ids";
 import { readEarnP3Context } from "@/lib/limits/earn-p3-read";
+import { readViewerTopupIxs } from "@/lib/limits/resolved-exit-load";
+import { sendWithTopup } from "@/lib/limits/resolved-topup";
+import { computeBudgetPrefix, connectionSelfHealDeps } from "@/lib/self-heal";
 import { readTxDrawSummary, type DrawSummary } from "@/lib/limits/p3-draw-logs";
 import { withdrawFlow } from "@/lib/limits/earn-withdraw";
 import { TAG_DEPOSIT_TO_LP_VAULT, TAG_EXECUTE_REDEMPTION } from "@/lib/limits/constants";
@@ -762,7 +768,7 @@ export function useInsuranceLP() {
       // tokenProgram, siblingLedger(w), redeemerRentDest(w)]. `cranker` is permissionless (anyone may execute post-cooldown,
       // and is directly credited the redemption PDA's reclaimed rent) — the UI always
       // calls it as the redeemer themselves.
-      const buildExecuteIxs = async () => {
+      const buildExecuteIxs = async (forceHarvest = false) => {
         const [vaultPda] = deriveVaultAuthority(progPk, marketPk);
         // v17 DUAL-DOMAIN: [11] is the sibling pot's ledger. NAV and
         // available-principal are summed across both pots, so it is required
@@ -780,7 +786,7 @@ export function useInsuranceLP() {
         // refuses 84 while LP fees are harvestable - bundle tag 78 in front (P3-K1).
         // [12] redeemerRentDest (#461 / GH#412, live in v18.2): the consumed redemption PDA's
         // rent is returned to the RECORDED redeemer - the UI only claims its own redemption.
-        const p3 = earnTxPlan(TAG_EXECUTE_REDEMPTION, await readEarnP3Context(connection, progPk, marketPk));
+        const p3 = withForcedHarvest(earnTxPlan(TAG_EXECUTE_REDEMPTION, await readEarnP3Context(connection, progPk, marketPk)), forceHarvest);
         assertEarnPlan(p3);
         return buildEarnExecuteIxs({
           programId: progPk,
@@ -799,20 +805,51 @@ export function useInsuranceLP() {
           plan: p3,
         });
       };
+      // P3 ordering: a resolved close that ran before the vault LP settled left the viewer a
+      // PARTIAL payout receipt. Once 101 has closed, its tag-46 top-up rides in front of this tx
+      // (sim-gated; dropped if it would refuse, so the withdrawal itself never pays for it).
+      const topup = await readViewerTopupIxs({
+        connection,
+        programId: progPk,
+        market: marketPk,
+        collateralMint: slabState.config.collateralMint,
+        viewer: wallet.publicKey,
+        simulate: async (ixs) =>
+          (await connectionSelfHealDeps(connection, marketPk, wallet.publicKey!).simulate([...computeBudgetPrefix(TOPUP_SIM_CU), ...ixs])).err ?? null,
+      });
       const send = (instructions: TransactionInstruction[]) =>
-        sendTx({ connection, wallet, instructions, selfHeal: { programId: progPk, market: marketPk }, vaultLpRepair: earnRepairFor(progPk, marketPk) });
+        sendWithTopup({
+          topup,
+          base: instructions,
+          isPreSignRefusal: (e) => e instanceof SimulationRefusal,
+          send: (ixs, bundled) =>
+            sendTx({
+              connection,
+              wallet,
+              instructions: ixs,
+              selfHeal: { programId: progPk, market: marketPk },
+              vaultLpRepair: earnRepairFor(progPk, marketPk),
+              ...(bundled ? { computeUnitsFromSim: { cap: TOPUP_BUNDLE_CU_CAP } } : {}),
+            }),
+        });
 
       // Check if a redemption request already exists
       const redemptionInfo = await connection.getAccountInfo(redemptionPda);
       if (redemptionInfo) {
         // Step 2 of 2: the payout. sendTx pre-simulates it and bundles the repairs (78 harvest,
         // 85/87 crank, 88 recall / other pot) before the wallet opens.
-        signature = await send(await buildExecuteIxs());
+        // 5544302a: a Resolved terminal-flat 77 can need 78 first (stray pot backing); a pre-sign 84
+        // rebuilds the same payout with 78 in front (lib/limits/earn-ixs.ts sendWithHarvestOn84).
+        signature = await sendWithHarvestOn84({ build: buildExecuteIxs, send, isHarvestPendingRefusal });
         step = 'executed';
         void readTxDrawSummary(connection, signature).then(setLastDrawSummary);
       } else if (state.registryExists && withdrawFlow(state.redemptionCooldownSlots) === 'one-tx') {
         // UX WP-4: only a vault whose cooldown is 0 requests AND pays out in one tx.
-        signature = await send([await buildRequestIx(), ...(await buildExecuteIxs())]);
+        signature = await sendWithHarvestOn84({
+          build: async (force) => [await buildRequestIx(), ...(await buildExecuteIxs(force))],
+          send,
+          isHarvestPendingRefusal,
+        });
         step = 'executed';
         void readTxDrawSummary(connection, signature).then(setLastDrawSummary);
       } else {
@@ -843,4 +880,15 @@ export function useInsuranceLP() {
     /** d119eebd: the senior draw booked / restored by the user's LAST Earn tx (its logs), or null. */
     lastDrawSummary,
   };
+}
+
+/** Simulation budget for the viewer's tag-46 top-up alone (budgeted like a CloseResolved payout). */
+export const TOPUP_SIM_CU = 400_000;
+/** A bundled top-up + Earn payout is sized from its own simulation, up to this cap. */
+export const TOPUP_BUNDLE_CU_CAP = 1_200_000;
+
+/** A pre-sign refusal with 84 VaultLpHarvestPending raised by the wrapper (the wallet was not opened). */
+export function isHarvestPendingRefusal(e: unknown): boolean {
+  // Only the wrapper's own 84 (CPI callees reuse numbers; error-codes table: decode by the raiser).
+  return e instanceof SimulationRefusal && e.code === WRAPPER_ERR.VaultLpHarvestPending && (e.programId === null || e.programId === resolveDevnetProgramIds().wrapper);
 }

@@ -2,7 +2,7 @@
  * matcher-params.ts — the matcher configuration every NEW market is created with.
  *
  * Ground truth: percolator-match @ 12bd671 (deployed, program
- * 4seJWjv3R5qfXY8R5ntuPHWsoqcVvaxvfFSnU2AnGMhT), src/vamm.rs. The wrapper
+ * DEVNET_PROGRAM_IDS.matcher), src/vamm.rs. The wrapper
  * (percolator-prog @ 6377376a, src/v16_program.rs:13643-13830) relays these
  * fields verbatim into the matcher's tag-2 init and adds lp_account_id itself.
  *

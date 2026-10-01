@@ -108,9 +108,14 @@ export function planResolvedExit(input: {
     else if (receiptOpen(v.view)) steps.push({ kind: "settle-vault-lp", topup: 1, portfolio: v.key });
     else if (!inWindow) steps.push({ kind: "settle-vault-lp", topup: 0, portfolio: v.key });
   }
-  // A winning trader is progress-only until the vault LP has settled: plan traders only once no
-  // vault LP remains materialized (the next round picks them up).
-  const vaultPending = vault.some((v) => !looksEmpty(v.view));
+  // Both directions depend on each other (P3 final pass + 5e4c15ff): a WINNING trader's close is
+  // progress-only (or pays a PARTIAL receipt) until the vault LP has settled, and a WINNING vault
+  // LP's 101 is progress-only until every trader leg has detached. So trader closes are planned
+  // alongside the 101 (the vault LP-wins case would otherwise never finish: measured on real BPF,
+  // limits_app_p3_partial_receipt_topup_after_101). An open (partial) receipt is diluted by ANY
+  // claimant still unreceipted — the vault LP or another trader — so its 46 top-up is planned
+  // whenever the receipt is open; the finish list repeats it after the 101 retry, and every step
+  // is simulated first (a 46 with nothing more to pay yet is skipped, not broadcast).
   for (const t of traders) {
     if (looksEmpty(t.view)) {
       steps.push({ kind: "close-empty", portfolio: t.key, isVaultLp: false });
@@ -124,7 +129,7 @@ export function planResolvedExit(input: {
       blockers.push({ kind: "locked", portfolio: t.key });
       continue;
     }
-    if (vaultPending || inWindow) continue;
+    if (inWindow) continue;
     steps.push(receiptOpen(t.view) ? { kind: "claim-topup", portfolio: t.key } : { kind: "close-resolved", portfolio: t.key });
   }
 
@@ -145,12 +150,15 @@ export function planResolvedExit(input: {
  * chain (p3_vault_lp limits_app_p3_finish_now_one_approval, LIMITS_FINISH_MEASURE=1): 101 281,529;
  * CloseResolved 151,044 / 104,931; ClosePortfolio (resolved, empty) 122,469 — NOT small: the
  * first budget of 60k was refused in the sim; 78 harvest 31,479; 76 34,933. Headroom on each.
- * (46 top-up claim not reached in that run: budgeted like a CloseResolved payout.)
+ * Wrapper 5544302a, after a price move (limits_app_p3_partial_receipt_topup_after_101,
+ * LIMITS_FINISH_MEASURE=1): 101 up to 425,253 (a vault LP that won) and CloseResolved up to
+ * 301,288 — both over the old 320k / 240k, which the sim refused at the app's budget. The 46
+ * top-up runs the same payout path as CloseResolved.
  */
 export const EXIT_STEP_CU: Record<ExitStep["kind"], number> = {
-  "settle-vault-lp": 320_000,
-  "close-resolved": 240_000,
-  "claim-topup": 240_000,
+  "settle-vault-lp": 520_000,
+  "close-resolved": 380_000,
+  "claim-topup": 380_000,
   "close-empty": 180_000,
   harvest: 120_000,
 };

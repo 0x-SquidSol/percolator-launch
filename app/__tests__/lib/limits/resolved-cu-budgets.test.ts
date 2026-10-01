@@ -21,6 +21,10 @@ describe("resolved CU budgets", () => {
   it("per-step budgets cover the measured costs", () => {
     expect(EXIT_STEP_CU["settle-vault-lp"]).toBeGreaterThanOrEqual(285_000);
     expect(EXIT_STEP_CU["close-resolved"]).toBeGreaterThanOrEqual(204_000);
+    // 5544302a, measured on real BPF after a price move: 101 425,253; CloseResolved 301,288.
+    expect(EXIT_STEP_CU["settle-vault-lp"]).toBeGreaterThanOrEqual(425_253);
+    expect(EXIT_STEP_CU["close-resolved"]).toBeGreaterThanOrEqual(301_288);
+    expect(EXIT_STEP_CU["claim-topup"]).toBeGreaterThanOrEqual(301_288);
     expect(exitStepsCu([settle(0)])).toBeGreaterThanOrEqual(300_000);
     expect(exitStepsCu([close(0)])).toBeGreaterThanOrEqual(204_000);
     expect(CLEANUP_CU).toBeGreaterThanOrEqual(400_000);
@@ -40,7 +44,8 @@ describe("resolved CU budgets", () => {
       simulate: async () => null,
       send: async (_ixs, cu) => { sent.push(cu); return "s"; },
     });
-    expect(sent).toEqual([3 * 320_000 + 20_000]);
+    // 3 x 101 no longer fit one 1.2M tx at the 5544302a budget (520k each): 2 + 1.
+    expect(sent).toEqual([2 * EXIT_STEP_CU["settle-vault-lp"] + 20_000, EXIT_STEP_CU["settle-vault-lp"] + 20_000]);
   });
   it("the exit simulation runs at the cap", () => {
     const src = readFileSync(resolve(process.cwd(), "hooks/useResolvedExit.ts"), "utf8");

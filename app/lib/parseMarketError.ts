@@ -60,11 +60,13 @@ const STEP_ERROR_OVERRIDES: Partial<Record<CreateStepKind, Record<number, string
   // P3 InitVaultLp (94) + DepositJuniorTranche (96): codes from the one constants module.
   "vault-lp": {
     [P3_ERR.VaultLpAlreadyBound]:
-      "This market's Earn vault is already bound to a vault-owned LP (an earlier attempt completed this step). Retry continues from the next step.",
+      "This market's Earn vault already provides its liquidity (an earlier attempt completed this step). Retry continues from the next step.",
     [P3_ERR.VaultLpMultiAssetMarket]:
-      "This market was created with more than one asset slot, and a vault-owned LP needs a single-asset market, so the bind was refused. Retrying this market won't help: start a new market (the wizard now creates single-asset markets).",
+      "This market holds more than one asset, and the Earn vault can only provide liquidity to a single-asset market. Retrying this market won't help: start a new market (the wizard now creates single-asset markets).",
+    [P3_ERR.VaultLpBindRequiresFlatAsset]:
+      "This market already has open positions, so the Earn vault can't take over its liquidity: that step has to run when the market is created, before any trade. Retrying this market won't help: start a new market.",
     [WRAPPER_ERR.Unauthorized]:
-      "Only the market's admin can bind the vault-owned LP, and admin authority has already moved to the staking pool, so this market can no longer be bound. It keeps its classic LP.",
+      "Only the market's admin can connect the Earn vault, and admin rights have already moved to the staking pool, so this market can no longer be connected. It keeps its current liquidity.",
   },
   "stake-pool": {
     [WRAPPER_ERR.Unauthorized]:

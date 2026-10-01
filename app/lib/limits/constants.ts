@@ -292,6 +292,8 @@ export const P3_ERR = {
   VaultLpRedeemNeedsRecall: WRAPPER_ERR.VaultLpRedeemNeedsRecall,
   /** 4b1a5d30: a senior draw is outstanding; LP risk-increasing fills, 97, 102 and 98 are paused. */
   VaultLpPausedForSeniorDraw: WRAPPER_ERR.VaultLpPausedForSeniorDraw,
+  /** 592286b4 (relaunch): tag 94 refuses a bind once the asset has open interest (bind at creation). */
+  VaultLpBindRequiresFlatAsset: WRAPPER_ERR.VaultLpBindRequiresFlatAsset,
 } as const;
 
 // ── P3 end-to-end (round 4; FINAL feat/p3-vault-owned-lp@07a1d0eb + engine 35ddd692) ────────
@@ -337,7 +339,7 @@ export const VAULT_LP_MAX_JUNIOR_FLOOR_BPS = 10_000;
 // ── P3 auto-pin (FINAL feat/p3-vault-owned-lp@07a1d0eb) ───────────────────────────────────────
 /** `constants::CANONICAL_VAULT_LP_MATCHER_PROGRAM` (devnet build): tag 94 accepts ONLY this at
  *  [8] (else VaultLpMatcherNotApproved 81) and pins it; there is no mainnet arm yet (fails closed). */
-export const CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET = "4seJWjv3R5qfXY8R5ntuPHWsoqcVvaxvfFSnU2AnGMhT";
+export const CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET = "EDKKgRaVHna6FCxiY1kgMzegD9rpaN1nwJNSzAzeBUBX";
 /** The matcher ctx tag 94 initialises: pre-created by the client, owner = the matcher program,
  *  zeroed; the wizard's existing size (the wrapper's own floor is 64 B). */
 export const VAULT_LP_MATCHER_CTX_LEN = 320;

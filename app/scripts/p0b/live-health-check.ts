@@ -1,10 +1,11 @@
 /** Read-only: decode v18 market health (LP capital, payout haircut, lock reasons) on devnet. */
+import { DEVNET_PROGRAM_IDS } from "../../lib/program-ids";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { decodeMarketHealth, healthBadges, MARKET_HEALTH_SLICE_LEN } from "../../lib/market-health";
 import { scanEnabledMarketLpCapitals } from "../../lib/lp-portfolio";
 
 const RPC = process.env.DEVNET_RPC ?? "https://api.devnet.solana.com";
-const PROGRAM = new PublicKey("GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ");
+const PROGRAM = new PublicKey(DEVNET_PROGRAM_IDS.wrapper);
 const MARKETS: Record<string, string> = {
   SOL: "AzagguvrWmRgcBpsKuqomW7Yb1YUUd6UzcrkiRsqdhr", PENGU: "ENdXK8k6iiWCAx4Z9XfoKLg9oXsEbPL4hEtmEmUqozDZ",
   PAID: "BPLPf1XT7HE9qKwAbf4cSqcDrV6VHJDS3FPeQ3GL7JPY", CATE: "CjdnH8fTmxNMsuUevBt9VjSi87E3ESTcuWuoSrjUjvXE",

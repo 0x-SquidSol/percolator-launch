@@ -112,3 +112,20 @@ LIMITS_APP_DIR=<percolator-launch>/app TSX_BIN=<percolator-launch>/node_modules/
 | Test | What it proves |
 |---|---|
 | `limits_app_p3_finish_now_one_approval` | The APP builds the WHOLE "Finish now" list from ONE snapshot right after resolve (bridge `finish`, `lib/limits/resolved-finish.ts`): 17 items = vault-LP 101 copies + top-up, the open trader's CloseResolved copies + 46 claim, the flat trader, the close-empties, the 78 harvest and the Earn depositor's own 76 last, each tx at the APP's per-step compute budget. The driver re-plans before each item with the app's skip rule (bridge `finish-needed`, `stepNeeded`). 8 sent / 9 copies never sent, every sent item lands (the identities the pre-built ClosePortfolio binds stay valid through the closes), the market ends terminal-flat, and the depositor's app 77 then pays 10,085,391; conservation holds. Negative controls: broadcasting every copy (skip rule off) is refused `Custom(21)` at the first unneeded copy; the first ClosePortfolio budget (60k/80k) was refused (it consumes 122,469), which is why `EXIT_STEP_CU["close-empty"]` is 180k. `LIMITS_FINISH_MEASURE=1` prints each step's consumed CU. |
+
+### Relaunch cutover (2026-10-01): wrapper 5544302a, matcher EDKK
+
+Patches `*.limits-app-5544302a.patch` apply to a clean `git archive` of wrapper 5544302a (engine
+35ddd692, matcher constant `EDKKgRaVHna6FCxiY1kgMzegD9rpaN1nwJNSzAzeBUBX`). All 12 `limits_` tests in
+`p3_vault_lp` and 5/5 `limits_app` in `p3_senior_draw` pass at the APP's own per-step budgets.
+
+| Test | What it proves |
+|---|---|
+| `limits_app_p3_resolved_77_after_vault_lp_win_needs_78_first` | 5544302a leaves stray pot backing at terminal-flat: the app's plain 77 is refused `Custom(84)`; the app's forced 78+77 (`sendWithHarvestOn84`) pays. |
+| `limits_app_p3_partial_receipt_topup_after_101` | The app's "Finish now" (blocks A-G, pre-sign pruning via bridge `finish-prune`, skip rule) finishes three markets in ONE run: trader won, vault LP won, two traders (vault LP net won), each with and without the viewer's own early CloseResolved. Outcomes are identical either way (viewer, other trader, senior), nothing is refused at broadcast, conservation holds. Measured: 101 up to 425,253 CU and CloseResolved up to 301,288, over the old 320k / 240k budgets, which this run refused before `EXIT_STEP_CU` was raised. These scenarios do not dilute a receipt on 5544302a (an early winner's close is progress-only); the diluted case is the gate's fuzz repro (`p3_resolved_lock` eedb), so the 46 ordering is proven by the app model tests (`resolved-partial-receipt.test.ts`). |
+| `limits_app_p3_vault_won_negative_control_without_101_retry` | The pre-fix ordering (traders held until the vault LP settled, no 101 retry) never finishes a market whose vault LP won: every 101 is progress-only and the senior's 77 never becomes payable. |
+
+```bash
+LIMITS_APP_DIR=<percolator-launch>/app TSX_BIN=<percolator-launch>/node_modules/.bin/tsx \
+  cargo test --release --test p3_vault_lp -- limits_ --test-threads=1
+```

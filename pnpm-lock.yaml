@@ -95,8 +95,8 @@ importers:
   app:
     dependencies:
       '@percolatorct/sdk':
-        specifier: ^7.0.0
-        version: 7.0.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)
+        specifier: file:vendor/percolatorct-sdk-8.0.0.tgz
+        version: file:app/vendor/percolatorct-sdk-8.0.0.tgz(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@privy-io/node':
         specifier: ^0.18.0
         version: 0.18.0(@solana/kit@6.1.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10))(viem@2.56.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@4.5.4))
@@ -1643,8 +1643,9 @@ packages:
     resolution: {integrity: sha512-HRzuWwIVG5vh2CAd5bawJQdEcpRD5lbEi7IeSP1oAWZwudRJoTSi6dwYYNQ0pcluVA26XGjHJF0af5MIhRYTcA==}
     engines: {node: '>=20.0.0'}
 
-  '@percolatorct/sdk@7.0.0':
-    resolution: {integrity: sha512-3mweEBxIDq4Ya5tTNMtV8ogSffsi9WSitphOd/F31F6ZfifiRE31iwmrLGTaNdoS1ozGpy97jaBbEehkswqB2w==}
+  '@percolatorct/sdk@file:app/vendor/percolatorct-sdk-8.0.0.tgz':
+    resolution: {integrity: sha512-nFs19SCqDZXN15jrKsgzQpatmci7TM8Pmz05+fG0t6hf0jFJKd5mvv3WcfFeP73PiQSeE+3gDeUVOEA2dR+kAA==, tarball: file:app/vendor/percolatorct-sdk-8.0.0.tgz}
+    version: 8.0.0
     engines: {node: '>=20.0.0'}
 
   '@phosphor-icons/webcomponents@2.1.5':
@@ -11017,7 +11018,7 @@ snapshots:
       - typescript
       - utf-8-validate
 
-  '@percolatorct/sdk@7.0.0(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)':
+  '@percolatorct/sdk@file:app/vendor/percolatorct-sdk-8.0.0.tgz(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)':
     dependencies:
       '@solana/spl-token': 0.4.14(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@solana/web3.js': 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)

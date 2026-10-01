@@ -5,7 +5,10 @@
  *  - app/api/markets/route.ts     (discoveredToApiRow → bulk list)
  *  - app/api/markets/[slab]/route.ts  (on-chain fallback for individual slab)
  *
- * v18 markets (2026-09-22 fresh wrapper GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ):
+ * CUTOVER: these are the 2026-09-22 markets of the ABANDONED pre-relaunch wrapper. The 2026-10
+ * relaunch (all-fresh program IDs, lib/program-ids.ts) seeds NEW slabs: replace this table with
+ * their addresses once the relaunch seed has run.
+ * Old v18 markets:
  * all marketauth=FbTbD, each with nft_registry + stake pool + matcher + LP — every
  * one proven trade+stake. Both backing-bucket domains (asset 0) are seeded to a
  * non-lapsing expiry (u64::MAX/2 = 9223372036854775807) via TopUpBackingBucket at

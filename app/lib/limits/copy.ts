@@ -98,6 +98,8 @@ export const COPY = {
   resolvedExit: {
     title: "Market settled",
     status: "This market has settled. Payouts are being finalised automatically.",
+    /** P3 ordering: the viewer's resolved close ran before the vault LP settled (receipt partial). */
+    partialReceipt: "Part of your payout is on its way — it completes automatically once the market finishes settling.",
     eta: (amount: string | null, at: string, rel: string) =>
       amount ? `Your ${amount} will be ready to withdraw by about ${at} (${rel}).` : `Earn withdrawals open by about ${at} (${rel}).`,
     ready: "Everything on this market is settled. Earn withdrawals pay out now: use Withdraw below.",
@@ -193,6 +195,9 @@ export const P3_ERROR_COPY_BY_NAME: Record<keyof typeof P3_ERR, string> = {
     "Part of this withdrawal is in use by open trades right now. Nothing moved and your withdrawal stays pending: withdraw less, or try again once those trades close.",
   VaultLpPausedForSeniorDraw:
     "Paused while Earn covers a loss. The market took a loss bigger than the creator's stake, so new positions and creator-stake withdrawals are paused until the vault recovers. Closing positions and Earn deposits and withdrawals still work; nothing moved.",
+  // 592286b4 (relaunch): tag 94 on an asset that already has open positions.
+  VaultLpBindRequiresFlatAsset:
+    "This market already has open positions, so the Earn vault can't take over its liquidity now. It can only do that when the market is created, before the first trade. Create a new market to use the Earn vault.",
   VaultLpMultiAssetMarket:
     "An Earn vault can only provide liquidity to a single-asset market, and this market holds more than one asset. Create a new market to use the Earn vault.",
 };

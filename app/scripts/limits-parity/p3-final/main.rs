@@ -1,5 +1,5 @@
 //! Round-4 oracle: the app's P3 end-to-end surface against the REAL P3 crate
-//! (percolator-prog feat/p3-vault-owned-lp@4b1a5d30 FINAL (senior draw, recall cap, pause code 89) + engine 35ddd692), path deps only —
+//! (percolator-prog feat/p3-vault-owned-lp@5544302a RELAUNCH (all-fresh IDs, error 90 since 592286b4; layout = 4b1a5d30) + engine 35ddd692), path deps only —
 //! nothing is copied. Build it OUTSIDE both repos (see Cargo.toml.example) and run:
 //!   cargo run --quiet -- vectors.txt > app/__tests__/fixtures/limits/rust-p3-final.json
 //! Emits: every app encoder's hex decoded by `ix::Instruction::decode` (with __short/__long
@@ -75,6 +75,7 @@ fn main() {
         ("VaultLpSeniorDrawRequired", E::VaultLpSeniorDrawRequired as u32),
         ("VaultLpRedeemNeedsRecall", E::VaultLpRedeemNeedsRecall as u32),
         ("VaultLpPausedForSeniorDraw", E::VaultLpPausedForSeniorDraw as u32),
+        ("VaultLpBindRequiresFlatAsset", E::VaultLpBindRequiresFlatAsset as u32),
     ];
     out.push(format!("\"errors\":{{{}}}", errs.iter().map(|(n, v)| format!("\"{n}\":{v}")).collect::<Vec<_>>().join(",")));
     // EVERY PercolatorError variant, by name (all_errors.rs, generated from the enum source by
@@ -151,7 +152,8 @@ fn main() {
         o("pin.maxFillUsd", percolator_prog::vault_lp_v18::PIN_MAX_FILL_USD as usize),
         o("pin.maxInventoryUsd", percolator_prog::vault_lp_v18::PIN_MAX_INVENTORY_USD as usize),
         o("pin.liquidityUsd", percolator_prog::vault_lp_v18::PIN_LIQUIDITY_USD as usize),
-        o("canonicalMatcherIsDevnet4seJ", (c::CANONICAL_VAULT_LP_MATCHER_PROGRAM.to_string() == "4seJWjv3R5qfXY8R5ntuPHWsoqcVvaxvfFSnU2AnGMhT") as usize),
+        // ALL-FRESH relaunch (592286b4): the wrapper pins the relaunch matcher EDKKgRaV….
+        o("canonicalMatcherIsDevnetEDKK", (c::CANONICAL_VAULT_LP_MATCHER_PROGRAM.to_string() == "EDKKgRaVHna6FCxiY1kgMzegD9rpaN1nwJNSzAzeBUBX") as usize),
     ];
     out.push(format!("\"layout\":{{{}}}", layout.join(",")));
 
@@ -208,5 +210,5 @@ fn main() {
     }
     out.push(format!("\"registryBound\":[{}]", bound.join(",")));
 
-    println!("{{\"p3Sha\":\"4b1a5d30c5282dfbaae0ac91e6e6e3a696e064ea\",\"p1Sha\":\"3acb34ae83b4038a88a02731d1aa023142ef6c11\",\"engineSha\":\"35ddd692\",{}}}", out.join(","));
+    println!("{{\"p3Sha\":\"5544302ad689dd94cff300f50a2964c4a1c07ede\",\"p1Sha\":\"3acb34ae83b4038a88a02731d1aa023142ef6c11\",\"engineSha\":\"35ddd692\",{}}}", out.join(","));
 }

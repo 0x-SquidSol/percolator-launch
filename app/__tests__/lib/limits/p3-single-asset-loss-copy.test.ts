@@ -35,7 +35,7 @@ describe("error 86 VaultLpMultiAssetMarket", () => {
     const hexForm = parseMarketCreationError(new Error("Program W failed: custom program error: 0x56"), { step: "vault-lp" });
     const jsonForm = parseMarketCreationError(new Error('{"InstructionError":[4,{"Custom":86}]}'), { step: "vault-lp" });
     for (const m of [hexForm, jsonForm]) {
-      expect(m).toMatch(/more than one asset slot/);
+      expect(m).toMatch(/more than one asset/);
       expect(m).toMatch(/single-asset markets/);
     }
   });

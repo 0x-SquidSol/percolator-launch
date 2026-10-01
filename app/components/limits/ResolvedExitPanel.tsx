@@ -12,6 +12,7 @@ import { COPY } from "@/lib/limits/copy";
 import { summarizeResolvedExit, type ResolvedExitPlan } from "@/lib/limits/resolved-exit";
 import { resolvedPayoutEta } from "@/lib/limits/resolved-eta";
 import type { FinishRun } from "@/lib/limits/resolved-finish";
+import type { ViewerReceipt } from "@/lib/limits/resolved-topup";
 import { useResolvedExit } from "@/hooks/useResolvedExit";
 import { LimitsNotice } from "./LimitsRow";
 
@@ -28,6 +29,8 @@ export interface ResolvedExitPanelViewProps {
   /** The viewer holds shares with no request pending, so "Finish now" can include the request. */
   canRequest: boolean;
   onFinish: (withRequest: boolean) => void;
+  /** The viewer's own resolved payout is partial (lib/limits/resolved-topup). */
+  viewerReceipt?: ViewerReceipt;
   /** Test seams (the clock and the formatting locale / zone). */
   now?: Date;
   locale?: string;
@@ -45,6 +48,7 @@ export const ResolvedExitPanelView: FC<ResolvedExitPanelViewProps> = ({
   earnAmount,
   canRequest,
   onFinish,
+  viewerReceipt = "none",
   now,
   locale,
   timeZone,
@@ -60,6 +64,11 @@ export const ResolvedExitPanelView: FC<ResolvedExitPanelViewProps> = ({
       <p data-testid="earn-resolved-exit-status" data-phase={s.phase} className="mt-1 text-[11px] leading-relaxed text-[var(--text)]">
         {ready ? COPY.resolvedExit.ready : COPY.resolvedExit.status}
       </p>
+      {viewerReceipt !== "none" && (
+        <p data-testid="earn-resolved-exit-partial" data-receipt={viewerReceipt} className="mt-1 text-[11px] leading-relaxed text-[var(--text-secondary)]">
+          {COPY.resolvedExit.partialReceipt}
+        </p>
+      )}
       {eta && (
         <p data-testid="earn-resolved-exit-eta" data-eta={eta.at.toISOString()} className="mt-1 text-[11px] leading-relaxed text-[var(--text-secondary)]">
           {COPY.resolvedExit.eta(earnAmount, eta.label, eta.relative)}
@@ -126,6 +135,7 @@ export const ResolvedExitPanel: FC<{
       error={x.error}
       canRun={walletConnected}
       earnAmount={earnAmount}
+      viewerReceipt={x.viewerReceipt}
       canRequest={requestableShares > 0n}
       onFinish={(withRequest) => {
         void x

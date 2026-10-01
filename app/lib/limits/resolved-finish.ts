@@ -18,8 +18,15 @@ import { exitStepsCu, looksEmpty } from "./resolved-exit";
 import { exitStepIxs, type ExitIxContext } from "./resolved-exit-ixs";
 import { finishFeeSol } from "./resolved-eta";
 
-/** How many copies of a repeatable step are pre-signed. */
-export const FINISH_COPIES = { "settle-vault-lp": 3, "close-resolved": 3 } as const;
+/** How many copies of a repeatable step are pre-signed ("settle-vault-lp" = the 101 close step;
+ *  "settle-vault-lp-topup" = 101(1), repeated until the vault LP's receipt is final; the "retry"
+ *  copies run again after the traders' closes, for a vault LP that won). */
+export const FINISH_COPIES = {
+  "settle-vault-lp": 3,
+  "settle-vault-lp-topup": 2,
+  "settle-vault-lp-retry": 2,
+  "close-resolved": 3,
+} as const;
 
 export interface FinishItem {
   /** The step this tx runs (a copy repeats the same step). */
@@ -31,12 +38,25 @@ export interface FinishItem {
 const stepKey = (s: FinishItem["step"]): string =>
   s.kind === "earn-request" ? "earn-request" : s.kind === "harvest" ? "harvest" : `${s.kind}:${"portfolio" in s ? s.portfolio : ""}:${s.kind === "settle-vault-lp" ? s.topup : ""}`;
 
+const receiptOpen = (v: ExitPortfolio["view"]): boolean => v.receiptPresent && !v.receiptFinalized;
+
 /**
- * The finish list, in the program's order: the vault LP settles first (a winner's close is
- * progress-only until then), then each trader closes (or claims its top-up), then empty
- * portfolios close, then the bound vault harvests, then (optionally) the user's Earn request.
- * Escrowed (NFT) and mid-liquidation portfolios are skipped: nobody but their owner / the engine
- * can move them.
+ * The finish list, in the program's order. The two sides wait on each other (a winning trader's
+ * close is partial / progress-only until the vault LP settles; a winning vault LP's 101 is
+ * progress-only until every trader leg has detached), and an open receipt is diluted by ANY
+ * claimant still unreceipted, so:
+ *   A. the vault LP settles (101 close step, then 101(1) while its receipt is open);
+ *   B. tag 46 for every open trader receipt, the VIEWER's own first;
+ *   C. each trader not yet closed closes (30): losers first, then winners, the viewer's first;
+ *   D. 101 again (a vault LP that won could only finish once the traders detached);
+ *   E. per trader, viewer first: 30 again (a winner that was still progress-only), then 46 again
+ *      (receipts opened or still diluted during A-D);
+ *   F. empty portfolios close (8), then the bound vault harvests (78);
+ *   G. (optionally) the viewer's own Earn request (76), last.
+ * The driver re-plans before each item and skips what is not needed; nothing unneeded is sent.
+ * Viewer-first matters because the list is capped at FINISH_MAX_TXS: the viewer's own payout is
+ * never the part left to the keeper. Escrowed (NFT) and mid-liquidation portfolios are skipped:
+ * nobody but their owner / the engine can move them.
  */
 export function buildFinishList(input: {
   portfolios: readonly ExitPortfolio[];
@@ -44,25 +64,67 @@ export function buildFinishList(input: {
   withEarnRequest: boolean;
   /** Owners' window: only these portfolios can be touched now (the plan's own steps). */
   only?: ReadonlySet<string>;
+  /** Portfolio keys the connected wallet owns (lib/limits/resolved-topup viewerOwnedKeys). */
+  viewerOwned?: ReadonlySet<string>;
 }): FinishItem[] {
   const out: FinishItem[] = [];
   const pick = (p: ExitPortfolio) => !input.only || input.only.has(p.key);
-  const vault = input.portfolios.filter((p) => p.isVaultLp && pick(p));
-  const traders = input.portfolios.filter((p) => !p.isVaultLp && pick(p) && !p.escrowed && !p.view.rebalanceLock && !p.view.liquidationLock);
-  for (const v of vault) {
-    if (looksEmpty(v.view)) continue;
-    for (let c = 0; c < FINISH_COPIES["settle-vault-lp"]; c++) out.push({ step: { kind: "settle-vault-lp", topup: 0, portfolio: v.key }, copy: c });
-    out.push({ step: { kind: "settle-vault-lp", topup: 1, portfolio: v.key }, copy: 0 });
-  }
-  for (const t of traders) {
-    if (looksEmpty(t.view)) continue;
+  const mine = (p: ExitPortfolio) => input.viewerOwned?.has(p.key) === true;
+  const viewerFirst = (a: ExitPortfolio, b: ExitPortfolio) => Number(mine(b)) - Number(mine(a));
+  const vault = input.portfolios.filter((p) => p.isVaultLp && pick(p) && !looksEmpty(p.view));
+  const traders = input.portfolios
+    .filter((p) => !p.isVaultLp && pick(p) && !p.escrowed && !p.view.rebalanceLock && !p.view.liquidationLock)
+    .sort(viewerFirst);
+  const live = traders.filter((t) => !looksEmpty(t.view));
+  const settle = (v: ExitPortfolio, from: number, n0: number, n1: number) => {
+    for (let c = 0; c < n0; c++) out.push({ step: { kind: "settle-vault-lp", topup: 0, portfolio: v.key }, copy: from + c });
+    for (let c = 0; c < n1; c++) out.push({ step: { kind: "settle-vault-lp", topup: 1, portfolio: v.key }, copy: from + c });
+  };
+  // A
+  for (const v of vault) settle(v, 0, FINISH_COPIES["settle-vault-lp"], FINISH_COPIES["settle-vault-lp-topup"]);
+  // B
+  for (const t of live) if (receiptOpen(t.view)) out.push({ step: { kind: "claim-topup", portfolio: t.key }, copy: 0 });
+  // C: losers first (a winner's close is progress-only until the losing side has paid in), then
+  // winners; the viewer first within each.
+  const closing = live.filter((t) => !receiptOpen(t.view)).sort((a, b) => Number(a.view.pnl > 0n) - Number(b.view.pnl > 0n) || viewerFirst(a, b));
+  for (const t of closing) {
     for (let c = 0; c < FINISH_COPIES["close-resolved"]; c++) out.push({ step: { kind: "close-resolved", portfolio: t.key }, copy: c });
-    out.push({ step: { kind: "claim-topup", portfolio: t.key }, copy: 0 });
   }
-  for (const p of [...vault, ...traders]) out.push({ step: { kind: "close-empty", portfolio: p.key, isVaultLp: p.isVaultLp }, copy: 0 });
+  // D (only when a trader still had to close: otherwise A already covered the vault LP)
+  if (closing.length > 0) {
+    const n = FINISH_COPIES["settle-vault-lp-retry"];
+    for (const v of vault) settle(v, 10, n, n);
+  }
+  // E: a winner whose close was still progress-only closes again, then every open receipt tops up.
+  for (const t of live) {
+    if (!receiptOpen(t.view)) out.push({ step: { kind: "close-resolved", portfolio: t.key }, copy: 10 });
+    out.push({ step: { kind: "claim-topup", portfolio: t.key }, copy: 1 });
+  }
+  // F
+  const all = [...input.portfolios.filter((p) => p.isVaultLp && pick(p)), ...traders];
+  for (const p of all) out.push({ step: { kind: "close-empty", portfolio: p.key, isVaultLp: p.isVaultLp }, copy: 0 });
   if (input.boundVault) out.push({ step: { kind: "harvest" }, copy: 0 });
+  // G
   if (input.withEarnRequest) out.push({ step: { kind: "earn-request" }, copy: 0 });
   return out;
+}
+
+/**
+ * Drop what the pre-sign simulation refused, BEFORE the wallet opens. A refused 30 / 101 / 8 drops
+ * its portfolio's whole chain (nothing later in it can land); a refused 46 drops only that one
+ * item: an open receipt's top-up can have nothing more to pay NOW and still pay after the 101 /
+ * the other closes later in the list (a partial receipt is diluted by every unreceipted claim).
+ */
+export function pruneRefusedItems(items: readonly FinishItem[], refused: readonly FinishItem[]): FinishItem[] {
+  const chain = (it: FinishItem) => ("portfolio" in it.step ? it.step.portfolio : it.step.kind);
+  const one = (it: FinishItem) => `${stepKey(it.step)}#${it.copy}`;
+  const chains = new Set<string>();
+  const singles = new Set<string>();
+  for (const r of refused) {
+    if (r.step.kind === "claim-topup") singles.add(one(r));
+    else chains.add(chain(r));
+  }
+  return items.filter((it) => !chains.has(chain(it)) && !singles.has(one(it)));
 }
 
 /** The portfolios a plan touches now (for `only` during the owners' window). */
@@ -152,7 +214,14 @@ export async function runFinish<Tx>(items: readonly { item: FinishItem; tx: Tx }
 
 /** What "Finish now" would do: distinct steps (copies not counted) and the fee estimate. */
 export function finishEstimate(items: readonly FinishItem[]): { steps: number; sol: string } {
-  const firsts = items.filter((i) => i.copy === 0 && i.step.kind !== "earn-request");
+  const seen = new Set<string>();
+  const firsts = items.filter((i) => {
+    if (i.step.kind === "earn-request") return false;
+    const k = stepKey(i.step);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
   const payoutAccounts = firsts.filter((i) => i.step.kind === "close-resolved" || (i.step.kind === "settle-vault-lp" && i.step.topup === 0)).length;
   const txs = items.filter((i) => i.step.kind !== "earn-request").length;
   return { steps: firsts.length, sol: finishFeeSol({ txs, payoutAccounts }) };

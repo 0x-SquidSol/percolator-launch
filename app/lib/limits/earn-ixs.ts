@@ -182,3 +182,29 @@ export function buildRequestRedeemIx(p: {
     data: encodeRequestRedeemLpShares({ shares: p.shares.toString() }),
   });
 }
+
+/**
+ * Wrapper 5544302a: on a Resolved market at terminal-flat, a bound vault's 77 refuses 84
+ * (VaultLpHarvestPending) until tag 78 has absorbed the STRAY pot backing (the vault LP's
+ * claim-originated payout recycled at 101), which the app does not decode. The simulate-first
+ * send answers it: the first attempt is simulated before any prompt; on a pre-sign 84 the same
+ * transaction is rebuilt with 78 in front and sent once more (still one wallet prompt).
+ */
+export async function sendWithHarvestOn84<T>(p: {
+  build: (forceHarvest: boolean) => Promise<TransactionInstruction[]>;
+  send: (ixs: TransactionInstruction[]) => Promise<T>;
+  isHarvestPendingRefusal: (e: unknown) => boolean;
+}): Promise<T> {
+  try {
+    return await p.send(await p.build(false));
+  } catch (e) {
+    if (!p.isHarvestPendingRefusal(e)) throw e;
+    return p.send(await p.build(true));
+  }
+}
+
+/** The plan with 78 forced in front (bound vault only; the tail is needed for 78's accounts). */
+export function withForcedHarvest(plan: EarnTxPlan, force: boolean): EarnTxPlan {
+  if (!force || !plan.ok || !plan.tail) return plan;
+  return { ...plan, prependHarvest: true };
+}

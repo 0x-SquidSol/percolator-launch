@@ -5,6 +5,7 @@
  * Runs the app's planSelfHeal and reports each simulation.
  *   npx tsx scripts/p0b/live-trade-selfheal.ts <SYMBOL>
  */
+import { DEVNET_PROGRAM_IDS } from "../../lib/program-ids";
 import { Connection, PublicKey } from "@solana/web3.js";
 import {
   ACCOUNTS_TRADE_CPI, buildAccountMetas, buildIx, decodePortfolioMatcherControl, deriveMatcherDelegate,
@@ -15,7 +16,7 @@ import { isLpPortfolio } from "../../lib/lpPortfolio";
 import { planSelfHeal, connectionSelfHealDeps, describeRepair, computeBudgetPrefix } from "../../lib/self-heal";
 
 const RPC = process.env.DEVNET_RPC ?? "https://api.devnet.solana.com";
-const PROGRAM = new PublicKey("GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ");
+const PROGRAM = new PublicKey(DEVNET_PROGRAM_IDS.wrapper);
 const MAGIC = Buffer.from([0x00, 0x36, 0x31, 0x56, 0x43, 0x52, 0x45, 0x50]);
 const MARKETS: Record<string, { slab: string; feeBps: bigint }> = {
   COLLECT: { slab: "3t67LQPdgiSqGvXsYff3Pzv2uHtM1zZ7f29HsnEzb6vJ", feeBps: 5n },

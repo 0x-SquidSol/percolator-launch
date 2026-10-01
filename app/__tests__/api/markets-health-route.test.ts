@@ -9,8 +9,9 @@ import { NextRequest } from "next/server";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PublicKey } from "@solana/web3.js";
+import { DEVNET_PROGRAM_IDS } from "@/lib/program-ids";
 
-const WRAPPER = "GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ";
+const WRAPPER = DEVNET_PROGRAM_IDS.wrapper;
 const MURPHY = "7h3wNxjzPo6pTfWQ7uiTjDSsprGEeMNh696efmYrpAX2";
 const PENGU = "ENdXK8k6iiWCAx4Z9XfoKLg9oXsEbPL4hEtmEmUqozDZ";
 const fixture = (n: string) => Buffer.from(readFileSync(join(__dirname, "..", "fixtures", "v18-liveness", `${n}.b64`), "utf8").trim(), "base64");

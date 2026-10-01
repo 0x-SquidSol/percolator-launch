@@ -22,11 +22,12 @@ import { ACCOUNTS_INIT_MARKET, buildAccountMetas, buildIx, deriveInsuranceLpMint
 import { buildV17InitMarketArgs, marketAssetSlotsFor, slabSizeFor } from "../../lib/create-market-args";
 import { deriveMarketParams, MIN_LEVERAGE_X } from "../../lib/market-params";
 import { buildP3BindIxs, canonicalVaultLpMatcher } from "../../lib/limits/p3-wizard";
-import { buildEarnDepositIxs, buildEarnExecuteIxs, buildRequestRedeemIx, earnTxPlan } from "../../lib/limits/earn-ixs";
+import { buildEarnDepositIxs, buildEarnExecuteIxs, buildRequestRedeemIx, earnTxPlan, withForcedHarvest } from "../../lib/limits/earn-ixs";
 import { CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET, TAG_DEPOSIT_TO_LP_VAULT, TAG_EXECUTE_REDEMPTION, KIND_PORTFOLIO } from "../../lib/limits/constants";
 import { buildDepositJuniorTrancheIx, buildWithdrawJuniorTrancheIx, deriveLpVaultRegistryPda, deriveVaultLpState } from "../../lib/limits/p3-ix";
 import { exitStepIxs, type ExitIxContext, type ExitPortfolioRef } from "../../lib/limits/resolved-exit-ixs";
-import { buildFinishList, finishEstimate, finishItemCu, finishItemIxs, FINISH_MAX_TXS, planPortfolios, stepNeeded, type FinishItem } from "../../lib/limits/resolved-finish";
+import { viewerOwnedKeys } from "../../lib/limits/resolved-topup";
+import { buildFinishList, finishEstimate, finishItemCu, finishItemIxs, FINISH_MAX_TXS, planPortfolios, pruneRefusedItems, stepNeeded, type FinishItem } from "../../lib/limits/resolved-finish";
 import { planResolvedExit, type ExitStep, type ExitPortfolio } from "../../lib/limits/resolved-exit";
 import {
   decodeLpVaultRegistryBound,
@@ -221,7 +222,8 @@ if (cmd === "init-market") {
   );
 } else if (cmd === "deposit" || cmd === "execute") {
   const ctx = earnCtx(programId, market);
-  const plan = earnTxPlan(cmd === "deposit" ? TAG_DEPOSIT_TO_LP_VAULT : TAG_EXECUTE_REDEMPTION, ctx);
+  // forceHarvest: the payout's pre-sign 84 retry (lib/limits/earn-ixs.ts sendWithHarvestOn84).
+  const plan = withForcedHarvest(earnTxPlan(cmd === "deposit" ? TAG_DEPOSIT_TO_LP_VAULT : TAG_EXECUTE_REDEMPTION, ctx), a.forceHarvest === true);
   if (!plan.ok) {
     out([], { blocked: plan.reason });
   } else if (cmd === "deposit") {
@@ -393,6 +395,8 @@ if (cmd === "init-market") {
     boundVault: x.bound,
     withEarnRequest,
     only: x.plan.phase === "owner-window" ? planPortfolios(x.plan) : undefined,
+    // useResolvedExit.finish: the connected wallet's own portfolios go first (its 46 top-up).
+    viewerOwned: a.viewer ? viewerOwnedKeys(x.portfolios, pk("viewer")) : undefined,
   }).slice(0, FINISH_MAX_TXS);
   let request: TransactionInstruction | null = null;
   if (withEarnRequest) {
@@ -408,6 +412,12 @@ if (cmd === "init-market") {
     estimate: finishEstimate(items),
     items: items.map((item) => ({ item, cu: finishItemCu(item), ixs: finishItemIxs(item, x.ctx, request).map(enc1) })),
   }));
+} else if (cmd === "finish-prune") {
+  // useResolvedExit.finish's pre-sign pass: drop what the simulation refused (pruneRefusedItems).
+  const items = a.items as unknown as FinishItem[];
+  const refused = new Set((a.refused as unknown as number[]).map(Number));
+  const kept = pruneRefusedItems(items, items.filter((_, i) => refused.has(i)));
+  process.stdout.write(JSON.stringify({ kept: items.map((it, i) => (kept.includes(it) ? i : -1)).filter((i) => i >= 0) }));
 } else if (cmd === "finish-needed") {
   // The driver's skip rule (runFinish): re-plan from fresh bytes, is this item still needed?
   const x = exitSnapshot();

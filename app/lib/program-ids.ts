@@ -1,9 +1,10 @@
 /**
  * THE single source of truth for on-chain program IDs.
  *
- * Repointing the app to a new deployment (e.g. the P0a fresh-ID wrapper
- * `ETDLAdiAyWnEUngspYczTXUceT6X8f92eZQvr8nmSkWB` with @percolatorct/sdk 8.0.0)
- * is ONE edit: the `wrapper` value in DEVNET_PROGRAM_IDS below. Everything
+ * Repointing the app to a new deployment is ONE edit: DEVNET_PROGRAM_IDS below. The
+ * 2026-10 relaunch is ALL-FRESH (wrapper, matcher, nft and stake all new devnet addresses,
+ * @percolatorct/sdk 8.0.0); the old GnwdeQr world (matcher 4seJWjv3…, stake GCHhcgw…,
+ * nft CNGBPZR…) is abandoned. Everything
  * else — config.ts (`programId`, `programsBySlabTier`, the known-program
  * allowlist), the markets static fallback, the warmup route, the NFT/stake
  * helpers, the error map's program routing — reads from here.
@@ -33,12 +34,11 @@ export interface ProgramIdSet {
 
 /** Deployed devnet programs (deployments.md). The wrapper line is the repoint. */
 export const DEVNET_PROGRAM_IDS: Readonly<ProgramIdSet> = Object.freeze({
-  // v18.2 wrapper, fresh ID 2026-09-22. P0a relaunch: ETDLAdiAyWnEUngspYczTXUceT6X8f92eZQvr8nmSkWB
-  wrapper: "GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ",
-  // matcher / nft / stake are upgraded in place and keep their addresses.
-  matcher: "4seJWjv3R5qfXY8R5ntuPHWsoqcVvaxvfFSnU2AnGMhT",
-  nft: "CNGBPZRALk9Xu8BdgWNyrLJ7daQ9eJYFf1GnEEC7YCU3",
-  stake: "GCHhcgwPyrai8SWHEVWw3odedguFXEtJobNnWSfWBCU3",
+  // ALL-FRESH relaunch (2026-10, wrapper 592286b4 / SDK 8.0.0): every program at a new address.
+  wrapper: "ETDLAdiAyWnEUngspYczTXUceT6X8f92eZQvr8nmSkWB",
+  matcher: "EDKKgRaVHna6FCxiY1kgMzegD9rpaN1nwJNSzAzeBUBX",
+  nft: "EMYT15LZWaP7Mmmm245kQPbrTyVjG16yZiU9kfNTF3GZ",
+  stake: "VmpVUArRnVkrjaPXQ2qaqCQa3ZrZFgsz7rjeALitF5w",
 });
 
 export const MAINNET_PROGRAM_IDS: Readonly<Omit<ProgramIdSet, "nft">> = Object.freeze({
