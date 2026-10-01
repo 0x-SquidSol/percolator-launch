@@ -387,7 +387,13 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
   // waits while `checking` so a slow lookup can't be raced past.
   const step1Valid = mintValid && wizard.tokenMeta !== null && (wizard.tokenMeta.decimals <= 12) && mintExistsOnNetwork;
   const duplicateCheck = useDuplicateMarket(wizard.step === 1 ? wizard.mintAddress : null);
-  const step1CanAdvance = step1Valid && !duplicateCheck.checking && duplicateCheck.duplicates.length === 0;
+  // Leaving step 1 also needs a connected wallet: the Control Room is where the
+  // launch is signed, so a wallet-less user must never reach it (StepTokenSelect
+  // shows "Connect wallet to continue" in place of Continue). Gates both the
+  // Continue click and the one-shot auto-advance, which then fires as soon as
+  // the user connects.
+  const step1CanAdvance =
+    step1Valid && !duplicateCheck.checking && duplicateCheck.duplicates.length === 0 && !!publicKey;
 
   // Control Room (dial) validation — trading fee, leverage margin, and seed amounts.
   const paramsValid =
@@ -1194,6 +1200,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string }> = ({ initialMint }
             onBalanceChange={setWalletBalance}
             onMintNetworkValidChange={setMintExistsOnNetwork}
             onContinue={() => {
+              if (!step1CanAdvance) return;
               quickAutoAdvancedRef.current = true;
               applyOracleAndAdvance();
             }}

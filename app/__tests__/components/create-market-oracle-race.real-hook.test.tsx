@@ -12,7 +12,7 @@
  *    lets auto-advance fire).
  *  - race: DexScreener lands, the wizard auto-advances, then resolve lands.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import { SystemProgram } from "@solana/web3.js";
 
@@ -85,7 +85,11 @@ const connection = {
   getAccountInfo: async () => null,
 };
 vi.mock("@/hooks/useWalletCompat", () => ({
-  useWalletCompat: () => ({ publicKey: SystemProgram.programId, connected: true }),
+  // `__noWallet` models a visitor who has not connected (the wallet gate on leaving step 1).
+  useWalletCompat: () =>
+    (globalThis as { __noWallet?: boolean }).__noWallet
+      ? { publicKey: null, connected: false }
+      : { publicKey: SystemProgram.programId, connected: true },
   useConnectionCompat: () => ({ connection }),
 }));
 
@@ -343,5 +347,41 @@ describe("oracle resolve lands after the advance: edge cases", () => {
     // id is ignored): with no DEX pool it stays on the admin placeholder.
     expect(s.priceFeed).not.toBe(`${FEED.slice(0, 12)}...`);
     expect(s.ariaLabel).not.toBe("Resolving price feed");
+  });
+});
+
+// Live report 2026-10-01: with no wallet a user could paste a CA and Continue to the final step.
+describe("leaving step 1 needs a connected wallet", () => {
+  const g = globalThis as { __gateMeta?: ReturnType<typeof deferred>; __noWallet?: boolean };
+  beforeEach(() => {
+    create.mockReset(); localStorage.clear(); sessionStorage.clear();
+    fetchLog.length = 0; gateResolve = deferred(); gateDex = deferred();
+    createState = IDLE;
+    (window.matchMedia as unknown as ReturnType<typeof vi.fn>).mockImplementation((q: string) => ({
+      matches: q.includes("reduce"), media: q, addListener() {}, removeListener() {},
+      addEventListener() {}, removeEventListener() {}, dispatchEvent: () => false, onchange: null,
+    }));
+  });
+  afterEach(() => { delete g.__noWallet; });
+
+  it("no wallet: the token resolves but the wizard stays on step 1 with a connect CTA, then advances once connected", async () => {
+    g.__noWallet = true;
+    g.__gateMeta = deferred();
+    const view = render(<CreateMarketWizard />);
+    fireEvent.change(screen.getByPlaceholderText("Paste mint address..."), { target: { value: MINT } });
+    await act(async () => { await new Promise((r) => setTimeout(r, 450)); });
+    g.__gateMeta.release(); await flush();
+    gateResolve.release(); await flush();
+    gateDex.release(); await flush();
+    // Every gate that used to auto-advance has settled: still step 1, no Continue, the CTA instead.
+    expect(onStep2()).toBe(false);
+    expect(screen.queryByTestId("wizard-next")).toBeNull();
+    expect(screen.getByTestId("wizard-connect-wallet")).toBeTruthy();
+
+    // The user connects: the one-shot auto-advance fires now.
+    g.__noWallet = false;
+    view.rerender(<CreateMarketWizard />); await flush();
+    await waitFor(() => expect(onStep2()).toBe(true));
+    expect(screen.queryByTestId("wizard-connect-wallet")).toBeNull();
   });
 });
