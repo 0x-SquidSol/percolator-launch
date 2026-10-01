@@ -39,6 +39,11 @@ describe("WP-7 screens", () => {
     const a = success({ priceFeedRequired: true, keeperDelegated: false, keeperPhase: "connecting", keeperMessage: KEEPER_REGISTER_COPY.connecting });
     expect(a.container.textContent).toContain("Almost ready");
     expect(a.container.textContent).not.toContain("Ready to trade");
+    // #2723: the connecting screen must not be a dead-end — the market exists, so
+    // it carries the way-forward CTAs (their market + dashboard) without claiming
+    // the market is priced (title stays "Almost ready", asserted above).
+    expect(a.container.textContent).toContain("Go to market");
+    expect(a.container.textContent).toContain("View my markets");
     await snap("almost-ready", a.container.firstElementChild as HTMLElement);
     a.unmount();
     const b = success({ priceFeedRequired: true, keeperDelegated: false, keeperPhase: "slow", keeperMessage: KEEPER_REGISTER_COPY.slow });

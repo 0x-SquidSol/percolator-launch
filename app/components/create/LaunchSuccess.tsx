@@ -173,9 +173,19 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
       <div data-testid="launch-price-feed-missing" className="border border-[var(--border)] bg-[var(--panel-bg)] p-6 text-center">
         <h2 className="text-[18px] font-bold text-[var(--text)] mb-2">{PRICE_FEED_MISSING_TITLE}</h2>
         <p className="text-[13px] text-[var(--text-secondary)] mb-4">{priceFeedMissingBody(tokenSymbol)}</p>
-        <code className="mb-4 inline-block font-mono text-[10px] text-[var(--accent)]/80 bg-[var(--bg)] border border-[var(--border)] px-3 py-1.5 break-all">
-          {marketAddress}
-        </code>
+        <div className="mb-4 flex items-center justify-center gap-2">
+          <code className="inline-block font-mono text-[10px] text-[var(--accent)]/80 bg-[var(--bg)] border border-[var(--border)] px-3 py-1.5 break-all">
+            {marketAddress}
+          </code>
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="border border-[var(--border)] px-2 py-1.5 text-[9px] font-medium text-[var(--text-secondary)] hover:text-[var(--accent)] hover:border-[var(--accent)]/30 transition-colors"
+            title="Copy address"
+          >
+            {copied ? "✓" : "copy"}
+          </button>
+        </div>
         <p data-testid="launch-price-feed-reason" data-phase={keeperPhase ?? "connecting"} className="mx-auto mb-4 flex max-w-sm items-center justify-center gap-1.5 text-[13px] text-[var(--text)]">
           {keeperPhase !== "slow" && keeperPhase !== "failed" && (
             <span aria-hidden="true" className="inline-block h-[6px] w-[6px] animate-pulse rounded-full bg-[var(--text-muted)]" />
@@ -193,6 +203,33 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
             {keeperRegistering ? "Trying…" : "Try now"}
           </button>
         )}
+        {/* Don't trap a creator while the price connects in the background: the
+            market is already created on-chain, so expose the same way-forward CTAs
+            the ready screen has — copy address (above), their market, their
+            dashboard, and devnet collateral. The title stays "Almost ready", so
+            this never claims the market is priced (WP-7 §3.15). (#2723) */}
+        <div className="mt-5 flex flex-col items-center justify-center gap-3 sm:flex-row">
+          <Link
+            href={`/trade/${marketAddress}`}
+            className="w-full border border-[var(--accent)]/40 bg-[var(--accent)]/[0.06] px-6 py-2.5 text-[12px] font-medium uppercase tracking-[0.1em] text-[var(--accent)] transition-all hover:bg-[var(--accent)]/[0.12] sm:w-auto"
+          >
+            Go to market →
+          </Link>
+          <Link
+            href="/my-markets"
+            className="w-full border border-[var(--border)] px-6 py-2.5 text-[12px] font-medium uppercase tracking-[0.1em] text-[var(--text-secondary)] transition-all hover:border-[var(--accent)]/30 hover:text-[var(--text)] sm:w-auto"
+          >
+            View my markets
+          </Link>
+          {isDevnet && (
+            <Link
+              href="/faucet"
+              className="w-full border border-[var(--border)] px-6 py-2.5 text-[12px] font-medium uppercase tracking-[0.1em] text-[var(--text-secondary)] transition-all hover:border-[var(--accent)]/30 hover:text-[var(--text)] sm:w-auto"
+            >
+              Get Sim-USDC
+            </Link>
+          )}
+        </div>
         <div className="mt-4">
           <button
             type="button"
