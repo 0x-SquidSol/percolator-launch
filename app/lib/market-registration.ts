@@ -34,6 +34,7 @@
  * See docs/MARKET-REGISTRATION-SPEC-2026-07-30.md.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { checkEnrollmentCaps, type EnrollmentCaps } from "@/lib/keeper-enrollment-guard";
 
 /** Everything registration writes. Display fields come from the creator. */
 export interface RegistrationRow {
@@ -132,12 +133,18 @@ function toDbOracleMode(mode: string): string {
   return mode === "keeper" ? "admin" : mode;
 }
 
+/**
+ * `caps` (review M-7): on the proof path, a registration that would newly enroll a market for
+ * keeper pricing is refused once the creator or the deployment is at its ceiling. A row that is
+ * already active is never re-counted, and the admin path is not capped.
+ */
 export async function upsertRegisteredMarketRow(
   supabase: SupabaseClient,
   row: RegistrationRow,
   mode: RegistrationMode,
+  caps?: EnrollmentCaps,
 ): Promise<UpsertResult> {
-  return upsertOnce(supabase, row, mode, false);
+  return upsertOnce(supabase, row, mode, false, caps);
 }
 
 async function upsertOnce(
@@ -145,6 +152,7 @@ async function upsertOnce(
   row: RegistrationRow,
   mode: RegistrationMode,
   raced: boolean,
+  caps?: EnrollmentCaps,
 ): Promise<UpsertResult> {
   const { data: existingRaw, error: readErr } = await supabase
     .from("markets")
@@ -173,6 +181,20 @@ async function upsertOnce(
     }
     if (existing.metadata_source === "manual") {
       return { ok: true, action: "unchanged", keeperActive: existing.keeper_status === "active" };
+    }
+  }
+
+  // Review M-7: every write below sets keeper_status='active'. On the proof path that enrolls the
+  // market for pricing, so the ceilings apply unless the row is already enrolled.
+  if (mode === "proof" && caps && existing?.keeper_status !== "active") {
+    const cap = await checkEnrollmentCaps(
+      supabase,
+      { slab: row.slab_address, deployer: row.deployer, network: row.network },
+      caps,
+    );
+    if (!cap.ok) {
+      if (cap.detail) console.error("[market-registration] enrollment count failed:", cap.detail);
+      return { ok: false, status: cap.status, error: cap.error, ...(cap.detail ? { detail: cap.detail } : {}) };
     }
   }
 
@@ -206,7 +228,7 @@ async function upsertOnce(
       // inserted between our read and this write. On the proof path, re-run the
       // existing-row rules against what is there now (never a blind update).
       if (error.code === "23505" && mode === "proof" && !raced) {
-        return upsertOnce(supabase, row, mode, true);
+        return upsertOnce(supabase, row, mode, true, caps);
       }
       if (error.code === "23505" && mode === "proof") {
         return { ok: false, status: 503, error: "The market row changed while registering. Try again." };
@@ -246,7 +268,7 @@ async function upsertOnce(
       return { ok: false, status: 500, error: "Failed to update market registration", detail: describe(pErr) };
     }
     if (!Array.isArray(updated) || updated.length === 0) {
-      if (!raced) return upsertOnce(supabase, row, mode, true);
+      if (!raced) return upsertOnce(supabase, row, mode, true, caps);
       return { ok: false, status: 503, error: "The market row changed while registering. Try again." };
     }
     return { ok: true, action: "updated", keeperActive: true };
