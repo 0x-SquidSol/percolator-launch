@@ -349,3 +349,22 @@ Run `npx tsc --noEmit` and `pnpm test` locally before pushing so CI passes first
   `npx tsc --noEmit` · `pnpm test`.
 
 Thanks for contributing! 🎉
+
+---
+
+## 16. Relaunch (2026-10-01) — current program IDs
+
+Section 15 above lists the **pre-relaunch** programs and markets. They are retired: the playground
+now runs on all-fresh devnet programs (single source: `app/lib/program-ids.ts`) and
+`@percolatorct/sdk` **8.0.0**.
+
+- **Programs** (devnet):
+  - wrapper `ETDLAdiAyWnEUngspYczTXUceT6X8f92eZQvr8nmSkWB`
+  - matcher `EDKKgRaVHna6FCxiY1kgMzegD9rpaN1nwJNSzAzeBUBX`
+  - nft `EMYT15LZWaP7Mmmm245kQPbrTyVjG16yZiU9kfNTF3GZ`
+  - vault/stake `VmpVUArRnVkrjaPXQ2qaqCQa3ZrZFgsz7rjeALitF5w`
+- **Markets:** there are no curated seed markets. Markets are created in the app's **Create**
+  wizard (`/create`) and show up on `/markets` automatically. With none created yet, `/markets`
+  reads "No markets yet — create the first one". The six section-15 slabs belong to the retired
+  wrapper and are no longer listed.
+- **Collateral:** sim-USDC `DJ54k4wH92NTtNP8RuHAwG8si1bevXEknzctDdqYN8eC` (unchanged).
