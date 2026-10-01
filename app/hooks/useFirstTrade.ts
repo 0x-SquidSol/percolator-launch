@@ -38,6 +38,7 @@ import {
   readNextPortfolioId,
 } from "@/lib/first-trade";
 import { invalidatePortfolio } from "@/lib/portfolio-invalidation";
+import { readU64LE } from "@/lib/u64le";
 
 export interface FundAndTradeParams {
   /** Signed size (base q). */
@@ -80,7 +81,7 @@ export function useFirstTrade(slabAddress: string) {
         const [vaultPda] = deriveVaultAuthority(programId, market);
         const vaultTokenAta = await getAta(vaultPda, mktConfig.collateralMint, true);
         const ataInfo = await connection.getAccountInfo(userAta);
-        const ataBalance = ataInfo && ataInfo.data.length >= 72 ? Buffer.from(ataInfo.data).readBigUInt64LE(64) : 0n;
+        const ataBalance = ataInfo && ataInfo.data.length >= 72 ? readU64LE(ataInfo.data, 64) : 0n;
         assertDepositWithinBalance(p.depositAtoms, ataBalance);
 
         const [lp, marketId] = await Promise.all([

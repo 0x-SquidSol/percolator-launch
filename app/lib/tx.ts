@@ -20,6 +20,7 @@ import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 import { resolveDevnetProgramIds } from "@/lib/program-ids";
 import type { SelfHealResult } from "@/lib/self-heal";
 import { getMaintenanceConfig, MaintenanceError } from "@/lib/maintenance";
+import { readU64LE } from "@/lib/u64le";
 
 /**
  * PERC-8388: Lighthouse v2 program ID — Blowfish/Phantom wallet middleware injects
@@ -700,7 +701,7 @@ function getAccountCreationLamports(instructions: TransactionInstruction[]): num
     // CreateAccount (discriminant 0): u32 | u64 lamports | u64 space | Pubkey owner
     if (ix.data.length < 12) continue;
     if (ix.data.readUInt32LE(0) !== 0) continue; // only CreateAccount is used by these flows
-    total += Number(ix.data.readBigUInt64LE(4));
+    total += Number(readU64LE(ix.data, 4));
   }
   return total;
 }
