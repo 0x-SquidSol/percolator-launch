@@ -41,7 +41,8 @@ vi.mock("@/hooks/useWalletCompat", () => ({
 }));
 vi.mock("@/components/providers/SlabProvider", () => ({ useSlabState: mocks.useSlabState }));
 vi.mock("@/hooks/useUserAccount", () => ({ useUserAccount: mocks.useUserAccount }));
-vi.mock("@/lib/tx", () => ({ sendTx: mocks.sendTx, prewarmTxLanding: vi.fn() }));
+// useTrade sends a single-tx trade via sendTxWaiting (string signature).
+vi.mock("@/lib/tx", () => ({ sendTx: mocks.sendTx, sendTxWaiting: mocks.sendTx, prewarmTxLanding: vi.fn() }));
 vi.mock("@/lib/programAllowlist", () => ({
   isKnownProgram: () => true,
   assertKnownProgram: () => {},
@@ -78,6 +79,23 @@ vi.mock("@/lib/v18-wire", async () => {
     fetchAssetMarketId: vi.fn(async () => 1n),
   };
 });
+// The LP side by on-chain identity (#2776) is not under test here: pin it.
+vi.mock("@/lib/market-lp", async () => {
+  const { PublicKey: Pk } = await import("@solana/web3.js");
+  const k = (n: number) => new Pk(new Uint8Array(32).fill(n));
+  return {
+    resolveMarketLp: vi.fn(async () => ({
+      pubkey: k(43),
+      data: new Uint8Array(0),
+      owner: k(44),
+      portfolioId: 1n,
+      matcherProg: k(46),
+      matcherCtx: k(47),
+      matcherDelegate: k(48),
+      reason: "asset-admin",
+    })),
+  };
+});
 vi.mock("@/hooks/useTrade", async () => {
   const actual = await vi.importActual<typeof import("@/hooks/useTrade")>("@/hooks/useTrade");
   return { ...actual, prewarmTradeSubmission: vi.fn() };
@@ -94,12 +112,9 @@ vi.mock("@percolatorct/sdk", async () => {
   };
 });
 
-import {
-  V17_PORTFOLIO_IDENTITY_TRAILER_LEN,
-  V17_MARKET_GROUP_OFF,
-  V17_MARKET_GROUP_LEN,
-  V17_ASSET_ORACLE_WRAPPER_LEN,
-} from "@percolatorct/sdk";
+import { V17_PORTFOLIO_IDENTITY_TRAILER_LEN } from "@percolatorct/sdk";
+import * as C from "@/lib/limits/constants";
+import { CLOSE_PRICE_UNREADABLE } from "@/lib/close-limit";
 import { useClosePosition } from "@/hooks/useClosePosition";
 
 const key = (n: number) => new PublicKey(new Uint8Array(32).fill(n));
@@ -143,10 +158,21 @@ function setMark(markE6: bigint) {
 
 /** Engine asset 0 effective_price as stored in the slab; null = slab unreadable. */
 let effectiveE6: bigint | null = null;
+/**
+ * A v18 market account (header magic / version 18 / kind 1) that lib/limits/decode.ts
+ * decodes: asset 0 live on both sides (A = ADL_ONE, epoch 0, mode 0 — not reduce-only),
+ * effective_price = `effectiveE6`.
+ */
 function slabData(): Buffer {
-  const off = V17_MARKET_GROUP_OFF + V17_MARKET_GROUP_LEN + V17_ASSET_ORACLE_WRAPPER_LEN + 25;
-  const data = Buffer.alloc(off + 64);
-  data.writeBigUInt64LE(effectiveE6 ?? 0n, off);
+  const e = C.assetEngineOff(0);
+  const data = Buffer.alloc(e + 1301);
+  data.writeBigUInt64LE(C.WRAPPER_MAGIC, 0);
+  data.writeUInt16LE(C.WRAPPER_VERSION_V18, 8);
+  data[C.HEADER_KIND_OFF] = C.KIND_MARKET_ACCOUNT;
+  data.writeBigUInt64LE(1n, e + C.A_MARKET_ID);
+  data.writeBigUInt64LE(effectiveE6 ?? 0n, e + C.A_EFFECTIVE_PRICE);
+  data.writeBigUInt64LE(C.ADL_ONE, e + C.A_A_LONG); // u128 LE, high half 0
+  data.writeBigUInt64LE(C.ADL_ONE, e + C.A_A_SHORT);
   return data;
 }
 
@@ -160,18 +186,11 @@ async function close(posQ: bigint) {
   const slab = key(slabN++).toBase58(); // fresh slab: useTrade caches trade accounts per slab
   mocks.parsePortfolioV17.mockReturnValue({
     owner: walletPk,
-    legs: [{ active: true, basisPosQ: posQ }],
+    legs: [{ active: true, side: posQ > 0n ? 0 : 1, basisPosQ: posQ, epochSnap: 0n, aBasis: C.ADL_ONE }],
   });
   const connection = {
-    getProgramAccounts: vi
-      .fn()
-      // useClosePosition's fresh portfolio read
-      .mockResolvedValueOnce([{ pubkey: takerPortfolio, account: { data: Buffer.from([1]) } }])
-      // useTrade: LP scan, then taker scan (twice, for a retried attempt)
-      .mockResolvedValueOnce([{ pubkey: lpPortfolioPk, account: { data: lpPortfolioData() } }])
-      .mockResolvedValueOnce([{ pubkey: takerPortfolio, account: { data: Buffer.from([1]) } }])
-      .mockResolvedValueOnce([{ pubkey: lpPortfolioPk, account: { data: lpPortfolioData() } }])
-      .mockResolvedValueOnce([{ pubkey: takerPortfolio, account: { data: Buffer.from([1]) } }]),
+    // Every scan left is the taker's own portfolio (fresh close read, useTrade's taker lookup).
+    getProgramAccounts: vi.fn(async () => [{ pubkey: takerPortfolio, account: { data: Buffer.from([1]) } }]),
     getAccountInfo: vi.fn(async (pk: PublicKey) =>
       pk.toBase58() === slab && effectiveE6 !== null ? { data: slabData() } : null,
     ),
@@ -200,7 +219,7 @@ describe("closing while the feed is 17% off the chain", () => {
     vi.clearAllMocks();
     mocks.isV17Account.mockReturnValue(true);
     mocks.deriveMatcherDelegate.mockReturnValue([key(48), 254]);
-    mocks.sendTx.mockResolvedValue({ signature: "sig" });
+    mocks.sendTx.mockResolvedValue("sig");
     mocks.retryOnce.on = false;
     mocks.useWalletCompat.mockReturnValue({ publicKey: walletPk, connected: true });
     mocks.useUserAccount.mockReturnValue({ idx: 0, account: { positionSize: 0n } });
@@ -245,7 +264,7 @@ describe("closing while the feed is 17% off the chain", () => {
     expect(long.limitE6!).toBeLessThanOrEqual(worstSellExec(6_806n));
     expect(long.limitE6).toBe(6_465n);
     vi.clearAllMocks();
-    mocks.sendTx.mockResolvedValue({ signature: "sig" });
+    mocks.sendTx.mockResolvedValue("sig");
     const short = await close(-5_000_000n);
     expect(short.error).toBeNull();
     expect(short.limitE6!).toBeGreaterThanOrEqual(worstBuyExec(6_806n));
@@ -260,7 +279,7 @@ describe("closing while the feed is 17% off the chain", () => {
     expect(short.error).toBeNull();
     expect(short.limitE6!).toBeGreaterThanOrEqual(worstBuyExec(57n));
     vi.clearAllMocks();
-    mocks.sendTx.mockResolvedValue({ signature: "sig" });
+    mocks.sendTx.mockResolvedValue("sig");
     const long = await close(5_000_000n);
     expect(long.error).toBeNull();
     expect(long.limitE6!).toBeGreaterThan(0n);
@@ -274,20 +293,31 @@ describe("closing while the feed is 17% off the chain", () => {
     expect(limitE6).toBe(1_050_000n);
   });
 
-  it("effective price unreadable: refuses with a clear message, never falls back to the feed", async () => {
-    effectiveE6 = null;
-    const { error, shown } = await close(-5_000_000n);
-    expect(String(error)).toMatch(/on-chain price for a safe close limit/);
-    // The UI shows the whole sentence, not a truncated "Transaction failed: ..." tail.
-    expect(shown).toBe("Could not read the on-chain price for a safe close limit. Please try again.");
+  it("market unreadable: refused before anything is sent, never falls back to the feed", async () => {
+    effectiveE6 = null; // the fresh market read (position + price) returns nothing
+    const { error } = await close(-5_000_000n);
+    expect(error).not.toBeNull();
     expect(mocks.sendTx).not.toHaveBeenCalled();
+    expect(mocks.encodeTradeCpi).not.toHaveBeenCalled();
+  });
+
+  it("retry with the market unreadable: refuses with the calm one-liner instead of reusing the limit", async () => {
+    mocks.retryOnce.on = true;
+    mocks.sendTx.mockImplementationOnce(async () => {
+      effectiveE6 = null; // the re-read before the retry finds nothing
+      throw new Error("Blockhash not found");
+    });
+    const { error, shown } = await close(-5_000_000n);
+    expect(String(error)).toContain(CLOSE_PRICE_UNREADABLE);
+    expect(shown).toBe(CLOSE_PRICE_UNREADABLE);
+    expect(mocks.sendTx).toHaveBeenCalledTimes(1);
   });
 
   it("effective price zero: same refusal", async () => {
     effectiveE6 = 0n;
     const { error, shown } = await close(5_000_000n);
-    expect(String(error)).toMatch(/on-chain price for a safe close limit/);
-    expect(shown).toBe("Could not read the on-chain price for a safe close limit. Please try again.");
+    expect(String(error)).toContain(CLOSE_PRICE_UNREADABLE);
+    expect(shown).toBe(CLOSE_PRICE_UNREADABLE);
     expect(mocks.sendTx).not.toHaveBeenCalled();
   });
 
@@ -298,7 +328,7 @@ describe("closing while the feed is 17% off the chain", () => {
         effectiveE6 = 1_100_000n; // price moves +10% before the retry
         throw new Error("Blockhash not found");
       })
-      .mockResolvedValue({ signature: "sig" });
+      .mockResolvedValue("sig");
     const { error } = await close(-5_000_000n);
     expect(error).toBeNull();
     const limits = mocks.encodeTradeCpi.mock.calls.map((c) => BigInt((c[0] as { limitPrice: string }).limitPrice));

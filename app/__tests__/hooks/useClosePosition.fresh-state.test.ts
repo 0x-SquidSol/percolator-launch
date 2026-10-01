@@ -86,6 +86,7 @@ import { useTrade } from "@/hooks/useTrade";
 import { useUserAccount } from "@/hooks/useUserAccount";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { useClosePosition } from "@/hooks/useClosePosition";
+import { decodeMarketEngineView } from "@/lib/limits/decode";
 
 describe("useClosePosition fresh-state verification", () => {
   const slabAddress =
@@ -200,10 +201,15 @@ describe("useClosePosition fresh-state verification", () => {
     });
 
     expect(mocks.getProgramAccounts).toHaveBeenCalled();
+    // The close's slippage limit is built from the fresh market's effective_price (a
+    // sell: effective x 0.95), never the feed.
+    const effectiveE6 = decodeMarketEngineView(new Uint8Array(MARKET_BYTES))!.effectivePriceE6;
     expect(mocks.trade).toHaveBeenCalledWith({
       lpIdx: 3,
       userIdx: 7,
       size: -2n,
+      sizes: undefined,
+      limitPriceE6: (effectiveE6 * 9_500n) / 10_000n,
     });
   });
 
