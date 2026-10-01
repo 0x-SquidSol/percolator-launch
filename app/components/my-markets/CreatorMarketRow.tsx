@@ -564,6 +564,17 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
             <p className="mt-2 text-[11px] text-[var(--text-secondary)]">
               This is permanent and irreversible. You will never be able to update config, set oracle, or perform any admin actions on this market again.
             </p>
+            {/* Tag 90 (WithdrawCreatorFee) is gated on asset 0's asset_admin only: once burned, no
+                creator fee on this market can ever be claimed again, and any unclaimed pot is
+                re-booked to the protocol at close (wrapper bd4fe5f8). */}
+            <p data-testid="burn-forfeits-fees" className="mt-2 text-[11px] text-[var(--text-secondary)]">
+              You also give up this market&apos;s creator fees for good: fees can only be claimed with this key.
+            </p>
+            {hasClaimableFees && (
+              <p data-testid="burn-claim-first" className="mt-2 text-[11px] font-semibold text-[var(--warning)]">
+                You have unclaimed fees on this market. Claim them before burning, or they are lost.
+              </p>
+            )}
             <p className="mt-4 text-[11px] font-semibold text-[var(--short)]">
               Type &quot;BURN&quot; to confirm:
             </p>

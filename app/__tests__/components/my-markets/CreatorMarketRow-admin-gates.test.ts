@@ -25,11 +25,19 @@ describe("CreatorMarketRow admin-action gates", () => {
 
   it("disables burn on !isAssetAdmin and close on !isMarketAuth", () => {
     expect(SRC).toMatch(/disabled=\{actions\.loading === "renounceAdmin" \|\| !isAssetAdmin\}/);
-    expect(SRC).toMatch(/disabled=\{closeMarket\.loading \|\| !isMarketAuth\}/);
+    // Merged with WP-9's close checklist: the blocker AND the marketauth gate.
+    expect(SRC).toMatch(/disabled=\{closeMarket\.loading \|\| closeBlocker !== null \|\| !isMarketAuth\}/);
+    expect(SRC).toContain("<CloseMarketChecklistView checks={closeChecks} />");
   });
 
   it("explains the autonomous-market state instead of a doomed close", () => {
     expect(SRC).toContain("{!isMarketAuth && (");
     expect(SRC).toMatch(/This market is autonomous/);
+  });
+
+  it("the burn confirm says it forfeits creator fees, and warns to claim first when fees are unclaimed", () => {
+    expect(SRC).toContain('data-testid="burn-forfeits-fees"');
+    expect(SRC).toMatch(/give up this market&apos;s creator fees for good/);
+    expect(SRC).toMatch(/\{hasClaimableFees && \(\s*<p data-testid="burn-claim-first"/);
   });
 });
