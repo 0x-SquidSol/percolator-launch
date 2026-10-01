@@ -37,6 +37,7 @@ import { useWithdraw } from "@/hooks/useWithdraw";
 import { readSweepableCapital, SWEEP_COPY } from "@/lib/close-sweep";
 import { useOptionalToast } from "@/hooks/useToast";
 import { formatTokenAmount } from "@/lib/format";
+import { closeLimitFromEngine } from "@/lib/close-limit";
 
 /** M-3: the leg is a prior-reset obligation (owns 0 effective quantity). */
 export const COPY_RESET_LEG =
@@ -354,16 +355,11 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
           return { signature: null };
         }
 
-        // Read the current mark price NON-reactively, at call time — not via
-        // the useLivePrice() hook (same rationale as useTrade.ts: this hook
-        // is called from PositionPanel/ClosePositionModal at top level, so a
-        // reactive subscription here would re-render those components on
-        // every price tick just to source a value only used inside this
-        // callback). useTrade derives limit_price_e6 from livePriceE6 and
-        // throws SlippageError when the live mark is unavailable —
-        // short-circuit here so the user sees the real reason immediately.
-        const { priceE6: livePriceE6 } = getLivePriceSnapshot(slabAddress);
-        if (livePriceE6 == null) {
+        // v17/v18: the close's slippage limit comes from the engine's effective_price
+        // (lib/close-limit.ts), not the site feed — so the feed is not needed here.
+        // Legacy v12 keeps the feed-derived path, which throws SlippageError
+        // without a live mark — short-circuit so the user sees the real reason.
+        if (!isV17Market && getLivePriceSnapshot(slabAddress).priceE6 == null) {
           throw new UserFacingError(
             "Live mark price unavailable — wait for the price feed to reconnect, then try again.",
           );
@@ -458,9 +454,30 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
           fill = r.fill;
           routedRebalance = true;
         } else {
+          // v17/v18 matcher close: limit from the engine's effective_price. Attempt 1 uses the
+          // fresh market read the position was verified against (no extra RPC); a retry
+          // (blockhash expiry / 429) can land a minute later, so it re-reads instead of
+          // reusing a limit the price may have moved past. v12 keeps useTrade's feed path.
+          let closeLimitPriceE6 = isV17Market ? closeLimitFromEngine(freshEngine, closeSize) : undefined;
+          let attempt = 0;
+          const rereadCloseLimit = async (): Promise<bigint> => {
+            const info = await connection.getAccountInfo(new PublicKey(slabAddress), "confirmed").catch(() => null);
+            return closeLimitFromEngine(info ? decodeMarketEngineView(new Uint8Array(info.data)) : null, closeSize);
+          };
           try {
             sig = await withTransientRetry(
-              async () => trade({ lpIdx, userIdx: userAccount.idx, size: closeSize, sizes: closeLegs }),
+              async () => {
+                if (attempt++ > 0 && closeLimitPriceE6 !== undefined) {
+                  closeLimitPriceE6 = await rereadCloseLimit();
+                }
+                return trade({
+                  lpIdx,
+                  userIdx: userAccount.idx,
+                  size: closeSize,
+                  sizes: closeLegs,
+                  ...(closeLimitPriceE6 !== undefined && { limitPriceE6: closeLimitPriceE6 }),
+                });
+              },
               { maxRetries: 2, delayMs: 3000 },
             );
           } catch (tradeErr) {
