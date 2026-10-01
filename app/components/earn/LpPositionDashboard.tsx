@@ -35,11 +35,14 @@ interface LpPositionDashboardProps {
   earned?: LpEarned;
 }
 
-const EARNED_UNAVAILABLE_REASON: Record<Extract<LpEarned, { kind: 'unavailable' }>['reason'], string> = {
-  'no-data': 'Not indexed yet',
-  'basis-unknown': 'LP moved outside the vault — cost unknown',
-  'out-of-sync': 'Updating…',
-  'no-supply': 'Vault empty',
+/**
+ * Earned is decoration: with no indexed basis (or an empty vault) the row is simply not shown.
+ * While the basis catches up, or for shares that arrived by transfer, it reads a calm "—"
+ * with the reason on hover only.
+ */
+const EARNED_UNAVAILABLE_HINT: Partial<Record<Extract<LpEarned, { kind: 'unavailable' }>['reason'], string>> = {
+  'out-of-sync': 'Updating',
+  'basis-unknown': 'Not available for shares received by transfer',
 };
 
 export function LpPositionDashboard({
@@ -140,7 +143,7 @@ export function LpPositionDashboard({
               </div>
             </div>
 
-            {earned && (
+            {earned && (earned.kind === 'exact' || EARNED_UNAVAILABLE_HINT[earned.reason]) && (
               <div className="mb-5 flex items-baseline justify-between" data-testid="lp-earned">
                 <div className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-secondary)]">
                   Earned
@@ -153,8 +156,8 @@ export function LpPositionDashboard({
                     {formatSigned(earned.earnedAtoms, decimals)} {collateralSymbol}
                   </div>
                 ) : (
-                  <div className="text-[12px] text-[var(--text-muted)]">
-                    — <span className="ml-1">{EARNED_UNAVAILABLE_REASON[earned.reason]}</span>
+                  <div className="text-[12px] text-[var(--text-muted)]" title={EARNED_UNAVAILABLE_HINT[earned.reason]}>
+                    —
                   </div>
                 )}
               </div>

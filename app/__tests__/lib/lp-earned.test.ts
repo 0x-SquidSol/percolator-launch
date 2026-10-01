@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeExactLpEarned, parseLpCostBasis, type LpCostBasis } from "@/lib/lp-earned";
+import { computeExactLpEarned, computeLpEarnedForVault, parseLpCostBasis, type LpCostBasis } from "@/lib/lp-earned";
 
 /** percolator-indexer#207: exact Earn "earned" from the indexed cost basis. */
 const basis = (o: Partial<LpCostBasis> = {}): LpCostBasis => ({
@@ -72,5 +72,24 @@ describe("parseLpCostBasis", () => {
   });
   it("treats a missing basisKnown as unknown", () => {
     expect(parseLpCostBasis({ available: true, lpShares: "1", costBasisAtoms: "1", realizedPnlAtoms: "0" })?.basisKnown).toBe(false);
+  });
+});
+
+describe("computeLpEarnedForVault (rebased onto the two-pot NAV, #2812/#2814)", () => {
+  // Two-pot vault: NAV 3300 over 3000 registry shares (1.1/share) while the LP mint
+  // supply reads 2000. The card's Value prices 1000 shares at 1100, so Earned must be 0.
+  const twoPot = {
+    userLpBalance: 1000n, pendingRedemptionShares: 0n,
+    vaultTotalAtoms: 3300n, lpSupply: 2000n, splitPot: { totalShares: 3000n },
+  };
+
+  it("prices the claim over the registry's shares on a two-pot vault, matching Value", () => {
+    const r = computeLpEarnedForVault(basis(), twoPot);
+    expect(r).toEqual({ kind: "exact", earnedAtoms: 0n, unrealizedAtoms: 0n, realizedAtoms: 0n, costBasisAtoms: 1100n });
+  });
+
+  it("falls back to the LP mint supply on a bound vault (no split pot)", () => {
+    const r = computeLpEarnedForVault(basis(), { ...twoPot, vaultTotalAtoms: 2400n, splitPot: null });
+    expect(r.kind === "exact" && r.earnedAtoms).toBe(100n);
   });
 });

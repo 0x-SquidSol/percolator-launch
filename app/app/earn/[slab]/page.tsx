@@ -10,7 +10,7 @@ import { SlabProvider, useSlabState } from '@/components/providers/SlabProvider'
 import { useInsuranceLP } from '@/hooks/useInsuranceLP';
 import { useLpCostBasis } from '@/hooks/useLpCostBasis';
 import { useWalletCompat } from '@/hooks/useWalletCompat';
-import { computeExactLpEarned } from '@/lib/lp-earned';
+import { computeLpEarnedForVault } from '@/lib/lp-earned';
 import { ResolvedExitPanel } from '@/components/limits/ResolvedExitPanel';
 import { earnExitProps } from '@/lib/limits/resolved-finish';
 import { EarnTrancheCardView } from '@/components/limits/EarnTrancheCard';
@@ -150,19 +150,14 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
   const earnPricing = withSplitPotPricing(earnPanelPricing(earnLimits, lpVaultState.vaultTotalAtoms, lpValuation.sim ?? lpValuation.value), lpVaultState.splitPot);
   const { engine, totalOI, vault: engineVault } = useEngineState();
 
-  // percolator-indexer#207: exact earned = value − indexed cost basis (+ realized).
-  const walletCompat = useWalletCompat();
+  // percolator-indexer#207: exact earned = value − indexed cost basis (+ realized), priced on
+  // the same NAV/share pair as the card's Value (two-pot vaults use the registry's shares).
   const lpClaimShares = lpVaultState.userLpBalance + lpVaultState.pendingRedemptionShares;
-  const lpCostBasis = useLpCostBasis(slabAddress, walletCompat.publicKey?.toBase58() ?? null, lpClaimShares);
+  const lpCostBasis = useLpCostBasis(slabAddress, earnWallet.publicKey?.toBase58() ?? null, lpClaimShares);
   const lpEarned = useMemo(
-    () => computeExactLpEarned({
-      basis: lpCostBasis,
-      userLpBalance: lpVaultState.userLpBalance,
-      pendingRedemptionShares: lpVaultState.pendingRedemptionShares,
-      vaultTotalAtoms: lpVaultState.vaultTotalAtoms,
-      lpSupply: lpVaultState.lpSupply,
-    }),
-    [lpCostBasis, lpVaultState.userLpBalance, lpVaultState.pendingRedemptionShares, lpVaultState.vaultTotalAtoms, lpVaultState.lpSupply],
+    () => computeLpEarnedForVault(lpCostBasis, lpVaultState),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [lpCostBasis, lpVaultState.userLpBalance, lpVaultState.pendingRedemptionShares, lpVaultState.vaultTotalAtoms, lpVaultState.lpSupply, lpVaultState.splitPot],
   );
 
   // BUG-5 FIX: resolve actual collateral mint from on-chain slab data.

@@ -71,3 +71,27 @@ export function parseLpCostBasis(json: unknown): LpCostBasis | null {
   if (lpShares === null || costBasisAtoms === null || realizedPnlAtoms === null) return null;
   return { basisKnown: j.basisKnown === true, lpShares, costBasisAtoms, realizedPnlAtoms };
 }
+
+/**
+ * The slice of `useInsuranceLP` state the Earned figure is priced from. On a two-pot
+ * (non-bound) vault `vaultTotalAtoms` is already the program's combined NAV, and it is
+ * spread over the registry's shares (`splitPot.totalShares`), not the LP mint supply —
+ * the same pair the card's Value uses, so Earned never disagrees with Value.
+ */
+export interface LpVaultValuationState {
+  userLpBalance: bigint;
+  pendingRedemptionShares: bigint;
+  vaultTotalAtoms: bigint;
+  lpSupply: bigint;
+  splitPot: { totalShares: bigint } | null;
+}
+
+export function computeLpEarnedForVault(basis: LpCostBasis | null, state: LpVaultValuationState): LpEarned {
+  return computeExactLpEarned({
+    basis,
+    userLpBalance: state.userLpBalance,
+    pendingRedemptionShares: state.pendingRedemptionShares,
+    vaultTotalAtoms: state.vaultTotalAtoms,
+    lpSupply: state.splitPot?.totalShares ?? state.lpSupply,
+  });
+}
