@@ -11,6 +11,8 @@
  * vault token account (collateral held) are read on-chain in the same pass as the LP balance, so
  * the value is consistent with it; the API snapshot is only a fallback if the chain read fails.
  */
+import { formatTokenAmount } from "@/lib/format";
+import { parseHumanAmount } from "@/lib/parseAmount";
 
 /** Stake pools hold USDC-style 6-decimal collateral (same convention as /api/stake/pools `tvl`). */
 export const STAKE_COLLATERAL_DECIMALS = 6;
@@ -50,4 +52,34 @@ export function valueStakePosition(i: StakeValuationInput): number {
   const lpHuman = Number(i.lpRaw) / 10 ** i.lpDecimals;
   const supplyHuman = i.apiTotalLpSupply / 10 ** i.lpDecimals;
   return supplyHuman > 0 ? (lpHuman / supplyHuman) * i.apiTvlUsd : 0;
+}
+
+/**
+ * The withdraw chips' amount: pct% of the staked LP balance, floored to the LP mint's decimals.
+ * toFixed(4) on the float balance rounded to nearest, so 100% of 10.123456 read 10.1235: more than
+ * the user holds, which handleWithdraw then refused without a word.
+ */
+export function stakeWithdrawChipAmount(lpBalanceRaw: bigint, pct: number, lpDecimals: number): string {
+  return formatTokenAmount((lpBalanceRaw * BigInt(pct)) / 100n, lpDecimals);
+}
+
+/**
+ * True when the typed withdraw amount can't be withdrawn as typed: more than the staked LP balance,
+ * or more decimal places than the LP mint has. Never throws: parseHumanAmount throws on extra
+ * decimals, and this runs on every render of the Stake page, so a throw here would take the page down.
+ * Empty / non-numeric input is not "exceeding" (the button is already off for a zero amount).
+ */
+export function exceedsStakedBalance(amount: string, lpBalanceRaw: bigint, lpDecimals: number): boolean {
+  return withdrawAmountError(amount, lpBalanceRaw, lpDecimals) !== null;
+}
+
+/** The one-line reason a typed withdraw amount can't go through, or null when it can (or is empty). */
+export function withdrawAmountError(amount: string, lpBalanceRaw: bigint, lpDecimals: number): string | null {
+  let raw: bigint;
+  try {
+    raw = parseHumanAmount(amount, lpDecimals);
+  } catch {
+    return `Use up to ${lpDecimals} decimal places.`;
+  }
+  return raw > lpBalanceRaw ? "Exceeds your staked balance." : null;
 }
