@@ -52,6 +52,11 @@ export interface ClaimProgress {
 /** CU cap for one tag-90 claim tx (sized from its simulation below the cap). */
 export const CLAIM_CU_CAP = 200_000;
 
+export interface ClaimOptions {
+  /** Called once per market whose claim CONFIRMED, as it confirms (re-read balances here). */
+  onLanded?: (slab: string) => void;
+}
+
 /**
  * A guard failure already reads well; anything else goes through the shared mapper.
  *
@@ -102,7 +107,7 @@ export function useClaimCreatorFees() {
   const [outcomes, setOutcomes] = useState<ClaimOutcome[]>([]);
 
   const claim = useCallback(
-    async (slabs: readonly string[]): Promise<ClaimOutcome[]> => {
+    async (slabs: readonly string[], opts: ClaimOptions = {}): Promise<ClaimOutcome[]> => {
       if (slabs.length === 0) return [];
       if (!wallet.publicKey || !wallet.signTransaction) {
         const failed = slabs.map((slab) => ({ slab, error: "Wallet not connected" }));
@@ -117,6 +122,10 @@ export function useClaimCreatorFees() {
       // Read at send time, per the module note above; a market that cannot build is reported.
       const results = new Map<string, ClaimOutcome>();
       const units: { key: string; instructions: TransactionInstruction[]; amount: bigint }[] = [];
+      // runOneApproval builds and broadcasts the signed units in the SAME order (one-approval.ts),
+      // and signAll may hand back new transaction objects, so units are matched by position.
+      const builtKeys: string[] = [];
+      let broadcastIndex = 0;
       try {
         // Inside the try on purpose: getConfig/new PublicKey/assertKnownProgram all
         // throw (a mis-set program id, an unlisted program), and a throw here used to
@@ -143,10 +152,27 @@ export function useClaimCreatorFees() {
               const g = await simulateForGate(connection, payer, ixs);
               return { err: g.err, consumed: g.consumed };
             },
-            build: (ixs, consumed, i) =>
-              buildBatchTx({ instructions: ixs, computeUnits: sizeComputeUnitLimit(consumed, { cap: CLAIM_CU_CAP }), priorityFeeMicroLamports: fee + i, blockhash, feePayer: payer }),
+            build: (ixs, consumed, i) => {
+              const tx = buildBatchTx({ instructions: ixs, computeUnits: sizeComputeUnitLimit(consumed, { cap: CLAIM_CU_CAP }), priorityFeeMicroLamports: fee + i, blockhash, feePayer: payer });
+              builtKeys[i] = units.find((u) => u.instructions === ixs)?.key ?? "";
+              return tx;
+            },
             signAll: (txs) => signAllCompat(wallet, txs),
-            broadcast: (tx) => broadcastSignedTx(connection, tx),
+            // Per transaction, as each confirms: progress moves and the caller re-reads that
+            // market's balance, so a partial success shows up while the rest are still going.
+            broadcast: async (tx) => {
+              const key = builtKeys[broadcastIndex++] || null;
+              setProgress((p) => ({ ...p, current: key }));
+              try {
+                const sig = await broadcastSignedTx(connection, tx);
+                if (key) {
+                  try { opts.onLanded?.(key); } catch { /* a caller's refresh never fails a landed claim */ }
+                }
+                return sig;
+              } finally {
+                setProgress((p) => ({ ...p, current: null, done: p.done + 1 }));
+              }
+            },
           });
           for (const [i, o] of outcomes.entries()) {
             const u = units[i]!;
@@ -168,7 +194,6 @@ export function useClaimCreatorFees() {
               }
               results.set(u.key, { slab: u.key, error: text });
             }
-            setProgress((p) => ({ ...p, done: p.done + 1 }));
           }
         }
       } catch (err) {
