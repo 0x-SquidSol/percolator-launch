@@ -975,10 +975,10 @@ function MarketsPageInner() {
                 </>
               ) : (
                 <>
-                  <h3 className="text-2xl font-medium tracking-tight text-[var(--text)]" style={{ fontFamily: "var(--font-display)" }}>no markets yet. be the main character.</h3>
+                  <h3 data-testid="markets-empty" className="text-2xl font-medium tracking-tight text-[var(--text)]" style={{ fontFamily: "var(--font-display)" }}>No markets yet — create the first one</h3>
                   <div className="mt-4">
-                    <Link href="/create">
-                      <GlowButton>launch first market</GlowButton>
+                    <Link href="/create" data-testid="markets-empty-create">
+                      <GlowButton>Create a market</GlowButton>
                     </Link>
                   </div>
                 </>

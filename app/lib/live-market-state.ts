@@ -78,6 +78,12 @@ export interface LiveMarketState {
    */
   isComplete: boolean;
   /**
+   * base58 owner program of the slab account (set by readLiveMarketStates). A slab owned by
+   * anything but the CURRENT wrapper is a market of an abandoned program (the 2026-10 relaunch
+   * moved to all-fresh IDs): lib/market-registry.ts drops it from every listing.
+   */
+  owner?: string;
+  /**
    * Max leverage cap derived from the market's REAL on-chain initialMarginBps
    * (round(10000 / bps)). This is the same figure /api/markets' on-chain
    * discovery path computes via computeMaxLeverage — but the Supabase list path
@@ -251,7 +257,7 @@ export async function readLiveMarketStates(
       infos.forEach((info, i) => {
         if (!info?.data) return;
         const state = parseLiveState(new Uint8Array(info.data), chunk[i].key);
-        if (state) out.set(chunk[i].slab, state);
+        if (state) out.set(chunk[i].slab, info.owner ? { ...state, owner: info.owner.toBase58() } : state);
       });
     } catch {
       // This chunk stays unresolved; the rest still land.
