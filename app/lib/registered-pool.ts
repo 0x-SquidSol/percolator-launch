@@ -48,6 +48,15 @@ function validPubkey(s: unknown): s is string {
   }
 }
 
+/**
+ * No Supabase configured (local dev / a deploy without the service key) is a supported mode, as
+ * in /api/markets: there are no registered markets to honour, so lookups answer "not registered"
+ * (cacheable, top-pool fallback) instead of a permanent "lookup failed" (review of #2735).
+ */
+function supabaseConfigured(): boolean {
+  return !!process.env.NEXT_PUBLIC_SUPABASE_URL && !!process.env.SUPABASE_SERVICE_ROLE_KEY;
+}
+
 async function dexTypeFor(slab: string): Promise<string | null> {
   try {
     return (await readRegisteredMarkets()).find((m) => m.slabAddress === slab)?.dexType ?? null;
@@ -66,6 +75,7 @@ export async function registeredPoolForSlab(slab: string, mint?: string): Promis
   const key = `${slab}|${mint ?? ""}`;
   const hit = bySlab.get(key);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.v;
+  if (!supabaseConfigured()) return null;
   let data: unknown;
   try {
     const res = await getServiceClient()
@@ -93,6 +103,7 @@ export async function registeredPoolForMint(mint: string): Promise<RegisteredPoo
   if (!validPubkey(mint)) return null;
   const hit = byMint.get(mint);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.v;
+  if (!supabaseConfigured()) return null;
   let data: unknown;
   try {
     const res = await getServiceClient()

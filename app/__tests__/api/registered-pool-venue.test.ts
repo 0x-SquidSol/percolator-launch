@@ -62,6 +62,8 @@ import { GET as resolveGET } from "@/app/api/oracle/resolve/[ca]/route";
 import { __clearRegisteredPoolCache, registeredPoolForSlab, registeredPoolForMint } from "@/lib/registered-pool";
 
 beforeEach(() => {
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://db.test";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "test-key";
   __clearRegisteredPoolCache();
   h.row = { slab_address: SLAB, dex_pool_address: REGISTERED, mainnet_ca: MINT };
   h.failNext = 0;
@@ -109,5 +111,14 @@ describe("registered market => registered pool", () => {
     expect(res.status).toBe(503);
     expect(res.headers.get("cache-control")).toBe("no-store");
     expect(((await res.json()) as { poolAddress: string | null }).poolAddress).toBeNull();
+  });
+
+  it("REVIEW #2735: no Supabase configured = 'not registered' (top-pool chart, cacheable), not a failure", async () => {
+    delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    h.failNext = 5;
+    expect(await registeredPoolForSlab(SLAB, MINT)).toBeNull();
+    expect(await registeredPoolForMint(MINT)).toBeNull();
+    expect(h.calls).toBe(0);
+    expect((await chart(`&slab=${SLAB}`)).poolAddress).toBe(BEST);
   });
 });
