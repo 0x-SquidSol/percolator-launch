@@ -180,8 +180,7 @@ export function useTokenChart(
         setError(null);
       } else {
         // Don't flip to loading on a repoll that already has candles — keep
-        // showing them to avoid flicker every 60s (mirrors usePythChart's
-        // identical fix). Only the very first fetch for a key sees "loading".
+        // showing them to avoid flicker every 60s. Only the very first fetch for a key sees "loading".
         setStatus((prev) => (prev === "success" ? "success" : "loading"));
         setError(null);
       }

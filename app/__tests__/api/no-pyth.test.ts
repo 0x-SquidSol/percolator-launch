@@ -6,10 +6,17 @@
  *     fallback; the old Jupiter v2 URL answered 404, so that fallback was silently dead;
  *   - price-ws: SOL/USD from Jupiter while fresh, else a DEX read of the SOL/USDC pool;
  *   - no code path calls Hermes / pyth.network for these.
+ *
+ * Complete removal (same PR): no Pyth network use anywhere in the app —
+ *   - /api/chart/pyth (benchmarks.pyth.network) and usePythChart are deleted; the chart's
+ *     sources are Percolator trades -> DEX pool (GeckoTerminal) -> on-chain mark history;
+ *   - /api/prices/[slab] derives 24h stats from GeckoTerminal only (no Benchmarks fallback);
+ *   - /api/oracle/publishers has no `pyth-pinned` / Pythnet RPC mode;
+ *   - the CSP connect-src no longer allows hermes.pyth.network.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { join, relative } from "node:path";
 import { NextRequest } from "next/server";
 
 const cache = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn() }));
@@ -20,9 +27,11 @@ vi.mock("@/lib/bounded-ttl-cache", () => ({
   },
 }));
 const owner = vi.hoisted(() => ({ classify: vi.fn() }));
+vi.mock("@sentry/nextjs", () => ({ captureException: vi.fn(), captureMessage: vi.fn() }));
 vi.mock("@/lib/dex-pool-owner", async (orig) => ({ ...(await orig<typeof import("@/lib/dex-pool-owner")>()), classifyPoolsByOwner: owner.classify }));
 
 import { GET } from "@/app/api/oracle/resolve/[ca]/route";
+import { GET as pricesGET } from "@/app/api/prices/[slab]/route";
 import { fetchJupiterSolUsdE6, fetchJupiterUsdPrice, parseJupiterUsdPrice, JUPITER_PRICE_URL } from "@/lib/jupiter-price";
 import { pickSolUsdE6 } from "@/lib/priceStore/solUsd";
 
@@ -112,5 +121,90 @@ describe("no Hermes / pyth.network in the playground's price paths", () => {
     }
     expect(existsSync(join(__dirname, "..", "..", "hooks", "usePythFeedSearch.ts"))).toBe(false);
     expect(read("components/create/CreateMarketWizard.tsx")).not.toMatch(/case "pyth":/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Complete removal: no Pyth network endpoint anywhere in the shipped app.
+// ---------------------------------------------------------------------------
+
+const APP_ROOT = join(__dirname, "..", "..");
+const SCAN_DIRS = ["app", "components", "hooks", "lib", "scripts", "public"];
+const SCAN_FILES = ["middleware.ts", "next.config.ts", "package.json", "vercel.json"];
+const SCAN_EXT = /\.(ts|tsx|js|mjs|cjs|json)$/;
+
+function walk(dir: string, out: string[]): string[] {
+  for (const name of readdirSync(dir)) {
+    if (name === "node_modules" || name === ".next" || name === "__tests__") continue;
+    const full = join(dir, name);
+    if (statSync(full).isDirectory()) walk(full, out);
+    else if (SCAN_EXT.test(name)) out.push(full);
+  }
+  return out;
+}
+
+function shippedFiles(): string[] {
+  const out: string[] = [];
+  for (const d of SCAN_DIRS) if (existsSync(join(APP_ROOT, d))) walk(join(APP_ROOT, d), out);
+  for (const f of SCAN_FILES) if (existsSync(join(APP_ROOT, f))) out.push(join(APP_ROOT, f));
+  return out;
+}
+
+/** Any Pyth network host, SDK package, or the deleted chart route. Matched against the RAW
+ *  file (not comment-stripped: stripping `//...` would also eat `https://...` inside strings). */
+const PYTH_ENDPOINT = /pyth\.network|hermes\.pyth|benchmarks\.pyth|pythnet\.rpcpool|@pythnetwork\/|\/api\/chart\/pyth/i;
+
+describe("no Pyth network endpoint anywhere in the app", () => {
+  it("grep: no pyth.network / Hermes / Benchmarks / Pythnet RPC / @pythnetwork / /api/chart/pyth", () => {
+    const files = shippedFiles();
+    expect(files.length).toBeGreaterThan(100); // the scan actually ran over the tree
+    const hits = files
+      .map((f) => ({ f: relative(APP_ROOT, f), m: readFileSync(f, "utf8").match(PYTH_ENDPOINT) }))
+      .filter((h) => h.m !== null)
+      .map((h) => `${h.f}: ${h.m?.[0]}`);
+    expect(hits).toEqual([]);
+  });
+
+  it("the Pyth chart route and its hook are gone", () => {
+    expect(existsSync(join(APP_ROOT, "app", "api", "chart", "pyth"))).toBe(false);
+    expect(existsSync(join(APP_ROOT, "hooks", "usePythChart.ts"))).toBe(false);
+  });
+
+  it("CSP connect-src does not allow any Pyth host", () => {
+    const mw = readFileSync(join(APP_ROOT, "middleware.ts"), "utf8");
+    const connect = mw.match(/`connect-src [^`]*`/)?.[0] ?? "";
+    expect(connect).toContain("api.geckoterminal.com"); // the line we inspect is the real one
+    expect(connect).not.toMatch(/pyth/i);
+  });
+
+  it("the chart has no Pyth source tier", () => {
+    for (const f of ["lib/chart-live-tick.ts", "lib/chart-source-select.ts", "components/trade/TradingChart.tsx"]) {
+      const code = readFileSync(join(APP_ROOT, f), "utf8");
+      expect(code, f).not.toMatch(/['"]pyth['"]|usePythChart|pythStatus|hasPythData/);
+    }
+  });
+});
+
+describe("/api/prices/[slab]: 24h stats from GeckoTerminal, never Pyth Benchmarks", () => {
+  const SLAB = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
+  const POOL = "BGm1tav58oGcsQJehL9WXBFXF7D27vZsKefj4xJKD5Y";
+
+  it("looks up the market's DEX pool and reads its GeckoTerminal OHLCV; no Pyth call", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      calls.push(url);
+      if (url.includes(`/api/markets/${SLAB}`)) return new Response(JSON.stringify({ market: { dex_pool_address: POOL } }), { status: 200 });
+      if (url.includes("api.geckoterminal.com")) {
+        // newest first: [ts, o, h, l, c, v]
+        const ohlcv_list = [[2, 110, 120, 105, 115, 1], [1, 100, 112, 95, 110, 1]];
+        return new Response(JSON.stringify({ data: { attributes: { ohlcv_list } } }), { status: 200 });
+      }
+      return new Response("unexpected", { status: 599 });
+    }));
+    const res = await pricesGET(new NextRequest(`http://localhost/api/prices/${SLAB}`), { params: Promise.resolve({ slab: SLAB }) });
+    expect(res.status).toBe(200);
+    const { stats } = (await res.json()) as { stats: { change24h: number; high24h: string; low24h: string } | null };
+    expect(stats).toEqual({ change24h: 15, high24h: "120000000", low24h: "95000000" });
+    expect(calls.some((u) => u.includes(`/pools/${POOL}/ohlcv/hour`))).toBe(true);
+    expect(calls.some((u) => /pyth/i.test(u))).toBe(false);
   });
 });

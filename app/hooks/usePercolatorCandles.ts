@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import type { Timeframe } from "./usePythChart";
 import { boundedSet } from "@/lib/bounded-map";
-import { CHART_WINDOWS } from "@/lib/chart-window";
+import { CHART_WINDOWS, type ChartTimeframe } from "@/lib/chart-window";
+
+type Timeframe = ChartTimeframe;
 
 export type PercolatorCandleStatus = "idle" | "loading" | "success" | "empty" | "error";
 
@@ -23,9 +24,8 @@ export interface UsePercolatorCandlesResult {
   refresh: () => void;
 }
 
-// Windows live in lib/chart-window.ts, shared with usePythChart. The
-// resolution string stays here: this route speaks UDF ("1D"), Pyth Benchmarks
-// wants "D", and the two tables previously differed on exactly that.
+// Windows live in lib/chart-window.ts. The resolution string stays here: this
+// route speaks UDF ("1D").
 const UDF_RESOLUTION: Record<Timeframe, string> = {
   "1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240",
   "1d": "1D", "7d": "1D", "30d": "1D",
@@ -99,7 +99,7 @@ let endpointUnavailable = false;
  * via the existing WS trades:<slab> channel.
  *
  * Preferred data source for markets with active Percolator volume. The
- * TradingChart component cascades to Pyth when this returns < 10 bars.
+ * TradingChart component cascades to the DEX source when this returns < 10 bars.
  */
 export function usePercolatorCandles(
   slabAddress: string | null | undefined,
@@ -145,7 +145,7 @@ export function usePercolatorCandles(
 
     if (endpointUnavailable) {
       // Known-unconfigured for this deployment/session — skip straight to
-      // the empty state so TradingChart's Pyth/DEX fallback cascade engages
+      // the empty state so TradingChart's DEX fallback cascade engages
       // without wasting a network round trip on a route that will 404 again.
       if (!cached) {
         setCandles([]);
