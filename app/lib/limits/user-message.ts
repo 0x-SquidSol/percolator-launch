@@ -199,8 +199,50 @@ export function resolveUserMessage(err: unknown, ctx: MessageContext): UserMessa
       action: { id: "try-again", label: "Try again" },
     });
   }
-  if (/slippage|price moved past|exceeds? (your )?limit price/i.test(p.raw) && p.code === null) {
+  if (/slippage|price moved past|exceeds? (your )?limit price/i.test(p.raw) && !/live mark price unavailable/i.test(p.raw) && p.code === null) {
     return m("price-moved", "error", "Price moved", "The price moved while you were confirming. Review and confirm again.");
+  }
+
+  // ── The app's own pre-sign refusals (thrown before the wallet opens) ─────────
+  // These used to fall through to "Something went wrong", hiding a cause the app knew.
+  if (p.code === null) {
+    if (/no lp portfolio with an active matcher config/i.test(p.raw)) {
+      return m("market-not-ready", "paused", "Market not ready", "This market isn't taking trades yet. Nothing was sent.", {
+        action: { id: "refresh", label: "Refresh" },
+      });
+    }
+    if (/failed to scan lp portfolio/i.test(p.raw)) {
+      return m("rpc-unreachable", "error", "Couldn't reach Solana", "Couldn't read the market from Solana. Nothing was sent.", {
+        action: { id: "try-again", label: "Try again" },
+      });
+    }
+    if (/account not found: [1-9a-hj-np-z]{32,44}/i.test(p.raw)) {
+      return m("out-of-date", "error", "Page out of date", "Part of this market couldn't be read. Refresh to continue. Nothing was sent.", {
+        action: { id: "refresh", label: "Refresh" },
+      });
+    }
+    if (/^trade already in progress$/i.test(p.raw.trim())) {
+      return m("in-progress", "info", "Already sending", "Your last order is still being sent. Nothing new was sent.");
+    }
+    if (/not the recognized percolator matcher|not owned by a recognized percolator program/i.test(p.raw)) {
+      return m("unsupported-market", "error", "Not supported here", "This market isn't supported by this app. Nothing was sent.");
+    }
+    if (/does not support signalltransactions or signtransaction/i.test(p.raw)) {
+      return m("wallet-unsupported", "error", "Wallet can't sign", "This wallet can't sign this order. Try another wallet. Nothing was sent.");
+    }
+    if (/market not loaded|wallet not connected or market not loaded/i.test(p.raw)) {
+      return m("market-loading", "info", "Still loading", "The market is still loading. Try again in a moment. Nothing was sent.", {
+        action: { id: "try-again", label: "Try again" },
+      });
+    }
+    if (/deposit amount exceeds your wallet balance/i.test(p.raw)) {
+      return m("amount-too-large", "error", "More than your balance", "That's more than your wallet holds. Lower the size or leverage, or get test funds.", {
+        action: { id: "get-funds", label: "Get test funds" },
+      });
+    }
+    if (/live mark price unavailable/i.test(p.raw)) {
+      return m("price-wait", "wait", "Waiting for price", "Waiting for a live price. Try again in a few seconds. Nothing was sent.");
+    }
   }
 
   // ── Matcher (P2) ───────────────────────────────────────────────────────────

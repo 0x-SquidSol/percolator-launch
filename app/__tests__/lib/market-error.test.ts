@@ -149,8 +149,8 @@ describe("P1 / newly-mapped deployed codes", () => {
     expect(explainMarketTxError(presim(4, 69), "open", health())).toBeNull();
     expect(explainMarketTxError(presim(4, 68), "close", health({ lpDepleted: true }))).toBeNull();
   });
-  it("NEGATIVE CONTROL: an unknown code still falls through to the generic text", () => {
-    // UX WP-10 (§5.3 unmapped): the generic line, never "Program error: …".
-    expect(humanizeError(presim(4, 250))).toBe("Something went wrong and nothing was sent.");
+  it("NEGATIVE CONTROL: an unknown code falls through to the named-code line", () => {
+    // UX WP-10 (§5.3 unmapped): never "Program error: …" or raw logs; the code is named.
+    expect(humanizeError(presim(4, 250))).toBe("Solana didn't accept this (error 250), so nothing changed.");
   });
 });

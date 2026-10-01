@@ -84,7 +84,20 @@ const NONE: TicketLimits = {
 
 export function deriveTicketLimits(i: TicketLimitsInput): TicketLimits {
   const L = i.limits;
-  if (L.state === "off" || !L.engine) return NONE;
+  if (L.state === "off" || !L.engine) {
+    // The wrapper refuses an opening trade from the market's creator / LP owner (SameOwnerTrade,
+    // Custom 67) on EVERY build, limits flags or not. Without this the creator got a normal
+    // ticket, signed, and the trade leg was refused on-chain ("Something went wrong").
+    if (!sameOwnerBlocked(i.takerOwner, L.lp?.owner ?? null, L.assetAdmin)) return NONE;
+    const sameOwner = sameOwnerRoomQ(i.takerPosQ, i.direction) === 0n;
+    return {
+      ...NONE,
+      halted: { long: false, short: false },
+      sameOwnerCloseOnly: true,
+      sameOwner,
+      issues: sameOwner ? [{ kind: "same-owner", severity: "error", title: "Can't open from this wallet", message: COPY.sameOwner }] : [],
+    };
+  }
   const out: TicketLimits = { ...NONE, halted: { long: false, short: false }, issues: [] };
   const e = L.engine;
 
