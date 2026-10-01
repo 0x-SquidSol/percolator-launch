@@ -379,6 +379,7 @@ export function DepositWithdrawPanel({
           disabled={!vaultAvailable || loading || claimSubmitting}
           onCollect={handleClaimRedemption}
           onRefresh={onRefresh}
+          ticketKey={pendingRedemptionShares.toString()}
           error={claimError}
           resize={
             resizeOffer

@@ -20,6 +20,26 @@ import {
   V17_PORTFOLIO_ACCOUNT_LEN,
   V17_PORTFOLIO_IDENTITY_TRAILER_LEN,
 } from "@percolatorct/sdk";
+// LP SELECTION is lib/market-lp.ts's job (identity rules, tested in market-lp.test.ts).
+// These tests pin matcherCaps' own caching/readiness on top of it, so the resolver is
+// stubbed: the first enabled portfolio the fake scan returns stands in for "the LP".
+vi.mock("@/lib/market-lp", async () => {
+  const sdk = await import("@percolatorct/sdk");
+  const { PublicKey: Pk } = await import("@solana/web3.js");
+  return {
+    resolveMarketLp: async (c: { getProgramAccounts: () => Promise<{ account: { data: Uint8Array } }[]> }) => {
+      const rows = await c.getProgramAccounts();
+      for (const r of rows) {
+        const d = r.account.data;
+        const off = d.length - 104 - sdk.V17_PORTFOLIO_IDENTITY_TRAILER_LEN;
+        if (off < 0) continue;
+        return { matcherCtx: new Pk(d.subarray(off + 32, off + 64)) };
+      }
+      return null;
+    },
+  };
+});
+
 import {
   getMatcherCaps,
   getMatcherInventory,

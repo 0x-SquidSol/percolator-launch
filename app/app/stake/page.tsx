@@ -1,6 +1,7 @@
 "use client";
 
 import { STAKE_COPY, cooldownDuration } from "@/lib/stake-copy";
+import { useStakeCooldown } from "@/hooks/useStakeCooldown";
 import { useEffect, useState, useCallback, useSyncExternalStore, type CSSProperties } from "react";
 import { DEVNET_PROGRAM_IDS } from "@/lib/program-ids";
 import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
@@ -13,6 +14,7 @@ import {
 import { STAKE_POOL_SIZE_V1, decodeStakePoolV1 } from "@/hooks/useStakePool";
 import { getConfig } from "@/lib/config";
 import { unpackAccount, getMint } from "@solana/spl-token";
+import { readPoolTotalLpSupply, valueStakePosition } from "@/lib/stake-position";
 import { useStakeDepositByPool } from "@/hooks/useStakeDepositByPool";
 import { useStakeWithdrawByPool } from "@/hooks/useStakeWithdrawByPool";
 import { parseHumanAmount, formatHumanAmount } from "@/lib/parseAmount";
@@ -193,7 +195,8 @@ async function fetchPoolPosition(
     // 392-byte layouts (see STAKE_POOL_SIZE_V1 comment in useStakePool.ts).
     const poolInfo = await connection.getAccountInfo(poolPda);
     if (!poolInfo || poolInfo.data.length < STAKE_POOL_SIZE_V1) return null;
-    const { lpMint } = decodeStakePoolV1(poolInfo.data);
+    const poolV1 = decodeStakePoolV1(poolInfo.data);
+    const { lpMint } = poolV1;
 
     // Get user LP ATA balance
     const userLpAta = getAssociatedTokenAddressSync(lpMint, publicKey);
@@ -214,13 +217,24 @@ async function fetchPoolPosition(
     }
     const lpBalance = Number(lpAccount.amount) / Math.pow(10, lpDecimals);
 
-    // Calculate estimated value: (user_lp / total_lp_supply) * vault_balance
-    // pool.totalLpSupply is raw (on-chain units); divide by 10^lpDecimals
-    // to match lpBalance which is already human-readable.
-    const lpSupplyHuman = pool.totalLpSupply / Math.pow(10, lpDecimals);
-    const estimatedValue = lpSupplyHuman > 0
-      ? (lpBalance / lpSupplyHuman) * pool.tvl
-      : 0;
+    // Estimated value = (user_lp / total_lp_supply) * vault_balance, from FRESH on-chain pool +
+    // vault reads (lib/stake-position.ts). The cached /api/stake/pools snapshot (pool.tvl /
+    // pool.totalLpSupply) predates a first deposit into a fresh pool and valued the stake at $0.
+    let chainVaultAtoms: bigint | null = null;
+    try {
+      const vaultInfo = await connection.getAccountInfo(poolV1.vault);
+      if (vaultInfo) chainVaultAtoms = unpackAccount(poolV1.vault, vaultInfo, vaultInfo.owner).amount;
+    } catch {
+      // fall back to the API snapshot below
+    }
+    const estimatedValue = valueStakePosition({
+      lpRaw: lpAccount.amount,
+      chainTotalLpSupplyRaw: readPoolTotalLpSupply(poolInfo.data),
+      chainVaultAtoms,
+      apiTotalLpSupply: pool.totalLpSupply,
+      apiTvlUsd: pool.tvl,
+      lpDecimals,
+    });
 
     // Fetch deposit PDA for cooldown info
     let cooldownRemaining = 0;
@@ -391,6 +405,8 @@ function PositionCard({
   });
 
   const [txStatus, setTxStatus] = useState<{ type: "success" | "error"; msg: string } | null>(null);
+  // Live countdown; at 0 re-read the position so "Withdraw All" enables without a refresh.
+  const cooldown = useStakeCooldown(position, onWithdrawSuccess);
 
   const handleWithdraw = useCallback(async () => {
     if (!position.cooldownElapsed) return;
@@ -438,7 +454,7 @@ function PositionCard({
             <span className="text-[10px] text-[var(--text-muted)] tabular-nums" style={{ fontFamily: "var(--font-mono)" }}>
               {position.cooldownElapsed
                 ? STAKE_COPY.ready
-                : STAKE_COPY.availableIn(position.cooldownRemaining)
+                : cooldown.label
               }
             </span>
           </div>
@@ -471,7 +487,7 @@ function PositionCard({
               ? "Withdrawing…"
               : position.cooldownElapsed
               ? "Withdraw All →"
-              : STAKE_COPY.availableIn(position.cooldownRemaining)}
+              : cooldown.label}
           </button>
 
           {/* Manage / Withdraw Partial — jumps to DepositWidget's Withdraw
@@ -574,6 +590,8 @@ function DepositWidget({
   const [withdrawPosition, setWithdrawPosition] = useState<UserPosition | null>(null);
   const [withdrawPositionLoading, setWithdrawPositionLoading] = useState(false);
   const [withdrawRefreshKey, setWithdrawRefreshKey] = useState(0);
+  // Live countdown for the Withdraw tab; at 0 re-read the position (the chain decides).
+  const withdrawCooldown = useStakeCooldown(withdrawPosition, () => setWithdrawRefreshKey((k) => k + 1));
   const [withdrawTxStatus, setWithdrawTxStatus] = useState<{ type: "success" | "error"; msg: string } | null>(null);
 
   const pool = pools.find((p) => p.id === selectedPool) ?? pools[0];
@@ -995,7 +1013,7 @@ function DepositWidget({
               <p className={`text-[10px] ${withdrawPosition.cooldownElapsed ? "text-[var(--text-muted)]" : "text-[var(--short)]"}`}>
                 {withdrawPosition.cooldownElapsed
                   ? "Cooldown complete — ready to withdraw."
-                  : `${STAKE_COPY.availableIn(withdrawPosition.cooldownRemaining)}.`}
+                  : `${withdrawCooldown.label}.`}
               </p>
             )}
 
@@ -1030,7 +1048,7 @@ function DepositWidget({
                   : !withdrawPosition
                   ? "Nothing to Withdraw"
                   : !withdrawPosition.cooldownElapsed
-                  ? STAKE_COPY.availableIn(withdrawPosition.cooldownRemaining)
+                  ? withdrawCooldown.label
                   : "Withdraw →"}
               </button>
             )}
