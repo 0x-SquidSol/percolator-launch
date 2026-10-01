@@ -164,7 +164,7 @@ describe("inline close — unknown entry (#2660/#2672 rules, 0n from OrderTicket
     expect(screen.getByText("unknown entry")).toBeTruthy();
     expect(screen.queryByText(/\$110\.0+ entry|\$0\.0+ entry/)).toBeNull();
     expect(screen.getByTestId("close-pnl-unknown").textContent?.trim()).toBe("--");
-    expect(rowValue(container, "Est. Back to Wallet:")).toMatch(/excl\. PnL/);
+    expect(rowValue(container, "Est. Account Balance After:")).toMatch(/excl\. PnL/);
   });
 
   it("…but closing stays ALLOWED: an unknown entry must never trap a position", async () => {
@@ -184,25 +184,48 @@ describe("inline close — where the funds go", () => {
   it("a 50% close previews the whole capital minus the fee, not half the capital", () => {
     const { container } = render(<OrderTicketClosePanel {...base({ entryPriceE6: 0n })} />);
     fireEvent.click(screen.getByRole("button", { name: "50%" }));
-    expect(rowValue(container, "Est. Balance After:")).toMatch(/^~49\.835 USDC/);
+    expect(rowValue(container, "Est. Account Balance After:")).toMatch(/^~49\.835 USDC/);
     expect(screen.queryByText("Est. Receive:")).toBeNull();
   });
 
-  it("a full close says the funds go back to the wallet, with one more approval", () => {
+  const FULL_COPY = "Your freed balance moves back to your wallet after one more approval.";
+  const PARTIAL_COPY = "Closing keeps the funds in your trading account. Withdraw to move them to your wallet.";
+
+  it("labels the row Est. Account Balance After at 50% and 100% (never a payout label)", () => {
     const { container } = render(<OrderTicketClosePanel {...base()} />);
-    expect(screen.getByTestId("close-funds-stay").textContent).toBe(
-      "A full close moves the funds back to your wallet. It asks for one more approval.",
-    );
-    expect(within(container).queryByText("Est. Balance After:")).toBeNull();
-    expect(within(container).getByText("Est. Back to Wallet:")).toBeTruthy();
+    // 100%: capital 50 + PnL ~10 (1 SOL, 100 → 110, collateral-unit rounding) − fee 0.33.
+    expect(rowValue(container, "Est. Account Balance After:")).toMatch(/^~59\.66999 USDC/);
+    fireEvent.click(screen.getByRole("button", { name: "50%" }));
+    expect(within(container).getByText("Est. Account Balance After:")).toBeTruthy();
+    for (const old of ["Est. Receive:", "Est. Balance After:", "Est. Back to Wallet:"]) {
+      expect(within(container).queryByText(old)).toBeNull();
+    }
   });
 
-  it("a partial close says the funds stay in the trading account", () => {
+  it("the funds-stay line depends on the percent: 50% stays, 100% goes back to the wallet", () => {
     render(<OrderTicketClosePanel {...base()} />);
+    expect(screen.getByTestId("close-funds-stay").textContent).toBe(FULL_COPY);
     fireEvent.click(screen.getByRole("button", { name: "50%" }));
-    expect(screen.getByTestId("close-funds-stay").textContent).toBe(
-      "A partial close keeps the funds in your trading account. Withdraw to move them to your wallet.",
+    expect(screen.getByTestId("close-funds-stay").textContent).toBe(PARTIAL_COPY);
+    fireEvent.click(screen.getByRole("button", { name: "100%" }));
+    expect(screen.getByTestId("close-funds-stay").textContent).toBe(FULL_COPY);
+  });
+
+  it("a full close in profit adds one calm line: profit is withdrawable once settled", () => {
+    render(<OrderTicketClosePanel {...base()} />); // long 1 SOL, 100 → 110: +10 USDC
+    expect(screen.getByTestId("close-profit-settles").textContent?.trim()).toBe(
+      "Profit becomes withdrawable once it settles.",
     );
+    fireEvent.click(screen.getByRole("button", { name: "50%" }));
+    expect(screen.queryByTestId("close-profit-settles")).toBeNull(); // partials never sweep
+  });
+
+  it("no profit line on a full close at a loss or with an unknown entry", () => {
+    render(<OrderTicketClosePanel {...base({ entryPriceE6: 120_000_000n })} />);
+    expect(screen.queryByTestId("close-profit-settles")).toBeNull();
+    cleanup();
+    render(<OrderTicketClosePanel {...base({ entryPriceE6: 0n })} />);
+    expect(screen.queryByTestId("close-profit-settles")).toBeNull();
   });
 });
 
@@ -239,7 +262,7 @@ describe("inline close — PnL / fee / balance after match ClosePositionModal ex
   // 1 SOL long, entry $100, mark $110, capital 50 USDC, fee 30 bps, 50%:
   //   close notional 0.5 × 110 = 55 USDC → fee 0.165 USDC
   //   balance after = 50 (the whole capital stays) + PnL − 0.165
-  const rows = ["Close Size:", "Remaining:", "Est. PnL:", "Trading Fee:", "Est. Balance After:"];
+  const rows = ["Close Size:", "Remaining:", "Est. PnL:", "Trading Fee:", "Est. Account Balance After:"];
 
   it("inline numbers are the modal's numbers", () => {
     const p = base();

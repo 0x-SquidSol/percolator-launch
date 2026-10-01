@@ -6,7 +6,7 @@ import { computeMarkPnl, computeMarkPnlCollateral, clampClosePercent, UNKNOWN_EN
 
 /**
  * The body of the close-position UI: position banner, close-amount slider + %
- * presets, the Est. PnL / Trading Fee / Est. Balance After preview, and the close
+ * presets, the Est. PnL / Trading Fee / Est. Account Balance After preview, and the close
  * button. Shared by:
  *  - ClosePositionModal (`variant="modal"`) — wraps this in a dialog with a
  *    title, an X, and a Cancel button.
@@ -23,7 +23,7 @@ export interface ClosePositionFormProps {
    * Resolved entry (E6), or 0n when it is UNKNOWN (#2660): v17/v18 store no
    * entry on-chain, and callers pass 0n rather than the mark placeholder.
    * Then the PnL is not "0" — the form shows "unknown entry", PnL "--" and an
-   * Est. Balance After marked "excl. PnL".
+   * Est. Account Balance After marked "excl. PnL".
    */
   entryPrice: bigint;
   currentPrice: bigint;
@@ -259,7 +259,7 @@ export const ClosePositionForm: FC<ClosePositionFormProps> = ({
           </div>
         )}
         <div className="flex justify-between">
-          <span className="text-[var(--text-dim)]">{percent >= 100 ? "Est. Back to Wallet:" : "Est. Balance After:"}</span>
+          <span className="text-[var(--text-dim)]">Est. Account Balance After:</span>
           <span className="font-mono font-medium text-[var(--text)]" title={entryKnown ? undefined : "Excludes PnL — the entry price is unknown, so the PnL settled on close can't be previewed."}>
             ~{formatTokenAmount(preview.balanceAfter, decimals)} {colSym}
             {!entryKnown && <span className="ml-1 text-[10px] text-[var(--text-muted)]">excl. PnL</span>}
@@ -267,13 +267,19 @@ export const ClosePositionForm: FC<ClosePositionFormProps> = ({
         </div>
       </div>
 
-      {/* A full close moves the freed funds back to the wallet in a second approval (useClosePosition,
-          #2831); a partial close leaves them in the account behind the rest of the position. */}
+      {/* A full close moves the freed balance back to the wallet in a second approval (useClosePosition,
+          #2831, SWEEP_COPY); a partial close never sweeps, so the funds stay behind the rest of the
+          position. Profit is not part of that sweep: it converts on withdraw once settled (tag 28, #2774). */}
       <p className="mb-4 -mt-2 text-[9px] text-[var(--text-dim)] leading-relaxed" data-testid="close-funds-stay">
         {percent >= 100
-          ? "A full close moves the funds back to your wallet. It asks for one more approval."
-          : "A partial close keeps the funds in your trading account. Withdraw to move them to your wallet."}
+          ? "Your freed balance moves back to your wallet after one more approval."
+          : "Closing keeps the funds in your trading account. Withdraw to move them to your wallet."}
       </p>
+      {percent >= 100 && entryKnown && preview.pnl > 0n && (
+        <p className="mb-4 -mt-3 text-[9px] text-[var(--text-dim)] leading-relaxed" data-testid="close-profit-settles">
+          Profit becomes withdrawable once it settles.
+        </p>
+      )}
 
       {oracleStale && (
         <div className="mb-4 rounded-none border border-[var(--warning)]/30 bg-[var(--warning)]/[0.07] p-2.5">
