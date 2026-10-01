@@ -92,6 +92,6 @@ describe("every trade / close / batch sender uses it", () => {
   it("useTrade (opens AND closes: useClosePosition calls trade()), the tag-44 close", () => {
     expect(src("hooks/useTrade.ts")).toContain("computeUnitsFromSim: { cap: tradeCuCap(legs.length) },");
     expect(src("lib/limits/rebalance-close.ts")).toContain("computeUnitsFromSim: { cap: tradeCuCap(1) },");
-    expect(src("hooks/useClosePosition.ts")).toContain("async () => trade({");
+    expect(src("hooks/useClosePosition.ts")).toMatch(/return trade\(\{|async \(\) => trade\(\{/);
   });
 });
