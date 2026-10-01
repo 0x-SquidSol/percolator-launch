@@ -42,6 +42,12 @@ describe("sendWithTopup packet gate", () => {
     const r = await sendWithTopup({ topup: [big(20), big(20)], base, send, isPreSignRefusal: () => false, packet: { feePayer: payer, droppable: 0 } });
     expect(r).toEqual({ ixs: base, bundled: false });
   });
+  it("an empty topup never runs the size estimator; an estimator error sends the user's tx alone", async () => {
+    const send = vi.fn(async (ixs: TransactionInstruction[], bundled: boolean) => ({ ixs, bundled }));
+    const broken = { feePayer: {} as PublicKey, droppable: 1 }; // makes serialization throw
+    expect(await sendWithTopup({ topup: [], base, send, isPreSignRefusal: () => false, packet: broken })).toEqual({ ixs: base, bundled: false });
+    expect(await sendWithTopup({ topup: [close()], base, send, isPreSignRefusal: () => false, packet: broken })).toEqual({ ixs: base, bundled: false });
+  });
   it("small bundles are untouched", async () => {
     const send = vi.fn(async (ixs: TransactionInstruction[], bundled: boolean) => ({ ixs, bundled }));
     const r = await sendWithTopup({ topup: [close()], base: [big(4)], send, isPreSignRefusal: () => false, packet: { feePayer: payer, droppable: 1 } });

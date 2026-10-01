@@ -49,12 +49,6 @@ export function viewerReceiptStatus(plan: ResolvedExitPlan | null, portfolios: r
   return viewerTopupSteps(plan, portfolios, viewer).length > 0 ? "partial-ready" : "partial-waiting";
 }
 
-/**
- * Send `base` with a prefix (the viewer's top-up, empty-portfolio closes) in front when there is
- * one. A prefix that makes the tx fail its pre-sign simulation (`isPreSignRefusal`: the wallet
- * never opened) is dropped and the user's own tx is sent alone, so bundling can never cost the
- * user their tx; if that refuses too, the bundled refusal is the one reported.
- */
 /** Solana's packet limit for a serialized transaction. */
 export const PACKET_DATA_SIZE = 1232;
 
@@ -65,7 +59,7 @@ export const PACKET_DATA_SIZE = 1232;
 export function finalTxWireSize(ixs: readonly TransactionInstruction[], feePayer: PublicKey): number {
   const tx = new Transaction();
   tx.add(
-    ComputeBudgetProgram.requestHeapFrame({ bytes: 256 * 1024 }),
+    ComputeBudgetProgram.requestHeapFrame({ bytes: 131072 }),
     ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
     ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000_000 }),
     ...ixs,
@@ -97,6 +91,12 @@ export function fitTopupToPacket(
   return null;
 }
 
+/**
+ * Send `base` with a prefix (the viewer's top-up, empty-portfolio closes) in front when there is
+ * one. A prefix that makes the tx fail its pre-sign simulation (`isPreSignRefusal`: the wallet
+ * never opened) is dropped and the user's own tx is sent alone, so bundling can never cost the
+ * user their tx; if that refuses too, the bundled refusal is the one reported.
+ */
 export async function sendWithTopup<T>(p: {
   topup: readonly TransactionInstruction[];
   base: TransactionInstruction[];
@@ -105,7 +105,15 @@ export async function sendWithTopup<T>(p: {
   /** Packet gate (review of #2721): fee payer, leading droppable topup ixs, bytes reserved for repairs. */
   packet?: { feePayer: PublicKey; droppable: number; reserveBytes?: number };
 }): Promise<T> {
-  const topup = p.packet ? fitTopupToPacket(p.topup, p.base, p.packet.droppable, p.packet.feePayer, p.packet.reserveBytes) ?? [] : p.topup;
+  if (p.topup.length === 0) return p.send(p.base, false);
+  let topup: readonly TransactionInstruction[] = p.topup;
+  if (p.packet) {
+    try {
+      topup = fitTopupToPacket(p.topup, p.base, p.packet.droppable, p.packet.feePayer, p.packet.reserveBytes) ?? [];
+    } catch {
+      topup = []; // the size estimate itself failed: never risk an unsignable bundle, send the user's tx alone
+    }
+  }
   if (topup.length === 0) return p.send(p.base, false);
   let bundledErr: unknown;
   try {
