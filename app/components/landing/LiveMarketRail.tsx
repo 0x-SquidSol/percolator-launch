@@ -9,7 +9,7 @@ import { rowVolumeUsd } from "@/lib/q-usd";
 import { subscribeSlab, getSnapshot } from "@/lib/priceStore/priceStore";
 import { usePriceFlash } from "@/hooks/usePriceFlash";
 import { useAllMarketStats, type MarketWithStats } from "@/hooks/useAllMarketStats";
-import { isZombieMarket } from "@/lib/activeMarketFilter";
+import { isListedMarketRow } from "@/lib/listed-markets";
 
 /** Decorative right-chevron — same mark used by every other CTA on the
  *  landing page (see app/app/page.tsx's ARROW), duplicated here rather than
@@ -31,23 +31,6 @@ const ARROW = (
 
 /** Rows shown on the landing page; /markets has the full list. */
 const RAIL_LIMIT = 6;
-
-/** NUMERIC columns can arrive as strings; coerce like /markets does (GH#1536). */
-const num = (v: unknown): number | null => {
-  const n = Number(v);
-  return v == null || !Number.isFinite(n) ? null : n;
-};
-const zombieInputs = (m: MarketWithStats) => {
-  const r = m as Record<string, unknown>;
-  return {
-    vault_balance: num(r.vault_balance),
-    c_tot: num(r.c_tot),
-    last_price: num(r.last_price),
-    volume_24h: num(r.volume_24h),
-    total_open_interest: num(r.total_open_interest),
-    total_accounts: num(r.total_accounts),
-  };
-};
 
 interface RailRowProps {
   slab: string;
@@ -191,9 +174,9 @@ const RailHeader: FC = () => (
  * Rows come from /api/markets (on-chain discovery + the registration Blob), the
  * same source as /markets. They used to come from PLAYGROUND_SLAB_META, which
  * the 2026-10-01 relaunch emptied, so the rail rendered a header and no rows.
- * The API already drops incomplete markets. Zombies are dropped here with the
- * same isZombieMarket() check /markets applies, since this fetch opts into them
- * (include_zombie=true). Busiest first, top RAIL_LIMIT. Each row subscribes to
+ * The API already drops incomplete markets. Blocked and zombie rows are dropped
+ * with isListedMarketRow(), the exact predicate /markets uses, since this fetch
+ * opts into zombies (include_zombie=true). Busiest first, top RAIL_LIMIT. Each row subscribes to
  * `priceStore` for its live price.
  */
 export function LiveMarketRail() {
@@ -202,7 +185,7 @@ export function LiveMarketRail() {
   const rows = useMemo(
     () =>
       [...statsMap.values()]
-        .filter((m) => m.slab_address && !isZombieMarket(zombieInputs(m)))
+        .filter((m) => !!m.slab_address && isListedMarketRow(m.slab_address, m))
         // Slab tiebreak: with no volume anywhere the API order is discovery
         // order, which can change between the 30s refetches.
         .sort(

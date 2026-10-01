@@ -19,6 +19,7 @@ vi.mock("@/lib/priceStore/priceStore", () => ({
 vi.mock("@/components/market/MarketLogo", () => ({ MarketLogo: () => null }));
 
 import { LiveMarketRail } from "@/components/landing/LiveMarketRail";
+import { HARDCODED_BLOCKED_SLABS } from "@/lib/blocklist-data";
 
 const row = (slab: string, symbol: string, vol: number, extra: Record<string, unknown> = {}) => [
   slab,
@@ -45,6 +46,19 @@ describe("LiveMarketRail rows", () => {
       "/trade/9EPm8nB8Fs7WcEZgE1WGFPTGc6rAzD6GhFJyMm4dEFHn",
     ]);
     expect(screen.queryByText("DEAD")).toBeNull();
+  });
+
+  it("applies /markets' exact listing rule: blocklist, and string/over-cap coercion", () => {
+    const blocked = [...HARDCODED_BLOCKED_SLABS][0];
+    setStats([
+      row("8WC8vALsDJhNCUVRmqZBDSg5xgFAhDrgy7zWqF512pDx", "SI", 50),
+      row(blocked, "BLOCKED", 99),
+      // Empty vault as the string "0" and a corrupt over-cap price: /markets
+      // sanitises the price away, so this is a zombie there and must be here.
+      row("CorruptSlab111111111111111111111111111111111", "CORRUPT", 98, { vault_balance: "0", c_tot: "0", last_price: "7900000000000", total_accounts: "0" }),
+    ]);
+    render(<LiveMarketRail />);
+    expect(links()).toEqual(["/trade/8WC8vALsDJhNCUVRmqZBDSg5xgFAhDrgy7zWqF512pDx"]);
   });
 
   it("caps the rail at the six busiest rows, in order", () => {
