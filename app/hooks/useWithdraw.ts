@@ -419,8 +419,7 @@ export function useWithdraw(slabAddress: string) {
         const rawMsg = e instanceof Error ? e.message : String(e);
         // M7: don't let a withdraw-specific EngineStale(19) read as
         // transient/auto-fixable — see ENGINE_STALE_WITHDRAW_MESSAGE above.
-        setError(
-          userFacingMessage(e) ??
+        setError(userFacingMessage(e) ??
             (e instanceof WithdrawRefusal
               ? rawMsg
               : usedConvertPrefix && isLockActiveError(rawMsg)
