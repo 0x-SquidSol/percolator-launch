@@ -6,7 +6,6 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
 import {
   encodeTradeCpi,
-  encodeBatchTradeCpi,
   encodePermissionlessCrank,
   ACCOUNTS_TRADE_CPI,
   ACCOUNTS_PERMISSIONLESS_CRANK_BASE,
@@ -40,7 +39,8 @@ import { invalidateMatcherCaps } from "@/lib/matcherCaps";
 import { getLivePriceSnapshot } from "@/lib/priceStore/priceStore";
 import { computeLimitPriceE6, assertFeedAgreesWithChain } from "@/lib/slippage";
 import { fetchPortfolioIdentity, fetchAssetMarketId, defaultCrankObservations } from "@/lib/v18-wire";
-import { buildTradeCpiIx } from "@/lib/trade-ix";
+import { buildTradeIxs } from "@/lib/trade-ix";
+import { isPortfolioAccount } from "@/lib/portfolio-account";
 
 // ---------------------------------------------------------------------------
 // v17 portfolio account layout constants
@@ -91,6 +91,7 @@ function readPortfolioMatcherConfig(data: Buffer): {
 } | null {
   // v18: the matcher config is followed by a `V17_PORTFOLIO_IDENTITY_TRAILER_LEN`-byte
   // identity trailer, so anchor off the end minus BOTH the trailer and the config.
+  if (!isPortfolioAccount(data)) return null; // F-3: never the Earn registry / ledgers
   const trailerLen = V17_PORTFOLIO_IDENTITY_TRAILER_LEN;
   if (data.length < PORTFOLIO_MATCHER_CONFIG_LEN + trailerLen) return null;
   const off = data.length - PORTFOLIO_MATCHER_CONFIG_LEN - trailerLen;
@@ -396,8 +397,9 @@ export function useTrade(slabAddress: string) {
       size: bigint;
       /**
        * Optional leg split for sizes over the matcher's per-fill cap
-       * (lib/closeChunks.ts). Legs must sum to `size`; >1 leg builds ONE
-       * BatchTradeCpi (tag 67) instead of a TradeCpi — each leg passes the
+       * (lib/closeChunks.ts). Legs must sum to `size`; >1 leg builds one
+       * single-leg TradeCpi per leg in ONE transaction (lib/trade-ix.ts buildTradeIxs; a
+       * same-asset BatchTradeCpi is refused on-chain) — each leg passes the
        * matcher's per-fill clamp individually, one signature for the lot.
        */
       sizes?: bigint[];
@@ -599,7 +601,7 @@ export function useTrade(slabAddress: string) {
 
         // v18: TradeCpi/BatchTradeCpi bind both portfolios' identity + accountB's matcher
         // sequence + the asset marketId (lib/trade-ix.ts; shared with the first-trade flow).
-        const tradeIx = buildTradeCpiIx({
+        const tradeIxs = buildTradeIxs({
           programId,
           signer: wallet.publicKey,
           market: slabPk,
@@ -666,7 +668,7 @@ export function useTrade(slabAddress: string) {
           });
           instructions.unshift(crankIx);
         }
-        instructions.push(tradeIx);
+        instructions.push(...tradeIxs);
 
         // Explicit limit sized from a simulation of THIS tx (P1: CPI trades cost ~13k more CU;
         // a single-leg batch on asset 1 is 216k > the 200k default), capped at 400k per leg

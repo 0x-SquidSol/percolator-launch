@@ -48,7 +48,15 @@ export const LP_VAULT_BACKING_BUCKET_NOT_EMPTY_CODE = 63;
 /** Vault params — unchanged from the wizard and the seeded markets. */
 export const EARN_VAULT_FEE_SHARE_BPS = 1000;
 export const EARN_VAULT_OI_RESERVATION_BPS = 8000;
-export const EARN_VAULT_COOLDOWN_SLOTS = 5n;
+/**
+ * C-1 (live SDK tests 2026-10-01, decided): new markets' Earn redemption cooldown AND stake
+ * cooldown are the relaunch floor of 150 slots (~1 min), the front-run protection decided for the
+ * relaunch (kit RELAUNCH_MIN_COOLDOWN_SLOTS). 5 slots (~2 s) was enforced (Custom 36) but too short
+ * to protect anything. Existing markets keep theirs.
+ */
+export const RELAUNCH_MIN_COOLDOWN_SLOTS = 150n;
+export const EARN_VAULT_COOLDOWN_SLOTS = RELAUNCH_MIN_COOLDOWN_SLOTS;
+export const STAKE_POOL_COOLDOWN_SLOTS = RELAUNCH_MIN_COOLDOWN_SLOTS;
 
 /** CreateLpVault + ATA + 2 deposits in one tx (devnet sim: ~151k CU measured; 500k leaves 3x headroom). */
 export const EARN_VAULT_SEED_COMPUTE_UNITS = 500_000;

@@ -34,6 +34,17 @@ import {
 import { sendTx } from "@/lib/tx";
 import { assertKnownProgram, assertCanonicalMatcher } from "@/lib/programAllowlist";
 import { fetchPortfolioIdentity } from "@/lib/v18-wire";
+import { batchTradeCaps } from "@/lib/trade-ix";
+
+/** One leg per asset (the wrapper's batch rule); every leg needs a mark for the caps. */
+export function assertBatchLegs(legs: BatchTradeCpiLeg[], markE6ByAsset: Record<number, bigint>): void {
+  const seen = new Set<number>();
+  for (const l of legs) {
+    if (seen.has(l.assetIndex)) throw new Error("A batch can hold only one order per market asset.");
+    seen.add(l.assetIndex);
+    if (!(markE6ByAsset[l.assetIndex] > 0n)) throw new Error("Waiting for a live price for every asset in the batch.");
+  }
+}
 
 export type { BatchTradeCpiLeg };
 
@@ -52,8 +63,11 @@ export interface BatchTradeParams {
   matcherCtx: string;
   /** Matcher delegate PDA address (derive_matcher_delegate) */
   matcherDelegate: string;
-  /** Trade legs — assetIndex, sizeQ (signed), feeBps (0=use market fee), limitPrice (0=no limit) */
+  /** Trade legs — assetIndex, sizeQ (signed), feeBps (0=use market fee), limitPrice (0=no limit).
+   *  At most ONE leg per asset: the wrapper refuses a second same-asset leg (Custom 9). */
   legs: BatchTradeCpiLeg[];
+  /** Mark (e6) per asset index, for the batch's signed slippage / fee caps (lib/trade-ix.ts). */
+  markE6ByAsset: Record<number, bigint>;
 }
 
 export function useBatchTrade() {
@@ -115,16 +129,26 @@ export function useBatchTrade() {
         ];
 
         // v18: BatchTradeCpi binds both portfolios' identity + accountB's
-        // matcher-sequence, live-read before building the tx. (maxSlippage/
-        // maxFeeAtoms=0 = no aggregate cap; per-leg limitPrice is the real bound.)
+        // matcher-sequence, live-read before building the tx. maxSlippageAtoms /
+        // maxFeeAtoms are HARD aggregate caps on-chain (0/0 refuses every fill): sign
+        // the budget the per-leg limits and fee already allow (lib/trade-ix.ts).
+        assertBatchLegs(params.legs, params.markE6ByAsset);
+        const caps = batchTradeCaps({
+          legs: params.legs.map((l) => ({
+            sizeQ: BigInt(l.sizeQ),
+            limitPriceE6: BigInt(l.limitPrice),
+            markE6: params.markE6ByAsset[l.assetIndex],
+          })),
+          feeBps: params.legs.reduce((mx, l) => (BigInt(l.feeBps) > mx ? BigInt(l.feeBps) : mx), 0n),
+        });
         const [takerId, makerId] = await Promise.all([
           fetchPortfolioIdentity(connection, takerPortfolioPk),
           fetchPortfolioIdentity(connection, makerPortfolioPk),
         ]);
         const data = encodeBatchTradeCpi({
           legs: params.legs,
-          maxSlippageAtoms: 0n,
-          maxFeeAtoms: 0n,
+          maxSlippageAtoms: caps.maxSlippageAtoms,
+          maxFeeAtoms: caps.maxFeeAtoms,
           accountAPortfolioId: takerId.portfolioId,
           accountAPositionEpoch: takerId.positionEpoch,
           accountBPortfolioId: makerId.portfolioId,

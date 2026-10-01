@@ -8,6 +8,7 @@ import {
 } from "@percolatorct/sdk";
 import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
 import { getMultipleAccountsInfoChunked } from "@/lib/rpc-chunk";
+import { isPortfolioAccount } from "@/lib/portfolio-account";
 
 /**
  * On-chain "Market LP" (the v17 LP-portfolio account that backs a market as
@@ -49,6 +50,7 @@ const PORTFOLIO_MATCHER_CONFIG_LEN = 104;
  * enabled) rather than a bare 0/1 flag — decoded via the SDK.
  */
 function isMatcherEnabled(data: Buffer): boolean {
+  if (!isPortfolioAccount(data)) return false; // F-3
   const trailerLen = V17_PORTFOLIO_IDENTITY_TRAILER_LEN;
   if (data.length < PORTFOLIO_MATCHER_CONFIG_LEN + trailerLen) return false;
   const off = data.length - PORTFOLIO_MATCHER_CONFIG_LEN - trailerLen;

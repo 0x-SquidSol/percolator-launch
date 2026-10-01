@@ -49,7 +49,7 @@ export interface MessageContext {
 }
 
 export interface UserMessageAction {
-  id: "use-max" | "get-funds" | "try-again" | "refresh" | "stop" | "try-size";
+  id: "use-max" | "get-funds" | "try-again" | "refresh" | "stop" | "try-size" | "improve-pricing";
   label: string;
 }
 

@@ -95,6 +95,7 @@ import { takeFillResult } from "@/lib/limits/fill-check";
 import { defaultFeeCapMarginBps } from "@/lib/limits/fee-channel";
 import { OrderTicketLimits, reasonCopy } from "@/components/limits/OrderTicketLimits";
 import { StatusLine } from "@/components/ui/StatusLine";
+import { FixPricingAction } from "@/components/trade/FixPricingAction";
 import { resolveUserMessage, type UserMessage, type UserMessageAction } from "@/lib/limits/user-message";
 import { TICKET_COPY } from "@/lib/limits/copy";
 import { decodeMarketEngineView } from "@/lib/limits/decode";
@@ -1237,6 +1238,10 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     <div className="relative p-3.5" data-testid="order-ticket" data-ticket-row={ticketState.row}>
       {openCloseToggle}
       {statusSlot && <div className="mb-3" data-testid="ticket-status-slot">{statusSlot}</div>}
+      {/* Creator-only, self-hiding: the LP owner can drop the matcher's skew (lib/fix-pricing.ts). */}
+      {ticketLimits.sameOwnerCloseOnly && !mockMode && (
+        <div className="mb-3" data-testid="fix-pricing-slot"><FixPricingAction slabAddress={slabAddress} /></div>
+      )}
 
       {/* Locked shell — a disabled fieldset natively disables every input and
           button inside (including keyboard focus), and the opacity drop makes
