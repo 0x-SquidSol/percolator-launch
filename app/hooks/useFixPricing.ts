@@ -86,5 +86,5 @@ export function useFixPricing(slabAddress: string) {
     }
   }, [lp, programId, wallet, connection, slabAddress]);
 
-  return { eligible, done, sending, error, fix };
+  return { eligible, done, sending, error, fix, ctx: lp?.ctx ?? null };
 }
