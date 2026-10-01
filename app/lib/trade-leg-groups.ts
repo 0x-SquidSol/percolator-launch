@@ -122,7 +122,10 @@ export async function planLegGroups<L>(
       const legsHere = groups[i].length;
       const tooBig =
         isComputeExhausted(sim) ||
-        (sim.consumed !== null && sizeComputeUnitLimit(sim.consumed, { cap: MAX_TX_COMPUTE_UNITS }) >= MAX_TX_COMPUTE_UNITS);
+        // The split decision uses the TIGHT estimate (+15% / 5k): a group that needs <1.4M
+        // stays one tx; its signed limit still gets the full headroom, clamped to 1.4M.
+        (sim.consumed !== null &&
+          sizeComputeUnitLimit(sim.consumed, { cap: MAX_TX_COMPUTE_UNITS, marginBps: 1_500, padUnits: 5_000 }) >= MAX_TX_COMPUTE_UNITS);
       if (tooBig && legsHere > 1) {
         replan = true;
         break;
