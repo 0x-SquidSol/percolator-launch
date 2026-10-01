@@ -90,21 +90,24 @@ if (!MAINNET_RPC_URL) {
 
 // ── Pyth Hermes: the 4 majors that have a feed ──────────────────────────────
 
-/** Pyth mainnet crypto price-feed IDs, keyed by the CURRENT devnet slab. */
-const PYTH_FEED: Record<string, string> = {
-  "AzagguvrWmRgcBpsKuqomW7Yb1YUUd6UzcrkiRsqdhr": "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d", // SOL (v18 GnwdeQr fresh)
-  "HvCDVSx5gStg1WAxBAaXwpouLyTvAHCyBPHJHh3RfVJg": "0a0408d619e9380abad35060f9192039ed5042fa6f82301d0e48bb52be830996", // JUP (v18 fresh)
-  "CdN8r7FBYBvCGAS75TKAK5UCzY9Zv9P4HaGHuTJ3VXNg": "879551021853eec7a7dc827578e8e69da7e4fa8148339aa0d3d5296405be4b1a", // TRUMP (v18 fresh)
-  "ENdXK8k6iiWCAx4Z9XfoKLg9oXsEbPL4hEtmEmUqozDZ": "bed3097008b9b5e3c93bec20be79cb43986b85a996475589351a21e67bae9b61", // PENGU (v18 fresh)
-};
+/**
+ * Pyth mainnet crypto price-feed IDs, keyed by the CURRENT devnet slab.
+ *
+ * RELAUNCH (2026-10-01): EMPTY. Every slab that was pinned here belonged to an
+ * abandoned wrapper (GnwdeQr…; the deployed copy still carried the 2026-09-22
+ * first-seed slabs), and nothing on the fresh wrapper (ETDLAdiA…) is pinned yet.
+ * Add an entry only for a slab owned by the current wrapper (lib/program-ids.ts).
+ */
+const PYTH_FEED: Record<string, string> = {};
 const idToSlab = new Map(Object.entries(PYTH_FEED).map(([slab, id]) => [id.toLowerCase(), slab]));
-const PYTH_LABELS: Record<string, string> = {
-  "AzagguvrWmRgcBpsKuqomW7Yb1YUUd6UzcrkiRsqdhr": "SOL/USDC",
-  "HvCDVSx5gStg1WAxBAaXwpouLyTvAHCyBPHJHh3RfVJg": "JUP/USDC",
-  "CdN8r7FBYBvCGAS75TKAK5UCzY9Zv9P4HaGHuTJ3VXNg": "TRUMP/USDC",
-  "ENdXK8k6iiWCAx4Z9XfoKLg9oXsEbPL4hEtmEmUqozDZ": "PENGU/USDC",
-};
-const SOL_SLAB = "AzagguvrWmRgcBpsKuqomW7Yb1YUUd6UzcrkiRsqdhr";
+const PYTH_LABELS: Record<string, string> = {};
+
+/**
+ * Pyth SOL/USD. Always streamed, whether or not a SOL market is pinned: the
+ * WSOL-quoted DEX pools need it for their USD conversion. Before the relaunch
+ * this came from the pinned SOL slab's feed.
+ */
+const SOL_USD_FEED_ID = "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d";
 
 // ── DEX poll: the 2 pump.fun markets with no Pyth feed ──────────────────────
 
@@ -123,10 +126,11 @@ interface DexMarketEntry extends PoolReadEntry {
  * deployed had no live price at all and only moved when the page re-read
  * on-chain — indistinguishable from a broken price feed.
  */
-const SEED_DEX_MARKETS: DexMarketEntry[] = [
-  { slab: "BeumQKPdWHTBewYnbGDbcUed5EPvr39covYtPPqJkYGV", poolAddress: "5tYFviFWQRKV9BJSTHGitbdqEYC1BGUgRUDnSADUXqJP", dexType: "pumpswap", label: "BURNIE/WSOL" },
-  { slab: "BbuB3mb5DkFmJLfoaumkbM6eEv3wZDjz9YZokhEgVJv3", poolAddress: "Ebs3mXAzqZfzHfsdinTNw7gPy4uNyEAywcCiJxzLRrBW", dexType: "pumpswap", label: "PERC/WSOL" },
-];
+// RELAUNCH (2026-10-01): EMPTY. Both pinned pump.fun slabs were on the abandoned
+// GnwdeQr… wrapper, so polling them cost two mainnet pool reads (three RPC calls each)
+// every cycle for markets no client can list. Relaunch markets come from the database
+// (refreshDbMarkets) as soon as they register.
+const SEED_DEX_MARKETS: DexMarketEntry[] = [];
 
 /**
  * Live DEX market list = the seed above plus every `keeper_status='active'`
@@ -307,14 +311,17 @@ wss.on("connection", (ws) => {
 type ParsedPrice = { id: string; price: { price: string; expo: number } };
 function applyParsed(parsed: ParsedPrice[]): void {
   for (const item of parsed) {
-    const slab = idToSlab.get(String(item.id).toLowerCase().replace(/^0x/, ""));
-    if (!slab) continue;
+    const id = String(item.id).toLowerCase().replace(/^0x/, "");
+    const slab = idToSlab.get(id);
+    const isSol = id === SOL_USD_FEED_ID;
+    if (!slab && !isSol) continue;
     const priceUsd = Number(item.price.price) * Math.pow(10, item.price.expo);
     if (!(priceUsd > 0)) continue;
     const priceE6 = BigInt(Math.round(priceUsd * 1_000_000));
+    if (isSol) latestSolPriceE6 = priceE6;
+    if (!slab) continue;
     lastPriceE6.set(slab, priceE6);
     broadcast(slab, priceE6);
-    if (slab === SOL_SLAB) latestSolPriceE6 = priceE6;
   }
 }
 
@@ -322,7 +329,8 @@ function applyParsed(parsed: ParsedPrice[]): void {
 // publishes (~2-3×/sec) — continuous ticking, like Hyperliquid's index price.
 // Auto-reconnects.
 async function streamPrices(): Promise<void> {
-  const qs = Object.values(PYTH_FEED).map((id) => `ids[]=0x${id}`).join("&");
+  const ids = new Set([SOL_USD_FEED_ID, ...Object.values(PYTH_FEED)]);
+  const qs = [...ids].map((id) => `ids[]=0x${id}`).join("&");
   const url = `${HERMES_BASE}/v2/updates/price/stream?${qs}&parsed=true`;
   for (;;) {
     try {
@@ -387,6 +395,9 @@ function logSkip(label: string, key: string, reason: string | undefined): void {
  * startup, before the first stream event lands).
  */
 async function pollOnce(): Promise<void> {
+  // Nothing to poll: skip the SOL fallback read as well. Without this an idle feed
+  // (no DEX markets, Pyth SOL not arriving) still spent an RPC read every cycle.
+  if (dexMarkets.length === 0) return;
   let solPriceE6 = latestSolPriceE6;
   if (solPriceE6 === undefined) {
     try {
@@ -427,7 +438,7 @@ async function pollLoop(): Promise<void> {
 }
 
 console.log(
-  `[local-price-ws] listening on ws://localhost:${PORT} — hybrid: Pyth Hermes (SSE, ~2-3/s) for 4 majors + DEX poll (${POLL_INTERVAL_MS}ms) for 2 pump.fun markets`,
+  `[local-price-ws] listening on ws://localhost:${PORT} — hybrid: Pyth Hermes (SSE, ~2-3/s) for ${Object.keys(PYTH_FEED).length} pinned feed(s) + SOL/USD, DEX poll (${POLL_INTERVAL_MS}ms) for ${SEED_DEX_MARKETS.length} pinned + database-registered markets`,
 );
 for (const slab of Object.keys(PYTH_FEED)) {
   console.log(`  ${(PYTH_LABELS[slab] ?? "?").padEnd(11)} slab=${slab.slice(0, 8)}…  pyth=${PYTH_FEED[slab].slice(0, 8)}…`);
