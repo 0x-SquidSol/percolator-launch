@@ -124,14 +124,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <TickerBanner />
               <MainnetBetaBanner />
             </ChromeGate>
-            <Header />
-            <ConnectionBar />
+            <ChromeGate hideOn={["/locked"]}>
+              <Header />
+              <ConnectionBar />
+            </ChromeGate>
             <ChromeGate>
               <PositionsBar />
             </ChromeGate>
             <main className="flex-1 pb-[60px] md:pb-0">{children}</main>
-            <Footer />
-            <MobileBottomNav />
+            <ChromeGate hideOn={["/locked"]}>
+              <Footer />
+              <MobileBottomNav />
+            </ChromeGate>
           </div>
           <ChromeGate>
             <MusicPlayer />
