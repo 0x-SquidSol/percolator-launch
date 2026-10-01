@@ -6,6 +6,7 @@ import { useEarnStats } from '@/hooks/useEarnStats';
 import { ShimmerSkeleton } from '@/components/ui/ShimmerSkeleton';
 import { VaultGrid } from '@/components/earn/VaultGrid';
 import { VaultDepositRail } from '@/components/earn/VaultDepositRail';
+import { useEarnPositions } from '@/hooks/useEarnPositions';
 import { formatCompact } from '@/lib/formatters';
 import { limitsFlags } from '@/lib/limits/flags';
 import { COPY } from '@/lib/limits/copy';
@@ -59,6 +60,11 @@ export function EarnVaultView() {
     setUserDeposits((prev) => (prev[slab] === usd ? prev : { ...prev, [slab]: usd }));
   }, []);
 
+  // Every row's deposit from chain (wallet LP ATA + pending escrow, incl. a creator's wizard seed),
+  // not only the row bound to the rail; the rail's own resolved value wins for the selected row.
+  const chainDeposits = useEarnPositions(stats.markets);
+  const tableDeposits = useMemo(() => ({ ...chainDeposits, ...userDeposits }), [chainDeposits, userDeposits]);
+
   return (
     <div className="animate-fade-in">
       {/* Compact header + stats strip */}
@@ -83,7 +89,7 @@ export function EarnVaultView() {
               error={error}
               selectedSlab={selectedSlab}
               onSelect={setSelectedSlab}
-              userDeposits={userDeposits}
+              userDeposits={tableDeposits}
             />
           </div>
 
