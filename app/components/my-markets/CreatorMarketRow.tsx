@@ -196,6 +196,22 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
     !!wallet.publicKey && !!detail?.creator_fee_authority &&
     detail.creator_fee_authority === wallet.publicKey.toBase58();
   const hasClaimableFees = isClaimAuthority && claimState.kind === "claimable";
+
+  // Authority gating for the destructive actions. The two "admin" keys diverge
+  // once a market completes creation:
+  //  • "Burn admin key" renounces asset 0's `asset_admin` — the creator's key
+  //    (== creator_fee_authority). The creator holds it, so this CAN be done.
+  //  • "Close market" (CloseSlab) needs `marketauth`, which StakeInitPool rotates
+  //    to the keyless stake-pool PDA at creation — no wallet holds it, so a
+  //    completed market can never be closed (it's autonomous by design).
+  // Gate each button on the authority it actually needs, instead of letting the
+  // user click into a doomed transaction.
+  const walletB58AdminGate = wallet.publicKey?.toBase58() ?? null;
+  const isAssetAdmin =
+    !!walletB58AdminGate && !!detail?.creator_fee_authority &&
+    detail.creator_fee_authority === walletB58AdminGate;
+  const marketAuthB58 = market.configV17?.marketauth?.toBase58() ?? null;
+  const isMarketAuth = !!walletB58AdminGate && !!marketAuthB58 && marketAuthB58 === walletB58AdminGate;
   const rowClaim = useClaimCreatorFees();
   const claimThisMarket = useCallback(
     (e: { preventDefault: () => void; stopPropagation: () => void }) => {
@@ -489,7 +505,8 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
                 preserved from the flow this replaces (see PR description). */}
             <button
               onClick={() => setShowBurnConfirm(true)}
-              disabled={actions.loading === "renounceAdmin"}
+              disabled={actions.loading === "renounceAdmin" || !isAssetAdmin}
+              title={isAssetAdmin ? undefined : "Only the market admin (asset_admin) can burn the admin key — connect the creator wallet."}
               className="text-[10px] uppercase tracking-[0.1em] text-[var(--short)]/70 hover:text-[var(--short)] transition-colors disabled:opacity-40"
             >
               burn admin key
@@ -497,7 +514,8 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
             <button
               data-testid="close-market-button"
               onClick={() => setShowCloseConfirm(true)}
-              disabled={closeMarket.loading || closeBlocker !== null}
+              disabled={closeMarket.loading || closeBlocker !== null || !isMarketAuth}
+              title={isMarketAuth ? undefined : "This market is autonomous — admin was renounced to the stake-pool program at creation, so it can't be closed."}
               className="text-[10px] uppercase tracking-[0.1em] text-[var(--short)]/70 hover:text-[var(--short)] transition-colors disabled:opacity-40"
             >
               {closeMarket.loading ? "closing…" : "close market"}
@@ -505,6 +523,12 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
           </div>
           {/* UX WP-9 (§3.11): the preconditions BEFORE the button, never "closeSlab will tell you". */}
           <CloseMarketChecklistView checks={closeChecks} />
+          {!isMarketAuth && (
+            <p className="mt-2 text-[10px] text-[var(--text-secondary)]">
+              This market is autonomous — admin control was permanently renounced to the stake-pool
+              program at creation, so it can’t be closed. You can still burn your remaining admin key.
+            </p>
+          )}
           {closeMarket.error && (
             <p className="mt-2 text-[10px] text-[var(--short)]">{closeMarket.error}</p>
           )}
@@ -540,6 +564,17 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
             <p className="mt-2 text-[11px] text-[var(--text-secondary)]">
               This is permanent and irreversible. You will never be able to update config, set oracle, or perform any admin actions on this market again.
             </p>
+            {/* Tag 90 (WithdrawCreatorFee) is gated on asset 0's asset_admin only: once burned, no
+                creator fee on this market can ever be claimed again, and any unclaimed pot is
+                re-booked to the protocol at close (wrapper bd4fe5f8). */}
+            <p data-testid="burn-forfeits-fees" className="mt-2 text-[11px] text-[var(--text-secondary)]">
+              You also give up this market&apos;s creator fees for good: fees can only be claimed with this key.
+            </p>
+            {hasClaimableFees && (
+              <p data-testid="burn-claim-first" className="mt-2 text-[11px] font-semibold text-[var(--warning)]">
+                You have unclaimed fees on this market. Claim them before burning, or they are lost.
+              </p>
+            )}
             <p className="mt-4 text-[11px] font-semibold text-[var(--short)]">
               Type &quot;BURN&quot; to confirm:
             </p>
