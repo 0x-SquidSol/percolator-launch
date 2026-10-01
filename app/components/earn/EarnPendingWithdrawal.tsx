@@ -9,7 +9,8 @@
  */
 import { useEffect, useRef, useState, type FC } from 'react';
 import { StatusLine } from '@/components/ui/StatusLine';
-import { EARN_WITHDRAW_COPY as C, SLOT_MS, fmtCountdown, type PendingPhase } from '@/lib/limits/earn-withdraw';
+import { EARN_WITHDRAW_COPY as C, fmtCountdown, type PendingPhase } from '@/lib/limits/earn-withdraw';
+import { useCooldownCountdown } from '@/hooks/useCooldownCountdown';
 
 export interface EarnPendingWithdrawalProps {
   /** "12.50 USDC" (the estimate at the withdraw-side price), or the share count when unknown. */
@@ -24,6 +25,8 @@ export interface EarnPendingWithdrawalProps {
   onRefresh?: () => Promise<void> | void;
   /** A plain-language failure from the last payout attempt. */
   error?: string | null;
+  /** Identifies the ticket (e.g. its share count): a new ticket restarts the clock. */
+  ticketKey?: string;
   /** The payout can only pay part right now: offer the max (re-request, then collect). */
   resize?: { label: string; body: string; onResize: () => Promise<void> } | null;
 }
@@ -38,31 +41,13 @@ export const EarnPendingWithdrawal: FC<EarnPendingWithdrawalProps> = ({
   onRefresh,
   error = null,
   resize = null,
+  ticketKey,
 }) => {
-  const [now, setNow] = useState(() => Date.now());
-  const [deadline, setDeadline] = useState(() => Date.now() + Number(cooldownRemainingSlots) * SLOT_MS);
   const [collecting, setCollecting] = useState(false);
   const autoFired = useRef(false);
-  const lastRefresh = useRef(0);
-
-  useEffect(() => {
-    setDeadline(Date.now() + Number(cooldownRemainingSlots) * SLOT_MS);
-  }, [cooldownRemainingSlots]);
-
-  useEffect(() => {
-    if (cooldownElapsed) return;
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, [cooldownElapsed]);
-
-  // The local clock ran out: ask the chain (at most every 2 s) until the ticket reads elapsed.
-  const remainingMs = deadline - now;
-  useEffect(() => {
-    if (cooldownElapsed || remainingMs > 0 || !onRefresh) return;
-    if (now - lastRefresh.current < 2000) return;
-    lastRefresh.current = now;
-    void onRefresh();
-  }, [cooldownElapsed, remainingMs, now, onRefresh]);
+  // One live clock shared with Stake (hooks/useCooldownCountdown): ticks every second, never
+  // snaps back on a lagging poll, and re-reads the chain at 0 until the ticket reads elapsed.
+  const { remainingMs } = useCooldownCountdown({ remainingSlots: cooldownRemainingSlots, elapsed: cooldownElapsed, resetKey: ticketKey ?? null, onZero: onRefresh ? () => void onRefresh() : undefined });
 
   const collect = async () => {
     if (collecting || disabled) return;
