@@ -39,6 +39,9 @@ import {
 } from "@/lib/first-trade";
 import { invalidatePortfolio } from "@/lib/portfolio-invalidation";
 
+/** Thrown before the wallet opens when the pre-sign simulation could not reach Solana. */
+export const PRESIGN_SIM_UNREACHABLE = "Couldn't reach Solana to check this order. Nothing was sent.";
+
 export interface FundAndTradeParams {
   /** Signed size (base q). */
   size: bigint;
@@ -125,6 +128,9 @@ export function useFirstTrade(slabAddress: string) {
         const bIxs = buildFundAndTradeIxs(ixp(kp.publicKey), { portfolioId: predicted, sequence: 0n, positionEpoch: 0n });
         const simAB = await simulateForGate(connection, owner, [...aIxs, ...bIxs]);
         if (simAB.err) throw new SimulationRefusal(simAB.err, simAB.logs, simAB.simulated);
+        // A simulation that could not RUN (RPC error) is not a pass: signing on it would let A
+        // (create + init) land and B fail on chain, the "Something went wrong" path. Stop first.
+        if (simA.rpcFailed || simAB.rpcFailed) throw new Error(PRESIGN_SIM_UNREACHABLE);
         const [{ blockhash }, fee] = await Promise.all([connection.getLatestBlockhash("confirmed"), getPriorityFee(connection)]);
         const txA = buildBatchTx({ instructions: aIxs, computeUnits: Math.max(60_000, Math.ceil((simA.consumed ?? 50_000) * 1.3)), priorityFeeMicroLamports: fee, blockhash, feePayer: owner });
         const txB = buildBatchTx({ instructions: bIxs, computeUnits: tradeCuCap(1) + 60_000, priorityFeeMicroLamports: fee, blockhash, feePayer: owner });

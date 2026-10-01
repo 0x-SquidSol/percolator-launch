@@ -75,7 +75,8 @@ vi.mock("@/lib/tx", async (orig) => {
   };
 });
 
-import { useFirstTrade } from "@/hooks/useFirstTrade";
+import { useFirstTrade, PRESIGN_SIM_UNREACHABLE } from "@/hooks/useFirstTrade";
+import { resolveUserMessage } from "@/lib/limits/user-message";
 import { SimulationRefusal } from "@/lib/tx";
 
 const ok = (ixs: TransactionInstruction[]) => ({ consumed: 40_000, err: null, logs: [], rpcFailed: false, simulated: ixs });
@@ -120,5 +121,20 @@ describe("useFirstTrade pre-sign A+B simulation", () => {
     const err = await run();
     expect(err).toBeNull();
     expect(signAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("a simulation that could not run (RPC error) stops before the wallet, with a plain line", async () => {
+    simulateForGate.mockImplementation(async (_c: unknown, _o: unknown, ixs: TransactionInstruction[]) =>
+      ixs.length === 2 ? ok(ixs) : { consumed: null, err: null, logs: [], rpcFailed: true, simulated: ixs },
+    );
+    const err = await run();
+    expect(signAll).not.toHaveBeenCalled();
+    expect((err as Error).message).toBe(PRESIGN_SIM_UNREACHABLE);
+    expect(resolveUserMessage(err, { surface: "trade" }).kind).toBe("rpc-unreachable");
+  });
+
+  it("'No portfolio account found' maps to a plain line, not 'Something went wrong'", () => {
+    const u = resolveUserMessage(new Error("No portfolio account found for your wallet on this market. Please deposit collateral first to create a portfolio."), { surface: "trade" });
+    expect(u.kind).toBe("no-account");
   });
 });

@@ -211,6 +211,14 @@ export function resolveUserMessage(err: unknown, ctx: MessageContext): UserMessa
         action: { id: "refresh", label: "Refresh" },
       });
     }
+    if (/couldn't reach solana to check this order/i.test(p.raw)) {
+      return m("rpc-unreachable", "error", "Couldn't reach Solana", "Couldn't reach Solana to check this order. Nothing was sent.", {
+        action: { id: "try-again", label: "Try again" },
+      });
+    }
+    if (/no portfolio account found for your wallet/i.test(p.raw)) {
+      return m("no-account", "info", "Add funds first", "Deposit once to open an account, then trade. Nothing was sent.");
+    }
     if (/failed to scan lp portfolio/i.test(p.raw)) {
       return m("rpc-unreachable", "error", "Couldn't reach Solana", "Couldn't read the market from Solana. Nothing was sent.", {
         action: { id: "try-again", label: "Try again" },
