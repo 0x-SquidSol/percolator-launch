@@ -5,7 +5,7 @@
  * to the caller's ATA. The mint authority acts as fee payer so the user needs
  * zero SOL to receive their first tokens.
  *
- * Also sends 0.05 SOL so the user can pay for their own subsequent transactions: from the
+ * Also tops the wallet up to 1 SOL so the user can pay for their own subsequent transactions: from the
  * server wallet when PLAYGROUND_SOL_FAUCET_KEYPAIR is set (UX WP-10, FA-1: the public devnet
  * airdrop is usually rate-limited), else best-effort via the public devnet faucet.
  *

@@ -124,7 +124,7 @@ describe("M-1: balance-aware, per-wallet, global budget, per-IP", () => {
   });
   it("the global daily budget holds across fresh keypairs; over it the reservation is removed", async () => {
     const { db, rows } = fakeDb();
-    const e = env({ PLAYGROUND_SOL_FAUCET_DAILY_SOL: "0.1" }); // 0.1 / 0.05 = 2 sends a day
+    const e = env({ PLAYGROUND_SOL_FAUCET_DAILY_SOL: "2" }); // 2 / 1 = 2 sends a day
     const out = [];
     for (let i = 0; i < 4; i++) out.push((await grantServerSol({ connection: conn() as never, db, to: to(), ip: ip(), env: e })).status);
     expect(out).toEqual(["sent", "sent", "skipped", "skipped"]);
@@ -213,7 +213,7 @@ describe("2026-10-02 live: faucet_claims.id is a UUID in production", () => {
   });
   it("the daily budget is counted by claim time, so it still holds with UUID ids", async () => {
     const { db } = fakeDb({ uuid: true });
-    const env = { PLAYGROUND_SOL_FAUCET_DAILY_SOL: "0.1" } as NodeJS.ProcessEnv; // 0.1 SOL / 0.05 = 2 sends
+    const env = { PLAYGROUND_SOL_FAUCET_DAILY_SOL: "2" } as NodeJS.ProcessEnv; // 2 SOL / 1 = 2 sends
     const t0 = Date.parse("2026-10-02T05:00:00Z");
     expect(await lib.reserveServerSol(db, "W1", t0, env)).toHaveProperty("id");
     expect(await lib.reserveServerSol(db, "W2", t0 + 1000, env)).toHaveProperty("id");
