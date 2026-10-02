@@ -24,9 +24,11 @@ export const SOL_FAUCET_ENV = "PLAYGROUND_SOL_FAUCET_KEYPAIR";
 /** Devnet's genesis hash (L-2): the server wallet never sends on any other cluster. */
 export const DEVNET_GENESIS_HASH = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
 /** A wallet is topped up to this (enough for many devnet transactions). */
-export const SERVER_SOL_TARGET_LAMPORTS = 50_000_000; // 0.05 SOL
+// 1 SOL (2026-10-02, product call): every market a user trades needs its own portfolio account, rent 0.0492 SOL;
+// 0.05 covered exactly one market and almost no fees, so a second market's first trade failed.
+export const SERVER_SOL_TARGET_LAMPORTS = 1_000_000_000; // 1 SOL (~20 market accounts + fees)
 /** Global daily budget of the server wallet (M-1), default 2 SOL; env override in whole SOL. */
-export const DEFAULT_SERVER_SOL_DAILY_BUDGET_LAMPORTS = 2_000_000_000;
+export const DEFAULT_SERVER_SOL_DAILY_BUDGET_LAMPORTS = 100_000_000_000; // 100 SOL/day = 100 new users at 1 SOL (env PLAYGROUND_SOL_FAUCET_DAILY_SOL overrides)
 export const SERVER_SOL_FUND_TYPE = "server-sol";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
