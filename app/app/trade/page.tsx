@@ -1,5 +1,6 @@
 "use client";
 
+import { isHiddenFromListing } from "@/lib/listing-hidden";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -56,11 +57,12 @@ export default function TradeRedirectPage() {
         }
 
         // Filter to markets with a sane last_price (active markets)
-        const active = markets.filter(
+        const listed = markets.filter((m) => !isHiddenFromListing(m.slab_address));
+        const active = listed.filter(
           (m) => m.last_price != null && m.last_price > 0 && m.last_price < 1e18
         );
 
-        const pool = active.length > 0 ? active : markets;
+        const pool = active.length > 0 ? active : listed;
 
         // PERC-352: Prefer SOL-PERP or SOL/USD by symbol match
         const solPerp = pool.find((m) => {

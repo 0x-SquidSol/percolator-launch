@@ -1,4 +1,5 @@
 import { BLOCKED_SLAB_ADDRESSES } from "@/lib/blocklist";
+import { isHiddenFromListing } from "@/lib/listing-hidden";
 import { isZombieMarket } from "@/lib/activeMarketFilter";
 
 /** Max sane price (USD) for both listed-market filtering and display capping.
@@ -40,6 +41,7 @@ export interface ListedMarketStatsRow {
  */
 export function isListedMarketRow(slab: string, row: ListedMarketStatsRow): boolean {
   if (BLOCKED_SLAB_ADDRESSES.has(slab)) return false;
+  if (isHiddenFromListing(slab)) return false;
   return !isZombieMarket({
     vault_balance: numericOrNull(row.vault_balance),
     c_tot: numericOrNull(row.c_tot),
