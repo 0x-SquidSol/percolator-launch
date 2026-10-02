@@ -1,5 +1,6 @@
 "use client";
 
+import { isHiddenFromListing } from "@/lib/listing-hidden";
 import { baseSymbol } from "@/lib/symbol-utils";
 import { FC, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -97,6 +98,7 @@ const MarketSwitcherInner: FC<MarketSwitcherProps> = ({ slabAddress, symbol, log
     const rows: SwitcherRow[] = [];
     for (const [slab, m] of statsMap) {
       if (!m?.symbol) continue;
+      if (isHiddenFromListing(slab)) continue; // hidden from browsing; still reachable by link
       // Ranking score only: raw OI atoms × price. Playground markets share
       // 6-decimal collateral, so cross-market ordering is sound; the exact
       // USD figure is never displayed here.
