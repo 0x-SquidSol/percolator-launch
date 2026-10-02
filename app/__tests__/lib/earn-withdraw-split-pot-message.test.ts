@@ -71,7 +71,8 @@ describe("Earn withdraw: split-pot EngineCounterUnderflow (Custom 25)", () => {
   it("is SCOPED: code 25 on any non-withdraw surface stays the generic internal-fault message", () => {
     // Everywhere else Custom(25) is a genuine internal-accounting fault and must NOT be
     // re-interpreted as a routine split-pot condition.
-    for (const surface of ["trade", "close", "earn-deposit", "creator-stake"] as const) {
+    // earn-deposit has its own message since 2026-10-02 (unbound-vault NAV underflow, see earn-deposit-25-message.test.ts).
+    for (const surface of ["trade", "close", "creator-stake"] as const) {
       const u = resolveUserMessage(underflow(), { surface });
       expect(u.kind, surface).toBe("unmapped");
       expect(u.body, surface).toMatch(/something went wrong/i);
