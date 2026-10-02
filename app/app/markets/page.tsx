@@ -57,9 +57,7 @@ function shortenAddress(addr: string, chars = 4): string {
 /** Returns true if a numeric value looks like a u64::MAX sentinel (≈1.844e19). */
 const isSentinelNum = (v: number) => v > 1e18;
 
-type SortKey = "volume" | "oi" | "recent" | "health";
-type LeverageFilter = "all" | "5x" | "10x" | "20x";
-type OracleFilter = "all" | "admin" | "live";
+type SortKey = "volume" | "oi" | "recent" | "health" | "leverage";
 
 interface MergedMarket {
   slabAddress: string;
@@ -195,8 +193,6 @@ function MarketsPageInner() {
   const [search, setSearch] = useState(searchParams.get("q") || "");
   const [debouncedSearch, setDebouncedSearch] = useState(search);
   const [sortBy, setSortBy] = useState<SortKey>((searchParams.get("sort") as SortKey) || "volume");
-  const [leverageFilter, setLeverageFilter] = useState<LeverageFilter>((searchParams.get("lev") as LeverageFilter) || "all");
-  const [oracleFilter, setOracleFilter] = useState<OracleFilter>((searchParams.get("oracle") as OracleFilter) || "all");
   // Default to USD notional (consistent, readable across tokens); token-qty view
   // is opt-in via ?usd=false. A markets list of raw base-token quantities (25.0M
   // BONK next to 24.38 SOL) reads as garbage — USD is the sane default.
@@ -219,8 +215,6 @@ function MarketsPageInner() {
     const params = new URLSearchParams();
     if (debouncedSearch) params.set("q", debouncedSearch);
     if (sortBy !== "volume") params.set("sort", sortBy);
-    if (leverageFilter !== "all") params.set("lev", leverageFilter);
-    if (oracleFilter !== "all") params.set("oracle", oracleFilter);
     if (!showUsd) params.set("usd", "false");
     
     // Mirror the filters into the address bar WITHOUT navigating. router.replace()
@@ -234,7 +228,7 @@ function MarketsPageInner() {
     const nextSearch = params.toString() ? `?${params.toString()}` : "";
     if (nextSearch === window.location.search) return;
     window.history.replaceState(null, "", nextSearch || "/markets");
-  }, [debouncedSearch, sortBy, leverageFilter, oracleFilter, showUsd]);
+  }, [debouncedSearch, sortBy, showUsd]);
 
   const merged = useMemo<MergedMarket[]>(() => {
     const result: MergedMarket[] = [];
@@ -432,18 +426,12 @@ function MarketsPageInner() {
           (isAddressSearch && marketMint?.includes(q));
       });
     }
-    // Leverage filter — exclude markets with invalid leverage (0, NaN, Infinity)
-    // when a filter is active (credit: PhotizoAi #228 for the isFinite guard idea)
-    if (leverageFilter !== "all") {
-      const minLev = parseInt(leverageFilter);
-      list = list.filter((m) => Number.isFinite(m.maxLeverage) && m.maxLeverage >= minLev);
-    }
-    // Oracle filter
-    if (oracleFilter === "admin") {
-      list = list.filter((m) => m.isAdminOracle);
-    } else if (oracleFilter === "live") {
-      list = list.filter((m) => !m.isAdminOracle);
-    }
+    // Leverage and oracle-type FILTERS removed: on-chain leverage is a continuous
+    // value capped per-market at creation (e.g. 2x, 2.5x, 5x, 7x, 10x — never 20x),
+    // so fixed "5x+/10x+/20x+" buckets were meaningless (20x matched nothing; 5x
+    // matched almost everything). Max leverage is now a SORT option instead
+    // (`case "leverage"` below). The oracle-type filter was dropped too — its only
+    // meaningful option was "manual", which no live market uses.
     // Helper to get OI (prefer on-chain, fall back to Supabase)
     // Sanitizes sentinel values (u64::MAX) to 0
     // Lives in lib/supabase-numeric.ts so it can be tested: inline here it was
@@ -584,11 +572,18 @@ function MarketsPageInner() {
           if (aTime) return -1; // a has time, b doesn't → a first
           return b.slabAddress.localeCompare(a.slabAddress);
         }
+        case "leverage": {
+          // Highest max leverage first. Max leverage is a continuous per-market cap
+          // (clamped to MAX_DISPLAY_LEVERAGE for display); invalid values sort last.
+          const la = Number.isFinite(a.maxLeverage) ? a.maxLeverage : 0;
+          const lb = Number.isFinite(b.maxLeverage) ? b.maxLeverage : 0;
+          return lb - la;
+        }
         default: return 0;
       }
     });
     return list;
-  }, [effectiveMarkets, debouncedSearch, sortBy, leverageFilter, oracleFilter, showUsd, tokenMetaMap]);
+  }, [effectiveMarkets, debouncedSearch, sortBy, showUsd, tokenMetaMap]);
 
   // P-MED-3: Progressive reveal + intersection observer backup
   // Auto-load items in batches via requestAnimationFrame for instant display.
@@ -639,10 +634,10 @@ function MarketsPageInner() {
     };
   }, [filtered.length]);
 
-  // Reset display count when filters change
+  // Reset display count when the search or sort changes
   useEffect(() => {
     setDisplayCount(20);
-  }, [debouncedSearch, leverageFilter, oracleFilter, sortBy]);
+  }, [debouncedSearch, sortBy]);
 
   const displayedMarkets = filtered.slice(0, displayCount);
   // P0b: v18 health (LP depleted / payout haircut / resolved) for the visible rows.
@@ -654,17 +649,10 @@ function MarketsPageInner() {
   const loading = discoveryLoading || statsLoading;
   const showDegradedBanner = Boolean(loadErrorMessage && !loading && filtered.length > 0);
 
-  // P-MED-4: Separate clear functions
-  const clearFilters = () => {
-    setLeverageFilter("all");
-    setOracleFilter("all");
-  };
-
   const clearSearch = () => {
     setSearch("");
   };
 
-  const hasActiveFilters = leverageFilter !== "all" || oracleFilter !== "all";
   const hasSearch = search.trim() !== "";
 
   return (
@@ -765,7 +753,7 @@ function MarketsPageInner() {
               <span className="md:hidden ml-auto shrink-0 whitespace-nowrap text-sm font-semibold uppercase tracking-[0.08em] text-[var(--text)] tabular-nums" style={{ fontFamily: "var(--font-mono)" }}>
                 {loading
                   ? <>&hellip; MARKETS</>
-                  : (hasSearch || hasActiveFilters) && filtered.length !== activeMarkets.length
+                  : (hasSearch) && filtered.length !== activeMarkets.length
                     ? <>{filtered.length} / {activeMarkets.length} {activeMarkets.length !== 1 ? "MARKETS" : "MARKET"}</>
                     : <>{activeMarkets.length} {activeMarkets.length !== 1 ? "MARKETS" : "MARKET"}</>}
               </span>
@@ -806,76 +794,9 @@ function MarketsPageInner() {
               </button>
             </div>
 
-            {/* Separator */}
-            <span className="hidden sm:inline-block h-4 w-px bg-[var(--border)] shrink-0" />
-            <span className="sm:hidden text-[var(--text-dim)] text-sm font-bold shrink-0">&middot;</span>
-
-            {/* Leverage filter */}
-            <div className="flex gap-1 rounded-sm border border-[var(--border)] bg-[var(--bg-elevated)] p-0.5 shrink-0" role="group" aria-label="Filter by leverage">
-              {([
-                { key: "all" as LeverageFilter, label: "ALL" },
-                { key: "5x" as LeverageFilter, label: "5X+" },
-                { key: "10x" as LeverageFilter, label: "10X+" },
-                { key: "20x" as LeverageFilter, label: "20X+" },
-              ]).map((opt) => (
-                <button
-                  key={opt.key}
-                  onClick={() => setLeverageFilter(opt.key)}
-                  className={[
-                    "rounded-sm px-2.5 py-1.5 sm:py-1 text-[10px] font-bold uppercase tracking-[0.08em] transition-all duration-200 min-h-[36px] sm:min-h-[32px]",
-                    leverageFilter === opt.key
-                      ? "bg-[var(--accent)]/10 text-[var(--accent)]"
-                      : "text-[var(--text-secondary)] hover:text-[var(--text)]",
-                  ].join(" ")}
-                  aria-pressed={leverageFilter === opt.key}
-                  aria-label={`Filter leverage ${opt.label}`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-
-            {/* Separator */}
-            <span className="hidden sm:inline-block h-4 w-px bg-[var(--border)] shrink-0" />
-            <span className="sm:hidden text-[var(--text-dim)] text-sm font-bold shrink-0">&middot;</span>
-
-            {/* Oracle filter */}
-            <div className="flex gap-1 rounded-sm border border-[var(--border)] bg-[var(--bg-elevated)] p-0.5 shrink-0" role="group" aria-label="Filter by oracle type">
-              {([
-                { key: "all" as OracleFilter, label: "ALL ORACLES" },
-                { key: "live" as OracleFilter, label: "LIVE FEED" },
-                { key: "admin" as OracleFilter, label: "MANUAL" },
-              ]).map((opt) => (
-                <button
-                  key={opt.key}
-                  onClick={() => setOracleFilter(opt.key)}
-                  className={[
-                    "rounded-sm px-2.5 py-1.5 sm:py-1 text-[10px] font-bold uppercase tracking-[0.08em] transition-all duration-200 min-h-[36px] sm:min-h-[32px]",
-                    oracleFilter === opt.key
-                      ? "bg-[var(--accent)]/10 text-[var(--accent)]"
-                      : "text-[var(--text-secondary)] hover:text-[var(--text)]",
-                  ].join(" ")}
-                  aria-pressed={oracleFilter === opt.key}
-                  aria-label={`Filter oracle ${opt.label}`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-
-            {/* P-MED-4: Separate clear buttons */}
-            {hasActiveFilters && (
-              <button
-                onClick={clearFilters}
-                className="text-[10px] font-bold uppercase tracking-[0.08em] text-[var(--short)] hover:text-[var(--short)]/80 underline underline-offset-2 shrink-0"
-              >
-                CLEAR
-              </button>
-            )}
-
             {/* Results count — desktop only, in filter row */}
             <span className="hidden md:inline-block ml-auto text-xs font-semibold uppercase tracking-[0.08em] text-[var(--text)] shrink-0 whitespace-nowrap tabular-nums" style={{ fontFamily: "var(--font-mono)" }}>
-              {(hasSearch || hasActiveFilters) && filtered.length !== activeMarkets.length
+              {(hasSearch) && filtered.length !== activeMarkets.length
                 ? `${filtered.length} / ${activeMarkets.length} MARKETS`
                 : `${activeMarkets.length} ${activeMarkets.length !== 1 ? "MARKETS" : "MARKET"}`}
             </span>
@@ -909,7 +830,7 @@ function MarketsPageInner() {
               </div>
             ) : filtered.length === 0 ? (
             <div className="rounded-sm border border-[var(--border)] bg-[var(--panel-bg)] p-16 text-center">
-              {hasSearch || hasActiveFilters ? (
+              {hasSearch ? (
                 <>
                   <h3 className="text-2xl font-medium tracking-tight text-[var(--text)]" style={{ fontFamily: "var(--font-display)" }}>nothing here.</h3>
                   <p className="mt-1 text-sm text-[var(--text-secondary)]">try a different search or filter.</p>
@@ -1256,6 +1177,7 @@ function MarketsPageInner() {
 const MARKET_SORT_OPTIONS: readonly { key: SortKey; label: string; name: string }[] = [
   { key: "volume", label: "VOLUME", name: "Volume" },
   { key: "oi", label: "OI", name: "Open interest" },
+  { key: "leverage", label: "MAX LEV", name: "Max leverage" },
   { key: "health", label: "HEALTH", name: "Health" },
   { key: "recent", label: "RECENT", name: "Newest" },
 ];
