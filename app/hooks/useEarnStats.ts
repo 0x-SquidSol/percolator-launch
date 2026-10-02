@@ -1,5 +1,6 @@
 'use client';
 
+import { isHiddenFromListing } from "@/lib/listing-hidden";
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Connection, PublicKey } from '@solana/web3.js';
 import { deriveLpVaultRegistry, parseLpVaultRegistry, isV17Account } from '@percolatorct/sdk';
@@ -595,7 +596,7 @@ export function buildLiveMarkets(
   vaultsTrusted = true,
 ): MarketVaultInfo[] {
   const live = liveMarkets
-    .filter((m) => !isBlockedSlab(m.slabAddress))
+    .filter((m) => !isBlockedSlab(m.slabAddress) && !isHiddenFromListing(m.slabAddress))
     .map((m) => {
       const info = buildMarketVaultInfo(m.slabAddress, m.symbol, m.name, m.mainnetCa, curatedVaults, supabaseBySlab, onChainMaxLeverage);
       return vaultsTrusted ? info : { ...info, hasVault: undefined };
@@ -605,7 +606,7 @@ export function buildLiveMarkets(
   // duplicate registry rows, in one pass.
   const seen = new Set<string>(liveSlabSet);
   const registered = registeredMarkets
-    .filter((m) => !isBlockedSlab(m.slabAddress))
+    .filter((m) => !isBlockedSlab(m.slabAddress) && !isHiddenFromListing(m.slabAddress))
     .filter((m) => {
       if (seen.has(m.slabAddress)) return false;
       seen.add(m.slabAddress);
