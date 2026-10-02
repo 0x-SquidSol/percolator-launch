@@ -9,7 +9,7 @@ can execute the whole thing top to bottom.
 > (SOL, JUP, TRUMP, PENGU, BURNIE, Percolator) priced off live mainnet DEX pools. The
 > trading app is the **`app/`** directory of this repo.
 >
-> **▶ Live playground: https://percolator-playground.vercel.app** — connect a devnet
+> **▶ Live playground: https://play.percolator.trade** — connect a devnet
 > wallet and trade, no setup. (This guide is for contributing to it.)
 
 ## Contents

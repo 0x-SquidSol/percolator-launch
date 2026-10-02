@@ -11,7 +11,7 @@ the guardrails.
 1. **One repo, one install.** The playground is the **`playground` branch** (`main` is the
    marketing site): `git clone -b playground …` → `pnpm install` (it installs
    `@percolatorct/sdk` from npm — no sibling clone, no SDK build). Live
-   playground: https://percolator-playground.vercel.app
+   playground: https://play.percolator.trade
 2. **Frontend + devnet only.** We want frontend improvements and bug fixes. Never
    redeploy programs, switch to mainnet, run the keeper/faucet locally, `npm publish`,
    or `vercel deploy`.
