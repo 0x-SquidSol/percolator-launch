@@ -43,12 +43,12 @@ const rpc = await import("@/lib/server-rpc");
 const { DEVNET_GENESIS_HASH, SERVER_SOL_TARGET_LAMPORTS, grantServerSol, getSolFaucetSigner, __resetSolFaucetSignerForTest } = lib;
 
 /** faucet_claims with its UNIQUE(wallet, fund_type), enough of the PostgREST builder for the lib. */
-function fakeDb() {
+function fakeDb(opts: { uuid?: boolean } = {}) {
   let seq = 0;
-  const rows: { id: number; wallet: string; fund_type: string; claimed_at: string }[] = [];
+  const rows: { id: number | string; wallet: string; fund_type: string; claimed_at: string }[] = [];
   const q = (filters: [string, string, unknown][] = []) => {
     const match = (r: Record<string, unknown>) =>
-      filters.every(([op, k, v]) => (op === "eq" ? r[k] === v : op === "lt" ? String(r[k]) < String(v) : op === "gte" ? String(r[k]) >= String(v) : op === "lte" ? (r[k] as number) <= (v as number) : true));
+      filters.every(([op, k, v]) => (op === "eq" ? r[k] === v : op === "lt" ? String(r[k]) < String(v) : op === "gte" ? String(r[k]) >= String(v) : op === "lte" ? (typeof r[k] === "number" && typeof v === "number" ? (r[k] as number) <= v : String(r[k]) <= String(v)) : true));
     return { filters, match };
   };
   const table = {
@@ -66,7 +66,7 @@ function fakeDb() {
       select: () => ({
         maybeSingle: async () => {
           if (rows.some((x) => x.wallet === r.wallet && x.fund_type === r.fund_type)) return { data: null, error: { code: "23505" } };
-          const row = { id: ++seq, ...r };
+          const row = { id: opts.uuid ? `00000000-0000-4000-8000-${String(++seq).padStart(12, "0")}` : ++seq, ...r };
           rows.push(row);
           return { data: { id: row.id }, error: null };
         },
@@ -201,5 +201,22 @@ describe("re-review I-D: a failed balance read falls back quietly", () => {
     expect(await grantServerSol({ connection: c as never, db, to: to(), ip: ip(), env: env() })).toEqual({ status: "skipped", reason: "failed" });
     expect(c.sendRawTransaction).not.toHaveBeenCalled();
     expect(rows).toHaveLength(0);
+  });
+});
+
+describe("2026-10-02 live: faucet_claims.id is a UUID in production", () => {
+  it("a UUID-id reservation succeeds (was 'no-db', which disabled the server SOL path)", async () => {
+    const { db } = fakeDb({ uuid: true });
+    const r = await lib.reserveServerSol(db, "WALLET-A", Date.parse("2026-10-02T05:00:00Z"));
+    expect(r).toHaveProperty("id");
+    expect(typeof (r as { id: unknown }).id).toBe("string");
+  });
+  it("the daily budget is counted by claim time, so it still holds with UUID ids", async () => {
+    const { db } = fakeDb({ uuid: true });
+    const env = { PLAYGROUND_SOL_FAUCET_DAILY_SOL: "0.1" } as NodeJS.ProcessEnv; // 0.1 SOL / 0.05 = 2 sends
+    const t0 = Date.parse("2026-10-02T05:00:00Z");
+    expect(await lib.reserveServerSol(db, "W1", t0, env)).toHaveProperty("id");
+    expect(await lib.reserveServerSol(db, "W2", t0 + 1000, env)).toHaveProperty("id");
+    expect(await lib.reserveServerSol(db, "W3", t0 + 2000, env)).toEqual({ reason: "budget" });
   });
 });
