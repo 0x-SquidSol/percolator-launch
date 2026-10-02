@@ -87,7 +87,7 @@ export function TradeHistory() {
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   const handleExportCsv = () => {
-    const headers = ["Time", "Market", "Side", "Size", "Price", "Fee", "Tx"];
+    const headers = ["Time", "Market", "Side", "Size", "Entry/Exit Price", "Fee", "Tx"];
     const rows = filtered.map((t) => [
       t.created_at,
       t.slab_address,
@@ -189,7 +189,10 @@ export function TradeHistory() {
                 <th className="px-3 py-3 text-left">Market</th>
                 <th className="px-3 py-3 text-left">Side</th>
                 <th className="px-3 py-3 text-right">Size</th>
-                <th className="px-3 py-3 text-right">Price</th>
+                {/* Each row is a fill — a trade's entry or a close's exit — so the column is the
+                    execution price of THAT fill, not the token's current market price. Label it
+                    accordingly so the number isn't misread as a live quote. */}
+                <th className="px-3 py-3 text-right">Entry/Exit</th>
                 <th className="px-3 py-3 text-right">Fee</th>
                 <th className="px-3 py-3 text-center">Tx</th>
               </tr>

@@ -155,7 +155,8 @@ export const TradeHistory: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             <div>Time</div>
             <div>Side</div>
             <div className="text-right">Size</div>
-            <div className="text-right">Price</div>
+            {/* Each row is a fill — the trade's entry or the close's exit price, not the live price. */}
+            <div className="text-right">Entry/Exit</div>
           </div>
           <div className="divide-y divide-[var(--border)]/15">
             {trades.map((trade) => (

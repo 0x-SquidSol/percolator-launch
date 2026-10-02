@@ -159,7 +159,8 @@ export function TradeHistoryTable({
     <div>
       {/* Header row */}
       <div className="hidden sm:grid sm:grid-cols-[1fr_80px_110px_110px_90px_110px_32px] gap-x-4 border-b border-[var(--border)] bg-[var(--bg-elevated)]/50 px-4 py-2">
-        {["Market", "Side", "Size", "Price", "Fee", "Time", "Tx"].map((h) => (
+        {/* "Entry/Exit" — each row is a fill's execution price, not the token's live price. */}
+        {["Market", "Side", "Size", "Entry/Exit", "Fee", "Time", "Tx"].map((h) => (
           <p
             key={h}
             className="text-[9px] font-medium uppercase tracking-[0.2em] text-[var(--text)]"
