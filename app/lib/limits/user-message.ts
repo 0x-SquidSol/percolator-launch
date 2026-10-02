@@ -358,6 +358,12 @@ export function resolveUserMessage(err: unknown, ctx: MessageContext): UserMessa
         // must stay generic. Funds are safe either way (a failed tx moves nothing).
         if (ctx.surface === "earn-withdraw")
           return m("earn-payout-split", "paused", "Can't pay out in full", "Part of this vault's backing is on the market's other side right now. Nothing was sent and your withdrawal stays ready to collect.");
+        // Unbound Earn vault DEPOSIT: one backing pot has taken more trading loss than its
+        // principal, and the program refuses to price new shares (lp_vault_domain_nav_atoms
+        // fails closed, 2026-10-02 live on OTC). It clears by itself as the market moves.
+        // Nothing was sent.
+        if (ctx.surface === "earn-deposit")
+          return m("earn-deposit-settling", "wait", "Vault is settling", "This vault can't take new deposits for a moment while its recent trades settle. Nothing was sent. Please try again shortly.");
         break;
       case W.VaultLpBindRequiresFlatAsset:
         return m("setup-not-allowed", "error", "Not available here", "This market already has open positions, so the Earn vault can't take over its liquidity. Create a new market to use it.");
