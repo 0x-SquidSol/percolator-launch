@@ -43,7 +43,7 @@ import { computeNotionalNative } from "@/lib/notional";
 import { availableLeverage as availableLeverageFor, nextLeverageInputState, clampSliderLeverage, LEVERAGE_STEP } from "@/lib/leverage-control";
 import { useTrade, prewarmTradeSubmission } from "@/hooks/useTrade";
 import { useFirstTrade } from "@/hooks/useFirstTrade";
-import { FIRST_TRADE_COPY, FirstTradeDepositError, firstTradeDepositAtoms, tradableMarginAtoms } from "@/lib/first-trade";
+import { FIRST_TRADE_COPY, FirstTradeDepositError, fundDepositAtoms, tradableMarginAtoms } from "@/lib/first-trade";
 import { useMarketFillCap } from "@/hooks/useMarketFillCap";
 import { remainingSideCapacityQ, UNLIMITED_CAPACITY } from "@/lib/marketCapacity";
 import { isBlockedSlab } from "@/lib/blocklist";
@@ -459,6 +459,11 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // What the ticket can OFFER: in-market available plus what the wallet can deposit in the same
   // approval (fund-and-trade), net of the deposit buffer and fee. `effectiveBalance` stays the
   // in-market figure that decides whether a deposit is bundled at all.
+  // What "Available" SHOWS: the real money — free in-market USDC plus the wallet (2026-10-02 live
+  // report: it showed the wallet / 1.1, so it never matched Solflare). Max / % use tradableBalance.
+  const displayAvailable = mockMode
+    ? effectiveBalance
+    : (userAccount ? availableBalance : 0n) + (walletAtaBalance ?? 0n);
   const tradableBalance = mockMode
     ? effectiveBalance
     : tradableMarginAtoms({
@@ -644,7 +649,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const fee = hasOrder ? computeTradingFee((positionSize * oracleE6) / 1_000_000n, tradingFeeBps) : 0n;
   // The deposit this order needs (margin + fee + 10%), editable; never more than the wallet holds.
   const marginShort = needsAccount ? marginNative : marginNative > availableBalance ? marginNative - availableBalance : 0n;
-  const fundNeededAtoms = fundingMode && hasOrder ? firstTradeDepositAtoms(marginShort, fee, decimals) : 0n;
+  const fundNeededAtoms = fundingMode && hasOrder ? fundDepositAtoms(marginShort, fee, walletAtaBalance ?? 0n, decimals) : 0n;
   const fundMinAtoms = fundingMode && hasOrder ? marginShort + fee : 0n;
   const fundEnteredAtoms = fundInput ? parsePercToNative(fundInput, decimals) : 0n;
   const fundAtoms = fundEnteredAtoms > 0n ? fundEnteredAtoms : fundNeededAtoms;
@@ -1367,7 +1372,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
           >
             <span data-testid="ticket-available">
               <span className="text-[var(--text-secondary)]">Available </span>
-              <span className="text-[var(--text)]">{formatTokenAmount(tradableBalance, decimals, 2)}</span>
+              <span className="text-[var(--text)]">{formatTokenAmount(displayAvailable, decimals, 2)}</span>
               <span className="text-[var(--text-secondary)]"> {collateralSymbol}</span>
             </span>
             {maxLabel && (
@@ -1595,6 +1600,11 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             </button>
             <span className="text-[10px] text-[var(--text-secondary)]">{collateralSymbol}</span>
           </div>
+          {!fundOverWallet && !fundTooSmall && (
+            <p data-testid="fund-explain" className="mt-1 text-[11px] leading-snug text-[var(--text-secondary)]">
+              {`Covers ${formatTokenAmount(marginShort, decimals, 2)} margin + fee for this ${formatTokenAmount(notionalNative, decimals, 2)} position${!needsAccount && availableBalance > 0n ? `; ${formatTokenAmount(availableBalance, decimals, 2)} already on this market` : ""}. Anything unused stays in your account.`}
+            </p>
+          )}
           {fundOverWallet && (
             <p role="alert" data-testid="starter-deposit-error" className="mt-1 text-[11px] text-[var(--warning)]">
               {depositAmountMessage("exceeds", walletAtaBalance ?? 0n, decimals, collateralSymbol)}
