@@ -9,6 +9,8 @@ import { adlReductionTooltip } from "@/lib/v17-adl";
 import { computeLiquidationDistancePct } from "@/lib/liquidation-distance";
 import { SlabProvider } from "@/components/providers/SlabProvider";
 import { useClosePosition } from "@/hooks/useClosePosition";
+import { PnlShareButton } from "@/components/share/PnlShareButton";
+import type { PnlCardData } from "@/lib/pnl-card";
 import { useEngineFreshness } from "@/hooks/useEngineFreshness";
 import { ClosePositionModal } from "@/components/trade/ClosePositionModal";
 import { clearEntryPrice } from "@/lib/entry-price";
@@ -353,6 +355,27 @@ function PositionCard({
                   </span>
                 )}
               </div>
+              <PnlShareButton
+                data={
+                  hasPosition && posEntry > 0n && markE6 > 0n
+                    ? {
+                        slab: pos.slabAddress,
+                        symbol: baseSymbol,
+                        name: baseSymbol,
+                        logoUrl: null,
+                        mintAddress: null,
+                        decimals,
+                        nominalSizeQ: pos.account?.positionSize ?? posSize,
+                        effectiveSizeQ: posSize,
+                        entryE6: posEntry,
+                        initialMarginBps: pos.initialMarginBps,
+                        initialMarkE6: markE6,
+                      } satisfies PnlCardData
+                    : null
+                }
+                label="Share PnL"
+                className="shrink-0 rounded-none border border-[var(--accent)]/30 px-2.5 py-1 text-[9px] font-medium uppercase tracking-[0.1em] text-[var(--accent)] transition-all duration-150 hover:border-[var(--accent)]/60 hover:bg-[var(--accent)]/10"
+              />
               <button
                 type="button"
                 onClick={(e) => {
