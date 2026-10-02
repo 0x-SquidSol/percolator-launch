@@ -133,7 +133,7 @@ export function dailyBudgetLamports(env: NodeJS.ProcessEnv = process.env): numbe
  * inserted first, then the rows at or before it in the window are counted; over the cap it is
  * deleted again. Returns the reservation id, or why not.
  */
-export async function reserveServerSol(db: Db, wallet: string, now = Date.now(), env: NodeJS.ProcessEnv = process.env): Promise<{ id: number } | { reason: "no-db" | "wallet-limit" | "budget" }> {
+export async function reserveServerSol(db: Db, wallet: string, now = Date.now(), env: NodeJS.ProcessEnv = process.env): Promise<{ id: number | string } | { reason: "no-db" | "wallet-limit" | "budget" }> {
   const windowStart = new Date(now - DAY_MS).toISOString();
   try {
     await db.from("faucet_claims").delete().eq("wallet", wallet).eq("fund_type", SERVER_SOL_FUND_TYPE).lt("claimed_at", windowStart);
@@ -143,14 +143,20 @@ export async function reserveServerSol(db: Db, wallet: string, now = Date.now(),
       .select("id")
       .maybeSingle();
     if (error) return { reason: error.code === "23505" ? "wallet-limit" : "no-db" };
-    const id = (data as { id?: number } | null)?.id;
-    if (typeof id !== "number") return { reason: "no-db" };
+    // faucet_claims.id is a UUID in production (2026-10-02 live: a `typeof id === "number"` check
+    // turned EVERY reservation into "no-db", left the row behind (24h wallet-limit) and silently
+    // disabled the server SOL path — new users got Sim-USDC but no SOL and their first trade failed
+    // "Account not found"). Accept either id type, and count the budget by claim TIME, not id order
+    // (UUIDs have no order): this claim and every server-sol claim at or before it in the window.
+    const id = (data as { id?: number | string } | null)?.id;
+    if (typeof id !== "number" && (typeof id !== "string" || id.length === 0)) return { reason: "no-db" };
+    const claimedAt = new Date(now).toISOString();
     const { count, error: cErr } = await db
       .from("faucet_claims")
       .select("id", { count: "exact", head: true })
       .eq("fund_type", SERVER_SOL_FUND_TYPE)
       .gte("claimed_at", windowStart)
-      .lte("id", id);
+      .lte("claimed_at", claimedAt);
     const maxSends = Math.floor(dailyBudgetLamports(env) / SERVER_SOL_TARGET_LAMPORTS);
     if (cErr || typeof count !== "number" || count > maxSends) {
       await db.from("faucet_claims").delete().eq("id", id);
@@ -162,7 +168,7 @@ export async function reserveServerSol(db: Db, wallet: string, now = Date.now(),
   }
 }
 
-async function releaseReservation(db: Db, id: number): Promise<void> {
+async function releaseReservation(db: Db, id: number | string): Promise<void> {
   try {
     await db.from("faucet_claims").delete().eq("id", id);
   } catch {
