@@ -24,15 +24,10 @@ export function StatsBar() {
   // test; this also fixes the length-based cases below.)
   const positions = useMemo(() => allPositions.filter(isOpenPosition), [allPositions]);
 
-  // Calculate real stats from portfolio positions (memoized — pure over `positions`)
-  const { totalPnl, wins, losses, total, inProfitPct } = useMemo(() => {
+  // Mark-to-market PnL of the open positions (memoized — pure over `positions`).
+  const totalPnl = useMemo(() => {
     const totalPnlRaw = positions.reduce((sum, p) => sum + (p.unrealizedPnl ?? 0n), 0n);
-    const totalPnl = Number(totalPnlRaw) / 1e6; // e6 → human
-    const wins = positions.filter((p) => (p.unrealizedPnl ?? 0n) > 0n).length;
-    const losses = positions.filter((p) => (p.unrealizedPnl ?? 0n) < 0n).length;
-    const total = wins + losses;
-    const inProfitPct = total > 0 ? ((wins / total) * 100).toFixed(0) : null;
-    return { totalPnl, wins, losses, total, inProfitPct };
+    return Number(totalPnlRaw) / 1e6; // e6 → human
   }, [positions]);
 
   // M15: v17 has no maker/taker fee split — "Fee Tier" used to fabricate one
@@ -73,17 +68,6 @@ export function StatsBar() {
       color: totalPnl >= 0 ? "text-[var(--long)]" : "text-[var(--short)]",
     },
     {
-      // This is NOT a trade win rate: it counts OPEN positions whose unrealized
-      // PnL is positive right now. Closed trades are not tracked anywhere (no
-      // per-trader trade history / realized PnL), so a "Win Rate" label claimed
-      // a track record this figure cannot support — a position that is up 1c
-      // and later closes at a loss was a "win". Label what it is.
-      label: "In Profit",
-      value: loading ? "..." : inProfitPct == null ? "--" : `${inProfitPct}%`,
-      sub: total > 0 ? `${wins} up / ${losses} down · open positions` : "No open positions",
-      color: "text-[var(--text)]",
-    },
-    {
       label: "Trade Fee",
       value: loading ? "..." : feeTierValue,
       sub: positions.length > 0 ? "Per market" : "No open positions",
@@ -92,7 +76,7 @@ export function StatsBar() {
   ];
 
   return (
-    <div className="grid grid-cols-1 gap-px overflow-hidden border border-[var(--border)] bg-[var(--border)] sm:grid-cols-3">
+    <div className="grid grid-cols-1 gap-px overflow-hidden border border-[var(--border)] bg-[var(--border)] sm:grid-cols-2">
       {cards.map((card) => (
         <div
           key={card.label}

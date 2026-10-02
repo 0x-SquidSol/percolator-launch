@@ -41,12 +41,12 @@ describe("PnlChart", () => {
 });
 
 describe("StatsBar in-profit card", () => {
-  it("does not call open-position unrealized PnL a 'Win Rate'", () => {
+  it("no longer renders the 'In Profit' block (removed as noise); PnL + Trade Fee remain", () => {
     render(<StatsBar />);
+    expect(screen.queryByText("In Profit")).toBeNull();
     expect(screen.queryByText("Win Rate")).toBeNull();
-    expect(screen.queryByText(/No trades yet/i)).toBeNull();
-    expect(screen.getByText("In Profit")).toBeTruthy();
-    expect(screen.getByText("100%")).toBeTruthy();
-    expect(screen.getByText(/1 up \/ 0 down · open positions/)).toBeTruthy();
+    expect(screen.queryByText(/up \/ .*down/)).toBeNull();
+    expect(screen.getByText("Unrealized PnL")).toBeTruthy();
+    expect(screen.getByText("Trade Fee")).toBeTruthy();
   });
 });
