@@ -1,4 +1,5 @@
 import "@/lib/polyfills";
+import { AutoSignIn } from "@/components/wallet/AutoSignIn";
 import { ConnectionBar } from "@/components/layout/ConnectionBar";
 import type { Metadata } from "next";
 import { JetBrains_Mono, Outfit } from "next/font/google";
@@ -118,6 +119,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <body suppressHydrationWarning className="min-h-screen antialiased">
         <JsonLd data={[organizationSchema(), websiteSchema()]} />
         <Providers>
+          <AutoSignIn />
           <div className="relative z-[1] flex min-h-screen flex-col">
             <MaintenanceBanner />
             <ChromeGate>

@@ -81,6 +81,13 @@ describe("GET/POST /enter route", () => {
     return import("@/app/enter/route");
   }
 
+  it("a granted entry lands on /?signin=1 so the playground opens Privy sign-in (same embedded wallet)", async () => {
+    const { GET } = await route();
+    const token = gate.mintHandoff("row-8", 8, SECRET);
+    const res = await GET(new NextRequest(`https://percolator-playground.vercel.app/enter?t=${token}`));
+    expect(new URL(res.headers.get("location")!).searchParams.get("signin")).toBe("1");
+  });
+
   it("accepts ?t= — the exact parameter percolator.trade's /api/playground/enter redirects with", async () => {
     const { GET } = await route();
     const token = gate.mintHandoff("row-7", 7, SECRET);
