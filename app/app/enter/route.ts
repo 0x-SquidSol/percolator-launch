@@ -49,7 +49,7 @@ const replayGuard: ReplayGuard = async (mac, ttl) => {
 };
 
 function finish(req: NextRequest, cookie: string | null): NextResponse {
-  const res = NextResponse.redirect(new URL(cookie ? "/" : "/locked", req.url), { status: 303 });
+  const res = NextResponse.redirect(new URL(cookie ? "/?signin=1" : "/locked", req.url), { status: 303 });
   if (cookie) res.cookies.set(SESSION_COOKIE, cookie, SESSION_COOKIE_OPTIONS);
   // The token rode in on this request; do not let it leak onward or be cached.
   res.headers.set("Cache-Control", "no-store");
