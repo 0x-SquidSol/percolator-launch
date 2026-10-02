@@ -11,6 +11,7 @@ import { isMockSlab, getMockUserAccount } from "@/lib/mock-trade-data";
 import { getEntryPrice } from "@/lib/entry-price";
 import { formatPnl } from "@/lib/chart-pnl-format";
 import { adlSideFactor, effectiveExposureQ } from "@/lib/v17-adl";
+import { applyInvert, sanitizePriceE6 } from "@/lib/oraclePrice";
 
 interface ChartPnlBadgeProps {
   slabAddress: string;
@@ -39,7 +40,21 @@ export const ChartPnlBadge: FC<ChartPnlBadgeProps> = ({ slabAddress }) => {
   if (!userAccount) return null;
   const { account } = userAccount;
   if (account.positionSize === 0n) return null;
-  if (livePriceE6 == null || livePriceE6 <= 0n || priceUsd == null) return null;
+
+  // Mark price: prefer the live store tick, but fall back to the on-chain config
+  // price IMMEDIATELY so the badge appears as soon as the market config loads,
+  // instead of waiting a few seconds for the first live tick / store seed. This
+  // mirrors PositionsDock's `currentPriceE6 = livePriceE6 ?? onChainPriceE6`
+  // (same `sanitizePriceE6(applyInvert(lastEffectivePriceE6, invert))` expression),
+  // so the badge and the dock row show the SAME PnL during the fallback window.
+  const onChainE6 = marketConfig
+    ? sanitizePriceE6(applyInvert(marketConfig.lastEffectivePriceE6, marketConfig.invert))
+    : 0n;
+  const markE6 = livePriceE6 != null && livePriceE6 > 0n ? livePriceE6 : onChainE6;
+  // sim-USDC collateral is $1-pegged and the store's `priceUsd` equals `markE6 / 1e6`
+  // anyway, so derive the USD figure from the mark when the store has none yet.
+  const markUsd = priceUsd != null ? priceUsd : markE6 > 0n ? Number(markE6) / 1_000_000 : null;
+  if (markE6 <= 0n || markUsd == null) return null;
 
   // V12_1: entry_price was removed from the on-chain account struct, so
   // accounts created via the position-NFT path have account.entryPrice == 0n.
@@ -60,13 +75,13 @@ export const ChartPnlBadge: FC<ChartPnlBadgeProps> = ({ slabAddress }) => {
   const effectiveSize = adlFactors
     ? effectiveExposureQ(account.positionSize, account.adlABasis, adlSideFactor(adlFactors, account.positionSize > 0n ? 0 : 1))
     : account.positionSize;
-  const pnlTokens = computeMarkPnl(effectiveSize, resolvedEntryPrice, livePriceE6);
-  const pnlUsd = (Number(pnlTokens) / 10 ** decimals) * priceUsd;
+  const pnlTokens = computeMarkPnl(effectiveSize, resolvedEntryPrice, markE6);
+  const pnlUsd = (Number(pnlTokens) / 10 ** decimals) * markUsd;
   // pnlTokens is coin-margined native scale (same units as positionSize), not
   // collateral — convert via computeMarkPnlCollateral before it's the basis
   // for ROE% (computePnlPercent expects a collateral-scale numerator to
   // compare against a collateral-scale denominator).
-  const pnlCollateral = computeMarkPnlCollateral(pnlTokens, livePriceE6);
+  const pnlCollateral = computeMarkPnlCollateral(pnlTokens, markE6);
   // BUG 14 fix: standardize the ROE denominator on this position's OWN locked
   // initial margin (matches PositionsDock/PositionPanel/AccountRiskSidebar),
   // not `account.capital` — capital includes collateral not backing this
