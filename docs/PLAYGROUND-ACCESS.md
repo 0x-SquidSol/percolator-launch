@@ -1,6 +1,6 @@
 # Playground access — the devnet v2 waitlist lock
 
-Devnet v2 (percolator-playground.vercel.app, branch `playground`) is open to the **first 1,000
+Devnet v2 (play.percolator.trade, branch `playground`) is open to the **first 1,000
 positions on the waitlist**. The waitlist and the "am I in?" check live on percolator.trade
 (branch `main`, `/playground` + `POST /api/playground/authorize`, design by @0x-SquidSol in #2732).
 The two are different registrable domains, so the gate hands the visitor over with a short-lived
@@ -9,7 +9,7 @@ signed token and this app sets its own cookie.
 ```
 percolator.trade/playground ──(Privy → waitlist row → position ≤ cutoff)──► handoff token (90s)
         │
-        └──► percolator-playground.vercel.app/enter?token=<handoff>   (or POST form field `token`)
+        └──► play.percolator.trade/enter?t=<handoff>   (or POST form field `token`)
                  verify signature + expiry + position ≤ cutoff + single use
                  Set-Cookie: pg_access=<session>; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=86400
                  303 → /
