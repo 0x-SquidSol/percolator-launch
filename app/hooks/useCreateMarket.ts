@@ -688,6 +688,47 @@ interface TailTxDescriptor {
 const MAX_BLOCKHASH_RECOVERIES = 2;
 
 /**
+ * A batch whose wallet approval took this long is treated as a "slow signer".
+ *
+ * Every tx in the batch is signed up front against ONE blockhash, which is only
+ * valid for ~60-90s. A wallet that can only approve one transaction at a time
+ * (no signAllTransactions, or Privy's per-tx fallback signer) asks the user N
+ * times before anything is broadcast; at a human pace that outlives the
+ * blockhash, the first send is rejected as expired, and `recoverTailFrom` used
+ * to ask the user to approve the whole remainder AGAIN, which expires the same
+ * way: 7 + 6 + 6 prompts and a failed launch (measured live, see
+ * __tests__/live/create-market-live.test.tsx). Past this threshold a re-sign
+ * of the same shape cannot win the race, so the batch stops asking.
+ */
+export const SLOW_BATCH_SIGN_MS = 30_000;
+
+/** What `broadcastTailTx` does when a tail tx's blockhash has expired. */
+export type ExpiredBlockhashAction = "resign-batch" | "sequential-fallback" | "give-up";
+
+/**
+ * Pure policy for an expired blockhash in the batched tail.
+ *  - signing was quick: one more batch approval is cheap and will land, re-sign it.
+ *  - signing was slow and NOTHING has landed (tail step 0 = M1): switch to the
+ *    sequential path, which signs each step against a fresh blockhash right
+ *    before sending it, so signing speed cannot expire anything.
+ *  - signing was slow and part of the launch already landed: do not re-prompt;
+ *    surface the resumable error (Retry resumes sequentially from the right step).
+ */
+export function expiredBlockhashAction(args: {
+  tailIdx: number;
+  lastSignMs: number;
+  recoveriesUsed: number;
+}): ExpiredBlockhashAction {
+  if (args.recoveriesUsed >= MAX_BLOCKHASH_RECOVERIES) return "give-up";
+  if (args.lastSignMs < SLOW_BATCH_SIGN_MS) return "resign-batch";
+  return args.tailIdx === 0 ? "sequential-fallback" : "give-up";
+}
+
+/** Reason recorded when the batch is skipped for a wallet that cannot sign a batch in one approval. */
+export const NO_BATCH_SIGNING_REASON =
+  "this wallet signs one transaction at a time, so the steps are approved one by one as they land";
+
+/**
  * Single source of truth for the market-registration payload.
  *
  * The batched fast path and the sequential fallback both POST this object to
@@ -744,6 +785,15 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
   const { connection, wallet, programId, slabKp, params, isDevnetEnv, isKeeperOracle, isAdminOracle, isHyperpOracle, oracleMode, setState, abortSignal } = ctx;
   const walletPk = wallet.publicKey;
   const slabPk = slabKp.publicKey;
+  // A wallet with no signAllTransactions would be asked to approve every batch tx one at a
+  // time BEFORE anything is sent, all against one blockhash (see SLOW_BATCH_SIGN_MS). The
+  // sequential path asks for the same number of approvals but sends each one as soon as it
+  // is signed, so a slow approver can never expire a blockhash. Decided before any popup or
+  // network call, so nothing is wasted.
+  if (!wallet.signAllTransactions) {
+    console.warn(`[useCreateMarket] BATCHED launch skipped: wallet exposes no signAllTransactions`);
+    return { status: "fallback", reason: NO_BATCH_SIGNING_REASON };
+  }
   let broadcastStarted = false;
   // Where a failure after broadcast leaves the launch, for Retry and for the
   // error message. The batch used to leave `state.step` at 0, so Retry resumed
@@ -1315,7 +1365,10 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
 
     // ---- ONE wallet approval for the whole batch --------------------------
     setState((s) => ({ ...s, phase: "awaiting-signature", stepLabel: "Approve the transaction batch in your wallet..." }));
+    let lastSignMs = 0;
+    const signStartedAt = Date.now();
     const signedTxs = await signAllCompat(wallet, orderedTxs);
+    lastSignMs = Date.now() - signStartedAt;
 
     // ---- Partial-sign keypairs AFTER the wallet signs (Privy embedded
     //      wallets can strip unknown signatures added before their own
@@ -1412,7 +1465,9 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       const freshBlockhash = await getFreshBlockhash(connection, true);
       const rebuiltDescriptors = tailDescriptors.slice(startIdx);
       const rebuiltTxs = rebuiltDescriptors.map((d) => buildTailTx(d, freshBlockhash));
+      const resignStartedAt = Date.now();
       const resigned = await signAllCompat(wallet, rebuiltTxs);
+      lastSignMs = Date.now() - resignStartedAt;
       for (let j = 0; j < rebuiltDescriptors.length; j++) {
         const descriptor = rebuiltDescriptors[j];
         const tx = resigned[j];
@@ -1446,10 +1501,22 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
           if (!tx) throw new Error(`Missing signed transaction for tail step ${idx}.`);
           return await broadcastSignedTx(connection, tx);
         } catch (err) {
-          const canRecover = blockhashRecoveries < MAX_BLOCKHASH_RECOVERIES;
+          const action = expiredBlockhashAction({ tailIdx: idx, lastSignMs, recoveriesUsed: blockhashRecoveries });
+          const canRecover = action === "resign-batch";
+          // Slow signer, nothing landed: stop asking and let the sequential path run in this
+          // same create() call. Safe because the signed tx was never accepted (a send
+          // rejected as expired, or a timeout with the signature definitively absent).
+          const abandonToSequential = (): never => {
+            broadcastStarted = false;
+            throw new Error(
+              `approving every step up front took ${Math.round(lastSignMs / 1000)}s, longer than the transactions stay valid; approving step by step instead`,
+              { cause: err },
+            );
+          };
 
           // Case A — the SEND was rejected as expired (no signature exists, the
           // tx never landed): safe to rebuild against a fresh blockhash.
+          if (isBlockhashExpiredError(err) && action === "sequential-fallback") abandonToSequential();
           if (isBlockhashExpiredError(err) && canRecover) {
             console.warn(
               `[useCreateMarket] batch: blockhash expired at tail step ${idx} — recovering (attempt ${blockhashRecoveries + 1}/${MAX_BLOCKHASH_RECOVERIES})`,
@@ -1478,6 +1545,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
               );
               return sig; // it's on-chain; treat exactly like a normal success
             }
+            if (landed === "not-found" && action === "sequential-fallback") abandonToSequential();
             if (landed === "not-found" && canRecover) {
               console.warn(
                 `[useCreateMarket] batch: tail step ${idx} timed out and did not land — recovering (attempt ${blockhashRecoveries + 1}/${MAX_BLOCKHASH_RECOVERIES})`,
