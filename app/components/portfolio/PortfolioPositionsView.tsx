@@ -178,6 +178,8 @@ function PositionCard({
   baseSymbol,
   collateralSymbol,
   decimals,
+  marketName,
+  mintAddress,
   onRefresh,
 }: {
   pos: PortfolioPosition;
@@ -185,6 +187,9 @@ function PositionCard({
   baseSymbol: string;
   collateralSymbol: string;
   decimals: number;
+  /** Market display name + token mint from the stats directory — for the Share-PnL card. */
+  marketName?: string | null;
+  mintAddress?: string | null;
   onRefresh: () => void;
 }) {
   const [showClose, setShowClose] = useState(false);
@@ -361,9 +366,9 @@ function PositionCard({
                     ? {
                         slab: pos.slabAddress,
                         symbol: baseSymbol,
-                        name: baseSymbol,
+                        name: marketName || baseSymbol,
                         logoUrl: null,
-                        mintAddress: null,
+                        mintAddress: mintAddress ?? null,
                         decimals,
                         nominalSizeQ: pos.account?.positionSize ?? posSize,
                         effectiveSizeQ: posSize,
@@ -884,6 +889,8 @@ export function PortfolioPositionsView() {
                   baseSymbol={(pos.symbol ?? statsMap.get(pos.slabAddress)?.symbol ?? pos.slabAddress.slice(0, 6)).replace(/-PERP$/i, "")}
                   collateralSymbol={tokenMetaMap.get(pos.collateralMint.toBase58())?.symbol ?? "USDC"}
                   decimals={getDecimals(pos)}
+                  marketName={statsMap.get(pos.slabAddress)?.name ?? null}
+                  mintAddress={statsMap.get(pos.slabAddress)?.mint_address ?? null}
                   onRefresh={refresh}
                 />
               ))}
