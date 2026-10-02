@@ -71,6 +71,10 @@ export function tradableMarginAtoms(p: {
   feeBps: bigint;
   decimals?: number;
 }): bigint {
+  // 2026-10-02 (live report): the 10% deposit buffer must never shrink what the ticket offers —
+  // "Available 9,154" against a 10.1k wallet read as missing money. The buffer is now taken only
+  // from what the wallet has left (fundDepositAtoms), so the whole wallet backs margin + fee:
+  //   (M - A) + M*k <= W - cent   =>   M <= (W - cent + A) / (1 + k)
   const A = p.inMarketAvailable > 0n ? p.inMarketAvailable : 0n;
   const decimals = p.decimals ?? 6;
   const cent = decimals >= 2 ? 10n ** BigInt(decimals - 2) : 1n;
@@ -78,10 +82,25 @@ export function tradableMarginAtoms(p: {
   if (W <= 0n) return A;
   const lev100 = BigInt(Math.max(100, Math.round(p.leverage100)));
   const fee = p.feeBps > 0n ? p.feeBps : 0n;
-  const num = ((W * 100n) / 110n + A) * 1_000_000n;
-  const den = 1_000_000n + lev100 * fee;
-  const m = num / den;
+  const m = ((W + A) * 1_000_000n) / (1_000_000n + lev100 * fee);
   return m > A ? m : A;
+}
+
+/**
+ * The deposit bundled with a trade: margin shortfall + fee + a 10% buffer, but the buffer only
+ * comes out of what the wallet has spare — never below the order's real need (shortfall + fee),
+ * never above the wallet (rounded down to a cent). Returns the need itself when the wallet can't
+ * cover it, so the ticket's "over wallet" check still fires.
+ */
+export function fundDepositAtoms(shortAtoms: bigint, feeAtoms: bigint, walletAtoms: bigint, decimals = 6): bigint {
+  const need = shortAtoms + feeAtoms;
+  if (need <= 0n) return 0n;
+  const buffered = firstTradeDepositAtoms(shortAtoms, feeAtoms, decimals);
+  if (walletAtoms <= need) return need;
+  const cent = decimals >= 2 ? 10n ** BigInt(decimals - 2) : 1n;
+  const walletCents = (walletAtoms / cent) * cent;
+  const capped = buffered < walletCents ? buffered : walletCents;
+  return capped > need ? capped : need;
 }
 
 /** B landed against a portfolio id someone else took first (the race: rebuild B, one more prompt). */
