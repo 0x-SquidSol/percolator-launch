@@ -368,6 +368,10 @@ export function isEngineLockError(msg: string): boolean {
  *   TX1 below). Omit for the generic case; pass "trade" from a trade()-CPI
  *   submit path (open or close).
  */
+/** Shown when the wallet has no SOL to pay network fees (top-level AccountNotFound). */
+export const NO_SOL_FOR_FEES_MESSAGE =
+  "Your wallet needs a little devnet SOL to pay network fees. Use Get test funds (the faucet) to add some, then try again.";
+
 export function humanizeError(rawMsg: string, context?: "trade"): string {
   // Log for debugging (only in browser)
   if (typeof window !== "undefined") {
@@ -420,6 +424,12 @@ export function humanizeError(rawMsg: string, context?: "trade"): string {
     return "Account already exists - this operation was already completed.";
   }
   if (rawMsg.includes('"AccountNotFound"') || rawMsg.includes("AccountNotFound")) {
+    // A TOP-LEVEL AccountNotFound (not inside an InstructionError) is the runtime refusing a fee
+    // payer with no SOL — the wallet has never been funded, so it "doesn't exist" (2026-10-02 live:
+    // the faucet gave Sim-USDC but no SOL and every first trade showed "Account not found").
+    if (!rawMsg.includes("InstructionError") && !/custom program error/i.test(rawMsg)) {
+      return NO_SOL_FOR_FEES_MESSAGE;
+    }
     return "Account not found on-chain. It may have been closed or not yet created.";
   }
   if (rawMsg.includes("insufficient account keys")) {
