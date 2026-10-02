@@ -44,7 +44,7 @@ type GeckoOhlcvBar = [number, number, number, number, number, number];
  * hardcoded symbol map, so it works for ANY market — curated or
  * wizard-launched — as long as GeckoTerminal has indexed its pool. No Pyth.
  */
-async function geckoTerminalStatsFallback(slab: string, origin: string): Promise<Stats24h | null> {
+async function geckoTerminalStatsFallback(slab: string, origin: string, cookie?: string | null): Promise<Stats24h | null> {
   const cacheKey = `gt:${slab}`;
   const cached = fallbackCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) {
@@ -60,8 +60,12 @@ async function geckoTerminalStatsFallback(slab: string, origin: string): Promise
     // already owns blocklist filtering, network (devnet/mainnet) scoping, slug resolution,
     // and the on-chain fallback for when Supabase itself isn't configured — reusing it keeps
     // this route from having to duplicate (and risk drifting from) all of that.
+    // The waitlist gate (middleware) 401s /api/* without the visitor's pg_access session, so the
+    // self-call must carry the caller's cookie — without it the 24h high/low/change went blank
+    // the moment the gate was enabled (2026-10-02).
     const marketRes = await fetch(`${origin}/api/markets/${slab}`, {
       signal: AbortSignal.timeout(5_000),
+      ...(cookie ? { headers: { cookie } } : {}),
     });
     if (!marketRes.ok) return setCache(null);
     const marketJson = (await marketRes.json()) as { market?: { dex_pool_address?: string | null } };
@@ -146,7 +150,7 @@ export async function GET(
       // geckoTerminalStatsFallback works for ANY market (looks up the pool via
       // /api/markets/:slab) as long as GeckoTerminal has indexed the pool, which
       // is the common case even for a brand-new pump.fun-style coin.
-      const stats = await geckoTerminalStatsFallback(validSlab, req.nextUrl.origin).catch(() => null);
+      const stats = await geckoTerminalStatsFallback(validSlab, req.nextUrl.origin, req.headers.get("cookie")).catch(() => null);
       // BUG 18 fix: was NO_STORE — this is the live path on the hosted playground
       // (no indexer backend), polled every ~10s by every viewer. Cache it briefly
       // so repeated polls within the window don't each re-hit GeckoTerminal
