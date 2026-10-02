@@ -6,6 +6,7 @@ import { RepoGrid } from "@/components/RepoGrid";
 import { ContributorStatsBar } from "@/components/ContributorStatsBar";
 import { CommitHeatmap } from "@/components/CommitHeatmap";
 import { HowToContribute } from "@/components/HowToContribute";
+import { DevnetV2Deployment } from "@/components/DevnetV2Deployment";
 import type {
   RepoData,
   ContributorStats,
@@ -91,6 +92,9 @@ export const DevelopersClient: FC<Props> = ({
 
         {/* ★ Contributor Stats Bar — always render; shows — values when API returns null */}
         <ContributorStatsBar stats={contributorStats} />
+
+        {/* Devnet V2 program addresses (from the app's own config) */}
+        <DevnetV2Deployment />
 
         {/* Repo Grid (with CI statuses for health badges) */}
         <RepoGrid repos={repos} isLive={isLive} ciStatuses={ciStatuses} />
