@@ -9,6 +9,8 @@ import { adlReductionTooltip } from "@/lib/v17-adl";
 import { computeLiquidationDistancePct } from "@/lib/liquidation-distance";
 import { SlabProvider } from "@/components/providers/SlabProvider";
 import { useClosePosition } from "@/hooks/useClosePosition";
+import { PnlShareButton } from "@/components/share/PnlShareButton";
+import type { PnlCardData } from "@/lib/pnl-card";
 import { useEngineFreshness } from "@/hooks/useEngineFreshness";
 import { ClosePositionModal } from "@/components/trade/ClosePositionModal";
 import { useWalletCompat } from "@/hooks/useWalletCompat";
@@ -172,6 +174,9 @@ function PositionCard({
   baseSymbol,
   collateralSymbol,
   decimals,
+  marketName,
+  logoUrl,
+  mainnetCa,
   onRefresh,
 }: {
   pos: PortfolioPosition;
@@ -179,6 +184,10 @@ function PositionCard({
   baseSymbol: string;
   collateralSymbol: string;
   decimals: number;
+  /** Market display name, uploaded logo and mainnet CA from the stats directory — for the Share-PnL card. */
+  marketName?: string | null;
+  logoUrl?: string | null;
+  mainnetCa?: string | null;
   onRefresh: () => void;
 }) {
   const [showClose, setShowClose] = useState(false);
@@ -349,6 +358,32 @@ function PositionCard({
                   </span>
                 )}
               </div>
+              <PnlShareButton
+                // Only for an entry CACHED at open on this device — the dock's rule.
+                // A "derived" entry is an estimate back-solved from on-chain pnl;
+                // fine for the row (it says so in a tooltip) but not for a card
+                // that gets shared as a fact.
+                liveSlabCapacity
+                data={
+                  hasPosition && pos.entryPriceSource === "cache" && posEntry > 0n && markE6 > 0n
+                    ? {
+                        slab: pos.slabAddress,
+                        symbol: baseSymbol,
+                        name: marketName || baseSymbol,
+                        logoUrl: logoUrl ?? null,
+                        mainnetCa: mainnetCa ?? null,
+                        decimals,
+                        nominalSizeQ: pos.account?.positionSize ?? posSize,
+                        effectiveSizeQ: posSize,
+                        entryE6: posEntry,
+                        initialMarginBps: pos.initialMarginBps,
+                        initialMarkE6: markE6,
+                      } satisfies PnlCardData
+                    : null
+                }
+                label="Share PnL"
+                className="shrink-0 rounded-none border border-[var(--accent)]/30 px-2.5 py-1 text-[9px] font-medium uppercase tracking-[0.1em] text-[var(--accent)] transition-all duration-150 hover:border-[var(--accent)]/60 hover:bg-[var(--accent)]/10"
+              />
               {/* An NFT-wrapped position belongs to the NFT, so this wallet can't close it here
                   (useClosePosition never finds it). Same badge as the trade page's other-markets
                   list; the card link leads to the market page, where it can be unwrapped. */}
@@ -891,6 +926,9 @@ export function PortfolioPositionsView() {
                   baseSymbol={(pos.symbol ?? statsMap.get(pos.slabAddress)?.symbol ?? pos.slabAddress.slice(0, 6)).replace(/-PERP$/i, "")}
                   collateralSymbol={tokenMetaMap.get(pos.collateralMint.toBase58())?.symbol ?? "USDC"}
                   decimals={getDecimals(pos)}
+                  marketName={statsMap.get(pos.slabAddress)?.name ?? null}
+                  logoUrl={statsMap.get(pos.slabAddress)?.logo_url ?? null}
+                  mainnetCa={statsMap.get(pos.slabAddress)?.mainnet_ca ?? null}
                   onRefresh={refresh}
                 />
               ))}

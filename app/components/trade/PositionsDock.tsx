@@ -32,6 +32,8 @@ import { useUserAccount, useUserAccountScanPending } from "@/hooks/useUserAccoun
 import { useNftWrappedPosition } from "@/hooks/useNftWrappedPosition";
 import { PositionNftMenu, ClosedPositionNftNotice, NFT_MENU_COPY } from "@/components/trade/PositionNftMenu";
 import { useClosePosition } from "@/hooks/useClosePosition";
+import { PnlShareButton } from "@/components/share/PnlShareButton";
+import { isPnlPoolCapped, poolPayableCapacity, type PnlCardData } from "@/lib/pnl-card";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { useMarketLimits } from "@/hooks/useMarketLimits";
 import { PositionLimitsRow } from "@/components/limits/PositionLimitsRow";
@@ -323,8 +325,9 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
   // (`engine.insuranceFund.balance` on v12, `parseMarketGroupV17OI` on v17),
   // so this gate at least fires off insurance capacity on v17 instead of
   // silently reading 0 forever (engine.insuranceFund is always null there).
-  const payableCapacity = (engine?.vault ?? 0n) + (insuranceBalance ?? 0n);
-  const pnlIsCapped = hasValidMark && pnlTokens > 0n && payableCapacity > 0n && pnlTokens > payableCapacity;
+  const payableCapacity = poolPayableCapacity(engine?.vault, insuranceBalance);
+  // Same predicate the Share-PnL card applies (lib/pnl-card), so they can't drift.
+  const pnlIsCapped = hasValidMark && isPnlPoolCapped(pnlTokens, payableCapacity);
 
   // Current effective leverage on the cross-margined portfolio (notional /
   // (capital + pnl)); NOT entry leverage — see lib/position-leverage.ts.
@@ -369,6 +372,28 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
   })();
   const pnlColor = pnlTokens === 0n ? "text-[var(--text-muted)]" : pnlTokens > 0n ? "text-[var(--long)]" : "text-[var(--short)]";
   const roeColor = roe === 0 ? "text-[var(--text-muted)]" : roe > 0 ? "text-[var(--long)]" : "text-[var(--short)]";
+
+  // "Share PnL" card data — only when we can price the PnL honestly: a live mark
+  // and the entry CACHED at open (resolvedEntryPrice > 0n ⇒ resolveEntryPrice
+  // source "cache"); never a derived/estimated entry. The pool payout capacity
+  // rides along so the card caps exactly where this row shows its caveat.
+  const pnlCardData: PnlCardData | null =
+    hasValidMark && pnlIsKnown && resolvedEntryPrice > 0n
+      ? {
+          slab: slabAddress,
+          symbol: marketDisplaySymbol,
+          name: marketInfo?.name ?? marketDisplaySymbol,
+          logoUrl: marketInfo?.logo_url ?? null,
+          mainnetCa: marketInfo?.mainnet_ca ?? null,
+          payableCapacityAtoms: payableCapacity,
+          decimals,
+          nominalSizeQ: account.positionSize,
+          effectiveSizeQ: effectiveSize,
+          entryE6: resolvedEntryPrice,
+          initialMarginBps,
+          initialMarkE6: currentPriceE6,
+        }
+      : null;
 
   const handleConfirmClose = async (percent: number) => {
     try {
@@ -519,6 +544,11 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
               </td>
               <td className="whitespace-nowrap px-3 py-2.5 text-right">
                 <span className="inline-flex items-center justify-end gap-1">
+                <PnlShareButton
+                  data={pnlCardData}
+                  label="Share PnL"
+                  className="rounded-none border border-[var(--accent)]/30 px-3 py-1 text-[9px] font-medium uppercase tracking-[0.1em] text-[var(--accent)] transition-colors duration-150 hover:bg-[var(--accent)]/8 hover:border-[var(--accent)]/50"
+                />
                 {isNftWrapped ? (
                   <span data-testid="position-close-wrapped" className="text-[9px] text-[var(--text-secondary)]">
                     {NFT_MENU_COPY.closeWrapped}
