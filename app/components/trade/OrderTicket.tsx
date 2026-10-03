@@ -1935,6 +1935,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       {showConfirmModal && confirmSnapshot && (
         <TradeConfirmationModal
           direction={direction}
+          existingPositionSize={existingPositionSize}
           positionSize={confirmSnapshot.positionSize}
           margin={confirmSnapshot.marginNative}
           leverage={leverage}
