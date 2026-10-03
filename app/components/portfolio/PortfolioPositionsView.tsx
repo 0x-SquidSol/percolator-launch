@@ -12,7 +12,7 @@ import { useClosePosition } from "@/hooks/useClosePosition";
 import { useEngineFreshness } from "@/hooks/useEngineFreshness";
 import { ClosePositionModal } from "@/components/trade/ClosePositionModal";
 import { useWalletCompat } from "@/hooks/useWalletCompat";
-import { usePortfolio, getLiquidationSeverity, getLiquidationSeverityForState, type PortfolioPosition } from "@/hooks/usePortfolio";
+import { usePortfolio, getLiquidationSeverity, getLiquidationSeverityForState, positionRowKeys, type PortfolioPosition } from "@/hooks/usePortfolio";
 import { classifyLiquidation } from "@/lib/liquidation-state";
 import { describeLiqPrice } from "@/lib/liq-price-display";
 import { LiqPriceValue } from "@/components/trade/LiqPriceValue";
@@ -349,18 +349,30 @@ function PositionCard({
                   </span>
                 )}
               </div>
-              <button
-                type="button"
-                onClick={(e) => {
-                  // Card is a Link — keep the click from navigating.
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setShowClose(true);
-                }}
-                className="shrink-0 rounded-none border border-[var(--short)]/30 px-2.5 py-1 text-[9px] font-medium uppercase tracking-[0.1em] text-[var(--short)] transition-all duration-150 hover:border-[var(--short)]/60 hover:bg-[var(--short)]/10"
-              >
-                Close
-              </button>
+              {/* An NFT-wrapped position belongs to the NFT, so this wallet can't close it here
+                  (useClosePosition never finds it). Same badge as the trade page's other-markets
+                  list; the card link leads to the market page, where it can be unwrapped. */}
+              {pos.nftWrapped ? (
+                <span
+                  title="This position is wrapped in a Position NFT. Burn the NFT on its market's trade page to unwrap it, then close."
+                  className="inline-block shrink-0 cursor-help rounded-none border border-[var(--accent)]/30 px-2.5 py-1 text-[9px] font-medium uppercase tracking-[0.1em] text-[var(--accent)]"
+                >
+                  🎫 Wrapped
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    // Card is a Link — keep the click from navigating.
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setShowClose(true);
+                  }}
+                  className="shrink-0 rounded-none border border-[var(--short)]/30 px-2.5 py-1 text-[9px] font-medium uppercase tracking-[0.1em] text-[var(--short)] transition-all duration-150 hover:border-[var(--short)]/60 hover:bg-[var(--short)]/10"
+                >
+                  Close
+                </button>
+              )}
             </div>
           </div>
 
@@ -555,6 +567,9 @@ export function PortfolioPositionsView() {
   // (and counting deposits in the POSITIONS stat) read as bogus data.
   const openPositions = activePositions.filter((pos) => (pos.account?.positionSize ?? 0n) !== 0n);
   const idleDeposits = activePositions.filter((pos) => (pos.account?.positionSize ?? 0n) === 0n);
+  // A card holds its open close modal in state, so its key must not move to another
+  // position when the list re-sorts (an owned and a wrapped row can share a market).
+  const openKeys = positionRowKeys(openPositions);
 
   // Market symbol/name per slab — the row label used to show the COLLATERAL
   // token's symbol, which is the same sim-USDC mint (with no token-list
@@ -851,7 +866,7 @@ export function PortfolioPositionsView() {
             <div className="space-y-3">
               {openPositions.map((pos, i) => (
                 <PositionCard
-                  key={`${pos.slabAddress}-${i}`}
+                  key={openKeys[i]}
                   pos={pos}
                   label={marketLabel(pos)}
                   baseSymbol={(pos.symbol ?? statsMap.get(pos.slabAddress)?.symbol ?? pos.slabAddress.slice(0, 6)).replace(/-PERP$/i, "")}
