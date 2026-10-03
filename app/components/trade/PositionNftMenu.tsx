@@ -10,6 +10,7 @@
  * ClosedPositionNftNotice covers the one case the row menu can't: a wrapped position that closed, which has no row.
  */
 import { type FC, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { usePositionNft } from "@/hooks/usePositionNft";
 import { useMintPositionNft } from "@/hooks/useMintPositionNft";
 import { useBurnPositionNft } from "@/hooks/useBurnPositionNft";
@@ -97,7 +98,9 @@ export const PositionNftMenuView: FC<PositionNftMenuViewProps> = ({ canWrap, isW
           )}
         </div>
       )}
-      {confirmWrap && (
+      {/* Portaled: inline, the trade page's animate-fade-in root caps its z-[60], so on phones the
+          bottom tab bar (z-50) covered Cancel / Wrap and took their taps. */}
+      {confirmWrap && typeof document !== "undefined" && createPortal(
         <div role="dialog" aria-modal="true" aria-labelledby="wrap-nft-title" data-testid="position-nft-wrap-sheet" className="fixed inset-0 z-[60] flex items-end justify-center bg-black/60 md:items-center">
           <div className="w-full max-w-md border border-[var(--border)] bg-[var(--bg)] p-5 text-left">
             <h3 id="wrap-nft-title" className="text-[13px] font-semibold text-[var(--text)]">{NFT_MENU_COPY.wrapTitle}</h3>
@@ -117,7 +120,8 @@ export const PositionNftMenuView: FC<PositionNftMenuViewProps> = ({ canWrap, isW
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
       {error && (
         <p data-testid="position-nft-error" className="mt-1 max-w-[220px] text-right text-[10px] text-[var(--short)]">
