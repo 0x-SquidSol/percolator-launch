@@ -9,6 +9,9 @@ export interface OrderTicketClosePanelProps {
   slabAddress: string;
   /** Signed position size (base units); 0n = nothing to close. */
   positionSize: bigint;
+  /** GH#2707: the wallet's portfolio scan has not answered yet, so a 0n
+   *  `positionSize` is "unknown", not "no position" — render loading. */
+  accountPending?: boolean;
   /** Resolved entry price (E6), or 0n when UNKNOWN (#2660) — never the mark placeholder. */
   entryPriceE6: bigint;
   capital: bigint;
@@ -49,6 +52,7 @@ export interface OrderTicketClosePanelProps {
 export const OrderTicketClosePanel: FC<OrderTicketClosePanelProps> = ({
   slabAddress,
   positionSize,
+  accountPending = false,
   entryPriceE6,
   capital,
   symbol,
@@ -92,6 +96,18 @@ export const OrderTicketClosePanel: FC<OrderTicketClosePanelProps> = ({
       // Surfaced through `error`, rendered inside the form.
     }
   };
+
+  if (!hasPosition && accountPending) {
+    return (
+      <div
+        data-testid="close-panel-loading"
+        role="status"
+        className="rounded-none border border-[var(--border)] bg-[var(--bg-surface)] px-3 py-8 text-center"
+      >
+        <p className="text-[12px] font-medium text-[var(--text-secondary)]">Loading position…</p>
+      </div>
+    );
+  }
 
   if (!hasPosition) {
     return (

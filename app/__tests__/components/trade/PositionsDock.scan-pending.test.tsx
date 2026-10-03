@@ -1,8 +1,5 @@
 /**
- * M-6 (code review 2026-10-01): with no locally cached entry price (second
- * device, cleared storage, NFT recipient) the on-chain `pnl` is ALREADY in
- * collateral atoms. It must not be multiplied by the mark a second time:
- * +5 USDC at a $100 mark rendered as +500 USDC, and at a $0.0036 mark as +0.018.
+ * GH#2707: the dock must not assert "no account" while the portfolio scan is in flight.
  */
 import "@testing-library/jest-dom";
 import { render, screen } from "@testing-library/react";
@@ -11,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
   account: null as unknown,
+  pending: false,
   priceE6: 100_000_000n as bigint | null,
 }));
 
@@ -25,7 +23,7 @@ const acct = (over: Record<string, unknown>) => ({
   },
 });
 
-vi.mock("@/hooks/useUserAccount", () => ({ useUserAccount: () => h.account, useUserAccountScanPending: () => false }));
+vi.mock("@/hooks/useUserAccount", () => ({ useUserAccount: () => h.account, useUserAccountScanPending: () => h.pending }));
 vi.mock("@/hooks/useNftWrappedPosition", () => ({ useNftWrappedPosition: () => null }));
 vi.mock("@/hooks/useClosePosition", () => ({
   useClosePosition: () => ({ closePosition: vi.fn(), loading: false, error: null, prewarmClose: vi.fn() }),
@@ -39,7 +37,7 @@ vi.mock("@/components/providers/SlabProvider", () => ({
   }),
 }));
 vi.mock("@/hooks/useTokenMeta", () => ({ useTokenMeta: () => ({ symbol: "USDC", decimals: 6 }) }));
-vi.mock("@/hooks/useLivePrice", () => ({ useLivePrice: () => ({ priceE6: h.priceE6, priceUsd: h.priceE6 === null ? null : Number(h.priceE6) / 1e6 }) }));
+vi.mock("@/hooks/useLivePrice", () => ({ useLivePrice: () => ({ priceE6: h.priceE6, priceUsd: 100 }) }));
 vi.mock("@/hooks/useMarketConfig", () => ({ useMarketConfig: () => null }));
 vi.mock("@/hooks/useMarketInfo", () => ({ useMarketInfo: () => ({ market: { symbol: "SOL-PERP" } }) }));
 vi.mock("@/hooks/useEngineState", () => ({ useEngineState: () => ({ engine: null, insuranceBalance: 0n }) }));
@@ -54,40 +52,38 @@ vi.mock("@/components/trade/OtherMarketPositions", () => ({ OtherMarketPositions
 vi.mock("@/components/trade/TradeHistory", () => ({ TradeHistory: () => null }));
 vi.mock("@/components/trade/WarmupProgress", () => ({ WarmupProgress: () => null }));
 vi.mock("@/components/trade/ClosePositionModal", () => ({ ClosePositionModal: () => null }));
-vi.mock("@/components/trade/PositionNftMenu", () => ({ PositionNftMenu: () => <span data-testid="nft-menu-marker" />, ClosedPositionNftNotice: () => <span data-testid="closed-nft-marker" />, NFT_MENU_COPY: { badge: "NFT", closeWrapped: "Unwrap to close this position" } }));
+vi.mock("@/components/trade/PositionNftMenu", () => ({ PositionNftMenu: () => <span data-testid="nft-menu-marker" />, ClosedPositionNftNotice: () => null, NFT_MENU_COPY: { badge: "NFT", closeWrapped: "Unwrap to close this position" } }));
 
 import { PositionsDock } from "@/components/trade/PositionsDock";
-import { saveEntryPrice } from "@/lib/entry-price";
 
 beforeEach(() => {
   localStorage.clear();
   h.priceE6 = 100_000_000n;
-  h.account = acct({});
+  h.account = null;
+  h.pending = false;
 });
 
-describe("PositionsDock PnL scale without a cached entry (M-6)", () => {
-  it("shows an on-chain +5 USDC pnl as +$5, not scaled by the $100 mark", () => {
-    h.account = acct({ pnl: 5_000_000n });
-    const { container } = render(<PositionsDock slabAddress="s" />);
-    const text = container.textContent ?? "";
-    expect(text).toContain("$5.00");
-    expect(text).not.toContain("$500.00");
+describe("PositionsDock while the portfolio scan is pending (GH#2707)", () => {
+  it("shows loading, not the no-account empty state, while the scan has not answered", () => {
+    h.pending = true;
+    render(<PositionsDock slabAddress="s" />);
+    expect(screen.getByText("Loading positions…")).toBeInTheDocument();
+    expect(screen.queryByText(/Connect your wallet and deposit collateral/)).toBeNull();
+    expect(screen.queryByText("No open positions")).toBeNull();
   });
 
-  it("does not shrink the same pnl on a sub-cent mark", () => {
-    // 1e9 units at $0.0036 = $3,600 notional; +5 USDC on-chain pnl.
-    h.priceE6 = 3_600n;
-    h.account = acct({ pnl: 5_000_000n, positionSize: 1_000_000_000_000n, capital: 1_000_000_000n });
-    const { container } = render(<PositionsDock slabAddress="s" />);
-    const text = container.textContent ?? "";
-    expect(text).toContain("$5.00");
-    expect(text).not.toContain("$0.02");
+  it("CONTROL: once the scan answers 'no account', the no-account empty state renders as before", () => {
+    h.pending = false;
+    render(<PositionsDock slabAddress="s" />);
+    expect(screen.getByText("No open positions")).toBeInTheDocument();
+    expect(screen.getByText(/Connect your wallet and deposit collateral/)).toBeInTheDocument();
   });
 
-  it("a cached entry still drives the PnL (unchanged path)", () => {
-    // Entry $99.875, mark $100, 40 units long => +$5.
-    saveEntryPrice("s", 0, 99_875_000n, 4, OWNER.toBase58());
-    const { container } = render(<PositionsDock slabAddress="s" />);
-    expect(container.textContent ?? "").toContain("$5.00");
+  it("a known position renders normally even if the pending flag were still set", () => {
+    h.pending = true;
+    h.account = acct({});
+    render(<PositionsDock slabAddress="s" />);
+    expect(screen.getByTestId("position-leverage").textContent).toBe("4×");
+    expect(screen.queryByText("Loading positions…")).toBeNull();
   });
 });

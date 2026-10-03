@@ -34,7 +34,7 @@ function setEngineStale(v: boolean) {
 }
 
 vi.mock("@/hooks/useWalletCompat", () => ({ useWalletCompat: mocks.useWalletCompat, useConnectionCompat: mocks.useConnectionCompat }));
-vi.mock("@/hooks/useUserAccount", () => ({ useUserAccount: mocks.useUserAccount }));
+vi.mock("@/hooks/useUserAccount", () => ({ useUserAccount: mocks.useUserAccount, useUserAccountScanPending: () => false }));
 vi.mock("@/components/providers/SlabProvider", () => ({ useSlabState: mocks.useSlabState }));
 vi.mock("@/hooks/useEngineState", () => ({ useEngineState: mocks.useEngineState }));
 vi.mock("@solana/spl-token", () => ({ getAssociatedTokenAddressSync: vi.fn(() => new PublicKey("11111111111111111111111111111111")) }));

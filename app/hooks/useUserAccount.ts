@@ -7,6 +7,7 @@ import { AccountKind, isV17Account } from "@percolatorct/sdk";
 import {
   makePortfolioScanKey,
   getPortfolioUserAccountSnapshot,
+  getPortfolioScanResolved,
   subscribePortfolioScan,
   triggerPortfolioScan,
   portfolioV17ToAccount,
@@ -84,4 +85,39 @@ export function useUserAccount(): UserAccountInfo | null {
   const v17Account = useSyncExternalStore(subscribe, getSnapshot, () => null);
 
   return isV17Market ? v17Account : v12Account;
+}
+
+/**
+ * GH#2707: `true` while the connected wallet's v17 portfolio scan for the
+ * current market has not completed yet — i.e. while `useUserAccount()`'s
+ * `null` means "not known yet" rather than "this wallet has no account".
+ * Surfaces use it to render loading / "—" instead of a no-account state, and
+ * to keep account-dependent actions (fund-and-trade, deposit, onboarding)
+ * locked until the answer is in.
+ *
+ * `false` when there is nothing to scan: no wallet, no slab bytes yet, or a
+ * legacy (v12) market whose account list is read synchronously from the slab.
+ *
+ * Read-only: it does not trigger the scan. Use it next to `useUserAccount()`
+ * (which does), as every caller does — the scan is shared per
+ * (program, slab, wallet) key, so both read the same store entry.
+ */
+export function useUserAccountScanPending(): boolean {
+  const { publicKey } = useWalletCompat();
+  const { raw, slabAddress, programId } = useSlabState();
+  const isV17Market = raw != null && raw.length > 0 && isV17Account(raw);
+  const publicKeyStr = publicKey?.toBase58() ?? null;
+  const programIdStr = programId?.toBase58() ?? null;
+  const scanKey = useMemo(() => {
+    if (!isV17Market || !publicKey || !programId || !slabAddress) return null;
+    return makePortfolioScanKey(programId, slabAddress, publicKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isV17Market, publicKeyStr, programIdStr, slabAddress]);
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => (scanKey ? subscribePortfolioScan(scanKey, onStoreChange) : () => {}),
+    [scanKey],
+  );
+  const getSnapshot = useCallback(() => getPortfolioScanResolved(scanKey), [scanKey]);
+  const resolved = useSyncExternalStore(subscribe, getSnapshot, () => true);
+  return !resolved;
 }

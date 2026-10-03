@@ -22,7 +22,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/hooks/useWalletCompat", () => ({ useWalletCompat: mocks.useWalletCompat, useConnectionCompat: mocks.useConnectionCompat }));
-vi.mock("@/hooks/useUserAccount", () => ({ useUserAccount: mocks.useUserAccount }));
+vi.mock("@/hooks/useUserAccount", () => ({ useUserAccount: mocks.useUserAccount, useUserAccountScanPending: () => false }));
 vi.mock("@/components/providers/SlabProvider", () => ({ useSlabState: mocks.useSlabState }));
 vi.mock("@/hooks/useEngineState", () => ({ useEngineState: mocks.useEngineState }));
 vi.mock("@/hooks/useInitUser", () => ({ useInitUser: () => ({ initUser: mocks.initUser, loading: false, error: null }) }));

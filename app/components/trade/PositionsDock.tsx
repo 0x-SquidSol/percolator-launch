@@ -28,7 +28,7 @@
  */
 
 import { FC, memo, useMemo, useState } from "react";
-import { useUserAccount } from "@/hooks/useUserAccount";
+import { useUserAccount, useUserAccountScanPending } from "@/hooks/useUserAccount";
 import { useNftWrappedPosition } from "@/hooks/useNftWrappedPosition";
 import { PositionNftMenu, ClosedPositionNftNotice, NFT_MENU_COPY } from "@/components/trade/PositionNftMenu";
 import { useClosePosition } from "@/hooks/useClosePosition";
@@ -95,7 +95,7 @@ function abs(n: bigint): bigint {
   return n < 0n ? -n : n;
 }
 
-function EmptyState({ subtitle }: { subtitle: string }) {
+function EmptyState({ subtitle, title = "No open positions" }: { subtitle: string; title?: string }) {
   return (
     <div className="py-10 text-center">
       <div className="mx-auto mb-2 flex h-8 w-8 items-center justify-center rounded-full border border-[var(--border)]/30">
@@ -103,7 +103,7 @@ function EmptyState({ subtitle }: { subtitle: string }) {
           <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3v11.25A2.25 2.25 0 006 16.5h2.25M3.75 3h-1.5m1.5 0h16.5m0 0h1.5m-1.5 0v11.25A2.25 2.25 0 0118 16.5h-2.25m-7.5 0h7.5m-7.5 0l-1 3m8.5-3l1 3m0 0l.5 1.5m-.5-1.5h-9.5m0 0l-.5 1.5" />
         </svg>
       </div>
-      <p className="text-[11px] font-medium text-[var(--text)]">No open positions</p>
+      <p className="text-[11px] font-medium text-[var(--text)]">{title}</p>
       <p className="mt-1 text-[10px] text-[var(--text-secondary)] max-w-[220px] mx-auto leading-relaxed">{subtitle}</p>
     </div>
   );
@@ -121,6 +121,9 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
   const realUserAccount = useUserAccount();
   const mockMode = isMockMode() && isMockSlab(slabAddress);
   const userAccount = realUserAccount ?? (mockMode ? getMockUserAccount(slabAddress) : null);
+  // GH#2707: while the portfolio scan is in flight a null account is unknown, not absent.
+  const scanPending = useUserAccountScanPending();
+  const accountPending = !mockMode && !userAccount && scanPending;
   const config = useMarketConfig();
   const { accounts, config: mktConfig, params, adlFactors } = useSlabState();
   const { engine, insuranceBalance } = useEngineState();
@@ -186,9 +189,15 @@ const PositionRow: FC<{ slabAddress: string }> = memo(function PositionRow({ sla
   if (!activeInfo) {
     // A position closed while wrapped as an NFT has no row (useNftWrappedPosition skips size-0 legs), so its
     // Unwrap lives under the empty state; renders nothing unless the wallet holds such an NFT on this market.
+    // While the portfolio scan is pending (#2707) say "Loading", not "no account" (#2933).
+    const subtitle = accountPending
+      ? "Checking this market for your account."
+      : userAccount
+        ? "Use the order ticket to open a position."
+        : "Connect your wallet and deposit collateral to start trading.";
     return (
       <>
-        <EmptyState subtitle={userAccount ? "Use the order ticket to open a position." : "Connect your wallet and deposit collateral to start trading."} />
+        <EmptyState title={accountPending ? "Loading positions…" : undefined} subtitle={subtitle} />
         <ClosedPositionNftNotice slabAddress={slabAddress} />
       </>
     );

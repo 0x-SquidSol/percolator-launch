@@ -226,6 +226,13 @@ interface PortfolioEntry {
    *  locally-guessed patch. Cleared on the next publish, whatever its
    *  outcome. */
   provisionalUntil: number;
+  /** GH#2707: `true` once ANY portfolio scan for this key has completed
+   *  successfully. Until then `userAccount === null` means "not known yet",
+   *  NOT "this wallet has no account" — `getPortfolioScanResolved` exposes
+   *  the difference so surfaces can render loading instead of absence. Never
+   *  reset back to `false` (entries are never evicted; a failed later scan
+   *  keeps the last good snapshot, which is still a resolved answer). */
+  scanned: boolean;
 }
 
 const portfolioEntries = new Map<string, PortfolioEntry>();
@@ -244,6 +251,7 @@ function getOrCreatePortfolioEntry(key: string): PortfolioEntry {
       lastTriggerRaw: null,
       inFlight: null,
       provisionalUntil: 0,
+      scanned: false,
     };
     portfolioEntries.set(key, entry);
   }
@@ -292,7 +300,12 @@ function publishPortfolioResult(entry: PortfolioEntry, result: OwnPortfolioScanR
   // one publish so the real, scan-sourced object always becomes the
   // published reference again.
   const bypassEqualityForProvisional = entry.provisionalUntil > 0 && Date.now() < entry.provisionalUntil;
-  if (!bypassEqualityForProvisional && ownPortfolioResultsEqual(entry.raw, result)) return;
+  // GH#2707: the FIRST successful scan must always notify, even when its
+  // result equals the initial `null` (a wallet with no account): that publish
+  // is what flips subscribers from "pending" to "resolved: no account".
+  const firstResolution = !entry.scanned;
+  entry.scanned = true;
+  if (!firstResolution && !bypassEqualityForProvisional && ownPortfolioResultsEqual(entry.raw, result)) return;
   entry.raw = result;
   entry.userAccount = result ? { idx: 0, account: portfolioV17ToAccount(result.portfolio), pubkey: result.pubkey } : null;
   entry.provisionalUntil = 0;
@@ -314,6 +327,18 @@ export function subscribePortfolioScan(key: string, listener: () => void): () =>
 export function getPortfolioUserAccountSnapshot(key: string | null): UserAccountInfo | null {
   if (!key) return null;
   return portfolioEntries.get(key)?.userAccount ?? null;
+}
+
+/**
+ * GH#2707: reactive read of whether the portfolio scan for `key` has
+ * completed successfully at least once. `false` while the first scan is in
+ * flight (or has only ever failed), so `getPortfolioUserAccountSnapshot`'s
+ * `null` is NOT yet proof the wallet has no account. A null key (no wallet /
+ * not a v17 market) has nothing to scan and reads `true`.
+ */
+export function getPortfolioScanResolved(key: string | null): boolean {
+  if (!key) return true;
+  return portfolioEntries.get(key)?.scanned ?? false;
 }
 
 /** Non-reactive read for usePositionNft — the raw parsed portfolio + pubkey. */
@@ -393,6 +418,11 @@ async function runPortfolioScan(
     // keeps showing the last good position/balance instead of all blanking
     // simultaneously on one blip.
     console.debug("[userAccountScan] portfolio scan failed, keeping last-good cache", e);
+    // GH#2707: release the dedup claim on this `raw` so the next trigger for
+    // the SAME slab bytes retries instead of joining a settled failure — a
+    // failed FIRST scan would otherwise leave the key pending until new slab
+    // bytes arrive. Only if no newer `raw` has claimed the entry since.
+    if (entry.lastTriggerRaw === params.raw) entry.lastTriggerRaw = null;
     return entry.raw;
   }
 }

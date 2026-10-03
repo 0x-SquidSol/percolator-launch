@@ -69,6 +69,19 @@ describe("OrderTicketClosePanel (inline form)", () => {
     expect(screen.queryByRole("button", { name: /^close \d+%$/i })).toBeNull();
   });
 
+  it("GH#2707: while the account scan is pending, a 0n size renders loading, not 'No open position'", () => {
+    render(<OrderTicketClosePanel {...base({ positionSize: 0n, accountPending: true })} />);
+    expect(screen.getByTestId("close-panel-loading").textContent).toBe("Loading position…");
+    expect(screen.queryByText("No open position")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^close \d+%$/i })).toBeNull();
+  });
+
+  it("GH#2707 CONTROL: a known position renders the close form even if accountPending were set", () => {
+    render(<OrderTicketClosePanel {...base({ accountPending: true })} />);
+    expect(screen.queryByTestId("close-panel-loading")).toBeNull();
+    expect(closeBtn()).toBeTruthy();
+  });
+
   it("prewarms the close on mount (no click needed)", () => {
     render(<OrderTicketClosePanel {...base()} />);
     expect(prewarmClose).toHaveBeenCalledTimes(1);

@@ -53,7 +53,7 @@ import { safeExplainMarketTxError } from "@/lib/market-error";
 import { PublicKey } from "@solana/web3.js";
 import { diagnoseTradeRejection } from "@/lib/tradeRejectDiagnosis";
 import { explorerTxUrl, getNetwork } from "@/lib/config";
-import { useUserAccount } from "@/hooks/useUserAccount";
+import { useUserAccount, useUserAccountScanPending } from "@/hooks/useUserAccount";
 import { OrderTicketClosePanel } from "@/components/trade/OrderTicketClosePanel";
 import { computeLimitPriceE6 } from "@/lib/slippage";
 import { bindConfirmedLimitPrice } from "@/lib/confirmedTrade";
@@ -230,6 +230,11 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const mockMode = isMockMode() && isMockSlab(slabAddress);
   const connected = walletConnected || mockMode;
   const userAccount = realUserAccount ?? (mockMode ? getMockUserAccountIdle(slabAddress) : null);
+  // GH#2707: the portfolio scan has not answered yet, so `userAccount === null`
+  // is "unknown", not "no account". Render "—"/loading and keep every
+  // account-dependent action (fund-and-trade, deposit, onboarding) locked.
+  const scanPending = useUserAccountScanPending();
+  const accountPending = !mockMode && walletConnected && !userAccount && scanPending;
   const { trade, loading: tradeLoading, error } = useTrade(slabAddress);
   const { fundAndTrade, loading: fundLoading } = useFirstTrade(slabAddress);
   const loading = tradeLoading || fundLoading;
@@ -653,12 +658,12 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const exceedsBalance = marginNative > 0n && (vsPosition ? vsPosition.shortBy > 0n : marginNeed > effectiveBalance);
 
   const needsWallet = !connected;
-  const needsAccount = connected && !userAccount;
+  const needsAccount = connected && !userAccount && !accountPending;
   const needsDeposit = connected && !!userAccount && capital === 0n;
   const walletHasTokens = (walletAtaBalance ?? 0n) > 0n;
   // UX WP-6 (§3.2): with sim-USDC in the wallet, "fund and trade" is ONE approval — no account
   // yet: [InitUser] + [Deposit, Trade] signed together; account short of margin: [Deposit, Trade].
-  const fundingMode = !mockMode && connected && walletHasTokens && (needsAccount || needsDeposit || exceedsBalance);
+  const fundingMode = !mockMode && connected && !accountPending && walletHasTokens && (needsAccount || needsDeposit || exceedsBalance);
 
   // ── Receipt (before -> after) ──
   const oracleE6 = priceUsd ? toE6(priceUsd) : 0n;
@@ -895,7 +900,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // below can only compose an order that cannot be submitted — the CTA at the bottom (Connect /
   // Get Tokens) is the only real action. With tokens in the wallet the ticket is fully usable:
   // the button funds and trades in one approval (UX WP-6).
-  const ticketLocked = needsWallet || ((needsAccount || needsDeposit) && !walletHasTokens);
+  const ticketLocked = needsWallet || accountPending || ((needsAccount || needsDeposit) && !walletHasTokens);
 
   async function handleTrade(
     snapshotSize?: bigint,
@@ -903,6 +908,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   ) {
     const effectiveSize = snapshotSize ?? positionSize;
     if (!marginInput || effectiveSize <= 0n) return;
+    if (accountPending) return;
     if ((!userAccount || exceedsBalance) && !fundingMode) return;
 
     if (mockMode) {
@@ -1113,6 +1119,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   }
 
   const submitDisabled =
+    accountPending ||
     tradePhase !== "idle" ||
     loading ||
     ticketState.blocks ||
@@ -1259,6 +1266,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
         <OrderTicketClosePanel
           slabAddress={slabAddress}
           positionSize={existingPositionSize}
+          accountPending={accountPending}
           entryPriceE6={existingEntryKnown ? existingEntryPriceE6 : 0n}
           capital={capital}
           symbol={symbol}
@@ -1412,7 +1420,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
           >
             <span data-testid="ticket-available">
               <span className="text-[var(--text-secondary)]">Available </span>
-              <span className="text-[var(--text)]">{formatTokenAmount(displayAvailable, decimals, 2)}</span>
+              <span className="text-[var(--text)]">{accountPending ? "—" : formatTokenAmount(displayAvailable, decimals, 2)}</span>
               <span className="text-[var(--text-secondary)]"> {collateralSymbol}</span>
             </span>
             {maxLabel && (
@@ -1901,7 +1909,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             ? TICKET_COPY.confirmInWallet
             : tradePhase === "waiting"
               ? TICKET_COPY.waitingLatest
-              : fundOverWallet && !ticketState.blocks
+              : accountPending
+                ? "Loading account…"
+                : fundOverWallet && !ticketState.blocks
                 ? "Get test funds"
                 : fundingMode && ticketState.row === "ok"
                   ? FIRST_TRADE_COPY.button(fundLabel, direction === "long" ? "Long" : "Short")
@@ -1920,9 +1930,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             Buying power
             <InfoIcon tooltip="Available balance x max leverage - the largest notional you could open right now." />
           </div>
-          <div className="font-mono tabular-nums text-[var(--text)]">{formatTokenAmount(buyingPower, decimals)} {collateralSymbol}</div>
+          <div className="font-mono tabular-nums text-[var(--text)]">{accountPending ? "—" : formatTokenAmount(buyingPower, decimals)} {collateralSymbol}</div>
         </div>
-        {connected && !needsAccount && !needsDeposit && (
+        {connected && !accountPending && !needsAccount && !needsDeposit && (
           <div className="flex shrink-0 items-center gap-1.5">
             <button
               onClick={() => toggleInlineDeposit("deposit")}
@@ -1941,7 +1951,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
           </div>
         )}
       </div>
-      {connected && showInlineDeposit && !((needsAccount || needsDeposit) && !walletHasTokens) && (
+      {connected && !accountPending && showInlineDeposit && !((needsAccount || needsDeposit) && !walletHasTokens) && (
         <div className="mt-1.5" data-deposit-trigger>
           <DepositWithdrawCard slabAddress={slabAddress} initialMode={inlineDepositMode} offerFaucet={fundOverWallet} />
         </div>
