@@ -20,7 +20,10 @@ vi.mock("@/hooks/useClosePosition", async () => {
   };
 });
 vi.mock("@/hooks/useWalletCompat", () => ({ useWalletCompat: () => ({ connected: false }) }));
-vi.mock("@/hooks/usePortfolio", () => ({ usePortfolio: () => ({ positions: [], refresh: () => {} }) }));
+vi.mock("@/hooks/usePortfolio", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/hooks/usePortfolio")>()),
+  usePortfolio: () => ({ positions: [], refresh: () => {} }),
+}));
 vi.mock("@/hooks/useMultiTokenMeta", () => ({ useMultiTokenMeta: () => new Map() }));
 vi.mock("@/hooks/useOracleFreshness", () => ({ useOracleFreshness: () => ({ level: "fresh", mode: "keeper", ready: true }) }));
 vi.mock("@/hooks/useEngineFreshness", () => ({ useEngineFreshness: () => ({ engineStale: false }) }));
