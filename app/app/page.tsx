@@ -5,6 +5,7 @@ import { ButtonLink } from "@/components/ui/Button";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { ScrollReveal } from "@/components/ui/ScrollReveal";
 import { LiveMarketRail } from "@/components/landing/LiveMarketRail";
+import { TrendingTokensRail } from "@/components/landing/TrendingTokensRail";
 
 const ARROW = (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
@@ -124,6 +125,20 @@ export default function Home() {
         </ScrollReveal>
         <ScrollReveal delay={0.1}>
           <LiveMarketRail />
+        </ScrollReveal>
+      </section>
+
+      {/* ─── Tokens trending (launchpad tokens without a perp yet) ─── */}
+      <section className="mx-auto max-w-[1100px] px-6 pb-20 sm:px-8">
+        <ScrollReveal delay={0.05}>
+          <div className="mb-4 flex items-baseline justify-between gap-4">
+            <h2 className="text-[10px] font-medium uppercase tracking-[0.25em] text-[var(--accent-text)]">
+              // tokens trending
+            </h2>
+          </div>
+        </ScrollReveal>
+        <ScrollReveal delay={0.1}>
+          <TrendingTokensRail />
         </ScrollReveal>
       </section>
 
