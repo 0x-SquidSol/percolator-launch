@@ -334,10 +334,10 @@ function StakeHeader({
           className="text-2xl font-medium tracking-[-0.01em] text-[var(--text)]"
           style={{ fontFamily: "var(--font-display)" }}
         >
-          <span className="font-normal text-[var(--text-secondary)]">Insurance </span>Staking
+          <span className="font-normal text-[var(--text-secondary)]">Fee </span>staking
         </h1>
         <p className="mt-2 max-w-lg text-[13px] text-[var(--text-secondary)]">
-          Stake collateral into a market&apos;s insurance pool to provide first-loss backing —
+          Stake into a market&apos;s pool to receive a share of that market&apos;s trading fees —
           fully on-chain and transparent.
         </p>
         {/* E2E B4 (2026-09-30): stakers ARE paid. The insurance fee leg accrues to the wrapper's
@@ -346,9 +346,10 @@ function StakeHeader({
             insurance pools (pool_mode 0; see lib/pre-resolve.ts decideStakeLeg). Measured: stakers
             C3 +5.86 USDC, U3 +7.01 USDC. The old zero-yield caption was false. */}
         <p className="mt-1.5 max-w-lg text-[11px] text-[var(--text-muted)]">
-          Staking backs the insurance fund, and stakers are paid its share of every trading
-          fee, moved into the stake pool automatically. Your stake is first-loss capital for
-          this market's insurance, so its value can fall.
+          Stakers are paid the insurance share of every trading fee, moved into the stake pool
+          automatically. The pool admin can move staked funds into the market&apos;s insurance
+          fund, where trading losses can use them, so your stake can lose value. This has not
+          happened so far.
         </p>
         {/* The 0% above reads as an oversight without the other shares beside
             it — "16% to insurance" is the number it gets mistaken for. #2565. */}
@@ -359,7 +360,7 @@ function StakeHeader({
         {/* Stats strip */}
         <div
           className="mt-5 grid grid-cols-2 gap-px border border-[var(--border)] bg-[var(--border)] sm:grid-cols-4"
-          aria-label="Staking statistics"
+          aria-label="Fee staking statistics"
         >
           {stats.map((s) => (
             <div key={s.label} className="min-w-0 bg-[var(--panel-bg)] p-4 sm:p-5">
@@ -1361,11 +1362,11 @@ function StakeSidebar() {
         <div className="mb-3 flex items-center gap-2">
           <span aria-hidden="true" className="text-xs">🛡️</span>
           <h3 className="text-[12px] font-medium text-[var(--text)]" style={{ fontFamily: "var(--font-display)" }}>
-            What Staking Backs
+            If the pool admin moves stake into insurance
           </h3>
         </div>
         <div className="space-y-2">
-          <CoverageItem icon="⚡" label="Liquidation Shortfall" description="First-loss capital when liquidations don't fully cover a position" />
+          <CoverageItem icon="⚡" label="Liquidation Shortfall" description="Moved stake can cover losses when liquidations don't fully cover a position" />
           <CoverageItem icon="🔄" label="Socialized Loss Buffer" description="Absorbs bad debt before it reaches the market's liquidity and Earn deposits" />
           <CoverageItem icon="🏗️" label="Protocol Solvency" description="Pre-funds the market's insurance fund via an admin flush" />
         </div>
