@@ -162,6 +162,14 @@ const ONE_SHOT_BODY: Record<string, string> = {
   "price-wait": "Waiting for a fresh price. Nothing was sent. Try again in a few seconds.",
 };
 
+/** Earn deposit paused (Custom 91 / planEarnDeposit). Calm, one line, no mechanics. */
+export const EARN_DEPOSITS_PAUSED_BODY = "Earn deposits are paused while this vault settles. Nothing was sent.";
+/**
+ * Custom 91 on a WITHDRAWAL (77): only reachable when a stale-version tx carried the 91 repair the
+ * upgraded wrapper refuses, and `sendWithUpgradeRetry` has already rebuilt once. Never deposit copy.
+ */
+export const EARN_WITHDRAW_RETRY_BODY = "This withdrawal couldn't go through just now. Nothing was sent. Please try again in a moment.";
+
 /** The one resolver (§5.3). Never throws. */
 export function resolveUserMessage(err: unknown, ctx: MessageContext): UserMessage {
   const u = resolveUserMessageInner(err, ctx);
@@ -196,6 +204,11 @@ function resolveUserMessageInner(err: unknown, ctx: MessageContext): UserMessage
   // ── Wallet / network conditions (no program code) ──────────────────────────
   if (/user rejected|rejected the request|user declined|transaction rejected|request rejected|\b4001\b/i.test(p.raw)) {
     return m("cancelled", "info", "Cancelled", "Cancelled.", { quiet: true });
+  }
+  // Earn deposit refused BEFORE the wallet opened (earn-split-pot planEarnDeposit): a pot is
+  // over-impaired or the share price collapsed. Same line the program's Custom 91 gets.
+  if ((err as { name?: string } | null)?.name === "EarnDepositsPausedError") {
+    return m("earn-pot-impaired", "paused", "Deposits paused", EARN_DEPOSITS_PAUSED_BODY);
   }
   // UX WP-3: the user pressed Stop on a long wait (lib/tx.ts WaitStoppedError): nothing was sent.
   if ((err as { name?: string } | null)?.name === "WaitStoppedError") {
@@ -396,6 +409,14 @@ function resolveUserMessageInner(err: unknown, ctx: MessageContext): UserMessage
         if (ctx.surface === "earn-deposit")
           return m("earn-deposit-settling", "wait", "Vault is settling", "This vault can't take new deposits for a moment while its recent trades settle. Nothing was sent. Please try again shortly.");
         break;
+      case W.LpVaultTargetPotImpaired:
+        // Wrapper 7a3ac04c+ (non-bound NAV floor, H-1): a 75 while a pot's net impairment exceeds
+        // its principal, or while the share price has collapsed, is refused. The app checks the
+        // same state before sending (earn-split-pot `planEarnDeposit`), so this only shows when
+        // the vault moved between the read and the send.
+        if (ctx.surface === "earn-withdraw")
+          return m("earn-withdraw-retry", "wait", "Try again", EARN_WITHDRAW_RETRY_BODY);
+        return m("earn-pot-impaired", "paused", "Deposits paused", EARN_DEPOSITS_PAUSED_BODY);
       case W.VaultLpBindRequiresFlatAsset:
         return m("setup-not-allowed", "error", "Not available here", "This market already has open positions, so the Earn vault can't take over its liquidity. Create a new market to use it.");
       case W.VaultLpPausedForSeniorDraw:

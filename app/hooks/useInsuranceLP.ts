@@ -34,7 +34,7 @@ import { useParams } from 'next/navigation';
 import { pythCrankAccount } from "@/lib/limits/oracle-tail";
 import { limitsFlags } from "@/lib/limits/flags";
 import { earnVaultLpRepairOption } from "@/lib/limits/vault-lp-repair";
-import { buildEarnDepositIxs, buildEarnExecuteIxs, buildRequestRedeemIx, earnTxPlan, sendWithHarvestOn84, withForcedHarvest, type EarnTxPlan } from "@/lib/limits/earn-ixs";
+import { buildEarnDepositIxs, buildEarnExecuteIxs, buildRequestRedeemIx, earnTxPlan, sendWithHarvestOn84, sendWithUpgradeRetry, withForcedHarvest, type EarnTxPlan } from "@/lib/limits/earn-ixs";
 import { SimulationRefusal } from "@/lib/tx";
 import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 import { resolveDevnetProgramIds } from "@/lib/program-ids";
@@ -55,6 +55,8 @@ import {
   type SplitPotState,
   repairUnderwaterPot,
   splitPotPrefixIxs,
+  planEarnDeposit,
+  EarnDepositsPausedError,
 } from "@/lib/limits/earn-split-pot";
 import { TAG_DEPOSIT_TO_LP_VAULT, TAG_EXECUTE_REDEMPTION } from "@/lib/limits/constants";
 import { COPY as LIMITS_COPY } from "@/lib/limits/copy";
@@ -513,7 +515,8 @@ export function useInsuranceLP() {
         // pot, #2853) lands.
         const rawSp: SplitPotState | null = vp && !vp.bound ? vp : null;
         const sp = rawSp ? repairUnderwaterPot(rawSp)?.state ?? null : null;
-        const v = sp ? combinedVault(sp.own, sp.sib, sp.feeShareBps) : null;
+        // Wrapper 7a3ac04c+ (navFloor): an over-impaired pot is worth 0 instead of unpriceable.
+        const v = sp ? combinedVault(sp.own, sp.sib, sp.feeShareBps, sp.navFloor === true) : null;
         if (sp && v && sp.totalShares > 0n) {
           const held = userLpBalance + pendingRedemptionShares;
           vaultTotalAtoms = v.nav;
@@ -521,7 +524,7 @@ export function useInsuranceLP() {
           userVaultValueAtoms = (held * v.nav) / sp.totalShares;
           let maxNowAtoms: bigint | null = null;
           if (held > 0n) {
-            const plan = planSplitPotRedemption({ own: sp.own, sib: sp.sib, totalShares: sp.totalShares, shares: held, feeShareBps: sp.feeShareBps });
+            const plan = planSplitPotRedemption({ own: sp.own, sib: sp.sib, totalShares: sp.totalShares, shares: held, feeShareBps: sp.feeShareBps, navFloor: sp.navFloor });
             if (plan && !plan.payable) maxNowAtoms = (cappedShares(plan.maxShares, held) * v.nav) / sp.totalShares;
           }
           splitPot = { totalShares: sp.totalShares, navAtoms: v.nav, maxNowAtoms };
@@ -729,49 +732,67 @@ export function useInsuranceLP() {
       assertDepositWithinBalance(amount, await readTokenBalance(connection, sourceTokenAta));
       const depositorLpAta = await getAssociatedTokenAddress(lpMintPda, wallet.publicKey);
 
-      const ixs = [];
-      // Create depositor LP ATA if it doesn't exist.
-      // BUG FIX (devnet flow-test 2026-07-01): connection.getAccountInfo() resolves to `null`
-      // for a missing account — it does NOT throw. The previous try/catch here never entered
-      // its catch branch, so the create-ATA instruction was never added, and DepositToLpVault
-      // failed on-chain with Custom(11) InvalidTokenAccount for any depositor whose LP-token
-      // ATA didn't already exist (i.e. every first-time depositor into a given LP vault).
-      const depositorLpAtaInfo = await connection.getAccountInfo(depositorLpAta);
-      if (!depositorLpAtaInfo) {
-        ixs.push(createAssociatedTokenAccountInstruction(
-          wallet.publicKey, depositorLpAta, wallet.publicKey, lpMintPda,
-        ));
-      }
+      // Around the upgrade cutover a pre-sign 91 / 25 means this tx was built for the other wrapper
+      // version: re-detect and rebuild once (lib/limits/earn-ixs.ts sendWithUpgradeRetry).
+      const depositor = wallet.publicKey;
+      const attemptDeposit = async (): Promise<string> => {
+        const ixs = [];
+        // Create depositor LP ATA if it doesn't exist.
+        // BUG FIX (devnet flow-test 2026-07-01): connection.getAccountInfo() resolves to `null`
+        // for a missing account — it does NOT throw. The previous try/catch here never entered
+        // its catch branch, so the create-ATA instruction was never added, and DepositToLpVault
+        // failed on-chain with Custom(11) InvalidTokenAccount for any depositor whose LP-token
+        // ATA didn't already exist (i.e. every first-time depositor into a given LP vault).
+        const depositorLpAtaInfo = await connection.getAccountInfo(depositorLpAta);
+        if (!depositorLpAtaInfo) {
+          ixs.push(createAssociatedTokenAccountInstruction(
+            depositor, depositorLpAta, depositor, lpMintPda,
+          ));
+        }
 
-      // P3 (vault-owned LP): a BOUND vault requires [11] vault_lp_state + [12] vault LP, and a
-      // genesis deposit with harvestable LP fees needs tag 78 first (P3-L1). Assembly is shared
-      // with the LiteSVM bridge (lib/limits/earn-ixs.ts), so the sim runs this exact code.
-      const p3 = earnTxPlan(TAG_DEPOSIT_TO_LP_VAULT, await readEarnP3Context(connection, progPk, marketPk));
-      assertEarnPlan(p3);
-      // Non-bound vault with an underwater pot: every deposit is refused (Custom 25) until the
-      // permissionless repair (91) lands, so it rides in front of the user's own deposit.
-      if (!p3.tail) {
-        ixs.push(...splitPotPrefixIxs({
-          programId: progPk, cranker: wallet.publicKey, market: marketPk, registry: registryPda,
-          sp: await readSplitPotState(connection, progPk, marketPk),
+        // P3 (vault-owned LP): a BOUND vault requires [11] vault_lp_state + [12] vault LP, and a
+        // genesis deposit with harvestable LP fees needs tag 78 first (P3-L1). Assembly is shared
+        // with the LiteSVM bridge (lib/limits/earn-ixs.ts), so the sim runs this exact code.
+        const p3 = earnTxPlan(TAG_DEPOSIT_TO_LP_VAULT, await readEarnP3Context(connection, progPk, marketPk));
+        assertEarnPlan(p3);
+        // Non-bound vault. Live wrapper: an underwater pot makes every deposit fail Custom 25 until the
+        // permissionless repair (91) lands, so it rides in front of the user's own deposit. Upgraded
+        // wrapper (sp.navFloor): no repair, ever (it would move Earn holders' money into the impaired
+        // pot, security review B-2) - `splitPotPrefixIxs` returns nothing then.
+        const sp = p3.tail ? null : await readSplitPotState(connection, progPk, marketPk);
+        // Never send a deposit the vault should not take: a pot over-impaired (H-1 / Custom 25) or a
+        // collapsed share price (B-1). Otherwise route to the pot whose principal covers its
+        // impairment. `ledger` / `siblingLedger` stay pinned; only the `domain` argument picks the pot.
+        // Fail CLOSED: a non-bound vault whose pot state cannot be read (RPC error -> null) is not
+        // deposited into blind - pre-upgrade the program has no collapse guard of its own.
+        if (!p3.tail && !sp) throw new EarnDepositsPausedError("unpriceable");
+        let targetDomain = domain;
+        if (sp) {
+          const plan = planEarnDeposit(sp, domain);
+          if (!plan.ok) throw new EarnDepositsPausedError(plan.reason);
+          targetDomain = plan.domain;
+          ixs.push(...splitPotPrefixIxs({
+            programId: progPk, cranker: depositor, market: marketPk, registry: registryPda, sp,
+          }));
+        }
+        ixs.push(...buildEarnDepositIxs({
+          programId: progPk,
+          depositor,
+          market: marketPk,
+          registry: registryPda,
+          lpMint: lpMintPda,
+          depositorLpAta,
+          sourceToken: sourceTokenAta,
+          vaultToken: vaultTokenAta,
+          ledger: ledgerPda,
+          siblingLedger: siblingLedgerPda,
+          domain: targetDomain,
+          amount,
+          plan: p3,
         }));
-      }
-      ixs.push(...buildEarnDepositIxs({
-        programId: progPk,
-        depositor: wallet.publicKey,
-        market: marketPk,
-        registry: registryPda,
-        lpMint: lpMintPda,
-        depositorLpAta,
-        sourceToken: sourceTokenAta,
-        vaultToken: vaultTokenAta,
-        ledger: ledgerPda,
-        siblingLedger: siblingLedgerPda,
-        domain,
-        amount,
-        plan: p3,
-      }));
-      const sig = await sendTx({ connection, wallet, instructions: ixs, selfHeal: { programId: progPk, market: marketPk }, vaultLpRepair: earnRepairFor(progPk, marketPk) });
+        return sendTx({ connection, wallet, instructions: ixs, selfHeal: { programId: progPk, market: marketPk }, vaultLpRepair: earnRepairFor(progPk, marketPk) });
+      };
+      const sig = await sendWithUpgradeRetry(attemptDeposit, isEarnVersionRefusal);
       void readTxDrawSummary(connection, sig).then(setLastDrawSummary);
       await refreshState();
       return sig;
@@ -941,16 +962,25 @@ export function useInsuranceLP() {
         // 5544302a: a Resolved terminal-flat 77 can need 78 first (stray pot backing); a pre-sign 84
         // rebuilds the same payout with 78 in front (lib/limits/earn-ixs.ts sendWithHarvestOn84).
         const pendingShares = parseLpRedemption(new Uint8Array(redemptionInfo.data)).shares;
-        signature = await sendWithHarvestOn84({ build: (force) => buildExecuteIxs(force, BigInt(pendingShares)), send, isHarvestPendingRefusal });
+        // A pre-sign 91 / 25 around the upgrade cutover = built for the other wrapper version (the
+        // 91 repair prefix present / absent): re-detect and rebuild once.
+        signature = await sendWithUpgradeRetry(
+          () => sendWithHarvestOn84({ build: (force) => buildExecuteIxs(force, BigInt(pendingShares)), send, isHarvestPendingRefusal }),
+          isEarnVersionRefusal,
+        );
         step = 'executed';
         void readTxDrawSummary(connection, signature).then(setLastDrawSummary);
       } else if (state.registryExists && withdrawFlow(state.redemptionCooldownSlots) === 'one-tx') {
         // UX WP-4: only a vault whose cooldown is 0 requests AND pays out in one tx.
-        signature = await sendWithHarvestOn84({
-          build: async (force) => [await buildRequestIx(), ...(await buildExecuteIxs(force, lpAmount))],
-          send,
-          isHarvestPendingRefusal,
-        });
+        signature = await sendWithUpgradeRetry(
+          () =>
+            sendWithHarvestOn84({
+              build: async (force) => [await buildRequestIx(), ...(await buildExecuteIxs(force, lpAmount))],
+              send,
+              isHarvestPendingRefusal,
+            }),
+          isEarnVersionRefusal,
+        );
         step = 'executed';
         void readTxDrawSummary(connection, signature).then(setLastDrawSummary);
       } else {
@@ -1042,6 +1072,20 @@ export const TOPUP_SIM_CU = 400_000;
 export const RESIZE_CU_CAP = 120_000;
 /** A bundled top-up + Earn payout is sized from its own simulation, up to this cap. */
 export const TOPUP_BUNDLE_CU_CAP = 1_200_000;
+
+/**
+ * A pre-sign refusal (wallet not opened) with the wrapper's own 91 LpVaultTargetPotImpaired or 25
+ * EngineCounterUnderflow on an Earn tx. Around the matcher-sync upgrade these are the symptom of a tx
+ * built for the other wrapper version (a 91 repair the new wrapper refuses, or a missing repair the
+ * old one needs), so `sendWithUpgradeRetry` re-detects and rebuilds once.
+ */
+export function isEarnVersionRefusal(e: unknown): boolean {
+  return (
+    e instanceof SimulationRefusal &&
+    (e.code === WRAPPER_ERR.LpVaultTargetPotImpaired || e.code === WRAPPER_ERR.EngineCounterUnderflow) &&
+    (e.programId === null || e.programId === resolveDevnetProgramIds().wrapper)
+  );
+}
 
 /** A pre-sign refusal with 84 VaultLpHarvestPending raised by the wrapper (the wallet was not opened). */
 export function isHarvestPendingRefusal(e: unknown): boolean {
