@@ -89,6 +89,7 @@ import { invalidatePortfolio } from "@/lib/portfolio-invalidation";
 import { FEE_LEGS, legPercent, splitFeeAtoms } from "@/lib/fee-breakdown";
 import { useMarketLimits } from "@/hooks/useMarketLimits";
 import { closeLimitNotice, deriveTicketLimits, feeFitSizeQ, sizeQToInput, type TicketLimitsInput } from "@/lib/limits/ticket";
+import { sameOwnerRoomQ } from "@/lib/limits/risk-limits";
 import { balanceMaxQ, deriveTicketState, maxInUnit, oneMaxQ, type TicketRow } from "@/lib/limits/ticket-state";
 import { publishTicketRow } from "@/lib/limits/ticket-status-store";
 import { fmtQ } from "@/lib/limits/format";
@@ -372,8 +373,11 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // /api/markets/health. Blocks OPENS only — a close reduces the LP's risk and
   // is not gated on this (OrderTicketClosePanel keeps the legacy value).
   const marketHealth = useSingleMarketHealth(slabAddress);
-  // Limits UI (P1/P2/P3, flag-gated; returns state "off" and does no RPC when all flags are off).
-  const marketLimits = useMarketLimits(slabAddress);
+  // SameOwnerTrade is unconditional even when the optional limits phases
+  // are OFF (#2976). The hook resolves canonical LP ownership only for a connected
+  // wallet on a market whose asset_admin is renounced (cached per market); normal
+  // markets, visitors without a wallet and mock mode pay for no extra read.
+  const marketLimits = useMarketLimits(slabAddress, 0, mockMode ? null : publicKey?.toBase58() ?? null);
   /** WP-3 row 9: the size was just reduced to the max; the helper turns --warning for 4 s. */
   const [clampedToQ, setClampedToQ] = useState<bigint | null>(null);
   /** WP-3 result line (§3.3): full / partial / zero fill of the last order, in the status slot. */
@@ -1118,8 +1122,16 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     }
   }
 
+  // #2976: while the post-burn LP owner is first being resolved (bounded), hold only an
+  // order that would OPEN / grow / flip this wallet. A close (within the reducing room) is
+  // never held; an unresolved owner never blocks (on-chain 67 + pre-sign simulation refuse).
+  const sameOwnerOpenPending =
+    marketLimits.sameOwnerPending === true &&
+    positionSize > sameOwnerRoomQ(existingPositionSize, direction);
+
   const submitDisabled =
     accountPending ||
+    sameOwnerOpenPending ||
     tradePhase !== "idle" ||
     loading ||
     ticketState.blocks ||
@@ -1909,7 +1921,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             ? TICKET_COPY.confirmInWallet
             : tradePhase === "waiting"
               ? TICKET_COPY.waitingLatest
-              : accountPending
+              : sameOwnerOpenPending
+                ? "Loading market…"
+                : accountPending
                 ? "Loading account…"
                 : fundOverWallet && !ticketState.blocks
                 ? "Get test funds"
