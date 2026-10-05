@@ -776,6 +776,10 @@ export async function sendTx({
 
   let lastError: Error | null = null;
   let lastSignature: string | undefined;
+  // Signature of the tx signed by THIS attempt's legacy path, known before it is broadcast. Used ONLY
+  // by the R2-S7 landed check; kept apart from `lastSignature` ("was sent atomically by the wallet"),
+  // which gates the PERC-8388 no-rebuild SAFETY branch below.
+  let preSendSignature: string | undefined;
 
   // P0b self-heal. Planned from the ORIGINAL instructions on EVERY attempt:
   // a repair that someone else (the keeper) landed meanwhile makes its engine
@@ -1020,6 +1024,15 @@ export async function sendTx({
           skipPreflight = true;
         }
 
+        // Capture the signature BEFORE broadcasting. A tx's signature is its
+        // fee payer's (first) signature and is fixed once signed, so we know it
+        // before sendRawTransaction. If the send then THROWS (timeout, dropped
+        // connection, blockhash lag on a load-balanced RPC) the tx may still
+        // have landed; without this, `lastSignature` stayed unset on a throw and
+        // the R2-S7 landed check in the catch below was silently skipped.
+        if (signed.signature) {
+          preSendSignature = bs58.encode(signed.signature);
+        }
         try {
           lastSignature = await connection.sendRawTransaction(signed.serialize(), {
             skipPreflight: skipPreflight ?? false,
@@ -1073,9 +1086,10 @@ export async function sendTx({
 
       if (isBlockhashExpired && attempt < maxRetries) {
         // R2-S7: Before retrying, check if the original tx actually landed
-        if (lastSignature) {
+        const landedCheckSig = preSendSignature ?? lastSignature;
+        if (landedCheckSig) {
           try {
-            const statusResp = await connection.getSignatureStatuses([lastSignature], {
+            const statusResp = await connection.getSignatureStatuses([landedCheckSig], {
               searchTransactionHistory: true,
             });
             const prevStatus = statusResp.value[0];
@@ -1085,7 +1099,7 @@ export async function sendTx({
               (prevStatus.confirmationStatus === "confirmed" ||
                 prevStatus.confirmationStatus === "finalized")
             ) {
-              return lastSignature; // Already landed — no retry needed
+              return landedCheckSig; // Already landed — no retry needed
             }
           } catch {
             // RPC error checking status — proceed with retry
