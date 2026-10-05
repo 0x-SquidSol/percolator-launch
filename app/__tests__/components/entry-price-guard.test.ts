@@ -68,6 +68,11 @@ const EXEMPT: Record<string, string> = {
     "Draws an entry LINE (no row/cell) from a cached entry or a PnL-derived one; source 'unknown' draws " +
     "no line at all — an absent line makes no claim and never falls back to the mark. The call-site check " +
     "below pins that its line goes through displayEntryE6 (#2990).",
+  "components/trade/perp/PerpChart.tsx":
+    "The perp-standard chart draws its Entry LINE only from usePositionLinePrices().entry, which is " +
+    "derived through displayEntryE6(resolvedEntry.entry, resolvedEntry.source) (pinned by the hook guard " +
+    "below) and is null for an unknown source; setLine removes the line for null/<=0. An absent line makes " +
+    "no claim and never falls back to the mark.",
 };
 
 describe("the entry-price surface list is discovered, not hand-maintained", () => {
@@ -84,7 +89,7 @@ describe("the entry-price surface list is discovered, not hand-maintained", () =
       ]),
     );
     // Pinned exactly: adding a surface must fail here and get a reviewed edit.
-    expect(names.length).toBe(8);
+    expect(names.length).toBe(9); // + components/trade/perp/PerpChart.tsx (exempt above)
   });
 
   it("every exemption still names a discovered surface, with a real reason", () => {
@@ -322,5 +327,16 @@ describe("TradingChart's exempt Entry line still goes through the display allowl
     expect(body).toMatch(/displayEntryE6\(\s*resolvedEntry\.entry,\s*resolvedEntry\.entrySource,?\s*\)/);
     // The returned number comes from the allowlisted value, never resolvedEntry.entry directly.
     expect(body).toMatch(/return displayEntry > 0n\s*\?\s*Number\(displayEntry\)/);
+  });
+});
+
+describe("the shared chart-line hook draws Entry only from the shared PnL resolution (#3077)", () => {
+  it("usePositionLinePrices goes through terminalPositionPnl and gates on pnlKnown and a known source", () => {
+    const src = fs.readFileSync(path.join(APP_ROOT, "hooks/usePositionLinePrices.ts"), "utf8");
+    expect(src).toMatch(/terminalPositionPnl\(/);
+    expect(src).toMatch(/!pnl\.pnlKnown \|\| pnl\.entrySource === "unknown"/);
+    expect(src).toMatch(/pnl\.liquidationPriceE6/);
+    // control: the hook never reads the raw account entry or the local cache itself
+    expect(src).not.toMatch(/getEntryPrice|account\.entryPrice/);
   });
 });

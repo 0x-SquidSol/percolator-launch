@@ -45,11 +45,19 @@
  */
 import { Connection, PublicKey } from "@solana/web3.js";
 import { detectDexType } from "@percolatorct/sdk";
+import { createServer, type IncomingMessage } from "node:http";
+import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { readPoolPriceE6, type DecimalsCache, type PoolReadEntry } from "../lib/priceStore/dexPoolReader";
 import { fetchJupiterSolUsdE6 } from "../lib/jupiter-price";
 import { pickSolUsdE6 } from "../lib/priceStore/solUsd";
 import { isBlockedSlab } from "../lib/blocklist";
+import { createTickService, MAX_BODY_BYTES } from "../lib/chart/tick-service";
+import { bearerMatches } from "../lib/chart/tick-ingest";
+import { MAX_WATCHED_SLABS, RateLimiter, WS_MAX_PAYLOAD_BYTES, checkSubscribe, clientKey, isKnownSlab } from "../lib/chart/ws-guards";
+import { getPgCandleStore, getPgSql } from "../lib/chart/pg-store";
+import { createTradeFeed } from "../lib/chart/trade-feed";
+import type { TickMessage } from "../lib/chart/perp-types";
 
 // Railway (and most PaaS) inject PORT and route the public domain to it, so
 // prefer it; PRICE_WS_PORT is the local-dev override; 8787 is the local default.
@@ -197,6 +205,7 @@ async function refreshDbMarkets(): Promise<void> {
       }
     }
     dexMarkets = next;
+    marketsLoaded = true;
   } catch (err) {
     console.warn(
       "[local-price-ws] market refresh failed — keeping the previous list:",
@@ -226,7 +235,85 @@ interface ClientState {
 }
 const clients = new Set<ClientState>();
 
-const wss = new WebSocketServer({ port: PORT });
+// ── Perp chart ticks (keeper -> here -> browsers) ──────────────────────────
+// The keeper POSTs every landed mark push (plus the raw pool price it read) to
+// POST /ingest/ticks. This process stamps (epoch, seq), folds the ticks into the canonical
+// candles, persists them (when a database URL is set), and pushes each tick to every client
+// subscribed to that slab over the same socket the price feed already uses.
+// See ~/percolator-ops/ledger/charts-perp-standard-plan-2026-10-04.md.
+const TICK_INGEST_KEY = process.env.TICK_INGEST_KEY;
+const TICK_FLUSH_MS = Number(process.env.TICK_FLUSH_MS ?? 10_000);
+const tickStore = getPgCandleStore(process.env, 2);
+/** The market set: database-registered active markets (dexMarkets) plus any TICK_EXTRA_SLABS. Until the first
+ *  successful database read the set is "not loaded" and only the address format is enforced. */
+let marketsLoaded = (process.env.TICK_EXTRA_SLABS ?? "").trim().length > 0 && !SUPABASE_URL;
+const knownSlabs = (): ReadonlySet<string> => {
+  const set = new Set(dexMarkets.map((m) => m.slab));
+  for (const x of (process.env.TICK_EXTRA_SLABS ?? "").split(",").map((v) => v.trim()).filter(Boolean)) set.add(x);
+  return set;
+};
+const tickService = createTickService({
+  key: TICK_INGEST_KEY, store: tickStore, epoch: randomUUID(),
+  isKnownSlab: (slab) => isKnownSlab(slab, knownSlabs(), marketsLoaded, isBlockedSlab),
+});
+const ticksLimiter = new RateLimiter(30, 60_000); // GET /ticks: 30 per minute per client
+const tickRequestStartedAt = Date.now();
+
+const CORS = { "Access-Control-Allow-Origin": "*" };
+
+function readBody(req: IncomingMessage): Promise<string | null> {
+  return new Promise((resolve) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => {
+      size += c.length;
+      if (size > MAX_BODY_BYTES) { resolve(null); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", () => resolve(null));
+  });
+}
+
+const httpServer = createServer(async (req, res) => {
+  const url = new URL(req.url ?? "/", "http://x");
+  const json = (status: number, body: unknown, extra: Record<string, string> = {}) => {
+    res.writeHead(status, { "content-type": "application/json", ...extra });
+    res.end(JSON.stringify(body));
+  };
+  if (req.method === "OPTIONS") { res.writeHead(204, { ...CORS, "Access-Control-Allow-Headers": "content-type" }); res.end(); return; }
+  if (req.method === "POST" && url.pathname === "/ingest/ticks") {
+    // Authenticate on the header BEFORE reading a byte of the body.
+    if (!TICK_INGEST_KEY) { json(503, { error: "ingest is not configured" }, { Connection: "close" }); return; }
+    if (!bearerMatches(req.headers.authorization, TICK_INGEST_KEY)) { tickService.stats.ingestUnauthorized++; json(401, { error: "unauthorized" }, { Connection: "close" }); return; }
+    const body = await readBody(req);
+    if (body === null) { json(413, { error: "body too large" }); return; }
+    const out = tickService.ingest(req.headers.authorization, body, (m) => broadcastTick(m));
+    if (out.status === 202) { res.writeHead(202, { "content-type": "application/json" }); res.end(JSON.stringify(out)); }
+    else json(out.status, { error: out.error });
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/ticks") {
+    // Gap repair: ticks after `sinceSeq` (same epoch) for one slab. A different epoch replays the buffer.
+    const slab = url.searchParams.get("slab") ?? "";
+    const since = Number(url.searchParams.get("sinceSeq") ?? "0");
+    const epoch = url.searchParams.get("epoch");
+    if (!ticksLimiter.allow(clientKey(req.headers["x-forwarded-for"], req.socket.remoteAddress), Date.now())) {
+      json(429, { error: "slow down" }, { ...CORS, "Retry-After": "10" });
+      return;
+    }
+    if (!slab || isBlockedSlab(slab)) { json(404, { error: "unknown slab" }, CORS); return; }
+    json(200, { epoch: tickService.hub.epoch, ticks: tickService.replay(slab, Number.isFinite(since) ? since : 0, epoch) }, { ...CORS, "Cache-Control": "no-store" });
+    return;
+  }
+  if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/")) {
+    json(200, { ok: true, uptimeS: Math.round((Date.now() - tickRequestStartedAt) / 1000), clients: clients.size, slabs: tickService.hub.slabCount(), ingestConfigured: !!TICK_INGEST_KEY, persistence: !!tickStore, stats: tickService.stats });
+    return;
+  }
+  json(404, { error: "not found" });
+});
+
+const wss = new WebSocketServer({ server: httpServer, maxPayload: WS_MAX_PAYLOAD_BYTES });
 
 function sendPrice(ws: WebSocket, slab: string, priceE6: bigint): void {
   if (ws.readyState !== WebSocket.OPEN) return;
@@ -246,6 +333,46 @@ function broadcast(slab: string, priceE6: bigint): void {
   }
 }
 
+// ── Last-trade feed: indexer trades -> subscribed browsers ─────────────────
+// One indexed query per second for every slab somebody is watching (never per viewer).
+const TRADE_POLL_MS = Number(process.env.TRADE_POLL_MS ?? 1_000);
+const tradeSql = getPgSql(process.env, 1);
+const tradeFeed = tradeSql
+  ? createTradeFeed({
+      maxSlabs: MAX_WATCHED_SLABS,
+      watched: () => { const s = new Set<string>(); for (const c of clients) for (const x of c.subscriptions) s.add(x); return s; },
+      emit: (m) => {
+        const payload = JSON.stringify(m);
+        for (const c of clients) {
+          if (c.subscriptions.has(m.slab) && c.ws.readyState === WebSocket.OPEN && c.ws.bufferedAmount <= 512 * 1024) c.ws.send(payload);
+        }
+      },
+      query: (slabs, sinceIso) =>
+        tradeSql.unsafe(
+          `SELECT id::text AS id, slab_address, price::text AS price, size::text AS size, side, created_at
+             FROM trades WHERE slab_address = ANY($1::text[]) AND network = $2 AND created_at >= $3::timestamptz
+            ORDER BY created_at ASC LIMIT 500`,
+          [slabs, process.env.NEXT_PUBLIC_DEFAULT_NETWORK ?? "devnet", sinceIso],
+        ) as never,
+    })
+  : null;
+if (tradeFeed) {
+  let polling = false;
+  setInterval(() => { if (polling) return; polling = true; void tradeFeed.poll().finally(() => { polling = false; }); }, TRADE_POLL_MS);
+}
+
+/** Skip a client whose socket is backed up: it repairs the gap from /ticks when it catches up. */
+const MAX_BUFFERED_BYTES = 512 * 1024;
+
+function broadcastTick(m: TickMessage): void {
+  const payload = JSON.stringify(m);
+  for (const client of clients) {
+    if (!client.subscriptions.has(m.slab)) continue;
+    if (client.ws.readyState !== WebSocket.OPEN || client.ws.bufferedAmount > MAX_BUFFERED_BYTES) continue;
+    client.ws.send(payload);
+  }
+}
+
 wss.on("connection", (ws) => {
   const client: ClientState = { ws, subscriptions: new Set() };
   clients.add(client);
@@ -255,12 +382,20 @@ wss.on("connection", (ws) => {
     try {
       const msg = JSON.parse(raw.toString()) as { type?: string; slabAddress?: string };
       if (msg.type === "subscribe" && msg.slabAddress) {
+        const v = checkSubscribe({ slab: msg.slabAddress, current: client.subscriptions, known: knownSlabs(), marketsLoaded, isBlocked: isBlockedSlab });
+        if (!v.ok) {
+          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "error", reason: v.reason }));
+          return;
+        }
         client.subscriptions.add(msg.slabAddress);
         // Send the last-known price immediately (if any) — mirrors
         // production's "send initial data for price channels" so the
         // client isn't blank until the next update.
         const last = lastPriceE6.get(msg.slabAddress);
         if (last !== undefined) sendPrice(ws, msg.slabAddress, last);
+        // ...and the last mark/oracle tick, so a chart that just (re)connected has a current value.
+        const lastTick = tickService.hub.latest(msg.slabAddress);
+        if (lastTick && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(lastTick));
       } else if (msg.type === "unsubscribe" && msg.slabAddress) {
         client.subscriptions.delete(msg.slabAddress);
       }
@@ -361,6 +496,15 @@ async function pollLoop(): Promise<void> {
   }
 }
 
+httpServer.listen(PORT);
+setInterval(() => { void tickService.flush(); }, TICK_FLUSH_MS);
+if (tickStore) {
+  // Retention prune, hourly. Failure is only a warning: the table just grows until the next success.
+  setInterval(() => { tickStore.prune(Date.now()).catch((e) => console.warn("[local-price-ws] chart prune failed:", e instanceof Error ? e.message : e)); }, 60 * 60_000);
+}
+console.log(
+  `[local-price-ws] ticks: ingest ${TICK_INGEST_KEY ? "ENABLED" : "disabled (TICK_INGEST_KEY unset)"}, persistence ${tickStore ? "on" : "off (no INDEXER_DATABASE_URL)"}`,
+);
 console.log(
   `[local-price-ws] listening on ws://localhost:${PORT} — DEX poll (${POLL_INTERVAL_MS}ms) for ${SEED_DEX_MARKETS.length} pinned + database-registered markets; SOL/USD from Jupiter every ${SOL_REFRESH_MS}ms (DEX fallback)`,
 );
@@ -373,13 +517,28 @@ for (const m of SEED_DEX_MARKETS) {
 void (async () => {
   await refreshDbMarkets();
   setInterval(() => { void refreshDbMarkets(); }, DB_REFRESH_MS);
+  // Continue each market's persisted candles across a restart (open stays the persisted open).
+  if (tickStore) {
+    try {
+      const rows = await tickStore.newest(dexMarkets.map((m) => m.slab));
+      for (const r of rows) tickService.hub.seed(r.slab, r.series, r.res, r.candle);
+      console.log(`[local-price-ws] seeded ${rows.length} forming candles from the database`);
+    } catch (err) {
+      console.warn("[local-price-ws] candle seed failed (continuing unseeded):", err instanceof Error ? err.message : err);
+    }
+  }
 })();
 
 void solLoop();
 void pollLoop();
 
+process.on("SIGTERM", () => {
+  wss.close();
+  void tickService.flush().finally(() => process.exit(0));
+});
+
 process.on("SIGINT", () => {
   console.log("\n[local-price-ws] shutting down");
   wss.close();
-  process.exit(0);
+  void tickService.flush().finally(() => process.exit(0));
 });
