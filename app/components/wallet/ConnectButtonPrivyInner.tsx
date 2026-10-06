@@ -1,6 +1,6 @@
 "use client";
 
-import { FC, useCallback, useMemo, useState, useRef } from "react";
+import { FC, useCallback, useEffect, useMemo, useState, useRef } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import type { LinkedAccountWithMetadata } from "@privy-io/react-auth";
@@ -15,6 +15,7 @@ import { isReconnectFallbackEligible, useWalletNeedsReconnect } from "@/hooks/us
 import { useMenuDismiss } from "@/hooks/useMenuDismiss";
 import { useOptionalToast } from "@/hooks/useToast";
 import { copyAddress } from "@/lib/copy-address";
+import { AccountSecurityModal } from "@/components/wallet/AccountSecurityModal";
 
 /**
  * Privy-backed connect button. Split into its own module (loaded via
@@ -31,6 +32,11 @@ export const ConnectButtonPrivyInner: FC = () => {
   const { preferredAddress, setPreferredAddress } = usePreferredWallet();
   const searchParams = useSearchParams();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
+  // Signed out with the window open: don't bring it back on the next sign-in.
+  useEffect(() => {
+    if (!authenticated) setAccountOpen(false);
+  }, [authenticated]);
   const menuRef = useRef<HTMLDivElement>(null);
 
   const activeWallet = useMemo(() => {
@@ -200,6 +206,15 @@ export const ConnectButtonPrivyInner: FC = () => {
             {activeWallet?.address}
           </div>
           <div className="h-px bg-[var(--border)] my-1" />
+          <button
+            onClick={() => {
+              setMenuOpen(false);
+              setAccountOpen(true);
+            }}
+            className="w-full px-3 py-1.5 text-left text-[13px] text-[var(--text-secondary)] hover:bg-[var(--accent)]/[0.06] rounded-sm transition-colors"
+          >
+            Account and Security
+          </button>
           <Link
             href="/wallet"
             onClick={() => setMenuOpen(false)}
@@ -265,6 +280,10 @@ export const ConnectButtonPrivyInner: FC = () => {
       )}
 
       {menuOpen && !authenticated && null}
+
+      {accountOpen && authenticated && (
+        <AccountSecurityModal onClose={() => setAccountOpen(false)} walletAddress={activeWallet?.address ?? null} />
+      )}
     </div>
   );
 };
