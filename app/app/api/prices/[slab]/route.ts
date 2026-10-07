@@ -16,7 +16,7 @@ const NO_STORE = { "Cache-Control": "private, no-store" } as const;
 // window reuse one upstream fetch instead of re-hitting it per viewer per poll.
 const FALLBACK_CACHE_HEADERS = { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=120" } as const;
 
-type Stats24h = { change24h: number; high24h: string; low24h: string };
+type Stats24h = { change24h: number; high24h: string; low24h: string; series?: number[] };
 
 /** Short in-memory TTL cache for the GeckoTerminal fallback, keyed by slab.
  *  Belt-and-suspenders alongside FALLBACK_CACHE_HEADERS: on a warm serverless
@@ -105,10 +105,20 @@ async function geckoTerminalStatsFallback(slab: string, origin: string, cookie?:
     if (!Number.isFinite(high) || !Number.isFinite(low)) return setCache(null);
 
     const toE6Str = (v: number) => toE6(v).toString();
+    // Oldest→newest close prices for the landing rail's mini 24h chart, over the SAME window as
+    // the stats above: the reference bar (the price 24h ago) plus the bars newer than the cutoff.
+    // GeckoTerminal leaves out hours with no trades, so the 25 bars of a quiet pool can reach days
+    // back; using them all drew more than 24h and let the line's colour disagree with change24h.
+    // Bars are newest-first, so reverse; drop any non-finite/≤0 points. No extra request.
+    const series = [
+      ...(refBar ? [refBar[4]] : []),
+      ...bars.filter((b) => b[0] > cutoff).map((b) => b[4]).reverse(),
+    ].filter((v) => Number.isFinite(v) && v > 0);
     return setCache({
       change24h: change.pct,
       high24h: toE6Str(high),
       low24h: toE6Str(low),
+      ...(series.length >= 2 ? { series } : {}),
     });
   } catch {
     return setCache(null);
