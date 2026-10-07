@@ -60,3 +60,11 @@ export function useLivePriceCapacity(wallet: string | null, enabled = true): Liv
 
   return { ...cap, refresh };
 }
+
+/**
+ * #3320: does the per-creator ceiling block a NEW launch? Only a known limit, only for a market
+ * the keeper would price, and never while continuing a launch that already started.
+ */
+export function blocksNewLaunch(cap: LivePriceCapacity, a: { keeperPriced: boolean; resuming: boolean }): boolean {
+  return a.keeperPriced && !a.resuming && cap.status === "atLimit" && cap.max !== null;
+}

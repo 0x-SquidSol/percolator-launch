@@ -1,6 +1,7 @@
 "use client";
 import { resolveMarketMetadata } from "@/lib/market-metadata";
-import { UNSUPPORTED_POOL_COPY } from "@/lib/wizard-copy";
+import { LIVE_PRICE_LIMIT_COPY, UNSUPPORTED_POOL_COPY } from "@/lib/wizard-copy";
+import { blocksNewLaunch, useLivePriceCapacity } from "@/hooks/useLivePriceCapacity";
 import { WIZARD_STORAGE_KEY } from "@/lib/wizard-storage";
 
 import { DEFAULT_JUNIOR_FLOOR_BPS, validateP3Wizard, wizardP3Params } from "@/lib/limits/p3-wizard";
@@ -690,7 +691,15 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
       seedNavAtoms: 2n * backingSeedPerDomain(j),
     });
   }, [wizard.lpCollateral, wizard.juniorFloorBps, wizard.tokenMeta?.decimals]);
-  const launchDisabled = !allValid || !oracleSettled || !publicKey || p3Issue !== null;
+  // #3320: a wallet already at its per-creator live-price ceiling would launch a market keeper-register
+  // refuses for good: it would list and sit with no live price (the same outcome the unsupported-pool
+  // gate above prevents), after spending its rent, LP and insurance. Block it before anything is
+  // signed. Only a KNOWN limit blocks: an unread or failed capacity read never does. Never blocks
+  // continuing a launch that already started (its slab exists; finishing it is the creator's call).
+  const resumingLaunch = resumeFromStep !== null || chainResume !== null;
+  const livePriceCapacity = useLivePriceCapacity(walletB58, isDevnet && resolvedOracleType === "keeper" && !resumingLaunch);
+  const atLivePriceLimit = blocksNewLaunch(livePriceCapacity, { keeperPriced: resolvedOracleType === "keeper", resuming: resumingLaunch });
+  const launchDisabled = !allValid || !oracleSettled || !publicKey || p3Issue !== null || atLivePriceLimit;
   const launchDisabledReason: string | undefined = !publicKey
     ? "Connect wallet"
     : p3Issue
@@ -699,6 +708,8 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
       ? "Resolving price feed"
     : !registrable
       ? (notRegistrableReason ?? "This token cannot be priced")
+    : atLivePriceLimit
+      ? LIVE_PRICE_LIMIT_COPY(livePriceCapacity.max as number)
     : !step1Valid
       ? "Resolve a token first"
       : duplicateCheck.duplicates.length > 0
