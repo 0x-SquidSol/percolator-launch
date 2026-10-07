@@ -105,10 +105,22 @@ export function readinessStatus(reason: ReadinessFailure): number {
 
 /** Shown when a creator hits the per-wallet ceiling (final; a maintainer can enroll more). */
 export const PER_CREATOR_CAP_COPY = "This wallet already has the most live-priced markets allowed.";
-/** Shown when the deployment's ceiling is full (final until a maintainer frees room). */
+/** Shown when the deployment's ceiling is full (not final: it clears once room is made). */
 export const GLOBAL_CAP_COPY = "Live prices are full right now. A maintainer can connect this market.";
 
-export const DEFAULT_MAX_ACTIVE_MARKETS = 50;
+/**
+ * The deployment-wide ceiling. 50 filled on 2026-10-05 20:14 UTC (the 50th active row, PLAGUE) and
+ * from then on EVERY new launch was refused with a final 403 for 28+ hours: ~25 markets, 7+
+ * deployers, all left "UNKNOWN" with no live price. The playground adds ~10 live markets a day, so
+ * a refusal for the ceiling is retryable (429, below), never final.
+ *
+ * 90, and NO HIGHER until the keeper changes: its push loop reads every eligible market in one
+ * getMultipleAccountsInfo call (percolator-oracle-keeper auth-mark-pusher.ts,
+ * fetchPushAuthMarkGenerationFields), which the RPC caps at 100 keys. At 101 priced markets that
+ * read throws every cycle and EVERY market's price stops, not just the new one. 90 leaves room for
+ * the registry and this table to disagree by a few. Raise it only after that read is chunked.
+ */
+export const DEFAULT_MAX_ACTIVE_MARKETS = 90;
 export const DEFAULT_MAX_ACTIVE_PER_CREATOR = 10;
 
 export interface EnrollmentCaps {
@@ -161,6 +173,10 @@ export async function checkEnrollmentCaps(
     };
   }
   if (mine.count >= caps.maxActivePerCreator) return { ok: false, status: 403, error: PER_CREATOR_CAP_COPY };
-  if (all.count >= caps.maxActive) return { ok: false, status: 403, error: GLOBAL_CAP_COPY };
+  // 429, not 403: a full deployment is a state that clears (a maintainer raises the ceiling or
+  // retires dead markets), not a verdict on this market. The launch screen and the resume pass
+  // keep retrying a 429 and never write the "refused" tombstone for it. The route reports it to
+  // Sentry at error level: the previous silent 403 hid a total outage for a day.
+  if (all.count >= caps.maxActive) return { ok: false, status: 429, error: GLOBAL_CAP_COPY };
   return { ok: true };
 }
