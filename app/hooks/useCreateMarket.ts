@@ -79,7 +79,7 @@ import { deriveLaunchMarketParams, deriveMarketParams, MIN_LEVERAGE_X, backingSe
 // the SAME number. They were two hand-copies, and the route's was understated by
 // both backing seeds, so it answered "sufficient" to the very request that said
 // the wallet was short.
-import { fullMarketRequirement } from "@/lib/prefund-requirement";
+import { fullMarketRequirement, classifyPreFundRefusal } from "@/lib/prefund-requirement";
 import { defaultCrankObservations, readPortfolioIdentity, readAssetMarketId, readAssetControlSeqs, assetProfileOff } from "@/lib/v18-wire";
 // v17: SetOracleAuthority (tag 17), PushOraclePrice (tag 16), SetOraclePriceCap (tag 16),
 // and UpdateConfig (tag 14) do not exist in v17. All oracle + risk params are embedded
@@ -99,6 +99,7 @@ import {
   TxCancelledError,
   isTxCancelledError,
   presimulateOrThrow,
+  confirmSignatureByPolling,
 } from "@/lib/tx";
 import { getConfig, getNetwork } from "@/lib/config";
 import { resolveMarketOracleMode } from "@/lib/resolveMarketOracleMode";
@@ -629,6 +630,36 @@ interface FreshBatchContext {
  * Never throws: `String(err)` can raise on a null-prototype object, a Proxy,
  * or a throwing `Symbol.toPrimitive`, and this runs outside any try.
  */
+/**
+ * The wallet is short of the test token for THIS launch and /api/devnet-pre-fund
+ * refused it for its claim window (see classifyPreFundRefusal). The sequential
+ * path's deposit step asks the same route and gets the same answer, so falling
+ * back would create the market, lock its rent, and then stop. This must end the
+ * launch before anything is sent.
+ */
+async function collateralBalanceOf(connection: Connection, mint: PublicKey, owner: PublicKey): Promise<bigint> {
+  try {
+    return (await getAccount(connection, await getAssociatedTokenAddress(mint, owner))).amount;
+  } catch {
+    return 0n; // no token account yet
+  }
+}
+
+export class PreFundRateLimitedError extends Error {
+  constructor(public readonly nextClaimAt: string | null) {
+    super("Devnet pre-fund failed: Already pre-funded recently");
+    this.name = "PreFundRateLimitedError";
+  }
+}
+
+export function preFundRateLimitedMessage(nextClaimAt: string | null): string {
+  const at = nextClaimAt ? new Date(nextClaimAt) : null;
+  const when = at && !Number.isNaN(at.getTime())
+    ? ` More arrive after ${at.toLocaleString(undefined, { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })}.`
+    : "";
+  return `This wallet is out of test tokens for a market this size, so it can't be funded yet. Nothing was sent.${when} Start over with a smaller liquidity amount to launch now.`;
+}
+
 export function describeBatchFallback(err: unknown): string {
   let raw = "";
   try {
@@ -898,7 +929,19 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
         // left the user with "Already pre-funded recently" and no idea when
         // "recently" stops, which is the single fact they need.
         const when = nextClaimAt ? ` Try again after ${nextClaimAt}.` : "";
-        throw new Error(`Devnet pre-fund failed: ${pfError ?? preFundResp.status}.${when}`);
+        // A refusal only matters if the wallet is actually short for THIS launch.
+        const refusal = classifyPreFundRefusal({
+          status: preFundResp.status,
+          body: err as { error?: unknown; nextClaimAt?: unknown },
+          balance: await collateralBalanceOf(connection, params.mint, walletPk),
+          lpCollateral: params.lpCollateral,
+          insuranceAmount: params.insuranceAmount,
+        });
+        if (refusal.kind === "blocked") throw new PreFundRateLimitedError(refusal.nextClaimAt);
+        if (refusal.kind === "error") {
+          throw new Error(`Devnet pre-fund failed: ${pfError ?? preFundResp.status}.${when}`);
+        }
+        console.info("[useCreateMarket] pre-fund refused, but the wallet already covers this launch — continuing");
       }
     }
 
@@ -958,10 +1001,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
           walletPk,
           Math.max(2_000_000_000, minSolRequired - solBalance + 500_000_000),
         );
-        const airdropConfirm = await connection.confirmTransaction(airdropSig, "confirmed");
-        if (airdropConfirm.value.err) {
-          throw new Error(`Airdrop transaction failed on-chain: ${JSON.stringify(airdropConfirm.value.err)}`);
-        }
+        await confirmSignatureByPolling(connection, airdropSig);
       } else {
         throw new Error(
           `Insufficient SOL. You need ~${(minSolRequired / 1e9).toFixed(3)} SOL but your wallet has ` +
@@ -1772,6 +1812,15 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
 
     return { status: "success" };
   } catch (err) {
+    if (!broadcastStarted && err instanceof PreFundRateLimitedError) {
+      // Not a fallback case: the sequential path cannot fund this launch either.
+      // Nothing was broadcast, so also drop the batch phase UI.
+      setState((s) => ({
+        ...s, loading: false, error: preFundRateLimitedMessage(err.nextClaimAt),
+        step: 0, stepLabel: "", phase: "idle", landingIndex: 0, landingTotal: 0,
+      }));
+      return { status: "fatal" };
+    }
     if (!broadcastStarted) {
       // Nothing landed — safe to fall back to the sequential path in the
       // SAME create() call. See the FALLBACK CONTRACT note above.
@@ -1780,7 +1829,7 @@ async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise<FreshB
       // funds (nothing broadcast, the launch still completes) but it was also
       // silent for diagnosis, which is a different thing and not a feature:
       // the batch has several unrelated ways to throw before broadcast — a
-      // 429 from /api/devnet-pre-fund's 24h faucet gate, a keeper co-sign
+      // 429 from /api/devnet-pre-fund's 1h faucet gate, a keeper co-sign
       // failure, an airdrop that did not confirm — and they are
       // indistinguishable from the outside.
       const reason = describeBatchFallback(err);
@@ -2167,7 +2216,8 @@ export function useCreateMarket() {
         if (outcome.status === "fatal") {
           // state.error already set inside attemptFreshBatchedLaunch — do
           // NOT fall through to the sequential path (something already
-          // broadcast; resuming happens via the existing RecoverSolBanner /
+          // broadcast, or the wallet cannot fund this launch on any path;
+          // resuming happens via the existing RecoverSolBanner /
           // handleRetry flow, which passes an explicit step and therefore
           // uses the sequential code below on its own next call).
           return;
@@ -2207,6 +2257,48 @@ export function useCreateMarket() {
         if (startStep <= 0) {
           runningStep = 0;
           setState((s) => ({ ...s, step: 0, stepLabel: STEP_LABELS[0] }));
+
+          // Fund the deposit BEFORE the market exists. The deposit step used to be the
+          // first place this path asked for test tokens, so a wallet inside the faucet's
+          // claim window created the market, locked its rent, and only then was refused.
+          // Only while the market account is not on chain: a resume of step 0 with a
+          // stuck slab, or a market that already landed, has rent to recover or finish
+          // and must not be stopped here. (Not keyed on this being a fresh call: Continue
+          // after a refusal re-enters with step 0 and nothing on chain, and must be
+          // refused again rather than create the market.)
+          const marketOnChain0 = isDevnetEnv
+            ? (await connection.getAccountInfo(slabPk, "confirmed").catch(() => null)) !== null
+            : true;
+          if (isDevnetEnv && !marketOnChain0) {
+            const balance0 = await collateralBalanceOf(connection, params.mint, wallet.publicKey);
+            if (balance0 < fullMarketRequirement(params.lpCollateral, params.insuranceAmount)) {
+              let refusal0: ReturnType<typeof classifyPreFundRefusal> = { kind: "proceed" };
+              try {
+                const fundResp0 = await fetch("/api/devnet-pre-fund", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    mintAddress: params.mint.toBase58(),
+                    walletAddress: wallet.publicKey.toBase58(),
+                    lpCollateral: params.lpCollateral.toString(),
+                    insuranceAmount: params.insuranceAmount.toString(),
+                  }),
+                });
+                if (!fundResp0.ok) {
+                  refusal0 = classifyPreFundRefusal({
+                    status: fundResp0.status,
+                    body: await fundResp0.json().catch(() => null),
+                    balance: balance0,
+                    lpCollateral: params.lpCollateral,
+                    insuranceAmount: params.insuranceAmount,
+                  });
+                }
+              } catch {
+                // Network error: left to the deposit step's own check and message.
+              }
+              if (refusal0.kind === "blocked") throw new PreFundRateLimitedError(refusal0.nextClaimAt);
+            }
+          }
 
           vaultAta = await getAssociatedTokenAddress(params.mint, vaultPda, true);
 
@@ -2352,10 +2444,7 @@ export function useCreateMarket() {
                     wallet.publicKey,
                     Math.max(2_000_000_000, minSolRequired - solBalance + 500_000_000),
                   );
-                  const airdropConfirm = await connection.confirmTransaction(airdropSig, "confirmed");
-                  if (airdropConfirm.value.err) {
-                    throw new Error(`Airdrop transaction failed on-chain: ${JSON.stringify(airdropConfirm.value.err)}`);
-                  }
+                  await confirmSignatureByPolling(connection, airdropSig, abortSignal);
                   setState((s) => ({ ...s, stepLabel: STEP_LABELS[0] }));
                 } catch (airdropErr) {
                   throw new Error(
@@ -2565,15 +2654,11 @@ export function useCreateMarket() {
             const signedTx = await wallet.signTransaction(partialTx);
 
             // Send the fully-signed tx
-            const keeperDelegateSig = await connection.sendRawTransaction(signedTx.serialize(), {
-              skipPreflight: false,
-            });
-            const keeperDelegateConfirm = await connection.confirmTransaction(keeperDelegateSig, "confirmed");
-            if (keeperDelegateConfirm.value.err) {
-              throw new Error(
-                `Keeper delegate tx failed on-chain: ${JSON.stringify(keeperDelegateConfirm.value.err)}`,
-              );
-            }
+            // Confirm by polling signature status, like every other step. This was the
+            // one launch tx still on `connection.confirmTransaction(sig)`, which waits on
+            // a websocket notification and reported a 30 s timeout for a hand-off that
+            // had landed in 4 s (three launches in a row on 2026-10-06), failing the step.
+            const keeperDelegateSig = await broadcastSignedTx(connection, signedTx, { abortSignal });
             setState((s) => ({ ...s, txSigs: [...s.txSigs, keeperDelegateSig] }));
           }
 
@@ -3865,6 +3950,10 @@ export function useCreateMarket() {
         }));
         if (isKeeperOracle && params.dexPoolAddress) startKeeperLoop(params, slabPk.toBase58());
       } catch (e) {
+        if (e instanceof PreFundRateLimitedError) {
+          setState((s) => ({ ...s, loading: false, error: preFundRateLimitedMessage(e.nextClaimAt) }));
+          return;
+        }
         const msg = parseMarketCreationError(e, {
           step: sequentialStepKind(runningStep),
           stepLabel: `Step ${runningStep + 1} (${STEP_LABELS[runningStep]?.replace(/\.\.\.$/, "") ?? "market creation"})`,
