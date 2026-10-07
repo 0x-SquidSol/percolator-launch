@@ -39,7 +39,15 @@ export const KEEPER_REGISTER_COPY = {
   noProof: "This market's creation transaction isn't known on this device, so the live price can't be connected from here.",
   serverTrouble: "Live price couldn't connect just now. Your market is live; try again in a moment.",
   generic: "Live price couldn't connect for this market. Your market is live; try again in a moment.",
+  /** #3320: the per-creator ceiling refused this market (final). `max` when the capacity read knew it. */
+  walletLimit: (max: number | null) =>
+    `This wallet has reached its limit of ${max != null ? `${max} ` : ""}live-priced markets, so this one can't be connected from here. Ask the team to connect more.`,
 } as const;
+
+/** #3320: keeper-register's final per-creator refusal (lib/keeper-enrollment-guard.ts), matched on the raw message. */
+export function isWalletLimitRefusal(message: string | null | undefined): boolean {
+  return (message ?? "").trim() === PER_CREATOR_CAP_COPY;
+}
 
 /**
  * The keeper-register reasons that were written for creators. Everything else the route can say
