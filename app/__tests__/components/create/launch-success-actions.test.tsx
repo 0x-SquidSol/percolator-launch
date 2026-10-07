@@ -34,6 +34,7 @@ import {
   runKeeperRegistration,
   type KeeperRegisterPhase,
 } from "@/lib/keeper-register-client";
+import { PER_CREATOR_CAP_COPY } from "@/lib/keeper-enrollment-guard";
 
 const SLAB = "7A2g9aUDHgJdeg5E53TqcXrVsKGpiaPbKDrJXRi7dfC1";
 const SIM_USDC = "So11111111111111111111111111111111111111112";
@@ -119,6 +120,17 @@ describe("launch success: actions while the live price is still connecting", () 
     expect(screen.getByText("Ready to trade")).toBeTruthy();
     expect(screen.getByTestId("launch-price-status").getAttribute("data-status")).toBe("ready");
     expect(screen.queryByTestId("launch-price-retry")).toBeNull();
+  });
+
+  it("#3320: the wallet's live-price ceiling refused it: says so, and no Retry (the refusal is final)", () => {
+    render(<LaunchSuccess {...base({ keeperPhase: "failed", keeperMessage: PER_CREATOR_CAP_COPY })} />);
+    expect(screen.getByTestId("launch-price-status-line").textContent).toBe(KEEPER_REGISTER_COPY.walletLimit(null));
+    expect(screen.queryByTestId("launch-price-retry")).toBeNull();
+  });
+
+  it("#3320: CONTROL: any other final refusal keeps its Retry", () => {
+    render(<LaunchSuccess {...base({ keeperPhase: "failed", keeperMessage: KEEPER_REGISTER_COPY.serverTrouble })} />);
+    expect(screen.getByTestId("launch-price-retry")).toBeTruthy();
   });
 });
 

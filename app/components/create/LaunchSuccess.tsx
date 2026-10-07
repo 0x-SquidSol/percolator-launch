@@ -8,7 +8,7 @@ import { LogoUpload } from "./LogoUpload";
 import { getNetwork, explorerTxUrl, explorerAccountUrl } from "@/lib/config";
 import { useWalletCompat } from "@/hooks/useWalletCompat";
 import { launchPriceFeedStatus } from "@/lib/launch-outcome";
-import { KEEPER_REGISTER_COPY, userFacingRegistrationReason } from "@/lib/keeper-register-client";
+import { isWalletLimitRefusal, KEEPER_REGISTER_COPY, userFacingRegistrationReason } from "@/lib/keeper-register-client";
 import { TICKET_COPY } from "@/lib/limits/copy";
 import { StatusLine } from "@/components/ui/StatusLine";
 import { lpShareWalletNote } from "@/lib/lp-share-wallet-note";
@@ -127,15 +127,19 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
         ? LAUNCH_PRICE_COPY.timedOut
         : priceStatus === "failed"
           ? keeperMessage
-            ? userFacingRegistrationReason(keeperMessage)
+            ? isWalletLimitRefusal(keeperMessage)
+              ? KEEPER_REGISTER_COPY.walletLimit(null)
+              : userFacingRegistrationReason(keeperMessage)
             : LAUNCH_PRICE_COPY.failed
           : priceStatus === "ready"
             ? LAUNCH_PRICE_COPY.ready
             : null;
   // Without the creation tx on this device a retry can only repeat the same message, so none is offered.
   const noProofHere = keeperMessage === KEEPER_REGISTER_COPY.noProof;
+  // #3320: the wallet's per-creator ceiling refused it, and that is final: a retry repeats it.
+  const walletLimitHere = priceStatus === "failed" && isWalletLimitRefusal(keeperMessage);
   const showPriceRetry =
-    !!onRetryKeeperRegistration && !noProofHere && (priceStatus === "failed" || priceStatus === "timed-out");
+    !!onRetryKeeperRegistration && !noProofHere && !walletLimitHere && (priceStatus === "failed" || priceStatus === "timed-out");
 
   /**
    * PERC-475: Claim ~$500 of Sim-USDC collateral, then navigate to the trade page.
