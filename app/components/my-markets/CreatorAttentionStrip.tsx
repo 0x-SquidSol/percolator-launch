@@ -15,8 +15,16 @@ import type { CreatorMarketDetail } from "./types";
 import { RecoverSolBanner } from "@/components/create/RecoverSolBanner";
 import { useCreateMarket, type KeeperRegisterRetryParams } from "@/hooks/useCreateMarket";
 import { isKeeperFeedDead, isEngineCrankStale, summarizeAffectedMarkets } from "./attentionLogic";
-import { resolveIdentity, type ResolvedIdentity } from "@/lib/bulk-identity";
-import { registrationCandidates, userFacingRegistrationReason, type KeeperRegisterRequest } from "@/lib/keeper-register-client";
+import { resolveIdentity, sawPlaceholderTicker, type ResolvedIdentity } from "@/lib/bulk-identity";
+import {
+  isWalletLimitRefusal,
+  KEEPER_REGISTER_COPY,
+  registrationCandidates,
+  userFacingRegistrationReason,
+  type KeeperRegisterRequest,
+} from "@/lib/keeper-register-client";
+import { launchRowTitle, savedLaunchIdentity } from "@/lib/unfinished-launch";
+import { cappedFor, useLivePriceCapacity } from "@/hooks/useLivePriceCapacity";
 
 /** The launch's own registration request, as this browser saved it at launch time (the creation-tx
  *  proof, plus the pool / CA / symbol / payload the memo bound). Empty when the launch happened on
@@ -27,6 +35,31 @@ export function savedRegistrationRequests(slab: string): KeeperRegisterRequest[]
   } catch {
     return [];
   }
+}
+
+/** localStorage, or null where it is blocked or absent (private mode, SSR). */
+function safeLocalStorage(): Storage | null {
+  try {
+    return typeof window === "undefined" ? null : window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * How the strip names a market (#3320), the same way its row below does (CreatorMarketRow): the
+ * ticker from the market's data, else the one this browser saved when it launched the market, else
+ * "Unnamed market" once identity has loaded and only knows the placeholder. Never the raw address
+ * once anything is known.
+ */
+export function attentionTitle(
+  market: CreatedMarket,
+  detail: CreatorMarketDetail | null,
+  identity: ResolvedIdentity | null,
+): string {
+  const slab = market.slabAddress.toBase58();
+  const symbol = resolveIdentity(detail, identity, savedLaunchIdentity(slab, safeLocalStorage())).symbol;
+  return launchRowTitle({ symbol, unfinished: false, sawPlaceholder: sawPlaceholderTicker(detail, identity), fallbackLabel: market.label });
 }
 
 export const NO_SAVED_REGISTRATION_COPY =
@@ -42,7 +75,9 @@ const RecoverFromChainForm: FC<{
   slab: string;
   retry: (p: KeeperRegisterRetryParams) => Promise<{ registered: boolean; message: string }>;
   registering: boolean;
-}> = ({ slab, retry, registering }) => {
+  /** #3320: the per-creator ceiling refused it (final): the row stops offering a retry. */
+  onWalletLimit: () => void;
+}> = ({ slab, retry, registering, onWalletLimit }) => {
   const { connection } = useConnectionCompat();
   const wallet = useWalletCompat();
   const [ca, setCa] = useState("");
@@ -79,6 +114,10 @@ const RecoverFromChainForm: FC<{
         symbol: r.launch.request.symbol ?? null,
         payload: r.launch.request.payload ?? null,
       });
+      if (!res.registered && isWalletLimitRefusal(res.message)) {
+        onWalletLimit();
+        return;
+      }
       setNote(res.registered ? null : userFacingRegistrationReason(res.message));
     } catch {
       setNote(RECOVERY_COPY.rpc);
@@ -115,13 +154,25 @@ const RecoverFromChainForm: FC<{
 /** One "connect the live price" row. Its own useCreateMarket() instance so
  *  N dead-feed markets in the strip have independent loading/message state
  *  instead of sharing one global "registering…" flag. */
-const KeeperRetryRow: FC<{ market: CreatedMarket; detail: CreatorMarketDetail | null; identity: ResolvedIdentity | null }> = ({ market, detail, identity }) => {
+const KeeperRetryRow: FC<{
+  market: CreatedMarket;
+  detail: CreatorMarketDetail | null;
+  identity: ResolvedIdentity | null;
+  /** #3320: the wallet's capacity read says a new enrollment of this market would be refused. */
+  capped: boolean;
+  capMax: number | null;
+}> = ({ market, detail, identity, capped, capMax }) => {
   const { state, retryKeeperRegistration } = useCreateMarket();
   const slab = market.slabAddress.toBase58();
   // Same field-level merge the row uses, so the alert names the market by
   // its real ticker even before the per-market detail lands.
   const resolved = resolveIdentity(detail, identity);
-  const symbol = resolved.symbol ?? market.label;
+  // #3320: named like its row below (incl. the ticker this browser saved at launch), never the raw
+  // address once identity has loaded. useMemo: the saved identity is a localStorage read.
+  const symbol = useMemo(() => attentionTitle(market, detail, identity), [market, detail, identity]);
+  // #3320: the per-creator ceiling refused THIS market on a click here (final, unlike every other refusal).
+  const [refusedAtLimit, setRefusedAtLimit] = useState(false);
+  const atLimit = capped || refusedAtLimit;
   // NOT merged: the bulk directory does not carry dex_pool_address, and this
   // value is passed to a real transaction, not rendered. Detail only.
   const dexPoolAddress = detail?.dex_pool_address;
@@ -143,7 +194,11 @@ const KeeperRetryRow: FC<{ market: CreatedMarket; detail: CreatorMarketDetail | 
           <p className="mt-0.5 text-[10px] text-[var(--text-dim)]">{state.keeperMessage}</p>
         )}
       </div>
-      {dexPoolAddress ? (
+      {atLimit ? (
+        <span data-testid="live-price-wallet-limit" className="max-w-[28rem] text-right text-[10px] text-[var(--text-dim)]">
+          {KEEPER_REGISTER_COPY.walletLimit(capMax)}
+        </span>
+      ) : dexPoolAddress ? (
         <button
           type="button"
           disabled={state.keeperRegistering}
@@ -154,7 +209,9 @@ const KeeperRetryRow: FC<{ market: CreatedMarket; detail: CreatorMarketDetail | 
               dexPoolAddress,
               symbol: resolved.symbol,
             };
-            retryKeeperRegistration(params);
+            void retryKeeperRegistration(params).then((r) => {
+              if (!r.registered && isWalletLimitRefusal(r.message)) setRefusedAtLimit(true);
+            });
           }}
           className="shrink-0 border border-[var(--warning)]/50 bg-[var(--warning)]/[0.08] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-[var(--warning)] hover:bg-[var(--warning)]/[0.15] transition-colors disabled:opacity-50"
         >
@@ -169,6 +226,7 @@ const KeeperRetryRow: FC<{ market: CreatedMarket; detail: CreatorMarketDetail | 
               setSavedBusy(true);
               setSavedNote(null);
               let last = "";
+              let walletLimit = false;
               for (const req of saved) {
                 const r = await retryKeeperRegistration({
                   slabAddress: slab,
@@ -182,9 +240,16 @@ const KeeperRetryRow: FC<{ market: CreatedMarket; detail: CreatorMarketDetail | 
                   last = "";
                   break;
                 }
+                // The request the memo binds is the one the ceiling refuses; the other candidates
+                // fail the memo check first. Any per-creator refusal is the answer: stop there.
+                if (isWalletLimitRefusal(r.message)) {
+                  walletLimit = true;
+                  break;
+                }
                 last = r.message;
               }
-              setSavedNote(last ? userFacingRegistrationReason(last) : null);
+              if (walletLimit) setRefusedAtLimit(true);
+              setSavedNote(!walletLimit && last ? userFacingRegistrationReason(last) : null);
               setSavedBusy(false);
             }}
             className="border border-[var(--warning)]/50 bg-[var(--warning)]/[0.08] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-[var(--warning)] hover:bg-[var(--warning)]/[0.15] transition-colors disabled:opacity-50"
@@ -196,7 +261,12 @@ const KeeperRetryRow: FC<{ market: CreatedMarket; detail: CreatorMarketDetail | 
       ) : (
         <div className="flex flex-col items-end gap-2">
           <span className="max-w-[28rem] text-right text-[10px] text-[var(--text-dim)]">{NO_SAVED_REGISTRATION_COPY}</span>
-          <RecoverFromChainForm slab={slab} retry={retryKeeperRegistration} registering={state.keeperRegistering} />
+          <RecoverFromChainForm
+            slab={slab}
+            retry={retryKeeperRegistration}
+            registering={state.keeperRegistering}
+            onWalletLimit={() => setRefusedAtLimit(true)}
+          />
         </div>
       )}
     </div>
@@ -270,6 +340,13 @@ interface CreatorAttentionStripProps {
 export const CreatorAttentionStrip: FC<CreatorAttentionStripProps> = ({ markets, details, identities, currentSlot }) => {
   const keeperDead = markets.filter((m) => isKeeperFeedDead(m, currentSlot));
   const crankStale = markets.filter((m) => isEngineCrankStale(m, currentSlot));
+  // #3320: the per-creator live-price ceiling, read only when a row could offer a connection
+  // (devnet-only route). Unknown never hides anything.
+  const wallet = useWalletCompat();
+  const capacity = useLivePriceCapacity(
+    wallet.publicKey?.toBase58() ?? null,
+    getNetwork() === "devnet" && keeperDead.length > 0,
+  );
 
   // Name the affected markets, capped — informative without becoming the list
   // this summary exists to remove. Same field-level identity merge as
@@ -278,7 +355,7 @@ export const CreatorAttentionStrip: FC<CreatorAttentionStripProps> = ({ markets,
   const crankStaleLabel = summarizeAffectedMarkets(
     crankStale.map((m) => {
       const slab = m.slabAddress.toBase58();
-      return resolveIdentity(details[slab] ?? null, identities[slab] ?? null).symbol ?? m.label;
+      return attentionTitle(m, details[slab] ?? null, identities[slab] ?? null);
     }),
   );
 
@@ -307,9 +384,19 @@ export const CreatorAttentionStrip: FC<CreatorAttentionStripProps> = ({ markets,
           })}
 
           {/* (b) keeper-fed, dead price feed — the highest-value new wiring here */}
-          {keeperDead.map((m) => (
-            <KeeperRetryRow key={m.slabAddress.toBase58()} market={m} detail={details[m.slabAddress.toBase58()] ?? null} identity={identities[m.slabAddress.toBase58()] ?? null} />
-          ))}
+          {keeperDead.map((m) => {
+            const slab = m.slabAddress.toBase58();
+            return (
+              <KeeperRetryRow
+                key={slab}
+                market={m}
+                detail={details[slab] ?? null}
+                identity={identities[slab] ?? null}
+                capped={cappedFor(capacity, slab)}
+                capMax={capacity.max}
+              />
+            );
+          })}
 
           {/* (c) engine crank stale — ONE summary line, not a row per market.
               This used to render one row per stale market, which on a quiet
