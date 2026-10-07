@@ -141,6 +141,44 @@ export function enrollmentCapsFromEnv(env: NodeJS.ProcessEnv = process.env): Enr
   };
 }
 
+/**
+ * The rows that count against a ceiling: priced (keeper_status='active') on `network`. The guard
+ * below and readCreatorCapacity count through this one filter so they cannot drift apart (#3320).
+ */
+function activeEnrollments(supabase: SupabaseClient, network: string, opts?: { count: "exact"; head: boolean }) {
+  return supabase.from("markets").select("slab_address", opts).eq("network", network).eq("keeper_status", "active");
+}
+
+/** A creator's live-priced markets and their ceiling, for the UI (#3320). */
+export type CreatorCapacity =
+  | { ok: true; activeSlabs: string[]; max: number; atLimit: boolean }
+  | { ok: false };
+
+/**
+ * The deployer's active rows (their slabs) and whether a NEW enrollment would be refused by the
+ * per-creator ceiling. Same filter and same caps as checkEnrollmentCaps: for a slab that is not
+ * already active, `atLimit` is exactly its 403. A slab that IS active is never refused (the
+ * registration path skips the ceilings for it), which is why the slabs are returned, not just a
+ * count. A read that fails is `{ ok: false }`: callers treat it as unknown and never block on it.
+ */
+export async function readCreatorCapacity(
+  supabase: SupabaseClient,
+  args: { deployer: string; network: string },
+  caps: EnrollmentCaps,
+): Promise<CreatorCapacity> {
+  try {
+    const { data, error } = await activeEnrollments(supabase, args.network).eq("deployer", args.deployer).limit(1000);
+    if (error || !Array.isArray(data)) return { ok: false };
+    const activeSlabs = data
+      .map((r) => (r as { slab_address?: unknown }).slab_address)
+      .filter((s): s is string => typeof s === "string");
+    const max = caps.maxActivePerCreator;
+    return { ok: true, activeSlabs, max, atLimit: activeSlabs.length >= max };
+  } catch {
+    return { ok: false };
+  }
+}
+
 export type CapVerdict =
   | { ok: true }
   | { ok: false; status: number; error: string; detail?: string };
@@ -155,13 +193,7 @@ export async function checkEnrollmentCaps(
   args: { slab: string; deployer: string; network: string },
   caps: EnrollmentCaps,
 ): Promise<CapVerdict> {
-  const base = () =>
-    supabase
-      .from("markets")
-      .select("slab_address", { count: "exact", head: true })
-      .eq("network", args.network)
-      .eq("keeper_status", "active")
-      .neq("slab_address", args.slab);
+  const base = () => activeEnrollments(supabase, args.network, { count: "exact", head: true }).neq("slab_address", args.slab);
   const [all, mine] = await Promise.all([base(), base().eq("deployer", args.deployer)]);
   const err = all.error ?? mine.error;
   if (err || typeof all.count !== "number" || typeof mine.count !== "number") {
