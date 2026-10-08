@@ -1086,12 +1086,16 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
                 computeLimitPriceE6({ markE6: getLivePriceSnapshot(slabAddress).priceE6 ?? livePriceE6 ?? 0n, size }),
               ...(ticketLimits.fee?.channel.enabled ? { feeBps: ticketLimits.fee.signedFeeBps } : {}),
               amountLabel: fundLabel,
-              onRace: () => setRaceNote(true),
+              // The race re-opens the wallet, so the button goes back to "Confirm in wallet…".
+              onRace: () => { setRaceNote(true); setTradePhase("submitting"); },
+              onConfirming: () => setTradePhase("pending"),
             })
           ).signature
         : await withTransientRetry(
-        async () =>
-          trade(
+        async () => {
+          // A retry signs again: back to "Confirm in wallet…" until that one is broadcast too.
+          setTradePhase("submitting");
+          return trade(
             bindConfirmedLimitPrice(
               {
                 lpIdx,
@@ -1101,7 +1105,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
                 // the protocol enabled the channel for this asset — else the base fee as before.
                 ...(ticketLimits.fee?.channel.enabled ? { feeBps: ticketLimits.fee.signedFeeBps } : {}),
                 // UX WP-2: the app waits for the market (no prompt) instead of failing.
-                onWaiting: (w: boolean) => setTradePhase(w ? "waiting" : "submitting"),
+                // Only "waiting" steps back to "submitting": sendTxWaiting also calls onWaiting(false)
+                // after the send confirmed, which must not undo "Confirming…" (#49).
+                onWaiting: (w: boolean) => setTradePhase((p) => (w ? "waiting" : p === "waiting" ? "submitting" : p)),
                 // UX WP-3: it keeps waiting past ~30 s ("We'll keep trying") until Stop.
                 keepWaiting: true,
                 onWaitingLong: () => setWaitingLong(true),
@@ -1109,10 +1115,13 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
                 shouldWait: waitPolicy(() => stallRef.current),
                 onRefreshingPositions: setRefreshingPositions,
                 abortSignal: waitAbort.signal,
+                // #49: signed and sent. "pending" is the ticket's "Confirming…" label.
+                onConfirming: () => setTradePhase("pending"),
               },
               snapshotLimitPriceE6,
             ),
-          ),
+          );
+        },
         { maxRetries: 2, delayMs: 3000 },
       );
       setWaitingLong(false);
