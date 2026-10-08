@@ -20,6 +20,7 @@ import { sendTx } from '@/lib/tx';
 import { isDevnetV22Enabled } from '@/lib/v22/flag';
 import { readFirstLossPool } from '@/lib/v22/stake-v5';
 import { ACCOUNTS_STAKE_WITHDRAW_V5, deriveInsuranceUnitsV22, stakeMetasV5 } from '@/lib/v22/sdk';
+import { stakeErrorMessage } from '@/lib/earnErrors';
 import { getConfig } from '@/lib/config';
 
 export interface StakeWithdrawPoolParams {
@@ -189,8 +190,9 @@ export function useStakeWithdrawByPool({ slabAddress, collateralMint }: StakeWit
         const sig = await sendTx({ connection, wallet, instructions });
         return sig;
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        setError(msg);
+        // #26: the plain line, never the raw simulation JSON / program logs (kept in the console).
+        console.warn('[stake] transaction failed:', e);
+        setError(stakeErrorMessage(e));
         throw e;
       } finally {
         inflightRef.current = false;

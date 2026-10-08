@@ -34,6 +34,7 @@ import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
 import Link from "next/link";
 import { FeeBreakdown } from "@/components/FeeBreakdown";
 import { ConnectWalletCta } from "@/components/wallet/ConnectWalletCta";
+import { stakeErrorMessage } from "@/lib/earnErrors";
 
 /* ── Types ── */
 
@@ -421,7 +422,7 @@ function PositionCard({
       setTxStatus({ type: "success", msg: `Withdrawal confirmed: ${sig.slice(0, 8)}…` });
       onWithdrawSuccess?.();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = stakeErrorMessage(e); // #26: never raw chain text
       setTxStatus({ type: "error", msg });
     }
   }, [withdraw, position, onWithdrawSuccess]);
@@ -790,7 +791,7 @@ function DepositWidget({
       setWithdrawRefreshKey((k) => k + 1);
       onTxSuccess?.();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = stakeErrorMessage(e); // #26: never raw chain text
       setTxStatus({ type: "error", msg });
     }
   }, [pool, amount, balanceDecimals, walletBalanceRaw, deposit, depositLoading, onTxSuccess]);
@@ -810,7 +811,7 @@ function DepositWidget({
       setWithdrawRefreshKey((k) => k + 1);
       onTxSuccess?.();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = stakeErrorMessage(e); // #26: never raw chain text
       setWithdrawTxStatus({ type: "error", msg });
     }
   }, [pool, withdrawPosition, withdrawAmount, withdraw, withdrawLoading, onTxSuccess]);
