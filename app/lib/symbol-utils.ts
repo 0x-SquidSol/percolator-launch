@@ -45,10 +45,17 @@ export const SLUG_ALIASES: Record<string, string> = {
  * isPlaceholderSymbol("A1b2c3d4", "EPj...") // -> true (looks like hex)
  * isPlaceholderSymbol(null, "EPj...") // -> true (empty)
  */
+/** Shortest mint-prefix placeholder any producer generates (`mint.slice(0, 4)`). */
+const MIN_GENERATED_PREFIX_LEN = 4;
+
 export function isPlaceholderSymbol(sym: string | null | undefined, mint: string): boolean {
   if (!sym) return true;
-  // Reject if it's the first N chars of the mint address (StatsCollector default)
-  if (mint.startsWith(sym)) return true;
+  // Reject the mint-prefix placeholders the stack generates: the indexer's StatsCollector
+  // (`mint.substring(0, 8)`) and the app's fallbacks (`mint.slice(0, 4)`, `slice(0, 6)`, and
+  // `slice(0, 4).toUpperCase()`). Every generated form is at least 4 chars, so a shorter real ticker
+  // that merely starts its vanity mint is NOT a placeholder (JUP / JUPyiw..., v2.2 QA A-1).
+  if (sym.length >= MIN_GENERATED_PREFIX_LEN && mint.startsWith(sym)) return true;
+  if (sym === mint.slice(0, MIN_GENERATED_PREFIX_LEN).toUpperCase()) return true;
   // Reject pure hex-like strings (8 chars)
   if (/^[0-9a-fA-F]{8}$/.test(sym)) return true;
   // Reject if it looks like a truncated address with ellipsis
