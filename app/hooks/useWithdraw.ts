@@ -42,6 +42,7 @@ import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 import { verifyPortfolioTarget } from "@/lib/portfolio-target";
 import type { TransactionInstruction } from "@solana/web3.js";
 import { parsePortfolio, isWrapperAccount } from "@/lib/v22/layout";
+import { engineStaleWithdrawMessage, WITHDRAW_OPEN_POSITIONS_MESSAGE } from "@/lib/withdraw-copy";
 
 // M7: withdraw's own EngineStale(19) surface. Unlike a trade (which can be
 // auto-retried after the next keeper crank via withTransientRetry — see
@@ -71,12 +72,9 @@ function isLockActiveError(msg: string): boolean {
 // all four cert epochs matching the header still reverts 19 while a leg is open).
 // The engine simply refuses to release collateral that backs an open position.
 // So the honest message points the user at the real remedy: close first.
-const ENGINE_STALE_WITHDRAW_MESSAGE =
-  "You can't withdraw while you have an open position on this market — the collateral backs your position. Close (or fully reduce) your position first, then withdraw. If you have no open position and still see this, the market may need a maintainer crank.";
-
-// Client-side guard message for the same rule, shown BEFORE sending a doomed tx.
-const OPEN_POSITION_WITHDRAW_MESSAGE =
-  "You have an open position on this market. Close it (fully) before withdrawing — this market can't release collateral while a position is open.";
+// v2.2 QA P-2: one calm line for both the pre-sign guard and an on-chain 19 with an open leg; a 19 on
+// an account known to be flat is real staleness and keeps the catching-up line (lib/withdraw-copy.ts).
+const OPEN_POSITION_WITHDRAW_MESSAGE = WITHDRAW_OPEN_POSITIONS_MESSAGE;
 
 export function useWithdraw(slabAddress: string) {
   const { connection } = useConnectionCompat();
@@ -98,6 +96,8 @@ export function useWithdraw(slabAddress: string) {
       inflightRef.current = true;
       // True once a ConvertReleasedPnl prefix rides in this withdraw (error copy below).
       let usedConvertPrefix = false;
+      // Whether the portfolio had an open leg when read before sending (null = not read): picks the 19 line.
+      let knownOpenLegs: boolean | null = null;
       setLoading(true);
       setError(null);
       try {
@@ -298,6 +298,7 @@ export function useWithdraw(slabAddress: string) {
               const portfolio = parsePortfolio(portfolioData);
               const activeLeg = portfolio.legs.find((l) => l.active);
               hasActiveLegs = activeLeg !== undefined;
+              knownOpenLegs = hasActiveLegs;
               // The engine forbids ANY withdrawal while a position is open
               // (v16.rs:14412, active_bitmap non-empty -> Stale). "Free margin"
               // is not withdrawable here — the whole account is locked until the
@@ -436,7 +437,7 @@ export function useWithdraw(slabAddress: string) {
               : usedConvertPrefix && isLockActiveError(rawMsg)
                 ? settlingProfitMessage(WRAPPER_ERR.EngineLockActive)
                 : isEngineStaleWithdrawError(rawMsg)
-                  ? ENGINE_STALE_WITHDRAW_MESSAGE
+                  ? engineStaleWithdrawMessage(knownOpenLegs)
                   : humanizeError(rawMsg)),
         );
         throw e;
