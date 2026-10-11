@@ -19,6 +19,7 @@ import { readRegisteredMarkets, type RegisteredMarket } from "@/lib/playground-r
 import { isBlockedSlab } from "@/lib/blocklist";
 import { getMultipleAccountsInfoChunked } from "@/lib/rpc-chunk";
 import * as Sentry from "@sentry/nextjs";
+import { isListableStakePool, stakePoolScanSize } from "@/lib/v22/stake-pool-scan";
 
 // ── APR helpers ───────────────────────────────────────────────────────────────
 
@@ -188,8 +189,9 @@ export async function GET() {
     const connection = getServerConnection("confirmed");
 
     // 1. Fetch all on-chain StakePool accounts
+    // S-1: v2.2 pools are v5 (480 B); flag off keeps the SDK size (lib/v22/stake-pool-scan.ts).
     const rawAccounts = await connection.getProgramAccounts(stakeProgramId, {
-      filters: [{ dataSize: STAKE_POOL_SIZE }],
+      filters: [{ dataSize: stakePoolScanSize() }],
     });
 
     if (rawAccounts.length === 0) {
@@ -201,6 +203,7 @@ export async function GET() {
     // 2. Parse binary data
     const allParsed: Array<{ pubkey: string; pool: ParsedStakePool }> = [];
     for (const { pubkey, account } of rawAccounts) {
+      if (!isListableStakePool(new Uint8Array(account.data))) continue;
       const pool = parseStakePool(Buffer.from(account.data));
       if (pool) allParsed.push({ pubkey: pubkey.toBase58(), pool });
     }
