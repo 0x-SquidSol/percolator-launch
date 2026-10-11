@@ -125,7 +125,8 @@ import { decodeMarketEngineView } from "@/lib/limits/decode";
 import { isAdlReduceOnly } from "@/lib/limits/adl-reduce-only";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { FirstDepositCard } from "@/components/trade/FirstDepositCard";
-import { diagnoseV22TradeCustom9 } from "@/lib/v22/trade-refusal-9";
+import { diagnoseV22TradeCustom9, positionCapBlocksOpen, V22_POSITION_CAP_COPY } from "@/lib/v22/trade-refusal-9";
+import { getPortfolioRawSnapshot, makePortfolioScanKey } from "@/lib/userAccountScan";
 
 const SIZE_PRESETS = [25, 50, 75, 100];
 const MAX_DISPLAY_LEVERAGE = 200;
@@ -1341,7 +1342,18 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const v1CloseOnly = isV1CloseOnly(slabProgramId?.toBase58(), isMoveFlowEnabled());
   const v1Blocked = v1BlocksOrder({ v1CloseOnly, existing: existingPositionSize, direction, size: positionSize });
 
+  // Q-6 (v2.2): a 5th asset is refused on chain (49 or 9 depending on margin, never a deposit away
+  // from passing). Block it up front with its own line. Flag off: never set.
+  const ownPortfolioRaw =
+    isDevnetV22Enabled() && publicKey && slabProgramId
+      ? getPortfolioRawSnapshot(makePortfolioScanKey(slabProgramId, slabAddress, publicKey))
+      : null;
+  const positionCapReached = ownPortfolioRaw
+    ? positionCapBlocksOpen(ownPortfolioRaw.portfolio.legs.filter((l) => l.active).map((l) => l.assetIndex), 0)
+    : false;
+
   const submitDisabled =
+    positionCapReached ||
     v1Blocked ||
     accountPending ||
     sameOwnerOpenPending ||
@@ -1395,6 +1407,13 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       const legacy = LEGACY_TESTID[ticketState.row];
       const line = <StatusLine message={ticketState.status} legacyTestId={legacy} />;
       return legacy ? <div data-testid={legacy} data-side={direction}>{line}</div> : line;
+    }
+    if (positionCapReached) {
+      return (
+        <div data-testid="trade-position-cap">
+          <StatusLine message={{ kind: "position-cap", variant: "error", title: "Position limit reached", body: V22_POSITION_CAP_COPY }} />
+        </div>
+      );
     }
     if (tradePhase === "waiting" && waitingLong) {
       return (
