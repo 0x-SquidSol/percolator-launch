@@ -422,6 +422,10 @@ function resolveUserMessageInner(err: unknown, ctx: MessageContext): UserMessage
           ? m("engine-catching-up", "wait", "Catching up", "The market is catching up with the latest prices. Your trade goes through automatically when it's ready.", { autoRetry: true })
           : m("engine-catching-up", "wait", "Catching up", "The market is catching up with the latest prices. Try again in a moment.");
       }
+      case W.LpVaultNoFeesToCrank:
+        // v2.2 QA Q-4: the Earn payout's fee collection (tag 78) found nothing left: the keeper collected the fees
+        // between the app's check and the send. Nothing moved; the next attempt goes without it.
+        return m("earn-fees-collected", "wait", "Try again", "Fees were just collected for this vault. Nothing moved. Try again.", { action: { id: "try-again", label: "Try again" } });
       case W.EngineInsufficientInitialMargin:
         // The IM gate runs on the LP side of the fill too: with the counterparty below the floor every
         // open is 49 whatever the trader deposits (STONK 2026-10-07), so "add collateral" is the wrong
