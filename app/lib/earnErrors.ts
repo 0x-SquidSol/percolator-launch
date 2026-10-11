@@ -1,4 +1,5 @@
 import { resolveUserMessage, type MessageContext, type UserMessage } from "@/lib/limits/user-message";
+import { EarnPriceWaitTimeoutError } from "@/lib/limits/earn-price-wait";
 
 /**
  * User-facing copy for a failed Earn (LP vault) action.
@@ -47,5 +48,7 @@ export function earnUserMessage(err: unknown, action: EarnAction, ctx: EarnError
  * "Program error" / "Custom(n)" (those are in the StatusLine's Details).
  */
 export function earnErrorMessage(err: unknown, action: EarnAction, ctx: EarnErrorContext = {}): string {
+  // S-3: the bounded price wait ran out (nothing was signed); its own line, never "usually takes a few seconds".
+  if (err instanceof EarnPriceWaitTimeoutError) return err.message;
   return earnUserMessage(err, action, ctx).body;
 }

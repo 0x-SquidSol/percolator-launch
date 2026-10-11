@@ -72,6 +72,8 @@ import {
   type KnownBalance,
   type TokenRead,
 } from '@/lib/token-balance';
+import { withEarnPriceWait } from "@/lib/limits/earn-price-wait";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
 
 /**
  * Bytes left free in a bundled Earn payout for the instructions sendTx can add (review of #2721,
@@ -846,7 +848,10 @@ export function useInsuranceLP() {
         }));
         return sendTx({ connection, wallet, instructions: ixs, selfHeal: { programId: progPk, market: marketPk }, vaultLpRepair: earnRepairFor(progPk, marketPk) });
       };
-      const sig = await sendWithUpgradeRetry(attemptDeposit, isEarnVersionRefusal);
+      // S-3 (v2.2): a pre-sign 26/27 (price) is re-checked for up to 20 s, then a clear error.
+      const sig = isDevnetV22Enabled()
+        ? await withEarnPriceWait(() => sendWithUpgradeRetry(attemptDeposit, isEarnVersionRefusal), { wrapperProgramId: progPk.toBase58() })
+        : await sendWithUpgradeRetry(attemptDeposit, isEarnVersionRefusal);
       void readTxDrawSummary(connection, sig).then(setLastDrawSummary);
       await refreshState();
       return sig;
