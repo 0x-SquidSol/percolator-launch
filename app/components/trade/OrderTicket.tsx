@@ -75,7 +75,7 @@ import { isMockMode } from "@/lib/mock-mode";
 import { isMockSlab, getMockUserAccountIdle } from "@/lib/mock-trade-data";
 import { sanitizeSymbol } from "@/lib/symbol-utils";
 import { useMarketInfo } from "@/hooks/useMarketInfo";
-import { formatTokenAmount, formatUsdPriceE6, toE6, normalizeTokenDecimals } from "@/lib/format";
+import { formatTokenAmount, toE6, normalizeTokenDecimals } from "@/lib/format";
 import { describeLiqPrice, type LiqPriceDisplay } from "@/lib/liq-price-display";
 import { computeRiskLeverage, formatLeverageValue } from "@/lib/leverage-display";
 import { saveEntryPrice, getEntryPrice, clearEntryPrice, entryAfterTrade, getSavedEntry } from "@/lib/entry-price";
@@ -1917,7 +1917,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       {/* Summary (§4.2): entry / liq / fee / margin. Everything else is in Details. */}
       {hasOrder && (
         <div className="mb-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]" data-testid="ticket-summary" style={{ fontVariantNumeric: "tabular-nums" }}>
-          <SummaryCell label="Entry" value={formatUsdPriceE6(estEntry)} />
+          <SummaryCell label="Entry" value={formatLotPriceE6(estEntry, lotExp)} />
           <SummaryCell
             label="Liq. price"
             value={beforeLiqDisplay.text !== "—" && beforeLiqDisplay.text !== afterLiqDisplay.text ? `${beforeLiqDisplay.text} → ${afterLiqDisplay.text}` : afterLiqDisplay.text}
@@ -2008,7 +2008,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
                 <DiffRow
                   label="Worst fill price"
                   before="—"
-                  after={slippageBoundE6 > 0n ? formatUsdPriceE6(slippageBoundE6) : "—"}
+                  after={slippageBoundE6 > 0n ? formatLotPriceE6(slippageBoundE6, lotExp) : "—"}
                   tooltip="Worst acceptable fill price sent on-chain: the trade is refused rather than fill worse than this."
                 />
                 <DiffRow
