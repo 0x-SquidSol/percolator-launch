@@ -1,3 +1,4 @@
+import { V22_COPY } from "@/lib/v22/copy";
 /**
  * v2.2 error copy: wrapper 104..124 and stake 33..45 map to calm one-line messages ONLY with the flag on.
  * Special handling: 104 is not red, 117/124 re-quote, 118 retries by itself, 121 keeps the v2.1 line.
@@ -88,11 +89,11 @@ describe("legacy string resolver", () => {
 });
 
 describe("special handling", () => {
-  it("104 is a calm wait, never red, with the founder's wording", () => {
+  it("104 is a calm wait, never red, with the SDK 3985c76 wording (QA P-4)", () => {
     const m = resolveUserMessage(fail(WRAPPER_ERR_V22.PriceBandPinned), { surface: "close" });
     expect(m.variant).toBe("wait");
     expect(m.variant).not.toBe("error");
-    expect(m.body).toBe("Price is catching up. Closing reopens when it has.");
+    expect(m.body).toBe("The price is pinned at the band edge; this close would get a better price than the market. Try again once the price catches up.");
     expect(m.kind).toBe("band-catching-up");
   });
   it("117 re-quotes (and does not stop the user)", () => {
@@ -148,9 +149,9 @@ describe("F10 honest copy", () => {
     expect(resolveUserMessage(fail(116), { surface: "any" }).body).not.toMatch(/isn't available/i);
     expect(resolveUserMessage(fail(110), { surface: "any" }).body).not.toMatch(/settings aren't valid/i);
   });
-  it("104 keeps the founder's line, adds the honest 'up to about an hour' only in Details (why), and does not auto-retry", () => {
+  it("104 says which close is refused (QA P-4), keeps 'up to about an hour' only in Details (why), and does not auto-retry", () => {
     const m = resolveUserMessage(fail(104), { surface: "close" });
-    expect(m.body).toBe("Price is catching up. Closing reopens when it has.");
+    expect(m.body).toBe(V22_COPY.band.pinnedClose);
     expect(m.why).toMatch(/up to about an hour/);
     expect(m.autoRetry).toBeFalsy();
   });
