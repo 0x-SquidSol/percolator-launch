@@ -556,7 +556,7 @@ function TradePageInner({ slab }: { slab: string }) {
       <a
         href={`/analytics/${slab}`}
         data-testid="market-analytics-link"
-        className="absolute right-3 top-1 py-0.5 text-[10px] text-[var(--text-muted)] transition-colors hover:text-[var(--accent-text)] lg:hidden"
+        className="absolute right-3 top-1 inline-flex items-center py-0.5 pointer-coarse:min-h-8 pointer-coarse:top-0 text-[10px] text-[var(--text-muted)] transition-colors hover:text-[var(--accent-text)] lg:hidden"
       >
         Full analytics <span aria-hidden="true">↗</span>
       </a>

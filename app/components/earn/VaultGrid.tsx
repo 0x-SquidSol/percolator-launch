@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { VaultRow, VAULT_GRID_COLS } from './VaultRow';
+import { VaultRow, VAULT_GRID_COLS, VAULT_UTIL_CELL } from './VaultRow';
 import { ShimmerSkeleton } from '@/components/ui/ShimmerSkeleton';
 import type { MarketVaultInfo } from '@/hooks/useEarnStats';
 import { orderEarnVaults, type EarnSortKey } from '@/lib/earn-vault-order';
@@ -121,7 +121,7 @@ export function VaultGrid({
 
       {/* Table */}
       <div className="overflow-x-auto border border-[var(--border)] bg-[var(--panel-bg)]">
-        <div className="min-w-[560px]">
+        <div className="min-w-0 sm:min-w-[560px]" data-testid="vault-table">
           {/* Column headers */}
           <div
             className={`${VAULT_GRID_COLS} border-b border-[var(--border)] bg-[var(--bg-elevated)]/50 px-3 py-2`}
@@ -132,7 +132,7 @@ export function VaultGrid({
             <span className="text-right text-[9px] font-medium uppercase tracking-[0.15em] text-[var(--text-secondary)]">
               TVL
             </span>
-            <span className="text-[9px] font-medium uppercase tracking-[0.15em] text-[var(--text-secondary)]">
+            <span className={`${VAULT_UTIL_CELL} text-[9px] font-medium uppercase tracking-[0.15em] text-[var(--text-secondary)]`}>
               Utilization
             </span>
             <span className="text-right text-[9px] font-medium uppercase tracking-[0.15em] text-[var(--text-secondary)]">
@@ -156,7 +156,7 @@ export function VaultGrid({
                     <ShimmerSkeleton className="h-3.5 w-16" />
                   </div>
                   <ShimmerSkeleton className="ml-auto h-3.5 w-12" />
-                  <ShimmerSkeleton className="h-1.5 w-full" />
+                  <ShimmerSkeleton className={`${VAULT_UTIL_CELL} h-1.5 w-full`} />
                   <ShimmerSkeleton className="ml-auto h-3.5 w-8" />
                   <ShimmerSkeleton className="ml-auto h-3.5 w-10" />
                 </div>

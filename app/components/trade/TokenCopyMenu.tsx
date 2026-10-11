@@ -98,7 +98,7 @@ export const TokenCopyMenu: FC<{
         aria-haspopup="menu"
         aria-expanded={open}
         className={[
-          "inline-flex min-h-[24px] min-w-[24px] select-none items-center justify-center gap-1.5 border px-1 md:px-2 border-[var(--text-secondary)]/40 text-[9px] font-medium uppercase tracking-wider text-[var(--text-secondary)] transition-colors hover:border-[var(--accent-text)] hover:text-[var(--accent-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
+          "inline-flex min-h-[24px] min-w-[24px] pointer-coarse:min-h-8 pointer-coarse:min-w-8 select-none items-center justify-center gap-1.5 border px-1 md:px-2 border-[var(--text-secondary)]/40 text-[9px] font-medium uppercase tracking-wider text-[var(--text-secondary)] transition-colors hover:border-[var(--accent-text)] hover:text-[var(--accent-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
           open ? "border-[var(--accent-text)] text-[var(--accent-text)]" : "",
         ].join(" ")}
       >

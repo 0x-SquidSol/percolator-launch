@@ -251,8 +251,9 @@ export const MarketInfoBar: FC<MarketInfoBarProps> = ({ slabAddress, symbol, log
       <span className="hidden md:block h-6 w-px bg-[var(--border)] shrink-0" />
 
       {/* Stats group — flex-1 fills remaining space so ml-auto on badge works correctly.
-          Mobile: its own horizontally scrollable chip row. */}
-      <div data-testid="market-info-stats" className="flex flex-1 items-center gap-5 min-w-0 overflow-x-auto scrollbar-none">
+          Mobile (v2.2 QA Mob-2): the stats WRAP onto a second line so Spread, Funding and the LIVE pill are on screen at
+          390 px (they were scrolled off the right edge); md+ keeps the single scrollable row. */}
+      <div data-testid="market-info-stats" className="flex flex-1 flex-wrap items-center gap-x-5 gap-y-1.5 min-w-0 md:flex-nowrap md:overflow-x-auto scrollbar-none">
         {/* Volume 24h */}
         <div className="flex flex-col shrink-0">
           <span className="text-[10px] uppercase tracking-[0.1em] text-[var(--text-muted)]">Vol 24h</span>
@@ -309,7 +310,7 @@ export const MarketInfoBar: FC<MarketInfoBarProps> = ({ slabAddress, symbol, log
         )}
 
         {/* P3-3: Market health badge — ml-auto pushes to far right within flex-1 group */}
-        <span className="ml-auto h-6 w-px bg-[var(--border)] shrink-0" />
+        <span className="ml-auto hidden md:block h-6 w-px bg-[var(--border)] shrink-0" />
         <MarketHealthBadge oracleDown={oracleDown} vaultEmpty={vaultEmpty} status={headerStatus} />
       </div>
     </div>

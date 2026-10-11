@@ -1,5 +1,6 @@
 "use client";
 
+import { timeframeLabel } from "@/lib/chart-timeframe-label";
 import { lotExpOf, tokenUsdOfLotUsd } from "@/lib/v22/lot";
 import { FC, memo, useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
@@ -1346,7 +1347,9 @@ const TradingChartInner: FC<{ slabAddress: string; mintAddress?: string }> = ({
               <button
                 key={tf}
                 onClick={() => setTimeframe(tf)}
-                className={`rounded-none px-1.5 sm:px-2 py-1 text-xs transition-colors ${
+                title={timeframeLabel(tf)}
+                aria-pressed={timeframe === tf}
+                className={`rounded-none px-1.5 sm:px-2 py-1 pointer-coarse:min-h-8 pointer-coarse:min-w-8 text-xs transition-colors ${
                   timeframe === tf
                     ? "bg-[var(--accent)]/10 text-[var(--accent)]"
                     : "text-[var(--text-secondary)] hover:bg-[var(--bg-surface)] hover:text-[var(--text)]"

@@ -14,8 +14,12 @@ import { withdrawChip, withdrawFlagLine } from '@/lib/limits/earn-withdrawable';
  *
  * Columns: Market · TVL · Utilization · Fee · Your Value.
  */
+// v2.2 QA Mob-1: below `sm` (390 px phones) the Utilization column is dropped and the grid fits the screen, so FEE and
+// YOUR VALUE are never clipped behind a horizontal scroll; from `sm` up it is the five-column table.
 export const VAULT_GRID_COLS =
-  'grid grid-cols-[minmax(120px,1.6fr)_84px_minmax(104px,1.2fr)_64px_92px] items-center gap-x-3';
+  'grid grid-cols-[minmax(88px,1fr)_72px_48px_76px] sm:grid-cols-[minmax(120px,1.6fr)_84px_minmax(104px,1.2fr)_64px_92px] items-center gap-x-3';
+/** The Utilization cell / header: hidden below `sm` (see VAULT_GRID_COLS). */
+export const VAULT_UTIL_CELL = 'hidden sm:block';
 
 interface VaultRowProps {
   vault: MarketVaultInfo;
@@ -86,7 +90,9 @@ export function VaultRow({ vault, selected, userDepositUsd, onSelect }: VaultRow
       </span>
 
       {/* Utilization — thin OI/capacity bar + % */}
-      <OiCapMeter currentOI={vault.totalOI} maxOI={vault.maxOI} compact />
+      <div className={VAULT_UTIL_CELL} data-testid="vault-util-cell">
+        <OiCapMeter currentOI={vault.totalOI} maxOI={vault.maxOI} compact />
+      </div>
 
       {/* Fee */}
       <span
