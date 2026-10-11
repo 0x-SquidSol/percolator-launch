@@ -1,5 +1,5 @@
 import { Connection, PublicKey as PublicKeyCtor, Transaction, TransactionInstruction, ComputeBudgetProgram, SendTransactionError, SystemProgram, TransactionExpiredBlockheightExceededError, VersionedTransaction } from "@solana/web3.js";
-import { MAX_TX_COMPUTE_UNITS, sizeComputeUnitLimit, type CuSizing } from "@/lib/compute-budget";
+import { MAX_TX_COMPUTE_UNITS, signedComputeUnitLimit, type CuSizing } from "@/lib/compute-budget";
 import bs58 from "bs58";
 import type { PublicKey, Signer } from "@solana/web3.js";
 import { getNetwork } from "@/lib/config";
@@ -917,7 +917,7 @@ export async function sendTx({
         const g = await simulateForGate(connection, feePayer, healedInstructions);
         if (g.err && !skipPreflight) throw new SimulationRefusal(g.err, g.logs, g.simulated);
         gateGreen = !g.err && !g.rpcFailed;
-        healedComputeUnits = sizeComputeUnitLimit(g.consumed, computeUnitsFromSim);
+        healedComputeUnits = signedComputeUnitLimit(g.consumed, computeUnitsFromSim);
         onComputeUnits?.({ limit: healedComputeUnits, consumed: g.consumed });
       }
 

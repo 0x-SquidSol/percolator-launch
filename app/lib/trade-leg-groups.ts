@@ -19,7 +19,7 @@
  * carries what landed so the caller can say "part of it closed".
  */
 import type { Transaction, TransactionInstruction } from "@solana/web3.js";
-import { MAX_TX_COMPUTE_UNITS, sizeComputeUnitLimit } from "@/lib/compute-budget";
+import { MAX_TX_COMPUTE_UNITS, signedComputeUnitLimit, sizeComputeUnitLimit } from "@/lib/compute-budget";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { BATCH_MAX_LEGS_V22, assertBatchLegsV22 } from "@/lib/v22/sdk";
 
@@ -144,7 +144,7 @@ export async function planLegGroups<L>(
       if (sim.err) throw deps.refusal(sim);
       // RPC failure: no verdict — size from the estimate; the broadcast preflight still guards.
       units.push(
-        sizeComputeUnitLimit(sim.consumed, {
+        signedComputeUnitLimit(sim.consumed, {
           cap: Math.min(MAX_TX_COMPUTE_UNITS, CU_TX_RESERVE + CU_PER_TRADE_LEG_ESTIMATE * legsHere),
         }),
       );
