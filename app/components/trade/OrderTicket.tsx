@@ -124,6 +124,7 @@ import { TICKET_COPY } from "@/lib/limits/copy";
 import { decodeMarketEngineView } from "@/lib/limits/decode";
 import { isAdlReduceOnly } from "@/lib/limits/adl-reduce-only";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
+import { FirstDepositCard } from "@/components/trade/FirstDepositCard";
 import { diagnoseV22TradeCustom9 } from "@/lib/v22/trade-refusal-9";
 
 const SIZE_PRESETS = [25, 50, 75, 100];
@@ -2219,6 +2220,18 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
           </div>
           <div className="font-mono tabular-nums text-[var(--text)]">{accountPending ? "—" : formatTokenAmount(buyingPower, decimals)} {collateralSymbol}</div>
         </div>
+        {/* SOL-2 (v2.2): a new user with tokens can deposit without trading first. */}
+        {isDevnetV22Enabled() && connected && !accountPending && needsAccount && walletHasTokens && (
+          <div className="flex shrink-0 items-center gap-1.5">
+            <button
+              onClick={() => toggleInlineDeposit("deposit")}
+              data-testid="deposit-toggle-new-account"
+              className="rounded-sm border border-[var(--accent)]/50 bg-[var(--accent)]/[0.1] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--accent)] transition-all duration-150 hover:bg-[var(--accent)]/[0.18] hover:brightness-110"
+            >
+              + Deposit
+            </button>
+          </div>
+        )}
         {connected && !accountPending && !needsAccount && !needsDeposit && (
           <div className="flex shrink-0 items-center gap-1.5">
             <button
@@ -2240,7 +2253,12 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       </div>
       {connected && !accountPending && showInlineDeposit && !((needsAccount || needsDeposit) && !walletHasTokens) && (
         <div className="mt-1.5" data-deposit-trigger>
-          <DepositWithdrawCard slabAddress={slabAddress} initialMode={inlineDepositMode} offerFaucet={fundOverWallet} />
+          {isDevnetV22Enabled() && needsAccount && !mockMode ? (
+            // SOL-2 (v2.2): no account yet — one approval creates it and deposits, no trade.
+            <FirstDepositCard slabAddress={slabAddress} walletBalance={walletAtaBalance ?? 0n} decimals={decimals} symbol={collateralSymbol} />
+          ) : (
+            <DepositWithdrawCard slabAddress={slabAddress} initialMode={inlineDepositMode} offerFaucet={fundOverWallet} />
+          )}
         </div>
       )}
 

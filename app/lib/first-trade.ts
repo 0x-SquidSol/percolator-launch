@@ -183,15 +183,24 @@ export function buildFirstTradeInitIxs(p: Pick<FirstTradeIxParams, "programId" |
   ];
 }
 
+/** Deposit(id, sequence) into `portfolio`. For a fresh portfolio the id is the PREDICTED one and the
+ *  sequence is 0 (SOL-2: the standalone create-and-deposit uses exactly this leg). */
+export function buildFirstDepositIx(
+  p: Pick<FirstTradeIxParams, "programId" | "owner" | "market" | "portfolio" | "userAta" | "vaultTokenAta" | "depositAtoms">,
+  id: { portfolioId: bigint; sequence: bigint },
+): TransactionInstruction {
+  return buildIx({
+    programId: p.programId,
+    keys: buildAccountMetas(ACCOUNTS_DEPOSIT_COLLATERAL, [p.owner, p.market, p.portfolio, p.userAta, p.vaultTokenAta, WELL_KNOWN.tokenProgram]),
+    data: encodeDepositCollateral({ portfolioId: id.portfolioId, expectedSequence: id.sequence, amount: p.depositAtoms.toString() }),
+  });
+}
+
 /** [Deposit(id, sequence), TradeCpi(id, position epoch)] — for a fresh portfolio id is the
  *  PREDICTED one and sequence / epoch are 0. */
 export function buildFundAndTradeIxs(p: FirstTradeIxParams, id: { portfolioId: bigint; sequence: bigint; positionEpoch: bigint }): TransactionInstruction[] {
   return [
-    buildIx({
-      programId: p.programId,
-      keys: buildAccountMetas(ACCOUNTS_DEPOSIT_COLLATERAL, [p.owner, p.market, p.portfolio, p.userAta, p.vaultTokenAta, WELL_KNOWN.tokenProgram]),
-      data: encodeDepositCollateral({ portfolioId: id.portfolioId, expectedSequence: id.sequence, amount: p.depositAtoms.toString() }),
-    }),
+    buildFirstDepositIx(p, id),
     buildTradeCpiIx({
       programId: p.programId,
       signer: p.owner,

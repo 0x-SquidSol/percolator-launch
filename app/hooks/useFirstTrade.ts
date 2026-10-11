@@ -30,6 +30,7 @@ import { tradeCuCap } from "@/lib/compute-budget";
 import { fetchAssetMarketId, fetchPortfolioIdentity } from "@/lib/v18-wire";
 import { findV17Portfolio, resolveLpTradeAccounts } from "@/hooks/useTrade";
 import {
+  buildFirstDepositIx,
   buildFirstTradeInitIxs,
   buildFundAndTradeIxs,
   type FirstTradeIxParams,
@@ -209,5 +210,82 @@ export function useFirstTrade(slabAddress: string) {
     [wallet, connection, mktConfig, slabProgramId, wrapperConfigV17, slabAddress, refreshSlab],
   );
 
-  return { fundAndTrade, loading };
+  /**
+   * SOL-2 (v2.2 QA 2026-10-11): deposit WITHOUT trading. A new user could only fund through the first
+   * trade (the Deposit / Withdraw toggles need an account), so a refused first trade left deposit,
+   * add-margin and withdraw unreachable. No account: ONE transaction [CreateAccount, InitPortfolio,
+   * Deposit(predicted id, sequence 0)] (the same legs and id prediction the first trade uses, minus
+   * the trade); the account exists: one Deposit with its live identity.
+   */
+  const createAndDeposit = useCallback(
+    async (depositAtoms: bigint): Promise<{ signature: string; portfolio: PublicKey; created: boolean }> => {
+      if (!wallet.publicKey || !mktConfig || !slabProgramId) throw new Error("Wallet not connected or market not loaded");
+      if (depositAtoms <= 0n) throw new Error("Enter an amount to deposit.");
+      assertKnownProgram(slabProgramId);
+      const owner = wallet.publicKey;
+      const programId = slabProgramId;
+      const market = new PublicKey(slabAddress);
+      const withPresignWait = async <T,>(send: () => Promise<T>): Promise<T> => {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            return await send();
+          } catch (e) {
+            if (attempt >= PRESIGN_WAIT_ATTEMPTS || !isPresignWaitable(e, programId)) throw e;
+            await new Promise((r) => setTimeout(r, PRESIGN_WAIT_MS));
+          }
+        }
+      };
+      setLoading(true);
+      try {
+        const userAta = await getAta(owner, mktConfig.collateralMint);
+        const [vaultPda] = deriveVaultAuthority(programId, market);
+        const vaultTokenAta = await getAta(vaultPda, mktConfig.collateralMint, true);
+        const ataInfo = await connection.getAccountInfo(userAta);
+        const ataBalance = ataInfo && ataInfo.data.length >= 72 ? readU64LE(ataInfo.data, 64) : 0n;
+        assertDepositWithinBalance(depositAtoms, ataBalance);
+        const legs = (portfolio: PublicKey) => ({ programId, owner, market, portfolio, userAta, vaultTokenAta, depositAtoms });
+
+        const existing = await findV17Portfolio(connection, programId, market, owner);
+        if (existing) {
+          const id = await fetchPortfolioIdentity(connection, existing);
+          const signature = await withPresignWait(() =>
+            sendTx({ connection, wallet, instructions: [buildFirstDepositIx(legs(existing), { portfolioId: id.portfolioId, sequence: id.matcherSequence })] }),
+          );
+          invalidatePortfolio();
+          refreshSlab();
+          return { signature, portfolio: existing, created: false };
+        }
+
+        const rent = await connection.getMinimumBalanceForRentExemption(portfolioAccountLen());
+        for (let raceRetry = 0; ; raceRetry++) {
+          const marketInfo = await connection.getAccountInfo(market, "confirmed");
+          const next = marketInfo ? readNextPortfolioId(new Uint8Array(marketInfo.data)) : null;
+          if (next === null) throw new Error("Market not loaded");
+          const kp = Keypair.generate();
+          const ixs: TransactionInstruction[] = [
+            ...buildFirstTradeInitIxs({ programId, owner, market, portfolio: kp.publicKey }, rent),
+            buildFirstDepositIx(legs(kp.publicKey), { portfolioId: predictPortfolioId(next), sequence: 0n }),
+          ];
+          try {
+            const signature = await withPresignWait(() =>
+              sendTx({ connection, wallet, instructions: ixs, signers: [kp], computeUnitsFromSim: { cap: FIRST_TRADE_CU_CAP } }),
+            );
+            invalidatePortfolio();
+            refreshSlab();
+            setTimeout(() => refreshSlab(), 2000);
+            return { signature, portfolio: kp.publicKey, created: true };
+          } catch (e) {
+            // Someone took the predicted id first: the tx is atomic, rebuild once with the real next id.
+            if (raceRetry === 0 && isPortfolioIdRace(e)) continue;
+            throw e;
+          }
+        }
+      } finally {
+        setLoading(false);
+      }
+    },
+    [wallet, connection, mktConfig, slabProgramId, slabAddress, refreshSlab],
+  );
+
+  return { fundAndTrade, createAndDeposit, loading };
 }
