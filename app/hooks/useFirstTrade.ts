@@ -42,6 +42,8 @@ import { measureFill, recordFillResult } from "@/lib/limits/fill-check";
 import { signedPositionForAsset } from "@/lib/limits/decode";
 import { readU64LE } from "@/lib/u64le";
 import { WRAPPER_ERR } from "@/lib/wrapper-errors";
+import { fetchTradeFeeBps } from "@/lib/limits/trade-fee-resolve";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
 
 /** CU cap for [deposit, trade]: the trade's cap + the deposit. */
 const FUND_AND_TRADE_CU_CAP = tradeCuCap(1) + 60_000;
@@ -124,9 +126,14 @@ export function useFirstTrade(slabAddress: string) {
           fetchAssetMarketId(connection, market, 0),
         ]);
         const lpId = await fetchPortfolioIdentity(connection, lp.accountB);
+        // Q-1 (v2.2 QA): sign the SDK rule (base + worst-case matcher fee + 5, capped at the market
+        // maximum; lib/limits/trade-fee-resolve.ts), else Custom 9 on the first fill. Flag off: unchanged.
+        const feeBps = isDevnetV22Enabled()
+          ? await fetchTradeFeeBps(connection, market, lp.matcherCtx, { fallback: p.feeBps ?? wrapperConfigV17?.tradeFeeBps })
+          : p.feeBps;
         const ixp = (portfolio: PublicKey): FirstTradeIxParams => ({
           programId, owner, market, portfolio, userAta, vaultTokenAta, depositAtoms: p.depositAtoms,
-          lp, lpId, marketId, size: p.size, limitPriceE6: p.limitPriceE6, feeBps: p.feeBps, marketTradeFeeBps: wrapperConfigV17?.tradeFeeBps,
+          lp, lpId, marketId, size: p.size, limitPriceE6: p.limitPriceE6, feeBps, marketTradeFeeBps: wrapperConfigV17?.tradeFeeBps,
         });
         // A confirmed TradeCpi is not proof the requested size filled: the matcher clips an
         // order to the LP's inventory room and the trade still returns Ok (a $100 order into a

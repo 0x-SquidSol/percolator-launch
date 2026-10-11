@@ -30,6 +30,7 @@ import { V22_ERROR_CODE_MAP, V22_STAKE_ERROR_CODE_MAP } from "@/lib/v22/error-co
 import { V22_ENGINE_LOCK_CODES } from "@/lib/v22/wrapper-errors";
 import { stakeProgramIdOrNull } from "@/lib/v22/program-ids";
 import { V21_ENGINE_LOCK_CODES } from "@/lib/v21/wrapper-errors";
+import { V22_CUSTOM9_GENERIC } from "@/lib/v22/trade-refusal-9-copy";
 const LIGHTHOUSE_PROGRAM_ID_STR = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95";
 
 const LIGHTHOUSE_USER_MESSAGE =
@@ -499,6 +500,9 @@ export function humanizeError(rawMsg: string, context?: "trade"): string {
     // path while the real cause was (b). Keep it honest: name the likely cause
     // and the recovery. Only trade-submit call sites pass context: "trade".
     if (code === WRAPPER_ERR.InvalidInstruction && context === "trade") {
+      // v2.2 (Q-1): never guess "slippage" up front; the ticket refines this from chain state
+      // (lib/v22/trade-refusal-9.ts: position cap / price limit / fee change).
+      if (isDevnetV22Enabled()) return V22_CUSTOM9_GENERIC;
       return "The trade was rejected by the program (invalid instruction) — usually the price moved past your slippage tolerance, or a trade parameter was off. Try again with the same size and leverage.";
     }
     // error-codes-4b1a5d30.md: a Custom(n) is the WRAPPER's code only when the wrapper raised

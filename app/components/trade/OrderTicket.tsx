@@ -41,7 +41,7 @@ import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { computeNotionalNative } from "@/lib/notional";
 import { availableLeverage as availableLeverageFor, nextLeverageInputState, clampSliderLeverage, LEVERAGE_STEP } from "@/lib/leverage-control";
-import { useTrade, prewarmTradeSubmission } from "@/hooks/useTrade";
+import { useTrade, prewarmTradeSubmission, resolveLpTradeAccounts } from "@/hooks/useTrade";
 import { useFirstTrade } from "@/hooks/useFirstTrade";
 import { FIRST_TRADE_COPY, FirstTradeDepositError, fundDepositAtoms, tradableMarginAtoms } from "@/lib/first-trade";
 import { useMarketFillCap } from "@/hooks/useMarketFillCap";
@@ -51,7 +51,7 @@ import { humanizeError, isEngineLockError, withTransientRetry } from "@/lib/erro
 import { useSingleMarketHealth } from "@/hooks/useMarketHealth";
 import { safeExplainMarketTxError } from "@/lib/market-error";
 import { PublicKey } from "@solana/web3.js";
-import { diagnoseTradeRejection } from "@/lib/tradeRejectDiagnosis";
+import { diagnoseTradeRejection, isCustom9Error } from "@/lib/tradeRejectDiagnosis";
 import { explorerTxUrl, getNetwork } from "@/lib/config";
 import { useUserAccount, useUserAccountScanPending } from "@/hooks/useUserAccount";
 import { OrderTicketClosePanel } from "@/components/trade/OrderTicketClosePanel";
@@ -123,6 +123,8 @@ import { resolveUserMessage, type UserMessage, type UserMessageAction } from "@/
 import { TICKET_COPY } from "@/lib/limits/copy";
 import { decodeMarketEngineView } from "@/lib/limits/decode";
 import { isAdlReduceOnly } from "@/lib/limits/adl-reduce-only";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
+import { diagnoseV22TradeCustom9 } from "@/lib/v22/trade-refusal-9";
 
 const SIZE_PRESETS = [25, 50, 75, 100];
 const MAX_DISPLAY_LEVERAGE = 200;
@@ -1297,7 +1299,24 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       // generic text immediately, then refine it from pre-trade state (matcher
       // context / market completeness) if that proves the real cause. No-op for
       // every other error code.
-      if (slabProgramId) {
+      if (slabProgramId && isDevnetV22Enabled() && isCustom9Error(msg)) {
+        // v2.2 (Q-1 / Q-6): name the cause the chain state proves (position cap / price limit / fee).
+        const pid = slabProgramId;
+        const market = new PublicKey(slabAddress);
+        const signedSize = direction === "short" ? -effectiveSize : effectiveSize;
+        void (async () => {
+          const lp = await resolveLpTradeAccounts(connection, pid, market).catch(() => null);
+          return diagnoseV22TradeCustom9(connection, {
+            market,
+            matcherCtx: lp?.matcherCtx ?? null,
+            takerPortfolio: userAccount?.pubkey ?? null,
+            sizeQ: signedSize,
+            limitPriceE6: snapshotLimitPriceE6,
+          });
+        })()
+          .then((refined) => setHumanError(refined))
+          .catch(() => { /* keep the generic message */ });
+      } else if (slabProgramId) {
         void diagnoseTradeRejection(msg, connection, slabProgramId, new PublicKey(slabAddress))
           .then((refined) => { if (refined) setHumanError(refined); })
           .catch(() => { /* keep the generic message */ });

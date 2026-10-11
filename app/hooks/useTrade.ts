@@ -47,6 +47,8 @@ import { decodeMarketEngineView, signedPositionForAsset } from "@/lib/limits/dec
 import { measureFill, recordFillResult } from "@/lib/limits/fill-check";
 import { measurePositionChange, readBeforeTrade, recordPositionChange } from "@/lib/position-change";
 import { tradeFeeBpsToSign } from "@/lib/limits/fee-channel";
+import { fetchTradeFeeBps } from "@/lib/limits/trade-fee-resolve";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { detectOracleMode, resolveMarketPriceE6 } from "@/lib/oraclePrice";
 import { assertKnownProgram, assertCanonicalMatcher } from "@/lib/programAllowlist";
@@ -529,6 +531,14 @@ export function useTrade(slabAddress: string) {
           fetchAssetMarketId(connection, slabPk, 0),
         ]);
 
+        // Q-1 (v2.2 QA): on a fee-channel market the taker must SIGN at least base + the matcher's
+        // requested fee (else Custom 9 on every fill). Flag on: the SDK rule (base + worst-case
+        // matcher fee + 5, capped at the market maximum), read from the market + the LP's matcher
+        // context right now (lib/limits/trade-fee-resolve.ts). Flag off: unchanged.
+        const signedFeeBps = isDevnetV22Enabled() && isV17Market
+          ? await fetchTradeFeeBps(connection, slabPk, matcherCtx, { fallback: params.feeBps ?? wrapperConfigV17?.tradeFeeBps })
+          : params.feeBps;
+
         // v18: TradeCpi/BatchTradeCpi bind both portfolios' identity + accountB's matcher
         // sequence + the asset marketId (lib/trade-ix.ts; shared with the first-trade flow).
         const tradeIxParams = {
@@ -546,7 +556,7 @@ export function useTrade(slabAddress: string) {
           legs,
           size: params.size,
           limitPriceE6: effectiveLimitPriceE6,
-          feeBps: params.feeBps,
+          feeBps: signedFeeBps,
           marketTradeFeeBps: wrapperConfigV17?.tradeFeeBps,
         };
         const tradeIxs = buildTradeIxs(tradeIxParams);
