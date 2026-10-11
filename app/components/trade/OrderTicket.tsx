@@ -114,6 +114,7 @@ import { V22_COPY } from "@/lib/v22/copy";
 import { parseHumanAmount } from "@/lib/parseAmount";
 import { POS_SCALE_V22, formatLotPriceE6, lotExpOf, lotOrderQ, tokenUsdOfLotUsd } from "@/lib/v22/lot";
 import { BandMarketNotice } from "@/components/v22/BandMarketNotice";
+import { OpenModeMarketNotes } from "@/components/v22/OpenModeMarketNotes";
 import { useBandRentView } from "@/hooks/useBandRentView";
 import { useLotTradingGuard } from "@/hooks/useLotTradingGuard";
 import { FixPricingAction } from "@/components/trade/FixPricingAction";
@@ -1584,6 +1585,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       {openCloseToggle}
       {v1CloseOnly && <V1CloseOnlyBanner />}
       {statusSlot && <div className="mb-3" data-testid="ticket-status-slot">{statusSlot}</div>}
+      {/* v2.2 QA M-1: why OPEN is disabled, band, minimum size and holding fee, in OPEN mode too (flag-gated by its inputs). */}
+      <OpenModeMarketNotes lotGuard={lotGuard} view={bandView} side={direction} collateralDecimals={decimals} collateralSymbol={collateralSymbol} />
       {/* Creator-only, self-hiding: the LP owner can drop the matcher's skew (lib/fix-pricing.ts). */}
       {ticketLimits.sameOwnerCloseOnly && !mockMode && (
         <div className="mb-3" data-testid="fix-pricing-slot"><FixPricingAction slabAddress={slabAddress} /></div>
