@@ -1453,6 +1453,16 @@ export function isWaitableRefusal(e: unknown): e is SimulationRefusal {
   return false;
 }
 
+/** The wait loop's decision for one refusal: re-simulate (true) or surface it now (false). */
+export function waitOnRefusal(
+  e: unknown,
+  o: { attempt: number; waitDelaysMs: readonly number[]; keepWaiting: boolean; aborted: boolean; shouldWait?: (e: SimulationRefusal) => boolean },
+): boolean {
+  const exhausted = o.attempt >= o.waitDelaysMs.length && !(o.keepWaiting && o.waitDelaysMs.length > 0);
+  if (!isWaitableRefusal(e) || exhausted || o.aborted) return false;
+  return o.shouldWait === undefined || o.shouldWait(e);
+}
+
 /**
  * sendTx, but a refusal the market clears on its own (engine/oracle catching up) is
  * re-simulated on WAIT_DELAYS_MS instead of surfacing — the wallet opens as soon as the
@@ -1471,9 +1481,14 @@ export async function sendTxWaiting(
     /** Called once when the wait passes `longWaitMs` (default 30 s). */
     onWaitingLong?: () => void;
     longWaitMs?: number;
+    /**
+     * v2.2 QA Q-3: a waitable refusal is surfaced at once when this returns false (a resolved market, a price nobody
+     * is pushing: lib/limits/price-stall.ts), instead of being re-simulated forever.
+     */
+    shouldWait?: (e: SimulationRefusal) => boolean;
   },
 ): Promise<string> {
-  const { onWaiting, waitDelaysMs = WAIT_DELAYS_MS, keepWaiting = false, onWaitingLong, longWaitMs = 30_000, ...rest } = params;
+  const { onWaiting, waitDelaysMs = WAIT_DELAYS_MS, keepWaiting = false, onWaitingLong, longWaitMs = 30_000, shouldWait, ...rest } = params;
   let waited = 0;
   let saidLong = false;
   for (let i = 0; ; i++) {
@@ -1482,8 +1497,7 @@ export async function sendTxWaiting(
       if (i > 0) onWaiting?.(false);
       return sig;
     } catch (e) {
-      const exhausted = i >= waitDelaysMs.length && !(keepWaiting && waitDelaysMs.length > 0);
-      if (!isWaitableRefusal(e) || exhausted || rest.abortSignal?.aborted) {
+      if (!waitOnRefusal(e, { attempt: i, waitDelaysMs, keepWaiting, aborted: rest.abortSignal?.aborted === true, shouldWait })) {
         if (i > 0) onWaiting?.(false);
         if (rest.abortSignal?.aborted && isWaitableRefusal(e)) throw new WaitStoppedError();
         throw e;

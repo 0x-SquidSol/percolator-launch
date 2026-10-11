@@ -18,6 +18,7 @@ import { isDevnetV22Enabled } from "../v22/flag";
 import { V22_NAME_BY_CODE } from "../v22/wrapper-errors";
 import { v22StakeMessage, v22WrapperMessage } from "../v22/error-message";
 import { resolveDevnetProgramIds } from "../program-ids";
+import { isLongStale, PRICE_STALLED } from "./price-stall";
 
 export type StatusVariant = "info" | "wait" | "paused" | "error";
 
@@ -67,6 +68,8 @@ export interface MessageContext {
   imFloorLabel?: string;
   /** v2.2 band market: the minimum position size, already formatted ("100 TOKEN"), for the 113 line. */
   minPositionLabel?: string;
+  /** v2.2 QA Q-3: seconds since the market's last on-chain price. Past LONG_STALE_SECS a stale refusal is not "a few seconds". */
+  priceAgeSecs?: number | null;
 }
 
 export interface UserMessageAction {
@@ -392,6 +395,13 @@ function resolveUserMessageInner(err: unknown, ctx: MessageContext): UserMessage
   }
   if (p.code !== null && wrapperish) {
     const W = WRAPPER_ERR;
+    // v2.2 QA Q-3: on a settled market these refusals are permanent; with no price for minutes nobody is pushing it.
+    // Neither waits, and neither says "a few seconds" or "goes through automatically".
+    const staleFamily = p.code === W.EngineStale || p.code === W.EngineBStale || p.code === W.EngineLockActive || p.code === W.OracleStale || p.code === W.OracleInvalid;
+    if (staleFamily && ctx.health?.resolved) return m("market-settled", "info", "Market settled", "Close any position and withdraw. There's nothing else to do.");
+    if (staleFamily && isLongStale(ctx.priceAgeSecs) && !(p.code === W.EngineLockActive && (ctx.surface === "earn-withdraw" || ctx.surface === "earn-deposit"))) {
+      return m("price-stalled", "paused", PRICE_STALLED.title, PRICE_STALLED.body(ctx.priceAgeSecs as number));
+    }
     switch (p.code) {
       case W.EngineStale:
       case W.EngineBStale:

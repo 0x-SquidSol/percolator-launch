@@ -7,6 +7,7 @@ import { UNLIMITED_CAPACITY } from "@/lib/marketCapacity";
 import { TICKET_COPY as T, TICKET_FUNDS_LINE } from "./copy";
 import type { StatusVariant } from "./user-message";
 import type { Side } from "./risk-limits";
+import { isLongStale, PRICE_STALLED } from "./price-stall";
 
 export type TicketRow =
   | "retired"
@@ -15,6 +16,7 @@ export type TicketRow =
   | "close-only"
   | "catching-up"
   | "waiting-price"
+  | "price-stalled"
   | "side-paused"
   | "both-paused"
   | "same-owner"
@@ -35,6 +37,8 @@ export interface TicketStateInput {
   engineStale: boolean;
   /** No price yet, the oracle isn't live, or its price is stale. */
   waitingForPrice: boolean;
+  /** v2.2 QA M-2: seconds since the last on-chain price; past LONG_STALE_SECS nobody is pushing it, so no "catching up". */
+  priceAgeSecs?: number | null;
   /** Per-side "no room for new exposure" (P1 halt, a legacy side capacity of 0). */
   sidePaused: Record<Side, boolean>;
   /** The market as a whole can't open (no liquidity, de-risking). */
@@ -96,6 +100,9 @@ export function deriveTicketState(i: TicketStateInput): TicketState {
     // Depleted as well: the close-only lock lifting is not enough on its own, so say what else it needs.
     const body = i.lpDepleted ? `${T.closeOnly.body} ${TICKET_FUNDS_LINE(i.lpIsVault === true)}` : T.closeOnly.body;
     return paused("close-only", "close-only", T.closeOnly.title, body, T.closeOnly.button);
+  }
+  if ((i.engineStale || i.waitingForPrice) && isLongStale(i.priceAgeSecs)) {
+    return paused("price-stalled", "price-stalled", PRICE_STALLED.title, PRICE_STALLED.ticketBody(i.priceAgeSecs as number), PRICE_STALLED.button);
   }
   if (i.engineStale) return paused("catching-up", "engine-catching-up", T.catchingUp.title, T.catchingUp.body, T.catchingUp.button, "wait");
   if (i.waitingForPrice) return paused("waiting-price", "waiting-price", T.waitingPrice.title, T.waitingPrice.body, T.waitingPrice.button, "wait");

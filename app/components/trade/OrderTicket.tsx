@@ -117,6 +117,7 @@ import { BandMarketNotice } from "@/components/v22/BandMarketNotice";
 import { useBandRentView } from "@/hooks/useBandRentView";
 import { useLotTradingGuard } from "@/hooks/useLotTradingGuard";
 import { FixPricingAction } from "@/components/trade/FixPricingAction";
+import { waitPolicy } from "@/lib/limits/price-stall";
 import { resolveUserMessage, type UserMessage, type UserMessageAction } from "@/lib/limits/user-message";
 import { TICKET_COPY } from "@/lib/limits/copy";
 import { decodeMarketEngineView } from "@/lib/limits/decode";
@@ -955,6 +956,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // Empty or zero size: the button says "Enter a size" rather than naming an order of nothing
   // ("Long SOL 1×", "Deposit 0.00 USDC & Long"). Submit is already disabled for it below.
   const sizeEntered = marginNative > 0n && positionSize > 0n;
+  // v2.2 QA Q-3: read at refusal time by the wait loop (lib/limits/price-stall.ts).
+  const stallRef = useRef({ resolved: false, priceAgeSecs: null as number | null });
+  stallRef.current = { resolved: marketResolved, priceAgeSecs: oracleReady && !oracleUnavailable ? oracleAgeSecs(oracleLastMs, oracleElapsed) : null };
   // ── The state machine (audit §3.3): one status slot, one state-labelled button ──
   const ticketState = deriveTicketState({
     direction,
@@ -966,6 +970,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     adlReduceOnly,
     engineStale,
     waitingForPrice: !mockMode && (oracleUnavailable || oracleStale || priceUsd == null),
+    priceAgeSecs: !mockMode && oracleReady && !oracleUnavailable ? oracleAgeSecs(oracleLastMs, oracleElapsed) : null,
     sidePaused,
     openingPaused: !mockMode && (vaultEmpty || lpDepleted || lpUnderfunded || riskGateActive),
     lpDepleted: !mockMode && lpDepleted,
@@ -1071,6 +1076,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
                 // UX WP-3: it keeps waiting past ~30 s ("We'll keep trying") until Stop.
                 keepWaiting: true,
                 onWaitingLong: () => setWaitingLong(true),
+                // v2.2 QA Q-3: never wait on a settled market or a price nobody is pushing.
+                shouldWait: waitPolicy(() => stallRef.current),
                 onRefreshingPositions: setRefreshingPositions,
                 abortSignal: waitAbort.signal,
               },
@@ -1222,6 +1229,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
         symbol: marketInfo?.symbol ?? undefined,
         maxNow: sideMaxQ !== null && sideMaxQ > 0n && sideMaxQ < UNLIMITED_CAPACITY ? fmtQ(sideMaxQ) : undefined,
         health: { lpDepleted, lpIsVault, adlReduceOnly, resolved: marketResolved },
+        priceAgeSecs: oracleReady && !oracleUnavailable ? oracleAgeSecs(oracleLastMs, oracleElapsed) : null,
         // GH#2953: fund-and-trade does not wait and resend; never promise "goes through automatically".
         oneShot: fundingMode,
         // GH#2959: a 49 on a new position below the market's floor is the floor, not the size.
