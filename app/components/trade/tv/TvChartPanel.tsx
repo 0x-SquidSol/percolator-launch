@@ -163,7 +163,7 @@ export function TvChartPanel({ slabAddress, onFailure }: TvChartPanelProps) {
   const isLarge = useIsLargeScreen();
   const mode = isLarge ? "desktop" : "compact";
   const [overlayPrefs, setOverlayPref] = useChartOverlayPrefs();
-  // The chart instance that reported ready (see chartKey below); `ready` is derived from it.
+  // The chart instance that reported ready (see instanceId below); `ready` is derived from it.
   const [readyKey, setReadyKey] = useState<string | null>(null);
   const [source, setSource] = useState<BarSource | null>(null);
   const [interval, setIntervalState] = useState<TvResolution | null>(null);
@@ -193,7 +193,12 @@ export function TvChartPanel({ slabAddress, onFailure }: TvChartPanelProps) {
   // mounts a new one, so `ready` is false in that same render: the opaque skeleton covers the rebuild
   // (no bare "…", white frame or raw-address title) and the resolution pills wait for the new chart.
   const chartKey = `${mode}:${embedEpoch}:${series}`;
-  const ready = readyKey === chartKey;
+  // Each new chartKey is a new instance, even one that repeats an earlier key (Mark -> Oracle -> Mark
+  // before Oracle is ready), so the first Mark chart's ready can't count for the second.
+  const [instance, setInstance] = useState({ key: chartKey, n: 0 });
+  if (instance.key !== chartKey) setInstance({ key: chartKey, n: instance.n + 1 });
+  const instanceId = `${chartKey}#${instance.key === chartKey ? instance.n : instance.n + 1}`;
+  const ready = readyKey === instanceId;
   const strip = usePerpLiveStrip(slabAddress, series);
   const headerStats = usePerpHeaderStats(slabAddress, strip.price, series);
   // Pre-launch pool history on screen: CoinGecko attribution is mandatory (the TradingView logo is the library's own and stays visible).
@@ -265,7 +270,7 @@ export function TvChartPanel({ slabAddress, onFailure }: TvChartPanelProps) {
             mode={mode}
             overlayPrefs={linePrefs}
             onFailure={onFailure}
-            onReady={() => setReadyKey(chartKey)}
+            onReady={() => setReadyKey(instanceId)}
             onSource={setSource}
             onInterval={setIntervalState}
             handleRef={handleRef}

@@ -55,6 +55,19 @@ describe("series switch while the new widget loads", () => {
     expect(pill().disabled).toBe(false);
   });
 
+  it("switching back before the other series is ready still covers the rebuild (no stale ready)", async () => {
+    render(<TvChartPanel slabAddress="S" onFailure={() => {}} />);
+    await settle(); // Mark ready
+    m.autoReady = false;
+    fireEvent.click(screen.getByRole("radio", { name: "Oracle" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Mark" }));
+    // A new Mark widget is loading: the first Mark instance's ready must not count for it.
+    expect(screen.getByRole("status", { name: "Loading chart" })).toBeInTheDocument();
+    expect(pill().disabled).toBe(true);
+    await settle();
+    expect(screen.getByRole("status", { name: "Loading chart" })).toBeInTheDocument();
+  });
+
   it("closing the full-screen sheet covers the remounted embedded chart too", async () => {
     render(<TvChartPanel slabAddress="S" onFailure={() => {}} />);
     await settle();
