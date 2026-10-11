@@ -222,7 +222,9 @@ export function useFirstTrade(slabAddress: string) {
    */
   const createAndDeposit = useCallback(
     async (depositAtoms: bigint): Promise<{ signature: string; portfolio: PublicKey; created: boolean }> => {
-      if (!wallet.publicKey || !mktConfig || !slabProgramId) throw new Error("Wallet not connected or market not loaded");
+      // Same split as fundAndTrade above (#3366).
+      if (!wallet.publicKey) throw new Error("Wallet not connected");
+      if (!mktConfig || !slabProgramId) throw new Error("Market not loaded");
       if (depositAtoms <= 0n) throw new Error("Enter an amount to deposit.");
       assertKnownProgram(slabProgramId);
       const owner = wallet.publicKey;
