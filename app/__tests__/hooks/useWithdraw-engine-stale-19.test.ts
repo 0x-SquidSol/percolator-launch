@@ -17,6 +17,7 @@ import { renderHook } from "@testing-library/react";
 import { act } from "react";
 import { PublicKey } from "@solana/web3.js";
 import { useWithdraw } from "../../hooks/useWithdraw";
+import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import { WITHDRAW_OPEN_POSITIONS_MESSAGE, WITHDRAW_STALE_MESSAGE, engineStaleWithdrawMessage } from "@/lib/withdraw-copy";
 
 vi.mock("@/hooks/useWalletCompat", () => ({
@@ -102,6 +103,8 @@ describe("useWithdraw: Custom(19) and open-leg copy (v2.2 QA P-2)", () => {
   });
 
   beforeEach(() => {
+    // The harness mocks the v2.1 portfolio parser (parsePortfolioV17); the copy under test is flag-independent.
+    __setDevnetV22ForTest(false);
     vi.clearAllMocks();
 
     mockConnection = {

@@ -30,6 +30,10 @@ describe("M-1: OpenModeMarketNotes", () => {
     expect(screen.queryByTestId("band-open")).toBeNull();
     expect(screen.queryByTestId("lot-trading-guard-open")).toBeNull();
   });
+  it("the brief 'exponent not read yet' state is not shown as a reason", () => {
+    const r = render(<OpenModeMarketNotes lotGuard="Checking this market's price. Try again in a moment." view={null} side="long" {...props} />);
+    expect(r.container.innerHTML).toBe("");
+  });
   it("renders nothing on a plain market (flag off => view null, guard null)", () => {
     const r = render(<OpenModeMarketNotes lotGuard={null} view={null} side="long" {...props} />);
     expect(r.container.innerHTML).toBe("");

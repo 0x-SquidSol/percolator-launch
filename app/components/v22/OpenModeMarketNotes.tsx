@@ -25,7 +25,9 @@ export interface OpenModeMarketNotesProps {
 export const bandLabel = (view: BandRentView | null): string | null =>
   view && view.band.enabled && view.band.bandBps > 0 ? `Price protection ±${(view.band.bandBps / 100).toFixed(view.band.bandBps % 100 === 0 ? 0 : 1)}%` : null;
 
-export const OpenModeMarketNotes: FC<OpenModeMarketNotesProps> = ({ lotGuard, view, side, collateralDecimals, collateralSymbol }) => {
+export const OpenModeMarketNotes: FC<OpenModeMarketNotesProps> = ({ lotGuard: guard, view, side, collateralDecimals, collateralSymbol }) => {
+  // The "exponent not read yet" guard is a brief loading state, not a reason: only a definitive refusal is shown here.
+  const lotGuard = guard === V22_COPY.lot.unitsUnknown ? null : guard;
   const band = bandLabel(view);
   const fee = holdingFeeLabel(view, side);
   if (!lotGuard && !band && !fee && !(view && view.band.enabled)) return null;
