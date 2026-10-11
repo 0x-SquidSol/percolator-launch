@@ -17,6 +17,19 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 
 const args = process.argv.slice(2);
+
+/**
+ * Worker cap for every vitest spawn (FLAG_DELTA_MAX_WORKERS, default 4): an uncapped run put 13 workers on the shared
+ * box (load 57). vitest 4.1 has no --minWorkers flag (removed upstream; passing it is an "Unknown option" error), so
+ * only the maximum is set. `--print-vitest-args` prints the exact argv and exits (used by the test).
+ */
+export function vitestArgs(out, env = process.env) {
+  return ["vitest", "run", `--maxWorkers=${env.FLAG_DELTA_MAX_WORKERS ?? 4}`, "--reporter=json", `--outputFile=${out}`];
+}
+if (args.includes("--print-vitest-args")) {
+  console.log(JSON.stringify(vitestArgs("<out>")));
+  process.exit(0);
+}
 const flag = (n) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : null; };
 const base = args.find((a) => !a.startsWith("--") && args[args.indexOf(a) - 1] !== "--json-base" && args[args.indexOf(a) - 1] !== "--json-head");
 const jsonBase = flag("--json-base"), jsonHead = flag("--json-head");
@@ -24,7 +37,7 @@ if (!base && !jsonBase) { console.error("usage: flag-on-delta.mjs <base-app-dir>
 
 function run(dir) {
   const out = join(mkdtempSync(join(tmpdir(), "flagdelta-")), "r.json");
-  const r = spawnSync("npx", ["vitest", "run", "--reporter=json", `--outputFile=${out}`], { cwd: dir, env: { ...process.env, NEXT_PUBLIC_DEVNET_V22: "1" }, stdio: "ignore" });
+  const r = spawnSync("npx", vitestArgs(out), { cwd: dir, env: { ...process.env, NEXT_PUBLIC_DEVNET_V22: "1" }, stdio: "ignore" });
   if (!existsSync(out)) { console.error(`vitest produced no report in ${dir} (exit ${r.status})`); process.exit(2); }
   return out;
 }
