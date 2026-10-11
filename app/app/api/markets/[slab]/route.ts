@@ -22,6 +22,7 @@ import { getMarketLpCapital } from "@/lib/lp-portfolio";
 import { verifyKeeperSignature } from "@/lib/keeper-hmac";
 import { sanitizeLogoUrl } from "@/lib/token-metadata-validators";
 import { parseMarketOI, isWrapperAccount, isUnknownWrapperVersion, unsupportedLayoutBody } from "@/lib/v22/layout";
+import { isMissingColumnError } from "@/lib/supabase-missing-column";
 
 /**
  * GH#2334 follow-up: `vault_balance`/`c_tot` are NULL for every v17 market in
@@ -339,7 +340,7 @@ export async function GET(
         .eq("network", network)
         .maybeSingle();
 
-      if (error && error.message?.includes("network")) {
+      if (isMissingColumnError(error, "network")) {
         Sentry.captureMessage(
           "PERC-8225: markets_with_stats.network column missing in [slab] route — migration not applied. " +
           "Falling back to unfiltered query. Apply 20260329180000_add_network_column.sql to fix.",
@@ -378,7 +379,7 @@ export async function GET(
         .select("*")
         .eq("network", network);
 
-      if (error && error.message?.includes("network")) {
+      if (isMissingColumnError(error, "network")) {
         Sentry.captureMessage(
           "PERC-8225: markets_with_stats.network column missing in [slab] slug route — migration not applied. " +
           "Falling back to unfiltered query. Apply 20260329180000_add_network_column.sql to fix.",

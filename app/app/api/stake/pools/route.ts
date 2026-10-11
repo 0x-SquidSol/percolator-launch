@@ -20,6 +20,7 @@ import { isBlockedSlab } from "@/lib/blocklist";
 import { getMultipleAccountsInfoChunked } from "@/lib/rpc-chunk";
 import * as Sentry from "@sentry/nextjs";
 import { isListableStakePool, stakePoolScanSize } from "@/lib/v22/stake-pool-scan";
+import { isMissingColumnError } from "@/lib/supabase-missing-column";
 
 // ── APR helpers ───────────────────────────────────────────────────────────────
 
@@ -316,7 +317,7 @@ export async function GET() {
         ]);
 
         let marketsData = marketsResult.data;
-        if (marketsResult.error && marketsResult.error.message?.includes("network")) {
+        if (isMissingColumnError(marketsResult.error, "network")) {
           const fallback = await supabase
             .from("markets_with_stats")
             .select("slab_address,symbol,name,logo_url")
