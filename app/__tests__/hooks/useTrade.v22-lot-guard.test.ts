@@ -26,6 +26,13 @@ const mocks = vi.hoisted(() => ({
   getLivePriceSnapshot: vi.fn(),
 }));
 
+// v2.2 QA L-1: the real registry is now fully covered (lot markets trade). The refusal path is still pinned through a
+// registry with one uncovered surface, injected here.
+const lotReg = vi.hoisted(() => ({ gap: null as null | Record<string, { covered: boolean }> }));
+vi.mock("@/lib/v22/lot-coverage", async (orig) => {
+  const a = await orig<typeof import("@/lib/v22/lot-coverage")>();
+  return { ...a, lotTradingRefusal: (k: number | null, flagOn?: boolean, reg?: Readonly<Record<string, { covered: boolean }>>) => a.lotTradingRefusal(k, flagOn, reg ?? lotReg.gap ?? a.LOT_SURFACES) };
+});
 vi.mock("@/hooks/useWalletCompat", () => ({
   useConnectionCompat: mocks.useConnectionCompat,
   useWalletCompat: mocks.useWalletCompat,
@@ -154,7 +161,8 @@ describe("useTrade, v2.2 (review N1/N2): a market with lots, or with an unknown 
     __setDevnetV22ForTest(null);
   });
 
-  it("lotExp 3 (known): refused with the calm line; nothing is sent; no limit is derived from the store price", async () => {
+  it("lotExp 3 (known) while a lot surface is uncovered: refused with the calm line; nothing is sent; no limit is derived from the store price", async () => {
+    lotReg.gap = { a: { covered: true }, b: { covered: false } };
     observeLotExp(slabAddress, market(3));
     const { result, unmount } = renderHook(() => useTrade(slabAddress));
     await act(async () => {
@@ -163,6 +171,7 @@ describe("useTrade, v2.2 (review N1/N2): a market with lots, or with an unknown 
     expect(mocks.sendTxWaiting).not.toHaveBeenCalled();
     expect(mocks.sendTx).not.toHaveBeenCalled();
     unmount();
+    lotReg.gap = null;
   });
 
   it("unknown exponent (e.g. a close from a row whose market was never read): refused, nothing sent", async () => {
@@ -171,6 +180,18 @@ describe("useTrade, v2.2 (review N1/N2): a market with lots, or with an unknown 
       await expect(result.current.trade({ lpIdx: 0, userIdx: 0, size: -1_000_000n })).rejects.toThrow("Checking this market's price. Try again in a moment.");
     });
     expect(mocks.sendTxWaiting).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it("L-1: lotExp 3 (known) with the real (fully covered) registry: the guard does not refuse", async () => {
+    observeLotExp(slabAddress, market(3));
+    mocks.sendTxWaiting.mockResolvedValue("sig");
+    const { result, unmount } = renderHook(() => useTrade(slabAddress));
+    let msg = "";
+    await act(async () => {
+      try { await result.current.trade({ lpIdx: 0, userIdx: 0, size: 1_000_000n }); } catch (e) { msg = (e as Error).message; }
+    });
+    expect(msg).not.toMatch(/isn't available in the app yet/);
     unmount();
   });
 

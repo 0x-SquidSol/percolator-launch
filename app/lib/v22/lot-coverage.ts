@@ -25,6 +25,7 @@ const T_TRADE = "__tests__/lib/v22/lot-surfaces-trade.test.tsx";
 const T_VIEWS = "__tests__/lib/v22/lot-surfaces-views.test.ts";
 const T_N1 = "__tests__/lib/v22/lot-n1.test.ts";
 const T_SURF = "__tests__/lib/v22/lot-surfaces-remaining.test.tsx";
+const T_L1 = "__tests__/lib/v22/lot-l1.test.tsx";
 
 export const LOT_SURFACES: Readonly<Record<string, LotSurface>> = Object.freeze({
   "price-store": { covered: true, test: T_N1, evidence: "per-token feeds of a slab with an unknown exponent are NOT ingested" },
@@ -47,9 +48,10 @@ export const LOT_SURFACES: Readonly<Record<string, LotSurface>> = Object.freeze(
   "legacy-chart": { covered: true, test: T_VIEWS, evidence: "TradingChart" },
   "trade-history": { covered: true, test: T_VIEWS, evidence: "TradeHistory" },
   "api-markets": { covered: true, test: T_VIEWS, evidence: "lotMarketNumbers" },
-  "trade-stats-panel": { covered: false, note: "volume units of the indexer rows (per lot or per token) are not verified" },
-  "keeper-mark-scaling": { covered: false, note: "the keeper must push mark = round(P * 10^lot_exp ...); other repo, verify on a live lot market" },
-  "indexer-candles-trades": { covered: false, note: "indexer storage of per-lot marks and sizes; other repo, verify on a live lot market" },
+  // v2.2 QA L-1 (2026-10-11): the three cross-repo surfaces, attested.
+  "trade-stats-panel": { covered: true, test: T_L1, evidence: "TradeStatsPanel withholds volume on v2.2", note: "volume withheld on v2.2 until NEXT_PUBLIC_V22_INDEXER_LOT_AWARE=1 (lib/trade-stats-display gateVolumeForV22)" },
+  "keeper-mark-scaling": { covered: true, test: T_L1, evidence: "keeper pushes price x 10^lot_exp (live 2026-10-11)", note: "oracle-keeper 9e56eb5 (K-1); live check __tests__/live/v22-lot-marks-live.test.ts: 8 markets within 1.6% of Jupiter x 10^lot_exp" },
+  "indexer-candles-trades": { covered: true, test: T_L1, evidence: "rows are chain values (per lot); the app converts", note: "indexer #218 827aa7f has no lot handling: it stores chain (per-lot) values, which every app surface converts; no v2.2 indexer runs on the preview (empty, not wrong)" },
 });
 
 /** The surfaces that still keep lot markets refused. */

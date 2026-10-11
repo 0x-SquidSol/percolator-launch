@@ -4,9 +4,11 @@ import { FC } from "react";
 import { ShimmerSkeleton } from "@/components/ui/ShimmerSkeleton";
 import { formatStatValue, formatTokenAmount } from "@/lib/format";
 import type { TraderStatsResponse } from "@/hooks/useTraderStats";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import {
   FEES_UNRECORDED_NOTE,
   feesPaidDisplay,
+  gateVolumeForV22,
   volumeDisplay,
   volumeNote,
 } from "@/lib/trade-stats-display";
@@ -145,10 +147,10 @@ export const TradeStatsPanel: FC<TradeStatsPanelProps> = ({
   // above make `stats` non-null, so both cells read one decision rather than
   // re-deriving it inline.
   const fees = feesPaidDisplay(stats.totalTrades, stats.feesRecorded, stats.totalFees);
-  const volume = volumeDisplay(
-    stats.totalTrades,
-    stats.tradesMissingPrice,
-    stats.totalVolume,
+  const volume = gateVolumeForV22(
+    volumeDisplay(stats.totalTrades, stats.tradesMissingPrice, stats.totalVolume),
+    isDevnetV22Enabled(),
+    process.env.NEXT_PUBLIC_V22_INDEXER_LOT_AWARE === "1",
   );
 
   const longPct =
@@ -185,7 +187,7 @@ export const TradeStatsPanel: FC<TradeStatsPanelProps> = ({
             value={
               volume.kind === "no-trades"
                 ? "—"
-                : volume.kind === "unknown"
+                : volume.kind === "unknown" || volume.kind === "unverified"
                   ? "—"
                   : formatVolume(volume.atoms)
             }

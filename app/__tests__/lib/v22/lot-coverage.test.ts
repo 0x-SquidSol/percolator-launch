@@ -16,15 +16,16 @@ describe("lot coverage registry", () => {
       expect(fs.readFileSync(file, "utf8"), `${id}: evidence`).toContain(s.evidence!);
     }
   });
-  it("surfaces that depend on other repos stay uncovered, so lot markets stay refused", () => {
-    expect(uncoveredLotSurfaces()).toEqual(expect.arrayContaining(["keeper-mark-scaling", "indexer-candles-trades", "trade-stats-panel"]));
-    expect(allLotSurfacesCovered()).toBe(false);
+  it("v2.2 QA L-1: every surface is attested (keeper marks live, indexer rows per lot, stats volume withheld), so lot markets trade", () => {
+    expect(uncoveredLotSurfaces()).toEqual([]);
+    expect(allLotSurfacesCovered()).toBe(true);
+    expect(lotTradingRefusal(4, true)).toBeNull();
   });
-  it("the guard: flag off allows; unknown exponent refuses; lotExp 0 allows; lotExp > 0 refuses while any surface is uncovered", () => {
+  it("the guard: flag off allows; unknown exponent refuses; lotExp 0 allows; lotExp > 0 refuses while any surface is uncovered (synthetic registry)", () => {
     expect(lotTradingRefusal(3, false)).toBeNull();
     expect(lotTradingRefusal(null, true)).toMatch(/Try again in a moment/);
     expect(lotTradingRefusal(0, true)).toBeNull();
-    expect(lotTradingRefusal(3, true)).toBe("Trading this market isn't available in the app yet.");
+    expect(lotTradingRefusal(3, true, { a: { covered: true }, b: { covered: false } })).toBe("Trading this market isn't available in the app yet.");
   });
   it("the guard is the AND of the registry: all covered allows lots, one uncovered refuses again", () => {
     const all = { a: { covered: true }, b: { covered: true } };
