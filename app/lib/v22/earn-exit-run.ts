@@ -56,7 +56,19 @@ export interface ExitRunDeps {
   sleep?: (ms: number) => Promise<void>;
   /** "Refreshing positions…" on/off. */
   onRefreshing?: (on: boolean) => void;
+  /**
+   * v2.2 QA E-1: tag 78 LpVaultCrankFees for this BOUND vault (tail-aware: vault-LP state, ext, LP, bond tranche), or
+   * null when the vault is not bound. A bound vault's 77 refuses 84 VaultLpHarvestPending while LP fees are
+   * harvestable, and 78 must ride in front IN THE SAME TX. 78 is permissionless but NOT a no-op: with nothing to harvest
+   * it refuses 38 LpVaultNoFeesToCrank (wrapper RC 6c078a0e handle_lp_vault_crank_fees), so it is added only on an 84.
+   */
+  harvestIx?: () => Promise<TransactionInstruction | null>;
 }
+
+/** 84 VaultLpHarvestPending: 77 on a bound vault with harvestable LP fees. */
+export const ERR_HARVEST_PENDING = 84;
+/** 38 LpVaultNoFeesToCrank: a 78 with nothing to harvest (someone else harvested first). */
+export const ERR_NO_FEES_TO_CRANK = 38;
 
 export interface ExitQuote {
   mode: ExitMode;
@@ -71,6 +83,8 @@ export interface ExitQuote {
   computeUnits: number;
   /** True when the quote is an estimate (a request that cannot be simulated until its cooldown ends). */
   estimate: boolean;
+  /** E-1: the quote was simulated with tag 78 in front (the send carries it too). */
+  harvest?: boolean;
 }
 
 export type QuoteResult =
@@ -103,11 +117,12 @@ async function simulateOnce(
   deps: ExitRunDeps,
   plan: EarnExitPlanV22,
   units: number,
+  prefix: readonly TransactionInstruction[] = [],
 ): Promise<{ outcome: ReturnType<typeof classifyRedemptionSimulationV22>; payout: bigint | null }> {
   const { ctx, mode } = input;
   const before = await deps.readDestBalance();
   const req = mode === "pair" ? [buildRequestRedeemLpSharesIxV22(ctx.market, ctx.redeemer, ctx.redeemerLpAta, ctx.shares, 1n, ctx.keeperOk === true)] : [];
-  const sim = await deps.simulate([...req, plan.simulationIx], units);
+  const sim = await deps.simulate([...prefix, ...req, plan.simulationIx], units);
   const outcome = classifyRedemptionSimulationV22({ err: sim.err, logs: sim.logs });
   if (outcome.kind !== "ok") return { outcome, payout: null };
   if (sim.destAfter === null) return { outcome: { kind: "other" }, payout: null };
@@ -143,13 +158,24 @@ export async function quoteExit(input: ExitRunInput, deps: ExitRunDeps): Promise
     }
   };
   let rescan = false; // N3: after a 118 round the next read is ONE fresh scan, not a re-read of the old set
+  let harvest: TransactionInstruction | null = null; // E-1: tag 78 in front once a simulation said 84
+  let harvestTried = false;
   try {
     for (;;) {
       const stale = ctx.boundLpPortfolio ? [] : await (rescan ? deps.rescanStale ?? deps.readStale : deps.readStale)();
       rescan = false;
       const plan = buildExitPlan(ctx, stale);
       const u = units ?? plan.computeUnits;
-      const { outcome, payout } = await simulateOnce(input, deps, plan, u);
+      const { outcome, payout } = await simulateOnce(input, deps, plan, u, harvest ? [harvest] : []);
+      if (!harvestTried && outcome.kind === "other" && outcome.code === ERR_HARVEST_PENDING && !harvest && deps.harvestIx) {
+        harvestTried = true;
+        harvest = await deps.harvestIx();
+        if (harvest) continue;
+      }
+      if (outcome.kind === "other" && outcome.code === ERR_NO_FEES_TO_CRANK && harvest) {
+        harvest = null; // harvested by someone else since: 77 alone again (an 84 now would not re-add it)
+        continue;
+      }
       const step = nextExitStep(state, outcome.kind === "ok" ? { kind: "ok" } : outcome.kind === "other" ? { kind: "other", error: new Error("The exit could not be priced right now. Try again shortly.") } : { kind: outcome.kind });
       if (step.action === "proceed" && payout !== null) {
         setRefreshing(false);
@@ -165,6 +191,7 @@ export async function quoteExit(input: ExitRunInput, deps: ExitRunDeps): Promise
             refreshDeferred: plan.refreshDeferred.length,
             computeUnits: u,
             estimate: false,
+            ...(harvest ? { harvest: true } : {}),
           },
         };
       }
@@ -216,6 +243,9 @@ export async function sendExit(input: ExitRunInput, confirmed: ExitQuote, deps: 
   let units = confirmed.computeUnits;
   let current = confirmed;
   let stale = confirmed.mode === "request" || input.ctx.boundLpPortfolio ? [] : await deps.readStale();
+  // E-1: 78 rides in front when the quote needed it; an 84 at send time adds it once, a 38 (already harvested) drops it once.
+  let harvest: TransactionInstruction | null = confirmed.harvest && deps.harvestIx ? await deps.harvestIx() : null;
+  let harvestToggled = false;
   let refreshing = false;
   const setRefreshing = (on: boolean) => {
     if (refreshing !== on) {
@@ -227,12 +257,25 @@ export async function sendExit(input: ExitRunInput, confirmed: ExitQuote, deps: 
     for (;;) {
       const plan = buildExitPlan(input.ctx, stale);
       // The program ALSO enforces the stored floor; we send the floor the user saw (the confirmed quote's floor).
-      const { ixs } = instructionsFor(input, plan, confirmed.quote, units);
+      const { ixs: body } = instructionsFor(input, plan, confirmed.quote, units);
+      const ixs = harvest ? [harvest, ...body] : body;
       try {
         const signature = await deps.send(ixs, units);
         setRefreshing(false);
         return { status: "sent", signature, quote: current };
       } catch (e) {
+        if (!harvestToggled && input.mode !== "request") {
+          const code = deps.parse(e).code;
+          if (code === ERR_HARVEST_PENDING && !harvest && deps.harvestIx) {
+            harvestToggled = true;
+            harvest = await deps.harvestIx();
+            if (harvest) continue;
+          } else if (code === ERR_NO_FEES_TO_CRANK && harvest) {
+            harvestToggled = true;
+            harvest = null;
+            continue;
+          }
+        }
         const outcome = classifyExitError(e, deps.parse);
         const step = nextExitStep(state, outcome);
         if (step.action === "refresh-and-retry") {

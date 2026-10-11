@@ -26,6 +26,8 @@ import {
   type SimResult,
 } from '@/lib/v22/earn-exit-run';
 import { V22_COPY } from '@/lib/v22/copy';
+import { buildLpCrankIx } from '@/lib/pre-resolve';
+import { fetchMarketTailsV22 } from '@/lib/v22/market-tails';
 import { makeStaleReader } from '@/lib/v22/stale-scan';
 import { EXIT_QUOTE_MAX_AGE_MS, StaleExitQuoteError, exitQuoteKey, quoteUsable, type BoundQuote } from '@/lib/v22/exit-quote-binding';
 
@@ -79,6 +81,25 @@ export async function simulateExitTx(connection: Connection, payer: PublicKey, d
   let destAfter: bigint | null = null;
   if (acc && Array.isArray(acc.data) && typeof acc.data[0] === 'string') destAfter = tokenAmountOf(Buffer.from(acc.data[0], 'base64'));
   return { err: sim.value.err ?? null, logs: sim.value.logs ?? [], destAfter };
+}
+
+/** Tag 78 LpVaultCrankFees on a bound vault: the v2.2 tails (ext / bond tranche) when the market has them, else the plain bound form. */
+export async function buildHarvestIx(
+  connection: Pick<Connection, 'getMultipleAccountsInfo'>,
+  programId: PublicKey,
+  cranker: PublicKey,
+  market: PublicKey,
+  domain: number,
+  lpPortfolio: PublicKey,
+): Promise<TransactionInstruction | null> {
+  let tails: Awaited<ReturnType<typeof fetchMarketTailsV22>> | null = null;
+  try {
+    tails = await fetchMarketTailsV22(connection, programId, market);
+  } catch {
+    tails = null;
+  }
+  const v22 = tails && (tails.vaultLpExt || tails.bondTranche) ? { lpPortfolio, vaultLpExt: tails.vaultLpExt ?? undefined, bond: !!tails.bondTranche } : undefined;
+  return buildLpCrankIx(programId, cranker, market, domain, true, v22);
 }
 
 export function useEarnExitV22(p: EarnExitParams) {
@@ -157,6 +178,8 @@ export function useEarnExitV22(p: EarnExitParams) {
         return r.signatures[r.signatures.length - 1];
       },
       parse: parseFailure,
+      // E-1: tag 78 for a BOUND vault, tail-aware (ext / bond tranche), added by the runner only on an 84.
+      harvestIx: bound ? () => buildHarvestIx(connection, programId, payer, market, p.sourceDomain, bound) : undefined,
       onRefreshing: (on) => setState((s) => (s.phase === 'quoting' || s.phase === 'refreshing' || s.phase === 'sending' ? { ...s, phase: on ? 'refreshing' : s.phase === 'refreshing' ? 'quoting' : s.phase } : s)),
     };
     return { input: { ctx, mode: p.mode, estimateAtoms: p.estimateAtoms }, deps };
