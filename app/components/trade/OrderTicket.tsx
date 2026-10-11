@@ -387,6 +387,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // Which tab the inline card opens on. Clicking the active trigger closes the
   // card; clicking the other trigger switches its tab in place.
   const [inlineDepositMode, setInlineDepositMode] = useState<"deposit" | "withdraw">("deposit");
+  // SOL-2 (v2.2): the new-account "+ Deposit" card (create account + deposit, no trade).
+  const [showFirstDeposit, setShowFirstDeposit] = useState(false);
   const toggleInlineDeposit = (target: "deposit" | "withdraw") => {
     if (showInlineDeposit && inlineDepositMode === target) {
       setShowInlineDeposit(false);
@@ -2243,7 +2245,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
         {isDevnetV22Enabled() && connected && !accountPending && needsAccount && walletHasTokens && (
           <div className="flex shrink-0 items-center gap-1.5">
             <button
-              onClick={() => toggleInlineDeposit("deposit")}
+              onClick={() => setShowFirstDeposit((v) => !v)}
               data-testid="deposit-toggle-new-account"
               className="rounded-sm border border-[var(--accent)]/50 bg-[var(--accent)]/[0.1] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--accent)] transition-all duration-150 hover:bg-[var(--accent)]/[0.18] hover:brightness-110"
             >
@@ -2272,12 +2274,14 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       </div>
       {connected && !accountPending && showInlineDeposit && !((needsAccount || needsDeposit) && !walletHasTokens) && (
         <div className="mt-1.5" data-deposit-trigger>
-          {isDevnetV22Enabled() && needsAccount && !mockMode ? (
-            // SOL-2 (v2.2): no account yet — one approval creates it and deposits, no trade.
-            <FirstDepositCard slabAddress={slabAddress} walletBalance={walletAtaBalance ?? 0n} decimals={decimals} symbol={collateralSymbol} />
-          ) : (
-            <DepositWithdrawCard slabAddress={slabAddress} initialMode={inlineDepositMode} offerFaucet={fundOverWallet} />
-          )}
+          <DepositWithdrawCard slabAddress={slabAddress} initialMode={inlineDepositMode} offerFaucet={fundOverWallet} />
+        </div>
+      )}
+      {/* SOL-2 (v2.2): no account yet — one approval creates it and deposits, no trade. Own state, so the
+          "Get test funds" / inline deposit paths above are unchanged. */}
+      {isDevnetV22Enabled() && showFirstDeposit && connected && !accountPending && needsAccount && walletHasTokens && !mockMode && (
+        <div className="mt-1.5">
+          <FirstDepositCard slabAddress={slabAddress} walletBalance={walletAtaBalance ?? 0n} decimals={decimals} symbol={collateralSymbol} />
         </div>
       )}
 
