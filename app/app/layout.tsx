@@ -21,6 +21,7 @@ import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { Analytics } from "@vercel/analytics/next";
 import { GoogleAnalytics } from "@/components/analytics/GoogleAnalytics";
 import { CloudflareAnalytics } from "@/components/analytics/CloudflareAnalytics";
+import { SignGuardLine } from "@/components/v22/SignGuardLine";
 
 // Geist (sans), Inter Tight, Geist Mono, and Space Grotesk removed — they were
 // never rendered (fallback-only entries in globals.css's font stacks, sitting
@@ -148,6 +149,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </Providers>
         <GoogleAnalytics />
         <CloudflareAnalytics />
+        {/* v2.2 QA NB-2: debug line for a refused / declined signature request (renders nothing otherwise). */}
+        {isDevnetV22Enabled() && <SignGuardLine />}
         {/* v2.2 preview: Vercel Web Analytics is not enabled on that project, so its script path 404s (QA minor). */}
         {!isDevnetV22Enabled() && <Analytics />}
       </body>

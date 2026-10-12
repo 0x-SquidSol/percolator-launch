@@ -25,6 +25,10 @@ import _bs58 from "bs58";
 import { getConfig } from "@/lib/config";
 import { walletAdapterNetwork } from "@/lib/wallet-adapter-network";
 import { WalletApiContext, type WalletApi } from "@/hooks/walletApiContext";
+import { useConnectionCompat } from "@/hooks/useWalletCompat";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
+import { guardSign, noteBlockhash, SIGN_CHAIN_DEVNET } from "@/lib/v22/sign-guard";
+import { standardDevnetSigner } from "@/lib/v22/standard-sign";
 
 const bs58 = _bs58 as { decode(str: string): Uint8Array };
 
@@ -79,6 +83,20 @@ const AdapterWalletApiBridge: FC<{ children: ReactNode }> = ({ children }) => {
   } = useWallet();
 
   const cfg = getConfig();
+  const { connection: appConnection } = useConnectionCompat();
+
+  // v2.2 QA NB-2: every signature goes through guardSign (devnet genesis + blockhash origin, logged), and Wallet
+  // Standard wallets are told the chain. Flag off: guardSign is a pass-through and no chain signer is built.
+  const chainSigner = useMemo(
+    () => (isDevnetV22Enabled() ? standardDevnetSigner(wallet?.adapter, publicKey) : null),
+    [wallet, publicKey],
+  );
+  const guarded = useMemo(
+    () =>
+      <T,>(via: string, txs: Transaction[], sign: () => Promise<T>): Promise<T> =>
+        guardSign({ txs, via, connection: appConnection, chain: chainSigner ? SIGN_CHAIN_DEVNET : "none", wrapperProgramId: cfg.programId, sign }),
+    [appConnection, chainSigner, cfg.programId],
+  );
 
   const signTransaction = useMemo(() => {
     if (!adapterSignTx || !publicKey) return undefined;
@@ -88,13 +106,14 @@ const AdapterWalletApiBridge: FC<{ children: ReactNode }> = ({ children }) => {
         const conn = new Connection(cfg.rpcUrl, "confirmed");
         const { blockhash } = await conn.getLatestBlockhash("confirmed");
         tx.recentBlockhash = blockhash;
+        noteBlockhash(blockhash, "wallet bridge signTransaction (tx arrived without a blockhash)", conn);
       }
       if (!tx.feePayer) {
         tx.feePayer = publicKey;
       }
-      return adapterSignTx(tx);
+      return guarded("adapter signTransaction", [tx], async () => (chainSigner ? (await chainSigner([tx]))[0] : adapterSignTx(tx)));
     };
-  }, [adapterSignTx, publicKey, cfg.rpcUrl]);
+  }, [adapterSignTx, publicKey, cfg.rpcUrl, guarded, chainSigner]);
 
   const signAndSendTransaction = useMemo(() => {
     if (!adapterSignTx || !publicKey) return undefined;
@@ -103,15 +122,16 @@ const AdapterWalletApiBridge: FC<{ children: ReactNode }> = ({ children }) => {
       if (!tx.recentBlockhash) {
         const { blockhash } = await conn.getLatestBlockhash("confirmed");
         tx.recentBlockhash = blockhash;
+        noteBlockhash(blockhash, "wallet bridge signAndSendTransaction (tx arrived without a blockhash)", conn);
       }
       if (!tx.feePayer) {
         tx.feePayer = publicKey;
       }
-      const signed = await adapterSignTx(tx);
+      const signed = await guarded("adapter signAndSendTransaction", [tx], async () => (chainSigner ? (await chainSigner([tx]))[0] : adapterSignTx(tx)));
       const sig = await conn.sendRawTransaction(signed.serialize());
       return bs58.decode(sig);
     };
-  }, [adapterSignTx, publicKey, cfg.rpcUrl]);
+  }, [adapterSignTx, publicKey, cfg.rpcUrl, guarded, chainSigner]);
 
   /**
    * signAllTransactions: the market-launch batching fast path's primary sign
@@ -128,9 +148,9 @@ const AdapterWalletApiBridge: FC<{ children: ReactNode }> = ({ children }) => {
       for (const tx of txs) {
         if (!tx.feePayer) tx.feePayer = publicKey;
       }
-      return adapterSignAllTx(txs);
+      return guarded("adapter signAllTransactions", txs, () => (chainSigner ? chainSigner(txs) : adapterSignAllTx(txs)));
     };
-  }, [adapterSignAllTx, publicKey]);
+  }, [adapterSignAllTx, publicKey, guarded, chainSigner]);
 
   const api = useMemo<WalletApi>(
     () => ({

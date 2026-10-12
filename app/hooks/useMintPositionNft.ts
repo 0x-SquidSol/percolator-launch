@@ -20,6 +20,7 @@ import {
   encodeNftMint,
 } from "@percolatorct/sdk";
 import { parsePortfolio, isWrapperAccount } from "@/lib/v22/layout";
+import { noteBlockhash } from "@/lib/v22/sign-guard";
 
 export function useMintPositionNft(slabAddress: string) {
   const { publicKey: walletPubkey } = useWalletCompat();
@@ -182,6 +183,7 @@ export function useMintPositionNft(slabAddress: string) {
 
       const { blockhash } = await connection.getLatestBlockhash("confirmed");
       tx.recentBlockhash = blockhash;
+      noteBlockhash(blockhash, "useMintPositionNft", connection);
       tx.feePayer = walletPubkey;
 
       // LAUNCH-H3: Pre-send simulation — catch program errors before user signs.

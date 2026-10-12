@@ -19,6 +19,7 @@ import { V22_NAME_BY_CODE } from "../v22/wrapper-errors";
 import { v22StakeMessage, v22WrapperMessage } from "../v22/error-message";
 import { resolveDevnetProgramIds } from "../program-ids";
 import { isLongStale, PRICE_STALLED } from "./price-stall";
+import { WALLET_REQUEST_CLOSED_COPY } from "../wallet-request-copy";
 
 export type StatusVariant = "info" | "wait" | "paused" | "error";
 
@@ -278,6 +279,10 @@ function resolveUserMessageInner(err: unknown, ctx: MessageContext): UserMessage
   // v2.2: a builder and the wrapper's tail layout disagree (lib/v22/market-tails.ts); raised before the wallet prompt.
   if ((err as { name?: string } | null)?.name === "MarketTailMismatchError") {
     return m("market-tail", "paused", "Not available yet", "This action isn't available for this market yet. Nothing was sent.");
+  }
+  // v2.2 QA RT5-2: the wallet popup expired or was closed without a signature (lib/v22/sign-guard.ts).
+  if ((err as { name?: string } | null)?.name === "WalletRequestClosedError" || p.raw.includes(WALLET_REQUEST_CLOSED_COPY)) {
+    return m("wallet-request-closed", "info", "Try again", WALLET_REQUEST_CLOSED_COPY);
   }
   // v2.2 QA NB-2: the connection is not devnet (lib/v22/devnet-guard.ts); refused before any blockhash or prompt.
   if ((err as { name?: string } | null)?.name === "WrongClusterError") {

@@ -65,6 +65,7 @@ import { buildTradeIxs } from "@/lib/trade-ix";
 import { isPortfolioAccount } from "@/lib/portfolio-account";
 import { findOwnerPortfolio } from "@/lib/owner-portfolio";
 import { parsePortfolio, isWrapperAccount } from "@/lib/v22/layout";
+import { noteBlockhash } from "@/lib/v22/sign-guard";
 
 // ---------------------------------------------------------------------------
 // v17 portfolio account layout constants
@@ -670,6 +671,7 @@ export function useTrade(slabAddress: string) {
             connection.getLatestBlockhash("confirmed"),
             getPriorityFee(connection),
           ]);
+          noteBlockhash(blockhash, "useTrade leg groups (more legs than one tx)", connection);
           const sent = await sendLegGroups(
             {
               legs,

@@ -13,6 +13,7 @@ import {
 import { parsePerpHistory } from "@/lib/tv/data/perpProvider";
 import { parseUdf } from "@/lib/tv/data/candlesApiProvider";
 import type { PerpSeries } from "@/lib/chart/perp-types";
+import { v22HasNoIndexer } from "@/lib/v22/indexer";
 
 /** The hourly-history request for the series the user is looking at, so the 24h change shares the price's baseline. */
 export function hourlyHistoryUrl(slab: string, series: PerpSeries, nowSec: number): string {
@@ -57,6 +58,8 @@ export function usePerpHeaderStats(slab: string, price: number | null, series: P
       }
     };
     const loadHourly = async () => {
+      // v2.2 QA RT5-3: the "last" series is indexer candles, and the v2.2 preview has no indexer (lib/v22/indexer.ts).
+      if (series === "last" && v22HasNoIndexer()) return;
       const r = await get(hourlyHistoryUrl(slab, series, Math.floor(Date.now() / 1000)));
       if (!alive || !r?.body) return;
       try {

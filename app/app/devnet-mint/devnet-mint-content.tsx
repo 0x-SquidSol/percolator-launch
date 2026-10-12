@@ -31,6 +31,7 @@ import { LogoUpload } from "@/components/create/LogoUpload";
 import { usePrefersReducedMotion } from "@/hooks/usePrefersReducedMotion";
 import { getBatchRpc } from "@/lib/batchRpc";
 import { isValidBase58Pubkey } from "@/lib/createWizardUtils";
+import { noteBlockhash } from "@/lib/v22/sign-guard";
 
 /**
  * Use the server-side RPC proxy to avoid exposing HELIUS_API_KEY in the client bundle.
@@ -349,6 +350,7 @@ const DevnetMintContent: FC = () => {
       const { blockhash } = await connection.getLatestBlockhash("confirmed");
       tx.feePayer = publicKey;
       tx.recentBlockhash = blockhash;
+      noteBlockhash(blockhash, "devnet-mint page", connection);
       tx.partialSign(mintKeypair);
 
       setCreateStatus("Approve in your wallet...");
@@ -461,6 +463,7 @@ const DevnetMintContent: FC = () => {
       const { blockhash } = await connection.getLatestBlockhash("confirmed");
       tx.feePayer = publicKey;
       tx.recentBlockhash = blockhash;
+      noteBlockhash(blockhash, "devnet-mint page", connection);
 
       setMintMoreStatus("Approve in your wallet...");
       const signed = await signTransaction(tx);

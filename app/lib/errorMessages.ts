@@ -31,6 +31,7 @@ import { V22_ENGINE_LOCK_CODES } from "@/lib/v22/wrapper-errors";
 import { stakeProgramIdOrNull } from "@/lib/v22/program-ids";
 import { V21_ENGINE_LOCK_CODES } from "@/lib/v21/wrapper-errors";
 import { V22_CUSTOM9_GENERIC } from "@/lib/v22/trade-refusal-9-copy";
+import { WALLET_REQUEST_CLOSED_COPY } from "./wallet-request-copy";
 const LIGHTHOUSE_PROGRAM_ID_STR = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95";
 
 const LIGHTHOUSE_USER_MESSAGE =
@@ -402,6 +403,7 @@ export const NO_SOL_FOR_FEES_MESSAGE =
   "Your wallet needs a little devnet SOL to pay network fees. Use Get test funds (the faucet) to add some, then try again.";
 
 export function humanizeError(rawMsg: string, context?: "trade"): string {
+  if (rawMsg.includes(WALLET_REQUEST_CLOSED_COPY)) return WALLET_REQUEST_CLOSED_COPY; // v2.2 QA RT5-2: already the calm line
   if (rawMsg.includes("This action isn't available for this market yet. Nothing was sent.")) return rawMsg; // v2.2 tail mismatch: already the calm line
   // Log for debugging (only in browser)
   if (typeof window !== "undefined") {

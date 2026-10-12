@@ -24,6 +24,8 @@ import { PrivyLoginContext, PrivySessionHeadersContext, type PrivySessionHeaders
 import { WalletApiContext, type WalletApi } from "@/hooks/walletApiContext";
 import { usePreferredWallet, resolveActiveWallet } from "@/hooks/usePreferredWallet";
 import { getNetwork } from "@/lib/config";
+import { useConnectionCompat } from "@/hooks/useWalletCompat";
+import { guardSign } from "@/lib/v22/sign-guard";
 import { purgeLegacyPrivyState } from "@/lib/privy-legacy-purge";
 import { EmbeddedBatchSignError, embeddedBatchSignOptions, isPrivyEmbeddedStandardWallet, isWalletRejection } from "@/lib/privy-batch-sign";
 
@@ -344,20 +346,26 @@ const PrivyWalletApiBridge: FC<{ children: ReactNode }> = ({ children }) => {
     };
   }, [activeWallet, privySignMessage]);
 
-  const api = useMemo<WalletApi>(
-    () => ({
+  // v2.2 QA NB-2: the same pre-sign assertion + log as the wallet-adapter bridge (pass-through when the flag is off).
+  const { connection: appConnection } = useConnectionCompat();
+  const api = useMemo<WalletApi>(() => {
+    const chain = getNetwork() === "mainnet" ? "solana:mainnet" : "solana:devnet";
+    const guarded = <T,>(via: string, txs: Transaction[], sign: () => Promise<T>): Promise<T> =>
+      guardSign({ txs, via, connection: appConnection, chain, sign });
+    return {
       publicKey,
       connected,
       connecting: !ready,
       wallet: activeWallet,
-      signTransaction,
-      signAndSendTransaction,
+      signTransaction: signTransaction && ((tx: Transaction) => guarded("privy signTransaction", [tx], () => signTransaction(tx))),
+      signAndSendTransaction:
+        signAndSendTransaction && ((tx: Transaction) => guarded("privy signAndSendTransaction", [tx], () => signAndSendTransaction(tx))),
       signMessage,
-      signAllTransactions,
+      signAllTransactions:
+        signAllTransactions && ((txs: Transaction[]) => guarded("privy signAllTransactions", txs, () => signAllTransactions(txs))),
       disconnect: logout,
-    }),
-    [publicKey, connected, ready, activeWallet, signTransaction, signAndSendTransaction, signMessage, signAllTransactions, logout],
-  );
+    };
+  }, [publicKey, connected, ready, activeWallet, signTransaction, signAndSendTransaction, signMessage, signAllTransactions, logout, appConnection]);
 
   return <WalletApiContext.Provider value={api}>{children}</WalletApiContext.Provider>;
 };

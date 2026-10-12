@@ -12,6 +12,7 @@ import { useSlabState } from "@/components/providers/SlabProvider";
 import { useTokenMeta } from "@/hooks/useTokenMeta";
 import { pollWhenVisible } from "@/lib/pollWhenVisible";
 import { fillSideColor, fillSideLabel } from "@/lib/fill-side";
+import { v22HasNoIndexer } from "@/lib/v22/indexer";
 
 interface Trade {
   id: string;
@@ -67,6 +68,11 @@ export const TradeHistory: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       if (isStale()) return;
       tradesRef.current = mockTrades;
       setTrades(mockTrades);
+      setLoading(false);
+      return;
+    }
+    // v2.2 QA RT5-3: no indexer on the v2.2 preview (lib/v22/indexer.ts): nothing to ask for, show the empty state.
+    if (v22HasNoIndexer()) {
       setLoading(false);
       return;
     }

@@ -1,5 +1,6 @@
 import { Connection, PublicKey as PublicKeyCtor, Transaction, TransactionInstruction, ComputeBudgetProgram, SendTransactionError, SystemProgram, TransactionExpiredBlockheightExceededError, VersionedTransaction } from "@solana/web3.js";
 import { assertDevnetConnection } from "@/lib/v22/devnet-guard";
+import { noteBlockhash } from "@/lib/v22/sign-guard";
 import { MAX_TX_COMPUTE_UNITS, signedComputeUnitLimit, type CuSizing } from "@/lib/compute-budget";
 import bs58 from "bs58";
 import type { PublicKey, Signer } from "@solana/web3.js";
@@ -523,7 +524,7 @@ export function getClockDriftWarning(): string | null {
 const BLOCKHASH_FRESH_MS = 20_000;
 let cachedBlockhash: { blockhash: string; ts: number } | null = null;
 
-export async function getFreshBlockhash(connection: Connection, forceFresh = false): Promise<string> {
+export async function getFreshBlockhash(connection: Connection, forceFresh = false, path = "getFreshBlockhash"): Promise<string> {
   // v2.2 QA NB-2: never a blockhash from a non-devnet connection, and never a reused one (always fetched now).
   await assertDevnetConnection(connection);
   if (isDevnetV22Enabled()) forceFresh = true;
@@ -532,6 +533,7 @@ export async function getFreshBlockhash(connection: Connection, forceFresh = fal
   }
   const { blockhash } = await connection.getLatestBlockhash("confirmed");
   cachedBlockhash = { blockhash, ts: Date.now() };
+  noteBlockhash(blockhash, path, connection);
   return blockhash;
 }
 
@@ -855,7 +857,7 @@ export async function sendTx({
       // lookup below (both usually resolve instantly from their caches after
       // a prewarmTxLanding call; retries force a fresh blockhash since a
       // stale one is a plausible cause of the failure being retried).
-      const blockhashPromise = getFreshBlockhash(connection, attempt > 0);
+      const blockhashPromise = getFreshBlockhash(connection, attempt > 0, `sendTx attempt ${attempt + 1}${signers.length ? ` (+${signers.length} keypair signer)` : ""}`);
       if (selfHealOn) {
         if (attempt > 0) selfHealPromise = planHeal();
         const heal = await selfHealPromise;

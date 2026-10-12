@@ -23,6 +23,7 @@ import { plainMessage } from "@/lib/limits/user-message";
 import { useToast } from "@/hooks/useToast";
 import { broadcastSignedTx } from "@/lib/tx";
 import { PERCOLATOR_NFT_PROGRAM_ID } from "@/lib/nft-program";
+import { noteBlockhash } from "@/lib/v22/sign-guard";
 
 /**
  * Build the Token-2022 `TransferChecked` instruction byte-for-byte, using
@@ -318,6 +319,7 @@ export function useTransferPositionNft(slabAddress: string, override?: TransferN
         stage = "fetching blockhash";
         const { blockhash } = await connection.getLatestBlockhash("confirmed");
         tx.recentBlockhash = blockhash;
+        noteBlockhash(blockhash, "useTransferPositionNft", connection);
         tx.feePayer = walletPubkey;
 
         stage = "pre-flight simulation";
