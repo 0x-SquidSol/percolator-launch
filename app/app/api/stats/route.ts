@@ -27,6 +27,7 @@ import {
 import { getMultipleAccountsInfoChunked } from "@/lib/rpc-chunk";
 import type { Database } from "@/lib/database.types";
 import { parseMarketOI, isWrapperAccount } from "@/lib/v22/layout";
+import { isMissingColumnError } from "@/lib/supabase-missing-column";
 
 /** $1M ceiling — mirrors /api/markets sanitizePrice. */
 const MAX_SANE_PRICE_FOR_ACTIVE = 1_000_000;
@@ -462,7 +463,7 @@ export async function GET(request: NextRequest) {
         .eq("network", getServerNetwork())
         .limit(500);
 
-      if (fallback.error && fallback.error.message?.includes("network")) {
+      if (isMissingColumnError(fallback.error, "network")) {
         // Tier 3: network column also missing — fully unfiltered.
         // WARNING: Without network column, we cannot distinguish devnet from mainnet.
         // Return empty stats with a degraded flag rather than silently mixing networks.
@@ -474,7 +475,7 @@ export async function GET(request: NextRequest) {
       } else {
         statsData_raw = fallback.data as typeof statsData_raw;
       }
-    } else if (errMsg.includes("network")) {
+    } else if (isMissingColumnError(statsRes.error, "network")) {
       // Tier 2 (alt): network column missing — retry without network but keep indexer_excluded
       console.warn(
         "[/api/stats] PERC-8215: network column missing on markets_with_stats — " +
@@ -504,7 +505,7 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  if (tradersRes.error && tradersRes.error.message?.includes("network")) {
+  if (isMissingColumnError(tradersRes.error, "network")) {
     console.warn(
       "[/api/stats] PERC-8215: network column missing on trades — falling back to unfiltered query."
     );
