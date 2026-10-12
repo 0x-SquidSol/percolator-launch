@@ -62,7 +62,7 @@ describe.skipIf(!RPC)("LIVE L-1: open + close on lot markets through the app's b
       const closeOnly = process.env.LIVE_CLOSE_ONLY === "1";
       if (closeOnly) pf = await findV17Portfolio(conn, result.current.slab.programId as PublicKey, new PublicKey(m.slab), kp.publicKey);
       if (!closeOnly) await act(async () => {
-        const r = await result.current.ft.fundAndTrade({ size, depositAtoms: deposit, limitPriceE6: computeLimitPriceE6({ markE6, size }), amountLabel: "test" });
+        const r = await result.current.ft.fundAndTrade({ size, depositAtoms: deposit, limitPriceE6: computeLimitPriceE6({ markE6, size }), amountLabel: "test", ...(process.env.LIVE_WAIT_MS ? { maxWaitMs: Number(process.env.LIVE_WAIT_MS) } : {}) });
         pf = r.portfolio;
         LOG(`[${m.name}] OPEN ok sig=${r.signature} portfolio=${r.portfolio.toBase58()} created=${r.created} prompts=${r.prompts}`);
       });
