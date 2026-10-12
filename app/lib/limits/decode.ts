@@ -136,13 +136,25 @@ export interface AssetRiskLimits {
   allDefault: boolean;
 }
 
+/** v2.2 `AssetRiskLimitsV17::adl_max_episode_slots` (u32 at record byte 44) and its program maximum. */
+const RL_ADL_MAX_EPISODE_SLOTS = 44;
+const ADL_MAX_EPISODE_SLOTS = 9_000;
+
 /** P1 `AssetRiskLimitsV17`; null when too short or when `validate_asset_risk_limits` would refuse. */
 export function decodeAssetRiskLimits(d: Uint8Array, assetIndex = 0): AssetRiskLimits | null {
   const M = marketOffsetsOrNull(d, "decodeAssetRiskLimits");
   if (!M) return null;
   const b = M.wrapperOff(assetIndex) + C.ASSET_RISK_LIMITS_OFF;
   if (d.length < b + C.ASSET_RISK_LIMITS_LEN) return null;
-  if (d[b + C.RL_RESERVED0] !== 0 || !allZero(d, b + C.RL_RESERVED, C.RL_RESERVED_LEN)) return null;
+  if (d[b + C.RL_RESERVED0] !== 0) return null;
+  // v2.2 QA RT5-1: on v2.2 bytes [42, 64) are NOT reserved. [42, 44) is the Earn senior floor code (Phase 2b) and
+  // [44, 64) the ADL wind-down lane; the program (wrapper RC 6c078a0e `validate_asset_risk_limits`) only refuses a
+  // wind-down length over its maximum. Requiring zeros here made every market with Earn seniors read as "fee channel
+  // off", so trades signed base + 5 instead of base + the matcher maximum and the program refused them with 9.
+  const v22 = isDevnetV22Enabled();
+  if (v22) {
+    if (u32(d, b + RL_ADL_MAX_EPISODE_SLOTS) > ADL_MAX_EPISODE_SLOTS) return null;
+  } else if (!allZero(d, b + C.RL_RESERVED, C.RL_RESERVED_LEN)) return null;
   const r: AssetRiskLimits = {
     sideOiCapQ: u128(d, b + C.RL_SIDE_OI_CAP_Q),
     lpFloorAtoms: u128(d, b + C.RL_LP_FLOOR_ATOMS),
@@ -150,7 +162,7 @@ export function decodeAssetRiskLimits(d: Uint8Array, assetIndex = 0): AssetRiskL
     execBandBps: u16(d, b + C.RL_EXEC_BAND_BPS),
     matcherExtMode: d[b + C.RL_MATCHER_EXT_MODE],
     maxRequestedFeeBps: u16(d, b + C.RL_MAX_REQUESTED_FEE_BPS),
-    allDefault: allZero(d, b, C.ASSET_RISK_LIMITS_LEN),
+    allDefault: allZero(d, b, v22 ? C.RL_RESERVED : C.ASSET_RISK_LIMITS_LEN),
   };
   if (
     r.matcherExtMode > C.MATCHER_EXT_MODE_V1 ||
