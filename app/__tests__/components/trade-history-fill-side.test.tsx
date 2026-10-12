@@ -28,6 +28,11 @@ import { TradeHistoryTable } from "@/components/trade/TradeHistoryTable";
 import { TradeHistory as DashboardTradeHistory } from "@/components/dashboard/TradeHistory";
 import { TradeHistory as MarketTradeTape } from "@/components/trade/TradeHistory";
 import { TradeStatsPanel } from "@/components/trade/TradeStatsPanel";
+import { beforeEach as v22PinBefore, afterEach as v22PinAfter } from "vitest";
+import { __setDevnetV22ForTest as v22Pin } from "@/lib/v22/flag";
+// v2.2 flag pinned OFF: the v2.2 preview has no indexer and does not ask for the trade tape (v22-no-backend-requests-rt5.test.tsx).
+v22PinBefore(() => v22Pin(false));
+v22PinAfter(() => v22Pin(null));
 
 const row = (id: string, side: string | null, price: number) => ({
   id, slab_address: SLAB, trader: WALLET, side, size: "37993777298", price, fee: 0,

@@ -3,6 +3,11 @@ import { act, render, waitFor } from "@testing-library/react";
 import { useContext } from "react";
 import { Keypair } from "@solana/web3.js";
 import * as Sentry from "@sentry/nextjs";
+import { beforeEach as v22PinBefore, afterEach as v22PinAfter } from "vitest";
+import { __setDevnetV22ForTest as v22Pin } from "@/lib/v22/flag";
+// v2.2 flag pinned OFF: these cases pin the pre-v2.2 Privy signer behaviour; the v2.2 sign guard (extra RPC checks before a prompt) has its own tests in lib/v22/sign-guard-nb2.test.ts.
+v22PinBefore(() => v22Pin(false));
+v22PinAfter(() => v22Pin(null));
 
 // Mock Sentry so the GH#2594 diagnosability path can be asserted on.
 vi.mock("@sentry/nextjs", () => ({

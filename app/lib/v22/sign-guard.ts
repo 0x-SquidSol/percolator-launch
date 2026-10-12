@@ -68,14 +68,19 @@ const KNOWN: Record<string, string> = {
 
 /** "cb,cb,cb,w:10": the wrapper's instructions carry their tag, so the line names what was built. */
 export function txShape(tx: Pick<Transaction, "instructions">, wrapperProgramId?: string): string {
-  return tx.instructions
-    .map((ix) => {
-      const id = ix.programId.toBase58();
-      if (KNOWN[id]) return KNOWN[id];
-      const tag = ix.data.length > 0 ? ix.data[0] : -1;
-      return `${id === wrapperProgramId ? "w" : id.slice(0, 4)}:${tag}`;
-    })
-    .join(",");
+  // Instrumentation must never be the reason a signature fails: anything unexpected reads as "?".
+  try {
+    return (tx.instructions ?? [])
+      .map((ix) => {
+        const id = ix.programId.toBase58();
+        if (KNOWN[id]) return KNOWN[id];
+        const tag = ix.data.length > 0 ? ix.data[0] : -1;
+        return `${id === wrapperProgramId ? "w" : id.slice(0, 4)}:${tag}`;
+      })
+      .join(",");
+  } catch {
+    return "?";
+  }
 }
 
 export const signLog = (): readonly SignLogEntry[] => log;
@@ -155,12 +160,23 @@ export interface GuardSignParams<T> {
   wrapperProgramId?: string;
   sign: () => Promise<T>;
   now?: () => number;
+  rpcTimeoutMs?: number;
+}
+
+/** A guard RPC that does not answer in this time proves nothing and never holds up a signature. */
+export const GUARD_RPC_TIMEOUT_MS = 4_000;
+function within<T>(p: Promise<T>, ms: number): Promise<T | "timeout"> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => resolve("timeout"), ms);
+    p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+  });
 }
 
 /** Assert, log, then let the wallet sign. See the file header. */
 export async function guardSign<T>(p: GuardSignParams<T>): Promise<T> {
   if (!isDevnetV22Enabled()) return p.sign();
   const now = p.now ?? Date.now;
+  const timeoutMs = p.rpcTimeoutMs ?? GUARD_RPC_TIMEOUT_MS;
   const entries: SignLogEntry[] = [];
   let refused: SignLogEntry | null = null;
   for (let i = 0; i < p.txs.length; i++) {
@@ -179,17 +195,17 @@ export async function guardSign<T>(p: GuardSignParams<T>): Promise<T> {
       wallet: "pending",
     };
     try {
-      await assertDevnetConnection(origin?.connection ?? p.connection);
-      if (origin?.connection && origin.connection !== p.connection) await assertDevnetConnection(p.connection);
+      await within(assertDevnetConnection(origin?.connection ?? p.connection), timeoutMs);
+      if (origin?.connection && origin.connection !== p.connection) await within(assertDevnetConnection(p.connection), timeoutMs);
     } catch {
       e.verdict = "REFUSED-wrong-cluster";
     }
     if (e.verdict === "ok" && !origin) {
       // Not fetched through a tagged path: prove it on the devnet connection. An RPC failure proves nothing.
-      const known = await Promise.resolve()
-        .then(() => p.connection.isBlockhashValid(blockhash, { commitment: "processed" }))
-        .then((r) => r.value)
-        .catch(() => null);
+      const known = await within(
+        Promise.resolve().then(() => p.connection.isBlockhashValid(blockhash, { commitment: "processed" })).then((r) => r.value),
+        timeoutMs,
+      ).then((v) => (v === "timeout" ? null : v), () => null);
       e.verdict = known === false ? "REFUSED-blockhash-not-on-devnet" : "untagged-blockhash";
     } else if (e.verdict === "ok" && e.blockhashAgeMs !== null && e.blockhashAgeMs > STALE_BLOCKHASH_MS) {
       e.verdict = "stale-blockhash";

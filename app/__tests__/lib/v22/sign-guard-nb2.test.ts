@@ -124,6 +124,21 @@ describe("NB-2 sign guard", () => {
     ]);
   });
 
+  it("an RPC that never answers proves nothing and does not hold the signature up", async () => {
+    const hang = { getGenesisHash: () => new Promise<string>(() => {}), isBlockhashValid: () => new Promise<never>(() => {}) };
+    const sign = vi.fn(async () => "signed");
+    await expect(guardSign({ txs: [tradeTx()], via: "adapter signTransaction", connection: hang, chain: "solana:devnet", sign, rpcTimeoutMs: 20 })).resolves.toBe("signed");
+    expect(lastSignProblem()).toMatchObject({ verdict: "untagged-blockhash", wallet: "signed" });
+  });
+
+  it("a transaction object the guard cannot read still gets signed (instrumentation never breaks a signature)", async () => {
+    const c = conn(DEVNET_GENESIS_HASH);
+    noteBlockhash(BH, "sendTx attempt 1", c);
+    const odd = { recentBlockhash: BH } as unknown as Transaction;
+    await expect(guardSign({ txs: [odd], via: "x", connection: c, chain: "none", sign: async () => 1 })).resolves.toBe(1);
+    expect(txShape({ instructions: [{ programId: null, data: null }] } as never)).toBe("?");
+  });
+
   it("flag off: a pass-through (no RPC, no log)", async () => {
     __setDevnetV22ForTest(false);
     const c = conn(MAINNET_GENESIS, false);
