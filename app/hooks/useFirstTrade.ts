@@ -79,6 +79,11 @@ export interface FundAndTradeParams {
   amountLabel: string;
   /** The id race happened: the UI labels the extra prompt. */
   onRace?: () => void;
+  /**
+   * #49: called once the tx is broadcast and the app is waiting for confirmation (no wallet
+   * prompt is open any more). May be called repeatedly while it waits.
+   */
+  onConfirming?: () => void;
 }
 
 export interface FundAndTradeResult {
@@ -96,7 +101,10 @@ export function useFirstTrade(slabAddress: string) {
 
   const fundAndTrade = useCallback(
     async (p: FundAndTradeParams): Promise<FundAndTradeResult> => {
-      if (!wallet.publicKey || !mktConfig || !slabProgramId) throw new Error("Wallet not connected or market not loaded");
+      // Two errors, not one: the message resolver maps "Wallet not connected" to "Wallet locked", so the old
+      // combined string told a connected user to unlock their wallet while the market was still loading.
+      if (!wallet.publicKey) throw new Error("Wallet not connected");
+      if (!mktConfig || !slabProgramId) throw new Error("Market not loaded");
       assertKnownProgram(slabProgramId);
       const owner = wallet.publicKey;
       const programId = slabProgramId;
@@ -158,6 +166,7 @@ export function useFirstTrade(slabAddress: string) {
               wallet,
               instructions: buildFundAndTradeIxs(ixp(existing), { portfolioId: id.portfolioId, sequence: id.matcherSequence, positionEpoch: id.positionEpoch }),
               computeUnitsFromSim: { cap: FUND_AND_TRADE_CU_CAP },
+              onProgress: p.onConfirming,
             }),
           );
           await recordFill(signature, existing, beforeQ);
@@ -183,7 +192,7 @@ export function useFirstTrade(slabAddress: string) {
           ];
           try {
             const signature = await withPresignWait(() =>
-              sendTx({ connection, wallet, instructions: ixs, signers: [kp], computeUnitsFromSim: { cap: FIRST_TRADE_CU_CAP } }),
+              sendTx({ connection, wallet, instructions: ixs, signers: [kp], computeUnitsFromSim: { cap: FIRST_TRADE_CU_CAP }, onProgress: p.onConfirming }),
             );
             // A brand-new portfolio holds no position before this transaction.
             await recordFill(signature, kp.publicKey, 0n);
@@ -219,7 +228,9 @@ export function useFirstTrade(slabAddress: string) {
    */
   const createAndDeposit = useCallback(
     async (depositAtoms: bigint): Promise<{ signature: string; portfolio: PublicKey; created: boolean }> => {
-      if (!wallet.publicKey || !mktConfig || !slabProgramId) throw new Error("Wallet not connected or market not loaded");
+      // Same split as fundAndTrade above (#3366).
+      if (!wallet.publicKey) throw new Error("Wallet not connected");
+      if (!mktConfig || !slabProgramId) throw new Error("Market not loaded");
       if (depositAtoms <= 0n) throw new Error("Enter an amount to deposit.");
       assertKnownProgram(slabProgramId);
       const owner = wallet.publicKey;

@@ -34,6 +34,7 @@ import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
 import Link from "next/link";
 import { FeeBreakdown } from "@/components/FeeBreakdown";
 import { ConnectWalletCta } from "@/components/wallet/ConnectWalletCta";
+import { stakeErrorMessage } from "@/lib/earnErrors";
 
 /* ── Types ── */
 
@@ -48,7 +49,8 @@ interface StakePool {
   /** SPL mint for pool collateral (USDC). Used to query wallet ATA balance. */
   collateralMint?: string;
   tvl: number;
-  apr: number;
+  /** null = not tracked (the API has no fee history), never a real 0%. */
+  apr: number | null;
   capUsed: number;
   capTotal: number;
   cooldownSlots: number;
@@ -85,7 +87,7 @@ interface ApiPool {
   tvl: number;
   tvlRaw: string;
   poolValue: number;
-  apr: number;
+  apr: number | null;
   capTotal: number;
   capTotalRaw: string;
   capUsed: number;
@@ -303,9 +305,9 @@ function StakeHeader({
   const { connected } = useWalletCompat();
   const totalStaked = pools.reduce((s, p) => s + p.tvl, 0);
   const activePools = pools.length;
-  const avgApr = pools.length > 0
-    ? pools.reduce((s, p) => s + p.apr, 0) / pools.length
-    : 0;
+  // Over the pools that report one; null when none does (not tracked), shown as "—", not "0%".
+  const aprs = pools.map((p) => p.apr).filter((a): a is number => a !== null);
+  const avgApr = aprs.length > 0 ? aprs.reduce((s, a) => s + a, 0) / aprs.length : null;
 
   const yourDeposits =
     !connected
@@ -320,7 +322,7 @@ function StakeHeader({
     { label: "Total Staked", value: loading ? "…" : formatUsd(totalStaked) },
     { label: "Your Deposits", value: yourDeposits, muted: !connected || totalUserDeposited === null || (totalUserDeposited ?? 0) <= 0 },
     { label: "Active Pools", value: loading ? "…" : String(activePools) },
-    { label: "Avg APR", value: avgApr > 0 ? `${avgApr.toFixed(1)}%` : "0%", muted: avgApr <= 0 },
+    { label: "Avg APR", value: avgApr === null ? "—" : `${avgApr.toFixed(1)}%`, muted: avgApr === null || avgApr <= 0 },
   ];
 
   return (
@@ -421,7 +423,7 @@ function PositionCard({
       setTxStatus({ type: "success", msg: `Withdrawal confirmed: ${sig.slice(0, 8)}…` });
       onWithdrawSuccess?.();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = stakeErrorMessage(e); // #26: never raw chain text
       setTxStatus({ type: "error", msg });
     }
   }, [withdraw, position, onWithdrawSuccess]);
@@ -689,9 +691,12 @@ function DepositWidget({
   // now that selectedPool/mode are lifted to the parent (so PositionCard's
   // "Manage" button can jump here), a stale amount from a previous pool/tab
   // must not silently carry over into a different pool's deposit/withdraw.
+  // Same for the last result line: pool A's "Withdrawal confirmed" must not show under pool B (#63).
   useEffect(() => {
     setAmount("");
     setWithdrawAmount("");
+    setTxStatus(null);
+    setWithdrawTxStatus(null);
   }, [selectedPool, mode]);
 
   // Fetch real SPL token balance for the selected pool's collateral mint
@@ -790,7 +795,7 @@ function DepositWidget({
       setWithdrawRefreshKey((k) => k + 1);
       onTxSuccess?.();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = stakeErrorMessage(e); // #26: never raw chain text
       setTxStatus({ type: "error", msg });
     }
   }, [pool, amount, balanceDecimals, walletBalanceRaw, deposit, depositLoading, onTxSuccess]);
@@ -810,7 +815,7 @@ function DepositWidget({
       setWithdrawRefreshKey((k) => k + 1);
       onTxSuccess?.();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = stakeErrorMessage(e); // #26: never raw chain text
       setWithdrawTxStatus({ type: "error", msg });
     }
   }, [pool, withdrawPosition, withdrawAmount, withdraw, withdrawLoading, onTxSuccess]);
@@ -1238,10 +1243,11 @@ function PoolRow({
 
         {/* APR */}
         <span
-          className={`text-right text-[12px] tabular-nums ${pool.apr > 0 ? "text-[var(--cyan)]" : "text-[var(--text-muted)]"}`}
+          className={`text-right text-[12px] tabular-nums ${pool.apr !== null && pool.apr > 0 ? "text-[var(--cyan)]" : "text-[var(--text-muted)]"}`}
           style={{ fontFamily: "var(--font-mono)" }}
+          title={pool.apr === null ? "Not tracked yet" : undefined}
         >
-          {pool.apr > 0 ? `${pool.apr.toFixed(1)}%` : "0%"}
+          {pool.apr === null ? "—" : `${pool.apr.toFixed(1)}%`}
         </span>
       </button>
     </div>
@@ -1470,7 +1476,7 @@ function StakeSidebar() {
         <div className="mb-2 text-[10px] uppercase tracking-[0.15em] text-[var(--warning)]">⚠ Risk Notice</div>
         <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">
           Staked funds are first-loss insurance capital. Admin flushes permanently reduce your
-          redeemable value, and the fee income shown as APR depends on trading volume. Only stake
+          redeemable value, and any fee income depends on trading volume. Only stake
           what you can afford to lose.
         </p>
       </div>
@@ -1624,9 +1630,11 @@ export default function StakePage() {
   }, []);
   const retryPositions = useCallback(() => setPositionRefreshKey((k) => k + 1), []);
 
-  const selectPoolAndScroll = useCallback((poolId: string, mode: "deposit" | "withdraw") => {
+  // `mode` only when the caller means a tab (Manage → Withdraw). Picking a pool row keeps the tab the
+  // user is on: switching pools while on Withdraw used to flip the widget back to Deposit.
+  const selectPoolAndScroll = useCallback((poolId: string, mode?: "deposit" | "withdraw") => {
     setSelectedPool(poolId);
-    setWidgetMode(mode);
+    if (mode) setWidgetMode(mode);
     document.getElementById("deposit")?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, []);
 
@@ -1656,7 +1664,7 @@ export default function StakePage() {
                 positionsPending={positionsPending}
                 connected={connected}
                 selectedPool={selectedPool}
-                onSelect={(poolId) => selectPoolAndScroll(poolId, "deposit")}
+                onSelect={(poolId) => selectPoolAndScroll(poolId)}
                 loadError={poolsError}
                 onRetry={retryPools}
               />

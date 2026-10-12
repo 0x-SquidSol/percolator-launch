@@ -36,6 +36,7 @@
  */
 
 import { FC, memo, useState, useMemo, useCallback, useEffect, useRef } from "react";
+import { balanceKey, NO_BALANCE_KNOWN, resolveTokenBalance, type KnownBalance, type TokenRead } from "@/lib/token-balance";
 import { useWalletBalanceRefreshKey } from "@/lib/wallet-balance-invalidation";
 import { useWalletCompat, useConnectionCompat } from "@/hooks/useWalletCompat";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
@@ -311,6 +312,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const [onChainDecimals, setOnChainDecimals] = useState<number | null>(null);
   const decimals = onChainDecimals ?? tokenMeta?.decimals ?? 6;
   const [walletAtaBalance, setWalletAtaBalance] = useState<bigint | null>(null);
+  // Last successful wallet-balance read, keyed by owner+mint (lib/token-balance.ts): a failed
+  // read keeps it instead of turning a funded wallet into "empty".
+  const knownWalletRef = useRef<KnownBalance>(NO_BALANCE_KNOWN);
 
   const riskThreshold = params?.riskReductionThreshold ?? 0n;
   const vaultBalance = engine?.vault ?? 0n;
@@ -577,19 +581,37 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       return;
     }
     let cancelled = false;
-    (async () => {
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const mint = mktConfig.collateralMint;
+    const owner = publicKey;
+    const key = balanceKey(owner.toBase58(), mint.toBase58());
+    const ata = getAssociatedTokenAddressSync(mint, owner);
+    // A different wallet or mint: the previous token decimals do not apply until this account is read.
+    if (knownWalletRef.current.key !== key) setOnChainDecimals(null);
+    // A failed read is not a zero balance: keep the last known one for this wallet+mint and
+    // retry, instead of showing "Get Tokens to Trade" and Max 0 until something else re-runs
+    // this effect. A missing token account IS a real zero.
+    const RETRY_MS = [2_000, 5_000, 10_000];
+    const read = async (attempt: number) => {
+      let r: TokenRead;
       try {
-        const ata = getAssociatedTokenAddressSync(mktConfig.collateralMint, publicKey);
         const info = await connection.getTokenAccountBalance(ata);
-        if (!cancelled) {
-          if (info.value.decimals !== undefined) setOnChainDecimals(info.value.decimals);
-          if (info.value.amount) setWalletAtaBalance(BigInt(info.value.amount));
-        }
+        if (cancelled) return;
+        if (info.value.decimals !== undefined) setOnChainDecimals(info.value.decimals);
+        r = { ok: true, amount: BigInt(info.value.amount || "0") };
       } catch {
-        if (!cancelled) { setOnChainDecimals(null); setWalletAtaBalance(null); }
+        // getTokenAccountBalance throws for a missing account too; ask whether it exists.
+        const acct = await Promise.resolve().then(() => connection.getAccountInfo(ata)).catch(() => undefined);
+        if (cancelled) return;
+        r = acct === null ? { ok: true, absent: true } : { ok: false };
       }
-    })();
-    return () => { cancelled = true; };
+      const known = resolveTokenBalance(knownWalletRef.current, key, r);
+      knownWalletRef.current = known;
+      setWalletAtaBalance(known.amount);
+      if (!r.ok && attempt < RETRY_MS.length) retryTimer = setTimeout(() => void read(attempt + 1), RETRY_MS[attempt]);
+    };
+    void read(0);
+    return () => { cancelled = true; if (retryTimer) clearTimeout(retryTimer); };
     // BUG 10 fix: `capital` and `showInlineDeposit` are lastSig-style refresh
     // triggers (mirrors DepositWithdrawCard's own `lastSig` dependency on its
     // twin wallet-balance effect, DepositWithdrawCard.tsx:69) — without them this
@@ -867,16 +889,20 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // "Margin req." but actually showed capital -> capital-minus-margin (a
   // balance readout), so the actual requirement never appeared as a number
   // and the label lied about the row. The receipt now shows BOTH, on the
-  // same "available" basis as the account strip above (capital minus margin
-  // already locked by an open position) so the two readouts can't disagree:
+  // same "available" basis as the account strip above (displayAvailable: free
+  // in-market margin plus the wallet, #57), so its before-value matches the strip:
   //   Margin            — what THIS order reserves (the requirement)
   //   Available to trade — before -> after reserving it
-  const beforeAvailable = availableBalance;
-  const afterAvailable = vsPosition
-    ? vsPosition.afterAvailable
-    : beforeAvailable > marginNative
-      ? beforeAvailable - marginNative
-      : 0n;
+  // The order only changes the in-market part (a deposit moves wallet money in, it
+  // doesn't add any), so after = before + the in-market change, unclamped until the end.
+  // The after-value is an estimate: it takes the order's margin at the chosen leverage
+  // (the engine locks notional x IM) and leaves out the fee.
+  const inMarketAfter = vsPosition
+    ? vsPosition.afterAvailable - vsPosition.shortBy
+    : availableBalance - marginNative;
+  const beforeAvailable = displayAvailable;
+  const afterUnclamped = displayAvailable - availableBalance + inMarketAfter;
+  const afterAvailable = afterUnclamped > 0n ? afterUnclamped : 0n;
   // Slippage: distance between the mark and the worst acceptable fill
   // (same computeLimitPriceE6 useTrade itself uses to derive the on-chain
   // limit when the caller doesn't supply one explicitly).
@@ -1064,12 +1090,16 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
                 computeLimitPriceE6({ markE6: getLivePriceSnapshot(slabAddress).priceE6 ?? livePriceE6 ?? 0n, size }),
               ...(ticketLimits.fee?.channel.enabled ? { feeBps: ticketLimits.fee.signedFeeBps } : {}),
               amountLabel: fundLabel,
-              onRace: () => setRaceNote(true),
+              // The race re-opens the wallet, so the button goes back to "Confirm in wallet…".
+              onRace: () => { setRaceNote(true); setTradePhase("submitting"); },
+              onConfirming: () => setTradePhase("pending"),
             })
           ).signature
         : await withTransientRetry(
-        async () =>
-          trade(
+        async () => {
+          // A retry signs again: back to "Confirm in wallet…" until that one is broadcast too.
+          setTradePhase("submitting");
+          return trade(
             bindConfirmedLimitPrice(
               {
                 lpIdx,
@@ -1079,7 +1109,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
                 // the protocol enabled the channel for this asset — else the base fee as before.
                 ...(ticketLimits.fee?.channel.enabled ? { feeBps: ticketLimits.fee.signedFeeBps } : {}),
                 // UX WP-2: the app waits for the market (no prompt) instead of failing.
-                onWaiting: (w: boolean) => setTradePhase(w ? "waiting" : "submitting"),
+                // Only "waiting" steps back to "submitting": sendTxWaiting also calls onWaiting(false)
+                // after the send confirmed, which must not undo "Confirming…" (#49).
+                onWaiting: (w: boolean) => setTradePhase((p) => (w ? "waiting" : p === "waiting" ? "submitting" : p)),
                 // UX WP-3: it keeps waiting past ~30 s ("We'll keep trying") until Stop.
                 keepWaiting: true,
                 onWaitingLong: () => setWaitingLong(true),
@@ -1089,10 +1121,13 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
                 ...(isDevnetV22Enabled() ? { maxWaitMs: TRADE_WAIT_BUDGET_MS } : {}),
                 onRefreshingPositions: setRefreshingPositions,
                 abortSignal: waitAbort.signal,
+                // #49: signed and sent. "pending" is the ticket's "Confirming…" label.
+                onConfirming: () => setTradePhase("pending"),
               },
               snapshotLimitPriceE6,
             ),
-          ),
+          );
+        },
         { maxRetries: 2, delayMs: 3000 },
       );
       setWaitingLong(false);

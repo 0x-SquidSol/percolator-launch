@@ -17,6 +17,8 @@ export interface ConfirmedTradeParams {
   maxWaitMs?: number;
   /** Devnet v2.1: a Custom(121) order waits to be resent ("Refreshing positions…"). */
   onRefreshingPositions?: (refreshing: boolean) => void;
+  /** #49: broadcast, waiting for confirmation (useTrade -> sendTx onProgress). */
+  onConfirming?: () => void;
 }
 
 /**

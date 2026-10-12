@@ -337,13 +337,21 @@ export function useTrade(slabAddress: string) {
        * again ("Refreshing positions…"), false once it is done either way (lib/v21/loss-stale-retry.ts).
        */
       onRefreshingPositions?: (refreshing: boolean) => void;
+      /**
+       * #49: called once the tx is broadcast and the app is waiting for confirmation (no wallet
+       * prompt is open any more). May be called repeatedly while it waits.
+       */
+      onConfirming?: () => void;
     }) => {
       if (inflightRef.current) throw new Error("Trade already in progress");
       inflightRef.current = true;
       setLoading(true);
       setError(null);
       try {
-        if (!wallet.publicKey || !mktConfig || !slabProgramId) throw new Error("Wallet not connected or market not loaded");
+        // Two errors, not one: the message resolver maps "Wallet not connected" to "Wallet locked", so the old
+        // combined string told a connected user to unlock their wallet while the market was still loading.
+        if (!wallet.publicKey) throw new Error("Wallet not connected");
+        if (!mktConfig || !slabProgramId) throw new Error("Market not loaded");
         // Defense-in-depth: refuse to build a tx whose programId is not in
         // our deployed allowlist. See SlabProvider.parseSlab for the primary
         // gate.
@@ -674,7 +682,8 @@ export function useTrade(slabAddress: string) {
               buildTx: (ixs, computeUnits) =>
                 buildBatchTx({ instructions: ixs, computeUnits, priorityFeeMicroLamports: priorityFee, blockhash, feePayer: owner }),
               signAll: (txs) => signAllCompat(wallet, txs),
-              broadcast: (tx) => broadcastSignedTx(connection, tx),
+              // Every group is signed up front (one approval), so the first broadcast ends the prompts.
+              broadcast: (tx) => broadcastSignedTx(connection, tx, { onProgress: params.onConfirming }),
             },
           );
           sig = sent.signatures[sent.signatures.length - 1];
@@ -701,6 +710,7 @@ export function useTrade(slabAddress: string) {
             onWaitingLong: params.onWaitingLong,
             shouldWait: params.shouldWait,
             maxWaitMs: params.maxWaitMs,
+            onProgress: params.onConfirming,
             computeUnitsFromSim: { cap: tradeCuCap(legs.length) },
             // P0b: prepend ExpireBackingBucket / FinalizeResetSide only if this
             // trade/close would otherwise revert 19/21 on them (lib/self-heal.ts).
