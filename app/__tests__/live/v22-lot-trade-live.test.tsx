@@ -23,7 +23,7 @@ vi.mock("@/hooks/useWalletCompat", async (orig) => {
 import { WalletApiContext, type WalletApi } from "@/hooks/walletApiContext";
 import { SlabProvider, useSlabState } from "@/components/providers/SlabProvider";
 import { useFirstTrade } from "@/hooks/useFirstTrade";
-import { useTrade } from "@/hooks/useTrade";
+import { useTrade, findV17Portfolio } from "@/hooks/useTrade";
 import { seedFromOnChain } from "@/lib/priceStore/priceStore";
 import { computeLimitPriceE6 } from "@/lib/slippage";
 import { firstTradeDepositAtoms } from "@/lib/first-trade";
@@ -57,7 +57,9 @@ describe.skipIf(!RPC)("LIVE L-1: open + close on lot markets through the app's b
       const deposit = firstTradeDepositAtoms(notional + 3_000_000n, (notional * 140n) / 10_000n + 1n);
       LOG(`[${m.name}] lot_exp=${k} markE6/lot=${markE6} perTokenE6=${lotPriceToTokenE6(markE6, k)} lots=${m.lots} tokens=${m.lots * 10n ** BigInt(k)} notional=${notional} deposit=${deposit}`);
       let pf: PublicKey | null = null;
-      await act(async () => {
+      const closeOnly = process.env.LIVE_CLOSE_ONLY === "1";
+      if (closeOnly) pf = await findV17Portfolio(conn, result.current.slab.programId as PublicKey, new PublicKey(m.slab), kp.publicKey);
+      if (!closeOnly) await act(async () => {
         const r = await result.current.ft.fundAndTrade({ size, depositAtoms: deposit, limitPriceE6: computeLimitPriceE6({ markE6, size }), amountLabel: "test" });
         pf = r.portfolio;
         LOG(`[${m.name}] OPEN ok sig=${r.signature} portfolio=${r.portfolio.toBase58()} created=${r.created} prompts=${r.prompts}`);
@@ -67,12 +69,13 @@ describe.skipIf(!RPC)("LIVE L-1: open + close on lot markets through the app's b
       const open = await read();
       const leg = open.legs.find((l) => l.active);
       LOG(`[${m.name}] after open legs=${open.legs.filter((l) => l.active).length} basisPosQ=${leg?.basisPosQ} capital=${open.capital}`);
-      expect(leg?.basisPosQ).toBe(size);
+      if (!closeOnly) expect(leg?.basisPosQ).toBe(size);
+      const closeSize = -(leg?.basisPosQ ?? 0n);
       const info2 = await conn.getAccountInfo(new PublicKey(m.slab));
       const mark2 = BigInt(parseWrapperConfigV17(new Uint8Array(info2!.data), V17_HEADER_LEN).markEwmaE6);
       seedFromOnChain(m.slab, mark2);
       await act(async () => {
-        const sig = await result.current.tr.trade({ lpIdx: 0, userIdx: 0, size: -size, portfolioPk: pf!, limitPriceE6: computeLimitPriceE6({ markE6: mark2, size: -size }) });
+        const sig = await result.current.tr.trade({ lpIdx: 0, userIdx: 0, size: closeSize, portfolioPk: pf!, limitPriceE6: computeLimitPriceE6({ markE6: mark2, size: closeSize }) });
         LOG(`[${m.name}] CLOSE ok sig=${sig}`);
       });
       await new Promise((r) => setTimeout(r, 4000));

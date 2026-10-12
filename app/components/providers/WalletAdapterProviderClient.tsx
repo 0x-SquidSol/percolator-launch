@@ -23,6 +23,7 @@ import { Connection, Transaction } from "@solana/web3.js";
 // bs58 v6: default export is the codec object
 import _bs58 from "bs58";
 import { getConfig } from "@/lib/config";
+import { walletAdapterNetwork } from "@/lib/wallet-adapter-network";
 import { WalletApiContext, type WalletApi } from "@/hooks/walletApiContext";
 
 const bs58 = _bs58 as { decode(str: string): Uint8Array };
@@ -43,7 +44,9 @@ export const WalletAdapterProviderClient: FC<Props> = ({ children }) => {
       // adapter bridge. Phantom's legacy adapter is intentionally omitted — Phantom
       // is always Standard-compliant now and double-registering logs a console
       // warning ("Phantom was registered as a Standard Wallet…") on every load.
-      new SolflareWalletAdapter(),
+      // v2.2 QA NB-2: always name the deployment's network; without it the Solflare SDK assumes mainnet-beta and
+      // flags every devnet transaction as "for mainnet" (lib/wallet-adapter-network.ts).
+      new SolflareWalletAdapter({ network: walletAdapterNetwork(getConfig().network) }),
     ],
     [],
   );

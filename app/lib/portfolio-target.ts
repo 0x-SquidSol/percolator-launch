@@ -10,7 +10,7 @@
  * success and never a fallback scan.
  */
 import type { PublicKey } from "@solana/web3.js";
-import { parsePortfolioV17 } from "@percolatorct/sdk";
+import { parsePortfolio } from "@/lib/v22/layout";
 import { isLpPortfolio } from "@/lib/lpPortfolio";
 import { isPortfolioAccount } from "@/lib/portfolio-account";
 
@@ -51,9 +51,11 @@ export function verifyPortfolioTarget(
   if (!info.owner.equals(programId)) throw new PortfolioTargetError(TARGET_COPY.unmatched);
   const data = Buffer.from(info.data);
   if (!isPortfolioAccount(data) || isLpPortfolio(data)) throw new PortfolioTargetError(TARGET_COPY.unmatched);
-  let pf: ReturnType<typeof parsePortfolioV17>;
+  // v2.2 QA NB-1: decode by the account's own VERSION (lib/v22/layout parsePortfolio). The installed SDK's v2.1 parser
+  // misreads a 10,603-byte v2.2 portfolio, which refused every close / withdraw on v2.2 as "couldn't match".
+  let pf: ReturnType<typeof parsePortfolio>;
   try {
-    pf = parsePortfolioV17(data);
+    pf = parsePortfolio(data);
   } catch {
     throw new PortfolioTargetError(TARGET_COPY.unmatched);
   }

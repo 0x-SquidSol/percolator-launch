@@ -1,5 +1,6 @@
 import { Connection, PublicKey as PublicKeyCtor, Transaction, TransactionInstruction, ComputeBudgetProgram, SendTransactionError, SystemProgram, TransactionExpiredBlockheightExceededError, VersionedTransaction } from "@solana/web3.js";
-import { MAX_TX_COMPUTE_UNITS, sizeComputeUnitLimit, type CuSizing } from "@/lib/compute-budget";
+import { assertDevnetConnection } from "@/lib/v22/devnet-guard";
+import { MAX_TX_COMPUTE_UNITS, signedComputeUnitLimit, type CuSizing } from "@/lib/compute-budget";
 import bs58 from "bs58";
 import type { PublicKey, Signer } from "@solana/web3.js";
 import { getNetwork } from "@/lib/config";
@@ -523,6 +524,9 @@ const BLOCKHASH_FRESH_MS = 20_000;
 let cachedBlockhash: { blockhash: string; ts: number } | null = null;
 
 export async function getFreshBlockhash(connection: Connection, forceFresh = false): Promise<string> {
+  // v2.2 QA NB-2: never a blockhash from a non-devnet connection, and never a reused one (always fetched now).
+  await assertDevnetConnection(connection);
+  if (isDevnetV22Enabled()) forceFresh = true;
   if (!forceFresh && cachedBlockhash && Date.now() - cachedBlockhash.ts < BLOCKHASH_FRESH_MS) {
     return cachedBlockhash.blockhash;
   }
@@ -917,7 +921,7 @@ export async function sendTx({
         const g = await simulateForGate(connection, feePayer, healedInstructions);
         if (g.err && !skipPreflight) throw new SimulationRefusal(g.err, g.logs, g.simulated);
         gateGreen = !g.err && !g.rpcFailed;
-        healedComputeUnits = sizeComputeUnitLimit(g.consumed, computeUnitsFromSim);
+        healedComputeUnits = signedComputeUnitLimit(g.consumed, computeUnitsFromSim);
         onComputeUnits?.({ limit: healedComputeUnits, consumed: g.consumed });
       }
 
@@ -1486,9 +1490,14 @@ export async function sendTxWaiting(
      * is pushing: lib/limits/price-stall.ts), instead of being re-simulated forever.
      */
     shouldWait?: (e: SimulationRefusal) => boolean;
+    /**
+     * v2.2 QA Q-7: total wait budget. A waitable refusal that has not cleared after this long is thrown as
+     * WaitExhaustedError (the last refusal is its `cause`) instead of being re-simulated forever. Omitted = unbounded.
+     */
+    maxWaitMs?: number;
   },
 ): Promise<string> {
-  const { onWaiting, waitDelaysMs = WAIT_DELAYS_MS, keepWaiting = false, onWaitingLong, longWaitMs = 30_000, shouldWait, ...rest } = params;
+  const { onWaiting, waitDelaysMs = WAIT_DELAYS_MS, keepWaiting = false, onWaitingLong, longWaitMs = 30_000, shouldWait, maxWaitMs, ...rest } = params;
   let waited = 0;
   let saidLong = false;
   for (let i = 0; ; i++) {
@@ -1501,6 +1510,10 @@ export async function sendTxWaiting(
         if (i > 0) onWaiting?.(false);
         if (rest.abortSignal?.aborted && isWaitableRefusal(e)) throw new WaitStoppedError();
         throw e;
+      }
+      if (waitBudgetSpent(waited, maxWaitMs)) {
+        onWaiting?.(false);
+        throw new WaitExhaustedError(e);
       }
       onWaiting?.(true);
       const delay = waitDelaysMs[Math.min(i, waitDelaysMs.length - 1)];
@@ -1515,6 +1528,19 @@ export async function sendTxWaiting(
         throw new WaitStoppedError();
       }
     }
+  }
+}
+
+/** True once the wait loop has used its budget (undefined budget = never). */
+export function waitBudgetSpent(waitedMs: number, maxWaitMs: number | undefined): boolean {
+  return maxWaitMs !== undefined && waitedMs >= maxWaitMs;
+}
+
+/** The bounded wait ended without the market clearing the refusal: nothing was sent. `cause` = the last refusal. */
+export class WaitExhaustedError extends Error {
+  constructor(cause: unknown) {
+    super("Stopped waiting for the market after the time limit; nothing was sent.", { cause });
+    this.name = "WaitExhaustedError";
   }
 }
 

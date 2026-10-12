@@ -13,6 +13,9 @@ import type { SimulationRefusal } from "@/lib/tx";
 /** A keeper pushes every few seconds; five minutes without a new mark means nobody is pushing this market. */
 export const LONG_STALE_SECS = 300;
 
+/** v2.2 QA Q-7: how long the ticket keeps re-simulating a waitable refusal before giving up with a clear line. */
+export const TRADE_WAIT_BUDGET_MS = 120_000;
+
 export function isLongStale(priceAgeSecs: number | null | undefined): boolean {
   return typeof priceAgeSecs === "number" && Number.isFinite(priceAgeSecs) && priceAgeSecs >= LONG_STALE_SECS;
 }

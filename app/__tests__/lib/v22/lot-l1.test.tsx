@@ -8,6 +8,8 @@
  *  - trade-stats-panel: TradeStatsPanel withholds volume on v2.2 until a lot-aware indexer is attested.
  */
 import { afterEach, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { render, screen } from "@testing-library/react";
 import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import { formatLotPriceE6, tokenQToQ, lotPriceToTokenE6, tokenPriceToLotE6, tokenUsdOfLotUsd, POS_SCALE_V22 } from "@/lib/v22/lot";
@@ -38,6 +40,20 @@ describe("keeper-mark-scaling: keeper pushes price x 10^lot_exp (live 2026-10-11
     expect(q).toBe(10n * POS_SCALE_V22);
     expect(remainderTokenQ).toBe(0n);
     expect(formatLotPriceE6(11_960_000n, 4)).toBe(formatLotPriceE6(1_196n, 0));
+  });
+});
+
+describe("order ticket: the OPEN summary's entry and worst-fill price are per TOKEN (L-1 browser check)", () => {
+  it("OrderTicket formats estEntry and the slippage bound through formatLotPriceE6, never the raw per-lot formatter", () => {
+    const s = readFileSync(path.join(__dirname, "../../../components/trade/OrderTicket.tsx"), "utf8");
+    expect(s).toContain('<SummaryCell label="Entry" value={formatLotPriceE6(estEntry, lotExp)} />');
+    expect(s).toContain("formatLotPriceE6(slippageBoundE6, lotExp)");
+    expect(s).not.toMatch(/formatUsdPriceE6\(/);
+  });
+  it("CHILLHOUSE per-lot entry $11.8956 shows per token", () => {
+    expect(formatLotPriceE6(11_895_580n, 4)).toBe("$0.00119");
+    expect(formatLotPriceE6(11_895_580n, 4)).not.toMatch(/11\.89/);
+    expect(formatLotPriceE6(11_895_580n, 0)).toBe("$11.895580");
   });
 });
 
