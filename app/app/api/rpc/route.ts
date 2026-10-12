@@ -192,6 +192,8 @@ const ALLOWED_RPC_METHODS = new Set([
   // Health & cluster
   "getHealth",
   "getVersion",
+  // v2.2 QA NB-2: the client proves the cluster once per session before it builds a transaction (lib/v22/devnet-guard.ts).
+  "getGenesisHash",
   "getSlot",
   "getBlockHeight",
   "getEpochInfo",
@@ -232,6 +234,7 @@ const MAX_BATCH_SIZE = 40;
 const CACHEABLE_METHODS: Record<string, number> = {
   getHealth: 5_000,
   getVersion: 60_000,
+  getGenesisHash: 3_600_000,
   getSlot: 2_000,
   getBlockHeight: 2_000,
   getEpochInfo: 10_000,

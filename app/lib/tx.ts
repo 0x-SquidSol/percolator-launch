@@ -1,4 +1,5 @@
 import { Connection, PublicKey as PublicKeyCtor, Transaction, TransactionInstruction, ComputeBudgetProgram, SendTransactionError, SystemProgram, TransactionExpiredBlockheightExceededError, VersionedTransaction } from "@solana/web3.js";
+import { assertDevnetConnection } from "@/lib/v22/devnet-guard";
 import { MAX_TX_COMPUTE_UNITS, signedComputeUnitLimit, type CuSizing } from "@/lib/compute-budget";
 import bs58 from "bs58";
 import type { PublicKey, Signer } from "@solana/web3.js";
@@ -523,6 +524,9 @@ const BLOCKHASH_FRESH_MS = 20_000;
 let cachedBlockhash: { blockhash: string; ts: number } | null = null;
 
 export async function getFreshBlockhash(connection: Connection, forceFresh = false): Promise<string> {
+  // v2.2 QA NB-2: never a blockhash from a non-devnet connection, and never a reused one (always fetched now).
+  await assertDevnetConnection(connection);
+  if (isDevnetV22Enabled()) forceFresh = true;
   if (!forceFresh && cachedBlockhash && Date.now() - cachedBlockhash.ts < BLOCKHASH_FRESH_MS) {
     return cachedBlockhash.blockhash;
   }

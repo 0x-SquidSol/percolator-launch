@@ -279,6 +279,10 @@ function resolveUserMessageInner(err: unknown, ctx: MessageContext): UserMessage
   if ((err as { name?: string } | null)?.name === "MarketTailMismatchError") {
     return m("market-tail", "paused", "Not available yet", "This action isn't available for this market yet. Nothing was sent.");
   }
+  // v2.2 QA NB-2: the connection is not devnet (lib/v22/devnet-guard.ts); refused before any blockhash or prompt.
+  if ((err as { name?: string } | null)?.name === "WrongClusterError") {
+    return m("wrong-cluster", "error", "Wrong network", (err as Error).message, { action: { id: "refresh", label: "Refresh" } });
+  }
   // UX WP-3: the user pressed Stop on a long wait (lib/tx.ts WaitStoppedError): nothing was sent.
   if ((err as { name?: string } | null)?.name === "WaitStoppedError") {
     return m("stopped", "info", "Stopped", "Stopped. Nothing was sent.", { quiet: true });
