@@ -5,6 +5,7 @@ import { getClientIp } from "@/lib/get-client-ip";
 import { createUpstashRateLimiter } from "@/lib/upstash-rate-limit";
 import { hasIndexerDb, queryTraderTradesPage } from "@/lib/indexer-db";
 import { getRetiredSlabs } from "@/lib/retired-slabs";
+import { isMissingColumnError } from "@/lib/supabase-missing-column";
 
 /**
  * GET /api/trader/:wallet/trades?limit=20&offset=0&slab=<optional>
@@ -140,7 +141,7 @@ export async function GET(
 
     let { data, error, count } = await query;
 
-    if (error && error.message?.includes("network")) {
+    if (isMissingColumnError(error, "network")) {
       let fallbackQuery = supabase
         .from("trades")
         .select("id, slab_address, trader, side, size, price, fee, tx_signature, created_at", { count: "exact" })

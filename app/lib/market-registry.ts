@@ -3,6 +3,7 @@ import { getServiceClient, getServerNetwork } from "@/lib/supabase";
 import { readLiveMarketStateResolutions } from "@/lib/live-market-state";
 import { BLOCKED_SLAB_ADDRESSES } from "@/lib/blocklist";
 import { getConfig } from "@/lib/config";
+import { isMissingColumnError } from "@/lib/supabase-missing-column";
 
 /**
  * The one place market rows are loaded.
@@ -76,7 +77,7 @@ async function fetchRegistryRows(
   }
 
   // Fallback 2: network column also missing (migration 20260329180000 not applied).
-  if (error && error.message?.includes("network")) {
+  if (isMissingColumnError(error, "network")) {
     Sentry.captureMessage(
       "PERC-8215: network column missing — apply migration 20260329180000. Falling back to unfiltered query.",
       {
