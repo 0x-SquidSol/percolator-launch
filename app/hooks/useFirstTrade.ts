@@ -43,7 +43,7 @@ import { measureFill, recordFillResult } from "@/lib/limits/fill-check";
 import { signedPositionForAsset } from "@/lib/limits/decode";
 import { readU64LE } from "@/lib/u64le";
 import { WRAPPER_ERR } from "@/lib/wrapper-errors";
-import { fetchTradeFeeBps } from "@/lib/limits/trade-fee-resolve";
+import { fetchTradeFeeBps, sendWithUtilFeeRetry } from "@/lib/limits/trade-fee-resolve";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { marketAssetSlots } from "@/lib/v22/trade-refresh";
 import { planTradeRefresh, sendWithRefreshRetry } from "@/lib/v22/trade-refresh-wire";
@@ -140,9 +140,13 @@ export function useFirstTrade(slabAddress: string) {
         const lpId = await fetchPortfolioIdentity(connection, lp.accountB);
         // Q-1 (v2.2 QA): sign the SDK rule (base + worst-case matcher fee + 5, capped at the market
         // maximum; lib/limits/trade-fee-resolve.ts), else Custom 9 on the first fill. Flag off: unchanged.
-        const feeBps = isDevnetV22Enabled()
+        let feeBps = isDevnetV22Enabled()
           ? await fetchTradeFeeBps(connection, market, lp.matcherCtx, { fallback: p.feeBps ?? wrapperConfigV17?.tradeFeeBps })
           : p.feeBps;
+        // v2.2 QA U-2: on a 98 the body is rebuilt ONCE with the cap that covers the utilisation fee (sendWithUtilFeeRetry).
+        const raiseFee = async (): Promise<void> => {
+          feeBps = await fetchTradeFeeBps(connection, market, lp.matcherCtx, { fallback: feeBps, withUtilMax: true });
+        };
         const ixp = (portfolio: PublicKey): FirstTradeIxParams => ({
           programId, owner, market, portfolio, userAta, vaultTokenAta, depositAtoms: p.depositAtoms,
           lp, lpId, marketId, size: p.size, limitPriceE6: p.limitPriceE6, feeBps, marketTradeFeeBps: wrapperConfigV17?.tradeFeeBps,
@@ -191,7 +195,10 @@ export function useFirstTrade(slabAddress: string) {
           const beforeInfo = await connection.getAccountInfo(existing, "confirmed").catch(() => null);
           const beforeQ = beforeInfo ? signedPositionForAsset(new Uint8Array(beforeInfo.data), 0, marketId) : null;
           const signature = await withPresignWait(() =>
-            sendRefreshed(buildFundAndTradeIxs(ixp(existing), { portfolioId: id.portfolioId, sequence: id.matcherSequence, positionEpoch: id.positionEpoch }), existing, { cap: FUND_AND_TRADE_CU_CAP }),
+            sendWithUtilFeeRetry(async (raised) => {
+              if (raised) await raiseFee();
+              return sendRefreshed(buildFundAndTradeIxs(ixp(existing), { portfolioId: id.portfolioId, sequence: id.matcherSequence, positionEpoch: id.positionEpoch }), existing, { cap: FUND_AND_TRADE_CU_CAP });
+            }),
           );
           await recordFill(signature, existing, beforeQ);
           invalidatePortfolio();
@@ -210,12 +217,17 @@ export function useFirstTrade(slabAddress: string) {
           const next = marketInfo ? readNextPortfolioId(new Uint8Array(marketInfo.data)) : null;
           if (next === null) throw new Error("Market not loaded");
           const kp = Keypair.generate();
-          const ixs: TransactionInstruction[] = [
+          const buildIxs = (): TransactionInstruction[] => [
             ...buildFirstTradeInitIxs({ programId, owner, market, portfolio: kp.publicKey }, rent),
             ...buildFundAndTradeIxs(ixp(kp.publicKey), { portfolioId: predictPortfolioId(next), sequence: 0n, positionEpoch: 0n }),
           ];
           try {
-            const signature = await withPresignWait(() => sendRefreshed(ixs, null, { signers: [kp], cap: FIRST_TRADE_CU_CAP }));
+            const signature = await withPresignWait(() =>
+              sendWithUtilFeeRetry(async (raised) => {
+                if (raised) await raiseFee();
+                return sendRefreshed(buildIxs(), null, { signers: [kp], cap: FIRST_TRADE_CU_CAP });
+              }),
+            );
             // A brand-new portfolio holds no position before this transaction.
             await recordFill(signature, kp.publicKey, 0n);
             invalidatePortfolio();

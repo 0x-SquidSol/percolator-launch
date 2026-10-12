@@ -47,7 +47,7 @@ import { decodeMarketEngineView, signedPositionForAsset } from "@/lib/limits/dec
 import { measureFill, recordFillResult } from "@/lib/limits/fill-check";
 import { measurePositionChange, readBeforeTrade, recordPositionChange } from "@/lib/position-change";
 import { tradeFeeBpsToSign } from "@/lib/limits/fee-channel";
-import { fetchTradeFeeBps } from "@/lib/limits/trade-fee-resolve";
+import { fetchTradeFeeBps, sendWithUtilFeeRetry } from "@/lib/limits/trade-fee-resolve";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { marketAssetSlots } from "@/lib/v22/trade-refresh";
 import { planTradeRefresh, sendWithRefreshRetry } from "@/lib/v22/trade-refresh-wire";
@@ -735,7 +735,17 @@ export function useTrade(slabAddress: string) {
             ? { programId, market: slabPk, marketData: raw, cranker: wallet.publicKey, takerPortfolio: accountA, lpPortfolio: accountB, body: instructions }
             : null;
           const multiAsset = v22Refresh !== null && (marketAssetSlots(raw as Uint8Array) ?? 1) > 1;
-          const sendOrder = async (): Promise<string> => {
+          // v2.2 QA U-2: a 98 (the signed cap does not cover the busy-side utilisation fee) is rebuilt ONCE with the cap
+          // that covers it and sent again inside this action; before, "Try again" re-signed the same cap forever.
+          let instructions0 = instructions;
+          const withRaisedFee = async (): Promise<void> => {
+            const raised = await fetchTradeFeeBps(connection, slabPk, matcherCtx, { fallback: signedFeeBps, withUtilMax: true });
+            const rebuilt = buildTradeIxs({ ...tradeIxParams, feeBps: raised });
+            instructions0 = instructions.map((ix) => { const k = tradeIxs.indexOf(ix); return k >= 0 ? rebuilt[k] : ix; });
+            if (v22Refresh) v22Refresh.body = instructions0;
+          };
+          const sendOrderOnce = async (): Promise<string> => {
+            const instructions = instructions0;
             try {
               if (v22Refresh && multiAsset) {
                 return await sendWithRefreshRetry(async () => {
@@ -765,6 +775,10 @@ export function useTrade(slabAddress: string) {
               throw e;
             }
           };
+          const sendOrder = (): Promise<string> =>
+            isV17Market && isDevnetV22Enabled()
+              ? sendWithUtilFeeRetry(async (raised) => { if (raised) await withRaisedFee(); return sendOrderOnce(); })
+              : sendOrderOnce();
           // Devnet v2.1: the order goes ALONE (no push / crank / refresh prefix): TradeCpi accrues
           // the market itself. A Custom(121) EngineLossStale (insurance does not yet cover the
           // stale portfolios' hidden-loss bound; the keeper's sweep shrinks it) is retried a few
