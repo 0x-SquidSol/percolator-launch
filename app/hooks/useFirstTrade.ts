@@ -48,6 +48,7 @@ import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { marketAssetSlots } from "@/lib/v22/trade-refresh";
 import { planTradeRefresh, sendWithRefreshRetry } from "@/lib/v22/trade-refresh-wire";
 import { isLossStaleError } from "@/lib/v21/loss-stale-retry";
+import { presignWait } from "@/lib/first-trade-wait";
 
 /** CU cap for [deposit, trade]: the trade's cap + the deposit. */
 const FUND_AND_TRADE_CU_CAP = tradeCuCap(1) + 60_000;
@@ -87,6 +88,15 @@ export interface FundAndTradeParams {
    * prompt is open any more). May be called repeatedly while it waits.
    */
   onConfirming?: () => void;
+  /**
+   * v2.2 QA RT5b: wait through a pre-sign 19 / 21 like the plain trade path (lib/first-trade-wait.ts). Without
+   * `maxWaitMs` nothing changes (three quick re-checks).
+   */
+  maxWaitMs?: number;
+  shouldWait?: (e: SimulationRefusal) => boolean;
+  onWaiting?: (waiting: boolean) => void;
+  onWaitingLong?: () => void;
+  abortSignal?: AbortSignal;
 }
 
 export interface FundAndTradeResult {
@@ -113,17 +123,19 @@ export function useFirstTrade(slabAddress: string) {
       const programId = slabProgramId;
       const market = new PublicKey(slabAddress);
       /** Re-run `send` while its pre-sign simulation is refused 19/21 (the wallet never opened). */
-      const withPresignWait = async <T,>(send: () => Promise<T>): Promise<T> => {
-        for (let attempt = 0; ; attempt++) {
-          try {
-            return await send();
-          } catch (e) {
-            if (attempt >= PRESIGN_WAIT_ATTEMPTS || !isPresignWaitable(e, programId)) throw e;
-            console.info(`[first-trade] pre-sign ${(e as SimulationRefusal).code}: market mid-update, re-checking (${attempt + 1}/${PRESIGN_WAIT_ATTEMPTS})`);
-            await new Promise((r) => setTimeout(r, PRESIGN_WAIT_MS));
-          }
-        }
-      };
+      // v2.2 QA RT5b: with a wait budget (the ticket passes one on v2.2) this waits like the plain trade path.
+      const withPresignWait = <T,>(send: () => Promise<T>): Promise<T> =>
+        presignWait(send, {
+          waitable: (e) => isPresignWaitable(e, programId),
+          legacyAttempts: PRESIGN_WAIT_ATTEMPTS,
+          legacyDelayMs: PRESIGN_WAIT_MS,
+          maxWaitMs: p.maxWaitMs,
+          shouldWait: p.shouldWait,
+          onWaiting: p.onWaiting,
+          onWaitingLong: p.onWaitingLong,
+          abortSignal: p.abortSignal,
+          onRecheck: (e, n) => console.info(`[first-trade] pre-sign ${(e as SimulationRefusal).code}: market mid-update, re-checking (${n}${p.maxWaitMs === undefined ? `/${PRESIGN_WAIT_ATTEMPTS}` : ""})`),
+        });
       setLoading(true);
       try {
         const userAta = await getAta(owner, mktConfig.collateralMint);

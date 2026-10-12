@@ -1093,6 +1093,16 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
               // The race re-opens the wallet, so the button goes back to "Confirm in wallet…".
               onRace: () => { setRaceNote(true); setTradePhase("submitting"); },
               onConfirming: () => setTradePhase("pending"),
+              // v2.2 QA RT5b: the same waiting as the plain trade below (was three re-checks in 4.5 s, then a failure).
+              ...(isDevnetV22Enabled()
+                ? {
+                    maxWaitMs: TRADE_WAIT_BUDGET_MS,
+                    shouldWait: waitPolicy(() => stallRef.current),
+                    onWaiting: (w: boolean) => setTradePhase((ph) => (w ? "waiting" : ph === "waiting" ? "submitting" : ph)),
+                    onWaitingLong: () => setWaitingLong(true),
+                    abortSignal: waitAbort.signal,
+                  }
+                : {}),
             })
           ).signature
         : await withTransientRetry(

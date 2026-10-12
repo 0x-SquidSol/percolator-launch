@@ -26,7 +26,7 @@ export const STALE_BLOCKHASH_MS = 30_000;
 const ORIGIN_TTL_MS = 180_000;
 const LOG_MAX = 50;
 
-type GuardConnection = Pick<Connection, "getGenesisHash" | "isBlockhashValid">;
+type GuardConnection = Pick<Connection, "getGenesisHash" | "isBlockhashValid"> & Partial<Pick<Connection, "getMultipleAccountsInfo">>;
 interface Origin { path: string; ts: number; connection: GuardConnection | null }
 
 export type SignVerdict = "ok" | "stale-blockhash" | "untagged-blockhash" | "REFUSED-wrong-cluster" | "REFUSED-blockhash-not-on-devnet";
@@ -42,6 +42,12 @@ export interface SignLogEntry {
   shape: string;
   chain: string;
   verdict: SignVerdict;
+  /**
+   * RT5b: accounts of this transaction that do not exist on the devnet connection ("w:" writable, "r:" read-only), or
+   * null when not checked. A PDA signer or an account the transaction creates is absent legitimately, so this is
+   * recorded for diagnosis (it is in the debug line), never a reason to refuse.
+   */
+  absentOnDevnet: string[] | null;
   /** What the wallet did with it. */
   wallet: "pending" | "signed" | "declined" | "not-asked";
   walletError?: string;
@@ -102,7 +108,8 @@ export function __resetSignGuardForTest(): void {
 
 export function formatSignEntry(e: SignLogEntry): string {
   const age = e.blockhashAgeMs === null ? "unknown" : `${(e.blockhashAgeMs / 1000).toFixed(1)}s`;
-  return `${e.verdict} | wallet ${e.wallet} | built by ${e.path} | ${e.via} | tx ${e.shape} | blockhash ${e.blockhash.slice(0, 8)} age ${age} | chain ${e.chain} | ${e.at}`;
+  const absent = e.absentOnDevnet === null ? "accounts not checked" : e.absentOnDevnet.length === 0 ? "all accounts on devnet" : `not on devnet: ${e.absentOnDevnet.join(" ")}`;
+  return `${e.verdict} | wallet ${e.wallet} | built by ${e.path} | ${e.via} | tx ${e.shape} | blockhash ${e.blockhash.slice(0, 8)} age ${age} | chain ${e.chain} | ${absent} | ${e.at}`;
 }
 
 function record(e: SignLogEntry): void {
@@ -172,6 +179,29 @@ function within<T>(p: Promise<T>, ms: number): Promise<T | "timeout"> {
   });
 }
 
+/** Every account key of the transaction that the devnet connection does not have. null = could not check. */
+async function absentAccounts(tx: Transaction, connection: GuardConnection, timeoutMs: number): Promise<string[] | null> {
+  try {
+    if (typeof connection.getMultipleAccountsInfo !== "function") return null;
+    const writable = new Map<string, boolean>();
+    const keys = new Map<string, import("@solana/web3.js").PublicKey>();
+    for (const ix of tx.instructions ?? []) {
+      for (const k of ix.keys) {
+        const id = k.pubkey.toBase58();
+        keys.set(id, k.pubkey);
+        writable.set(id, (writable.get(id) ?? false) || k.isWritable);
+      }
+    }
+    const list = [...keys.values()];
+    if (list.length === 0) return [];
+    const infos = await within(connection.getMultipleAccountsInfo(list), timeoutMs);
+    if (infos === "timeout") return null;
+    return list.filter((_, n) => infos[n] === null).map((k) => `${writable.get(k.toBase58()) ? "w" : "r"}:${k.toBase58()}`);
+  } catch {
+    return null;
+  }
+}
+
 /** Assert, log, then let the wallet sign. See the file header. */
 export async function guardSign<T>(p: GuardSignParams<T>): Promise<T> {
   if (!isDevnetV22Enabled()) return p.sign();
@@ -192,8 +222,10 @@ export async function guardSign<T>(p: GuardSignParams<T>): Promise<T> {
       shape: txShape(tx, p.wrapperProgramId),
       chain: p.chain,
       verdict: "ok",
+      absentOnDevnet: null,
       wallet: "pending",
     };
+    e.absentOnDevnet = await absentAccounts(tx, p.connection, timeoutMs);
     try {
       await within(assertDevnetConnection(origin?.connection ?? p.connection), timeoutMs);
       if (origin?.connection && origin.connection !== p.connection) await within(assertDevnetConnection(p.connection), timeoutMs);

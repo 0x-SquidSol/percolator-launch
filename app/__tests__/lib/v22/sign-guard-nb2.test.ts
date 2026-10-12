@@ -139,6 +139,23 @@ describe("NB-2 sign guard", () => {
     expect(txShape({ instructions: [{ programId: null, data: null }] } as never)).toBe("?");
   });
 
+  it("RT5b: accounts the devnet connection does not have are recorded and shown in the line; never a refusal by themselves", async () => {
+    const tx = tradeTx();
+    const c = { ...conn(DEVNET_GENESIS_HASH), getMultipleAccountsInfo: vi.fn(async (ks: PublicKey[]) => ks.map(() => null)) };
+    noteBlockhash(BH, "sendTx attempt 1", c);
+    await expect(guardSign({ txs: [tx], via: "adapter signTransaction", connection: c as never, chain: "solana:devnet", sign: async () => { throw new Error("User rejected the request."); } })).rejects.toThrow(/rejected/);
+    const e = lastSignProblem()!;
+    expect(e.absentOnDevnet).toEqual([`w:${payer.publicKey.toBase58()}`]);
+    expect(formatSignEntry(e)).toContain(`not on devnet: w:${payer.publicKey.toBase58()}`);
+    __resetSignGuardForTest();
+    const all = { ...conn(DEVNET_GENESIS_HASH), getMultipleAccountsInfo: vi.fn(async (ks: PublicKey[]) => ks.map(() => ({}) as never)) };
+    noteBlockhash(BH, "sendTx attempt 1", all);
+    await guardSign({ txs: [tradeTx()], via: "x", connection: all as never, chain: "solana:devnet", sign: async () => 1 });
+    expect(signLog()[0].absentOnDevnet).toEqual([]);
+    expect(formatSignEntry(signLog()[0])).toContain("all accounts on devnet");
+    expect(lastSignProblem()).toBeNull();
+  });
+
   it("flag off: a pass-through (no RPC, no log)", async () => {
     __setDevnetV22ForTest(false);
     const c = conn(MAINNET_GENESIS, false);
