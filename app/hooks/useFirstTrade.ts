@@ -49,6 +49,8 @@ import { marketAssetSlots } from "@/lib/v22/trade-refresh";
 import { planTradeRefresh, sendWithRefreshRetry } from "@/lib/v22/trade-refresh-wire";
 import { isLossStaleError } from "@/lib/v21/loss-stale-retry";
 import { presignWait } from "@/lib/first-trade-wait";
+import { pythCrankAccount } from "@/lib/limits/oracle-tail";
+import { crankOracleTail } from "@/lib/limits/vault-lp-repair";
 
 /** CU cap for [deposit, trade]: the trade's cap + the deposit. */
 const FUND_AND_TRADE_CU_CAP = tradeCuCap(1) + 60_000;
@@ -159,6 +161,14 @@ export function useFirstTrade(slabAddress: string) {
         const raiseFee = async (): Promise<void> => {
           feeBps = await fetchTradeFeeBps(connection, market, lp.matcherCtx, { fallback: feeBps, withUtilMax: true });
         };
+        // The same liveness repairs a normal trade gets (useTrade): a lagging engine clock or a lapsed
+        // backing bucket otherwise refuses every deposit-and-trade, the path new wallets onboard on.
+        // Market-level repairs + an LP catch-up crank: valid with no taker portfolio, wallet signs.
+        const selfHeal = {
+          programId,
+          market,
+          catchUp: { portfolio: lp.accountB, oracleTail: crankOracleTail(pythCrankAccount(mktConfig, wrapperConfigV17?.oracleMode)) },
+        };
         const ixp = (portfolio: PublicKey): FirstTradeIxParams => ({
           programId, owner, market, portfolio, userAta, vaultTokenAta, depositAtoms: p.depositAtoms,
           lp, lpId, marketId, size: p.size, limitPriceE6: p.limitPriceE6, feeBps, marketTradeFeeBps: wrapperConfigV17?.tradeFeeBps,
@@ -176,7 +186,7 @@ export function useFirstTrade(slabAddress: string) {
         // holds >= 3 legs, and the stale peers' refresh cranks in the SAME tx when the order is refused 121.
         const sendRefreshed = async (body: TransactionInstruction[], takerPortfolio: PublicKey | null, o: { signers?: Keypair[]; cap: number }): Promise<string> => {
           const send = (ixs: TransactionInstruction[]) =>
-            sendTx({ connection, wallet, instructions: ixs, ...(o.signers ? { signers: o.signers } : {}), computeUnitsFromSim: { cap: o.cap }, onProgress: p.onConfirming });
+            sendTx({ connection, wallet, instructions: ixs, ...(o.signers ? { signers: o.signers } : {}), computeUnitsFromSim: { cap: o.cap }, onProgress: p.onConfirming, selfHeal });
           if (!isDevnetV22Enabled() || !slabRaw) return send(body);
           const input = { programId, market, marketData: slabRaw, cranker: owner, takerPortfolio, lpPortfolio: lp.accountB, body };
           try {
@@ -301,12 +311,15 @@ export function useFirstTrade(slabAddress: string) {
         const ataBalance = ataInfo && ataInfo.data.length >= 72 ? readU64LE(ataInfo.data, 64) : 0n;
         assertDepositWithinBalance(depositAtoms, ataBalance);
         const legs = (portfolio: PublicKey) => ({ programId, owner, market, portfolio, userAta, vaultTokenAta, depositAtoms });
+        // Deposit-only: the market-level repairs (ExpireBackingBucket / FinalizeResetSide, non-signer) a refused
+        // 19/21 needs. No LP catch-up crank here: a deposit has no LP leg, so no LP accounts are resolved.
+        const depositSelfHeal = { programId, market };
 
         const existing = await findV17Portfolio(connection, programId, market, owner);
         if (existing) {
           const id = await fetchPortfolioIdentity(connection, existing);
           const signature = await withPresignWait(() =>
-            sendTx({ connection, wallet, instructions: [buildFirstDepositIx(legs(existing), { portfolioId: id.portfolioId, sequence: id.matcherSequence })] }),
+            sendTx({ connection, wallet, instructions: [buildFirstDepositIx(legs(existing), { portfolioId: id.portfolioId, sequence: id.matcherSequence })], selfHeal: depositSelfHeal }),
           );
           invalidatePortfolio();
           refreshSlab();
@@ -325,7 +338,7 @@ export function useFirstTrade(slabAddress: string) {
           ];
           try {
             const signature = await withPresignWait(() =>
-              sendTx({ connection, wallet, instructions: ixs, signers: [kp], computeUnitsFromSim: { cap: FIRST_TRADE_CU_CAP } }),
+              sendTx({ connection, wallet, instructions: ixs, signers: [kp], computeUnitsFromSim: { cap: FIRST_TRADE_CU_CAP }, selfHeal: depositSelfHeal }),
             );
             invalidatePortfolio();
             refreshSlab();
