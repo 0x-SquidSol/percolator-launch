@@ -12,7 +12,7 @@
  * portfolio's previous measured trade, so a second trade right after a first can't read bytes
  * from before the first. Every failure is `null` and never fails a trade.
  */
-import { parsePortfolioV17 } from "@percolatorct/sdk";
+import { parsePortfolio } from "@/lib/v22/layout";
 import type { Connection, PublicKey } from "@solana/web3.js";
 import { decodeMarketEngineView } from "@/lib/limits/decode";
 import { effectiveLeg } from "@/lib/limits/effective-quantity";
@@ -57,7 +57,7 @@ export async function readEffectivePositionQ(
     if (!pf) return 0n;
     const engine = decodeMarketEngineView(new Uint8Array(mk.data));
     if (!engine) return null;
-    const leg = parsePortfolioV17(new Uint8Array(pf.data)).legs.find((l) => l.active);
+    const leg = parsePortfolio(new Uint8Array(pf.data)).legs.find((l) => l.active); // VERSION-aware (v2.2 QA NB-1)
     if (!leg) return 0n;
     const eff = effectiveLeg(engine, leg);
     return eff.kind === "invalid" ? null : eff.signedQ;
