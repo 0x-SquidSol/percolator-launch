@@ -93,7 +93,8 @@ describe("sendTx", () => {
     expect(wallet.signTransaction).not.toHaveBeenCalled(); // failed before signing, for the unrelated reason
   });
 
-  it("BUG 24: no longer performs the dead genesis-hash network check", async () => {
+  it("BUG 24: no longer performs the dead genesis-hash network check (v2.2 flag off; the flag-gated devnet proof is devnet-only-nb2.test)", async () => {
+
     // validateNetwork() used to compare the app's OWN configured Connection's
     // genesis hash against its own config — a tautology (the connection is
     // always built from that same config) that also 403'd in production
@@ -103,6 +104,8 @@ describe("sendTx", () => {
     // weight in the sendTx hot path. Assert sendTx no longer calls
     // getGenesisHash and never throws "Network mismatch".
     vi.resetModules();
+    const { __setDevnetV22ForTest } = await import("@/lib/v22/flag");
+    __setDevnetV22ForTest(false);
     vi.mock("@/lib/config", () => ({
       getConfig: () => ({ network: "devnet", rpcUrl: "https://api.devnet.solana.com" }),
       getNetwork: () => netState.network,

@@ -3,7 +3,12 @@
  * The leg/market decoders are driven directly (no market fixture is ADL'd); the effective-size
  * math is the real lib/limits/effective-quantity.ts.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, afterEach } from "vitest";
+import { __setDevnetV22ForTest } from "@/lib/v22/flag";
+
+// v2.1 portfolio fixtures: decoded by the v2.1 parser (flag off). v2.2 bytes: lib/v22/portfolio-target-nb1.test.ts.
+beforeEach(() => __setDevnetV22ForTest(false));
+afterEach(() => __setDevnetV22ForTest(null));
 import { PublicKey } from "@solana/web3.js";
 
 const h = vi.hoisted(() => ({
