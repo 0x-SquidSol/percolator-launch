@@ -591,7 +591,9 @@ export class UserFacingError extends Error {
 
 /** The message of a UserFacingError, else null (the caller then humanizes as before). */
 export function userFacingMessage(e: unknown): string | null {
-  return e instanceof UserFacingError ? e.message : null;
+  if (e instanceof UserFacingError) return e.message;
+  // v2.2 QA RT5-2: the wallet-request-closed line (lib/v22/sign-guard.ts) is written for the user too.
+  return (e as { name?: unknown } | null)?.name === "WalletRequestClosedError" ? WALLET_REQUEST_CLOSED_COPY : null;
 }
 /** §5.3 "confirmation timeout" (never "check your wallet"). */
 export const CONFIRMING_MESSAGE = "Still confirming. We'll update this when it lands.";

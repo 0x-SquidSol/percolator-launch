@@ -10,15 +10,15 @@ import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { dismissSignProblem, formatSignEntry, lastSignProblem, subscribeSignGuard } from "@/lib/v22/sign-guard";
 
 export function SignGuardLine() {
-  const entry = useSyncExternalStore(subscribeSignGuard, lastSignProblem, () => null);
-  if (!isDevnetV22Enabled() || !entry) return null;
+  const req = useSyncExternalStore(subscribeSignGuard, lastSignProblem, () => null);
+  if (!isDevnetV22Enabled() || !req) return null;
   return (
     <div
       role="status"
       data-testid="v22-sign-guard-line"
       className="fixed inset-x-0 bottom-0 z-[1000] flex items-start gap-2 border-t border-yellow-500/40 bg-black/90 px-3 py-1.5 font-mono text-[11px] leading-snug text-yellow-200"
     >
-      <span className="min-w-0 flex-1 break-words">sign debug: {formatSignEntry(entry)}{entry.walletError ? ` | ${entry.walletError}` : ""}</span>
+      <span className="min-w-0 flex-1 break-words">sign debug: {formatSignEntry(req)}{req.walletError ? ` | ${req.walletError}` : ""}</span>
       <button type="button" onClick={dismissSignProblem} className="shrink-0 underline" aria-label="Dismiss sign debug line">
         dismiss
       </button>

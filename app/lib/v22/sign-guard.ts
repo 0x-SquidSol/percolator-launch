@@ -19,7 +19,6 @@ import { assertDevnetConnection, WrongClusterError } from "./devnet-guard";
 import { isDevnetV22Enabled } from "./flag";
 import { detectWalletError, isTransientError, UserFacingError } from "@/lib/errorMessages";
 import { WALLET_REQUEST_CLOSED_COPY } from "@/lib/wallet-request-copy";
-import { isWalletRejection } from "@/lib/privy-batch-sign";
 
 export const SIGN_CHAIN_DEVNET = "solana:devnet";
 /** A blockhash older than this at the moment the wallet opens is reported (not refused). */
@@ -124,7 +123,9 @@ export { WALLET_REQUEST_CLOSED_COPY };
  * A wallet popup that expired or was closed rejects with wallet-specific text (or none), which used to fall through
  * to "Something went wrong and nothing was sent.". Nothing was signed, so nothing was sent.
  */
-export class WalletRequestClosedError extends UserFacingError {
+export class WalletRequestClosedError extends Error {
+  // Not a subclass of UserFacingError: this module is loaded by lib/tx.ts everywhere, and must not need
+  // lib/errorMessages at class-definition time. `userFacingMessage` recognises it by name.
   constructor(cause: unknown) {
     super(WALLET_REQUEST_CLOSED_COPY);
     this.name = "WalletRequestClosedError";
@@ -133,7 +134,10 @@ export class WalletRequestClosedError extends UserFacingError {
 }
 /** A declined prompt, a locked wallet and the app's own explained errors keep their meaning; the rest is "closed". */
 export function asWalletRequestError(err: unknown): unknown {
-  if (isWalletRejection(err) || err instanceof UserFacingError) return err;
+  const o = err as { code?: unknown; statusCode?: unknown } | null;
+  // 4001 = declined (EIP-1193 style), 0x6985 = denied on a Ledger: the same two codes lib/privy-batch-sign.ts checks.
+  if (typeof o === "object" && o !== null && (o.code === 4001 || o.statusCode === 0x6985)) return err;
+  if (typeof UserFacingError === "function" && err instanceof UserFacingError) return err;
   const msg = err instanceof Error ? `${err.name} ${err.message}` : String((err as { message?: unknown } | null)?.message ?? err);
   // Text the send loop already acts on (an expired blockhash, a rate limit) keeps its retry.
   if (detectWalletError(msg) !== null || isTransientError(msg)) return err;
