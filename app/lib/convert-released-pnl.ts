@@ -288,11 +288,14 @@ export function buildConvertReleasedPnlIx(p: ConvertIxParams): TransactionInstru
  * (v16.rs:16309-16326) refuses with Stale(19) — measured on devnet for a freshly closed winner.
  * A PermissionlessCrank on the user's own portfolio re-certifies it inside the same tx.
  */
-export function buildRecertifyCrankIx(programId: PublicKey, owner: PublicKey, market: PublicKey, portfolio: PublicKey): TransactionInstruction {
+export function buildRecertifyCrankIx(programId: PublicKey, owner: PublicKey, market: PublicKey, portfolio: PublicKey, assetSlots = 1): TransactionInstruction {
+  // v2.2 QA Q-7c: on a multi-asset market the crank must observe EVERY asset slot (a certificate against asset 0 alone
+  // leaves tag 28 stale: 19). `assetSlots = 1` is byte-identical to the single-asset crank.
+  const observations = assetSlots <= 1 ? defaultCrankObservations(0) : Array.from({ length: assetSlots }, (_, k) => defaultCrankObservations(k)[0]);
   return buildIx({
     programId,
     keys: buildAccountMetas(ACCOUNTS_PERMISSIONLESS_CRANK_BASE, [owner, market, portfolio]),
-    data: encodePermissionlessCrank({ nowSlot: 0n, observations: defaultCrankObservations(0) }),
+    data: encodePermissionlessCrank({ nowSlot: 0n, observations }),
   });
 }
 
@@ -325,6 +328,8 @@ export interface QuoteParams {
   portfolio: PublicKey;
   /** Live portfolio bytes (owner already verified by the caller). */
   portfolioData: Uint8Array;
+  /** Asset slots of the market (lib/v22/trade-refresh marketAssetSlots); omitted = 1. */
+  assetSlots?: number;
 }
 
 /**
@@ -348,7 +353,7 @@ export async function quoteConvertible(p: QuoteParams, deps: QuoteDeps): Promise
   });
   const plans: TransactionInstruction[][] = [
     [convert],
-    [buildRecertifyCrankIx(p.programId, p.owner, p.market, p.portfolio), convert],
+    [buildRecertifyCrankIx(p.programId, p.owner, p.market, p.portfolio, p.assetSlots ?? 1), convert],
   ];
   let lastCode: number | null = null;
   for (const prefix of plans) {
@@ -399,6 +404,50 @@ export async function convertPrefixForWithdraw(
   const plan = planWithdraw({ capital: pf.capital, convertible, amount: p.amount });
   if (!plan.fits) throw new WithdrawRefusal(WITHDRAW_EXCEEDS_BALANCE_MESSAGE);
   return plan.needsConvert && quote.status === "ready" ? quote.prefix : [];
+}
+
+/**
+ * v2.2 QA Q-7c / W-1: the convert + withdraw plan for a flat account, on every market.
+ *
+ * The one-click "convert and withdraw all" failed on the multi-asset market with 21 (the withdraw asked for capital +
+ * the pnl FACE, but tag 28 credits slightly less: it floors per source domain, and on a plain-LP market it can be
+ * haircut) or 19 (the withdraw expected sequence + 1; tag 28 does not advance it). The shape that works, one tx:
+ * simulate [crank self observing every asset, tag 28] and read the post-conversion CAPITAL, then send
+ * [same crank, tag 28, withdraw(min(requested, that capital), the CURRENT sequence)].
+ *
+ * W-1 guard: when the simulated capital gain is short of the released profit by more than CONVERT_SHORTFALL_BPS (0.1%;
+ * beyond per-domain rounding), tag 28 would burn the unsupported part of the claim. The profit is then NOT converted:
+ * only the existing capital is withdrawn and the caller shows PROFIT_NOT_MOVABLE_MESSAGE.
+ */
+export const CONVERT_SHORTFALL_BPS = 10n;
+export const PROFIT_NOT_MOVABLE_MESSAGE = "Part of this profit can't be moved to your balance right now. Try again shortly.";
+
+export interface ConvertWithdrawPlan {
+  /** Instructions in front of the withdraw ([] = withdraw alone). */
+  prefix: TransactionInstruction[];
+  /** The amount to withdraw (never above the capital the account will hold when the withdraw runs). */
+  amount: bigint;
+  /** A calm line to show next to a successful withdrawal (the profit was left in place), or null. */
+  notice: string | null;
+}
+
+export async function planConvertWithdraw(p: QuoteParams & { amount: bigint }, deps: QuoteDeps): Promise<ConvertWithdrawPlan> {
+  const pf = parsePortfolio(p.portfolioData);
+  if (p.amount <= pf.capital || pf.legs.some((l) => l.active)) return { prefix: [], amount: p.amount, notice: null };
+  if (pf.pnl <= 0n) throw new WithdrawRefusal(WITHDRAW_EXCEEDS_BALANCE_MESSAGE);
+  const quote = await quoteConvertible(p, deps);
+  if (quote.status === "settling") throw new WithdrawRefusal(settlingProfitMessage(quote.code));
+  if (quote.status !== "ready") throw new WithdrawRefusal(WITHDRAW_EXCEEDS_BALANCE_MESSAGE);
+  const released = releasedPnlFace(pf.pnl, pf.reservedPnl);
+  const gain = quote.postCapital - pf.capital;
+  const shortfall = released > gain ? released - gain : 0n;
+  if (released > 0n && shortfall * 10_000n > released * CONVERT_SHORTFALL_BPS) {
+    if (pf.capital <= 0n) throw new WithdrawRefusal(PROFIT_NOT_MOVABLE_MESSAGE);
+    return { prefix: [], amount: p.amount < pf.capital ? p.amount : pf.capital, notice: PROFIT_NOT_MOVABLE_MESSAGE };
+  }
+  // More than capital + the released face is not a rounding matter: refuse as before.
+  if (p.amount > pf.capital + released) throw new WithdrawRefusal(WITHDRAW_EXCEEDS_BALANCE_MESSAGE);
+  return { prefix: quote.prefix, amount: p.amount < quote.postCapital ? p.amount : quote.postCapital, notice: null };
 }
 
 /** QuoteDeps over a real connection: one simulateTransaction with the portfolio read back. */

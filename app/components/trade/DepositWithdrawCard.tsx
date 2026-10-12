@@ -50,7 +50,7 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
   const connected = walletConnected || mockMode;
   const userAccount = realUserAccount ?? (mockMode ? getMockUserAccount(slabAddress) : null);
   const { deposit, loading: depositLoading, error: depositError } = useDeposit(slabAddress);
-  const { withdraw, loading: withdrawLoading, error: withdrawError } = useWithdraw(slabAddress);
+  const { withdraw, loading: withdrawLoading, error: withdrawError, notice: withdrawNotice } = useWithdraw(slabAddress);
   const { initUser, loading: initLoading, error: initError } = useInitUser(slabAddress);
   const { config: mktConfig } = useSlabState();
   const tokenMeta = useTokenMeta(mktConfig?.collateralMint ?? null);
@@ -486,6 +486,10 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
       </button>
 
       {error && <p data-testid={`${mode}-error`} className="mt-2 text-[10px] text-[var(--short)]">{error}</p>}
+      {/* v2.2 QA Q-7c / W-1: the withdrawal went through, part of the profit stayed in the account. */}
+      {mode === "withdraw" && !error && withdrawNotice && (
+        <p data-testid="withdraw-notice" role="status" className="mt-2 text-[10px] text-[var(--text-secondary)]">{withdrawNotice}</p>
+      )}
       {lastSig && <p className="mt-2 text-[10px] text-[var(--text-dim)]" style={{ fontFamily: "var(--font-mono)" }}>Tx: <a href={`${explorerTxUrl(lastSig)}`} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">{lastSig.slice(0, 12)}...</a></p>}
     </div>
   );

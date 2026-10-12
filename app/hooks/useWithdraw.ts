@@ -35,7 +35,7 @@ import { isSentinelValue } from "@/lib/health";
 import {
   WithdrawRefusal,
   connectionQuoteDeps,
-  convertPrefixForWithdraw,
+  planConvertWithdraw,
   settlingProfitMessage,
 } from "@/lib/convert-released-pnl";
 import { WRAPPER_ERR } from "@/lib/wrapper-errors";
@@ -43,6 +43,7 @@ import { verifyPortfolioTarget } from "@/lib/portfolio-target";
 import type { TransactionInstruction } from "@solana/web3.js";
 import { parsePortfolio, isWrapperAccount } from "@/lib/v22/layout";
 import { engineStaleWithdrawMessage, WITHDRAW_OPEN_POSITIONS_MESSAGE } from "@/lib/withdraw-copy";
+import { marketAssetSlots } from "@/lib/v22/trade-refresh";
 
 // M7: withdraw's own EngineStale(19) surface. Unlike a trade (which can be
 // auto-retried after the next keeper crank via withTransientRetry — see
@@ -79,9 +80,11 @@ const OPEN_POSITION_WITHDRAW_MESSAGE = WITHDRAW_OPEN_POSITIONS_MESSAGE;
 export function useWithdraw(slabAddress: string) {
   const { connection } = useConnectionCompat();
   const wallet = useWalletCompat();
-  const { config: mktConfig, wrapperConfigV17, programId: slabProgramId, params: slabParams, refresh: refreshSlab } = useSlabState();
+  const { config: mktConfig, wrapperConfigV17, programId: slabProgramId, params: slabParams, refresh: refreshSlab, raw } = useSlabState();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** A calm line next to a SUCCESSFUL withdrawal (e.g. profit left in place, W-1). */
+  const [notice, setNotice] = useState<string | null>(null);
   const inflightRef = useRef(false);
 
   const withdraw = useCallback(
@@ -98,6 +101,10 @@ export function useWithdraw(slabAddress: string) {
       let usedConvertPrefix = false;
       // Whether the portfolio had an open leg when read before sending (null = not read): picks the 19 line.
       let knownOpenLegs: boolean | null = null;
+      // Q-7c / W-1: the amount the withdraw instruction carries (clamped to the post-conversion capital) and the notice.
+      let withdrawAmount = params.amount;
+      let pendingNotice: string | null = null;
+      setNotice(null);
       setLoading(true);
       setError(null);
       try {
@@ -334,10 +341,15 @@ export function useWithdraw(slabAddress: string) {
                   : portfolio.capital; // fail closed: no entry price could be established
               const freeMargin = portfolio.capital > lockedMargin ? portfolio.capital - lockedMargin : 0n;
               if (!hasActiveLegs && params.amount > portfolio.capital) {
-                convertPrefix = await convertPrefixForWithdraw(
-                  { programId, owner: wallet.publicKey, market: slabPk, portfolio: portfolioPk, portfolioData: new Uint8Array(portfolioData), amount: params.amount },
+                // v2.2 QA Q-7c / W-1 (lib/convert-released-pnl planConvertWithdraw): the crank observes every asset, the
+                // withdraw takes the capital the simulation shows after tag 28 (never the pnl face), same sequence.
+                const plan = await planConvertWithdraw(
+                  { programId, owner: wallet.publicKey, market: slabPk, portfolio: portfolioPk, portfolioData: new Uint8Array(portfolioData), amount: params.amount, assetSlots: raw ? marketAssetSlots(raw) ?? 1 : 1 },
                   connectionQuoteDeps(connection, wallet.publicKey),
                 );
+                convertPrefix = plan.prefix;
+                withdrawAmount = plan.amount;
+                pendingNotice = plan.notice;
               } else if (params.amount > freeMargin) {
                 throw new UserFacingError(
                   hasActiveLegs
@@ -384,7 +396,7 @@ export function useWithdraw(slabAddress: string) {
             data: encodeWithdrawCollateral({
               portfolioId: wdId.portfolioId,
               expectedSequence: wdId.matcherSequence,
-              amount: params.amount.toString(),
+              amount: withdrawAmount.toString(),
             }),
           }));
         } else {
@@ -426,6 +438,7 @@ export function useWithdraw(slabAddress: string) {
           connection, wallet, instructions, computeUnits: usedConvertPrefix ? 600_000 : 300_000,
           selfHeal: { programId, market: slabPk },
         });
+        if (pendingNotice) setNotice(pendingNotice);
         // Force immediate slab re-read so balance updates without waiting for the next poll.
         refreshSlab?.();
         setTimeout(() => refreshSlab?.(), 2000);
@@ -452,5 +465,5 @@ export function useWithdraw(slabAddress: string) {
     [connection, wallet, mktConfig, slabAddress, slabProgramId, slabParams, wrapperConfigV17, refreshSlab]
   );
 
-  return { withdraw, loading, error };
+  return { withdraw, loading, error, notice };
 }
