@@ -50,7 +50,7 @@ import { tradeFeeBpsToSign } from "@/lib/limits/fee-channel";
 import { fetchTradeFeeBps } from "@/lib/limits/trade-fee-resolve";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { marketAssetSlots } from "@/lib/v22/trade-refresh";
-import { planTradeRefresh } from "@/lib/v22/trade-refresh-wire";
+import { planTradeRefresh, sendWithRefreshRetry } from "@/lib/v22/trade-refresh-wire";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { detectOracleMode, resolveMarketPriceE6 } from "@/lib/oraclePrice";
 import { assertKnownProgram, assertCanonicalMatcher } from "@/lib/programAllowlist";
@@ -738,18 +738,25 @@ export function useTrade(slabAddress: string) {
           const sendOrder = async (): Promise<string> => {
             try {
               if (v22Refresh && multiAsset) {
-                const plan = await planTradeRefresh(connection, v22Refresh);
-                if (plan.cranks.length > 0) console.info(`[useTrade] v2.2 refresh shape: ${plan.cranks.map((c) => c.role).join(", ")}`);
-                return await sendTrade(plan.instructions);
+                return await sendWithRefreshRetry(async () => {
+                  const plan = await planTradeRefresh(connection, v22Refresh);
+                  if (plan.cranks.length > 0) console.info(`[useTrade] v2.2 refresh shape: ${plan.cranks.map((c) => c.role).join(", ")}`);
+                  return plan.instructions;
+                }, sendTrade);
               }
               return await sendTrade(instructions);
             } catch (e) {
               if (v22Refresh && isLossStaleError(e, programId.toBase58())) {
                 // 121: refresh the stale positioned peers in this transaction instead of waiting for the keeper.
-                const plan = await planTradeRefresh(connection, v22Refresh, { withPeers: true });
-                if (plan.cranks.some((c) => c.role === "peer")) {
-                  console.info(`[useTrade] 121: refreshing ${plan.cranks.filter((c) => c.role === "peer").length} stale peer(s) in the same tx`);
-                  return sendTrade(plan.instructions);
+                const first = await planTradeRefresh(connection, v22Refresh, { withPeers: true });
+                if (first.cranks.some((c) => c.role === "peer")) {
+                  console.info(`[useTrade] 121: refreshing ${first.cranks.filter((c) => c.role === "peer").length} stale peer(s) in the same tx`);
+                  let planned: TransactionInstruction[] | null = first.instructions;
+                  return sendWithRefreshRetry(async () => {
+                    const ixs = planned ?? (await planTradeRefresh(connection, v22Refresh, { withPeers: true })).instructions;
+                    planned = null;
+                    return ixs;
+                  }, sendTrade);
                 }
               }
               // Devnet v2.1: the allocation refused (Custom 100) after the pre-check passed (state moved).

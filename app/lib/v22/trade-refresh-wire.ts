@@ -72,3 +72,30 @@ export async function planTradeRefresh(
   const lpData = lpInfo ? new Uint8Array(lpInfo.data) : null;
   return planV22TradeRefresh({ ...i, takerData, lpData }, tradeRefreshDeps(connection, i.programId, i.market, i.cranker), opts);
 }
+
+/** Re-plans after a refresh crank lost the same-slot race (22 at send time): at most this many extra attempts. */
+export const REFRESH_RACE_RETRIES = 2;
+
+/** Custom(22) anywhere in the error text: a crank of the refresh prefix was already current when the tx ran. */
+export function isRefreshRace(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : typeof e === "string" ? e : "";
+  const logs = Array.isArray((e as { logs?: unknown } | null)?.logs) ? ((e as { logs: unknown[] }).logs).map(String).join("\n") : "";
+  return /custom program error: 0x16\b|"Custom":22\b|Custom\(22\)/.test(msg + "\n" + logs);
+}
+
+/**
+ * Plan the refresh prefix and send; when the SEND loses the same-slot race (the observing crank is refused 22 because
+ * another transaction accrued the market in that slot: the keeper pushes every few seconds), re-plan from fresh state and
+ * send again, at most REFRESH_RACE_RETRIES more times. `plan` returns the instructions to send.
+ */
+export async function sendWithRefreshRetry<T>(plan: () => Promise<TransactionInstruction[]>, send: (ixs: TransactionInstruction[]) => Promise<T>, sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    const ixs = await plan();
+    try {
+      return await send(ixs);
+    } catch (e) {
+      if (attempt >= REFRESH_RACE_RETRIES || !isRefreshRace(e)) throw e;
+      await sleep(700); // one slot, then re-plan
+    }
+  }
+}

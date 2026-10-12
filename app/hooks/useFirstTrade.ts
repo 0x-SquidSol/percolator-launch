@@ -46,7 +46,7 @@ import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 import { fetchTradeFeeBps } from "@/lib/limits/trade-fee-resolve";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { marketAssetSlots } from "@/lib/v22/trade-refresh";
-import { planTradeRefresh } from "@/lib/v22/trade-refresh-wire";
+import { planTradeRefresh, sendWithRefreshRetry } from "@/lib/v22/trade-refresh-wire";
 import { isLossStaleError } from "@/lib/v21/loss-stale-retry";
 
 /** CU cap for [deposit, trade]: the trade's cap + the deposit. */
@@ -164,14 +164,19 @@ export function useFirstTrade(slabAddress: string) {
           if (!isDevnetV22Enabled() || !slabRaw) return send(body);
           const input = { programId, market, marketData: slabRaw, cranker: owner, takerPortfolio, lpPortfolio: lp.accountB, body };
           try {
-            if ((marketAssetSlots(slabRaw) ?? 1) > 1) return await send((await planTradeRefresh(connection, input)).instructions);
+            if ((marketAssetSlots(slabRaw) ?? 1) > 1) return await sendWithRefreshRetry(async () => (await planTradeRefresh(connection, input)).instructions, send);
             return await send(body);
           } catch (e) {
             if (isLossStaleError(e, programId.toBase58())) {
-              const plan = await planTradeRefresh(connection, input, { withPeers: true });
-              if (plan.cranks.some((c) => c.role === "peer")) {
-                console.info(`[first-trade] 121: refreshing ${plan.cranks.filter((c) => c.role === "peer").length} stale peer(s) in the same tx`);
-                return send(plan.instructions);
+              const first = await planTradeRefresh(connection, input, { withPeers: true });
+              if (first.cranks.some((c) => c.role === "peer")) {
+                console.info(`[first-trade] 121: refreshing ${first.cranks.filter((c) => c.role === "peer").length} stale peer(s) in the same tx`);
+                let planned: TransactionInstruction[] | null = first.instructions;
+                return sendWithRefreshRetry(async () => {
+                  const ixs = planned ?? (await planTradeRefresh(connection, input, { withPeers: true })).instructions;
+                  planned = null;
+                  return ixs;
+                }, send);
               }
             }
             throw e;

@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
 import { buildRefreshCrankIxV22 } from "@/lib/v22/sdk";
-import { refreshCandidatesFromAccounts } from "@/lib/v22/trade-refresh-wire";
+import { isRefreshRace, refreshCandidatesFromAccounts, REFRESH_RACE_RETRIES, sendWithRefreshRetry } from "@/lib/v22/trade-refresh-wire";
 import { resolveUserMessage } from "@/lib/limits/user-message";
 import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import { HealthCheckStaleError, MAX_PEER_CRANKS, marketAssetSlots, needsMultiAssetShape, planV22TradeRefresh, type RefreshSim, type TradeRefreshDeps, type TradeRefreshInput } from "@/lib/v22/trade-refresh";
@@ -156,5 +156,24 @@ describe("refresh candidates and copy", () => {
     expect(m.body).toBe("These positions needed more refreshing than fits in one go, so nothing was sent. Try again in a moment.");
     expect(m.body).not.toMatch(/automatically/);
     expect(m.autoRetry).toBeFalsy();
+  });
+});
+
+describe("same-slot race at send time", () => {
+  it("a 22 from the sent tx re-plans and sends again, at most twice more; anything else is thrown at once", async () => {
+    const race = new Error("Transaction simulation failed: Error processing Instruction 3: custom program error: 0x16");
+    expect(isRefreshRace(race)).toBe(true);
+    expect(isRefreshRace(new Error('{"InstructionError":[3,{"Custom":22}]}'))).toBe(true);
+    expect(isRefreshRace(new Error("custom program error: 0x31"))).toBe(false);
+    const plan = vi.fn(async () => [trade]);
+    const send = vi.fn().mockRejectedValueOnce(race).mockResolvedValueOnce("SIG");
+    expect(await sendWithRefreshRetry(plan, send, async () => {})).toBe("SIG");
+    expect(plan).toHaveBeenCalledTimes(2);
+    const always = vi.fn().mockRejectedValue(race);
+    await expect(sendWithRefreshRetry(plan, always, async () => {})).rejects.toBe(race);
+    expect(always).toHaveBeenCalledTimes(1 + REFRESH_RACE_RETRIES);
+    const other = vi.fn().mockRejectedValue(new Error("custom program error: 0x31"));
+    await expect(sendWithRefreshRetry(plan, other, async () => {})).rejects.toThrow(/0x31/);
+    expect(other).toHaveBeenCalledTimes(1);
   });
 });
