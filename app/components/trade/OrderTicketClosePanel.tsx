@@ -1,5 +1,6 @@
 "use client";
 
+import { LastCloseTxLink } from "@/components/trade/LastCloseTxLink";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { onChainMarkE6 } from "@/lib/position-pnl";
 import { FC, useEffect, useRef } from "react";
@@ -168,6 +169,7 @@ export const OrderTicketClosePanel: FC<OrderTicketClosePanelProps> = ({
         <p className="mx-auto mt-1.5 max-w-[240px] text-[11px] leading-relaxed text-[var(--text-secondary)]">
           You have no open position in this market to close. Switch to Open to place a trade.
         </p>
+        <LastCloseTxLink slabAddress={slabAddress} className="mt-3" />
       </div>
     );
   }

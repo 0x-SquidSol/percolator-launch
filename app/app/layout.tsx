@@ -17,6 +17,7 @@ import { MaintenanceBanner } from "@/components/layout/MaintenanceBanner";
 import { ChromeGate } from "@/components/layout/ChromeGate";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { organizationSchema, websiteSchema } from "@/lib/structured-data";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { Analytics } from "@vercel/analytics/next";
 import { GoogleAnalytics } from "@/components/analytics/GoogleAnalytics";
 import { CloudflareAnalytics } from "@/components/analytics/CloudflareAnalytics";
@@ -147,7 +148,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </Providers>
         <GoogleAnalytics />
         <CloudflareAnalytics />
-        <Analytics />
+        {/* v2.2 preview: Vercel Web Analytics is not enabled on that project, so its script path 404s (QA minor). */}
+        {!isDevnetV22Enabled() && <Analytics />}
       </body>
     </html>
   );

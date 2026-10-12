@@ -12,6 +12,7 @@
  * Replaced later by a hosted OHLCV provider via ./index.ts — chart code does
  * not change.
  */
+import { v22HasNoIndexer } from "@/lib/v22/indexer";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import {
   RESOLUTION_SECONDS,
@@ -95,7 +96,7 @@ export function createCandlesApiProvider(deps: CandlesApiProviderDeps): ChartDat
   const { fetchImpl, trades, marks } = deps;
   const now = deps.now ?? Date.now;
   /** Set on a definitive 404: this deployment has no indexer — skip the call for the session. */
-  let candlesUnavailable = false;
+  let candlesUnavailable = v22HasNoIndexer(); // v2.2 preview: no indexer (lib/v22/indexer.ts)
   /**
    * v2.2 lot markets: the indexer stores per-LOT marks and trades in LOTS (wrapper doc v22-wave-a-wire.md:46: "candles in
    * per-token price" is the app's job), and the app's mark store is per lot too. The chart shows per TOKEN, so every

@@ -27,6 +27,7 @@
  * `OrderTicket` already owns the deposit entry point (its account row).
  */
 
+import { LastCloseTxLink } from "@/components/trade/LastCloseTxLink";
 import { computeMarginCushion, severityFromCushion } from "@/lib/liquidation-risk";
 import { FC, memo, useMemo, useState } from "react";
 import { useUserAccount, useUserAccountScanPending } from "@/hooks/useUserAccount";
@@ -231,6 +232,7 @@ const PositionRow: FC<{ slabAddress: string; wrappedRow?: boolean }> = memo(func
     return (
       <>
         <EmptyState title={accountPending ? "Loading positions…" : undefined} subtitle={subtitle} />
+        <LastCloseTxLink slabAddress={slabAddress} className="px-3 pb-2 text-center" />
         <ClosedPositionNftNotice slabAddress={slabAddress} />
       </>
     );

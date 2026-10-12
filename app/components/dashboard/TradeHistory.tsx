@@ -9,6 +9,7 @@
  * Bug 6 fix: "Trader dashboard showing stats but zero transactions"
  */
 
+import { NO_HISTORY_COPY, v22HasNoIndexer } from "@/lib/v22/indexer";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useWalletCompat } from "@/hooks/useWalletCompat";
 import { explorerTxUrl } from "@/lib/config";
@@ -193,11 +194,11 @@ export function TradeHistory() {
           </div>
         ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12">
-            <p className="text-[13px] text-[var(--text-secondary)]">No trades yet</p>
+            <p data-testid="trade-history-empty" className="text-[13px] text-[var(--text-secondary)]">{v22HasNoIndexer() ? NO_HISTORY_COPY.title : "No trades yet"}</p>
             <p className="mt-1 text-[10px] text-[var(--text-secondary)]">
-              Your executed trades will appear here once the trade indexer has processed them.
+              {v22HasNoIndexer() ? NO_HISTORY_COPY.body : "Your executed trades will appear here once the trade indexer has processed them."}
             </p>
-            {(process.env.NEXT_PUBLIC_DEFAULT_NETWORK ?? process.env.NEXT_PUBLIC_SOLANA_NETWORK) === "devnet" && (
+            {!v22HasNoIndexer() && (process.env.NEXT_PUBLIC_DEFAULT_NETWORK ?? process.env.NEXT_PUBLIC_SOLANA_NETWORK) === "devnet" && (
               <p className="mt-2 text-[10px] text-[var(--warning)]/60">
                 ⚠ Devnet: trade indexer may not be running. Trades are on-chain but not yet indexed.
               </p>

@@ -1,5 +1,6 @@
 "use client";
 
+import { v22HasNoIndexer } from "@/lib/v22/indexer";
 import { useEffect, useRef, useState, useCallback } from "react";
 import { boundedSet } from "@/lib/bounded-map";
 import { CHART_WINDOWS, type ChartTimeframe } from "@/lib/chart-window";
@@ -89,7 +90,8 @@ const QUANTIZE_SEC = 10;
 // single transient 500 or network blip permanently disabled the tier-0 candle
 // source for the entire session — and because this hook has no poll, nothing
 // ever retried it.
-let endpointUnavailable = false;
+// v2.2 preview: no indexer, so the route is known-unavailable from the start (no 404 round trip; lib/v22/indexer.ts).
+let endpointUnavailable = v22HasNoIndexer();
 
 /**
  * Internal-trade OHLCV for a Percolator slab. Loads historical bars from
