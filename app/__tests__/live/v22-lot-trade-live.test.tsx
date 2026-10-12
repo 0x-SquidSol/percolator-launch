@@ -36,6 +36,8 @@ const LOTS = (process.env.LIVE_LOTS ?? "").split(",").filter(Boolean).map((s) =>
 describe.skipIf(!RPC)("LIVE L-1: open + close on lot markets through the app's builders", () => {
   for (const m of LOTS) {
     it(`${m.name}: open ${m.lots} lots (negative = short), then close`, async () => {
+      const info0 = console.info.bind(console);
+      console.info = (...a: unknown[]) => { LOG("  info: " + a.map(String).join(" ")); info0(...a); };
       const kp = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(process.env.LIVE_WALLET ?? "", "utf8"))));
       const sign = async (tx: Transaction) => { tx.partialSign(kp); return tx; };
       const w: WalletApi = { publicKey: kp.publicKey, connected: true, connecting: false, wallet: null, signTransaction: sign, signAndSendTransaction: undefined, signMessage: undefined, signAllTransactions: async (txs: Transaction[]) => Promise.all(txs.map(sign)), disconnect: async () => {} };

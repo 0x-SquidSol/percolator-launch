@@ -283,6 +283,11 @@ function resolveUserMessageInner(err: unknown, ctx: MessageContext): UserMessage
   if ((err as { name?: string } | null)?.name === "WrongClusterError") {
     return m("wrong-cluster", "error", "Wrong network", (err as Error).message, { action: { id: "refresh", label: "Refresh" } });
   }
+  // v2.2 QA Q-7b: the multi-asset refresh shape still returned 19 after every refinement (lib/v22/trade-refresh.ts).
+  // Never the waiting copy: this one does not "go through automatically".
+  if ((err as { name?: string } | null)?.name === "HealthCheckStaleError") {
+    return m("health-check-stale", "paused", "Not sent", (err as Error).message, { action: { id: "try-again", label: "Try again" } });
+  }
   // v2.2 QA Q-7: the wait loop gave up (lib/tx.ts WaitExhaustedError): the refusal did not clear in the bounded time.
   if ((err as { name?: string } | null)?.name === "WaitExhaustedError") {
     return m("wait-exhausted", "paused", "Not sent", "This order still can't go through after waiting, so nothing was sent. Try again later.", { action: { id: "try-again", label: "Try again" } });

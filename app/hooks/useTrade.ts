@@ -36,7 +36,7 @@ import {
 import { planTakerCrank } from "@/lib/taker-crank";
 import { isAllocateRefusal, planAllocatePrefix } from "@/lib/v21/allocate-prefix";
 import { isDevnetV21Enabled } from "@/lib/v21/flag";
-import { withLossStaleRetry } from "@/lib/v21/loss-stale-retry";
+import { isLossStaleError, withLossStaleRetry } from "@/lib/v21/loss-stale-retry";
 import { getMaintenanceConfig, MaintenanceError } from "@/lib/maintenance";
 import { PartialLegSendError, SINGLE_TX_MAX_LEGS, sendLegGroups } from "@/lib/trade-leg-groups";
 import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
@@ -49,6 +49,8 @@ import { measurePositionChange, readBeforeTrade, recordPositionChange } from "@/
 import { tradeFeeBpsToSign } from "@/lib/limits/fee-channel";
 import { fetchTradeFeeBps } from "@/lib/limits/trade-fee-resolve";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
+import { marketAssetSlots } from "@/lib/v22/trade-refresh";
+import { planTradeRefresh } from "@/lib/v22/trade-refresh-wire";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { detectOracleMode, resolveMarketPriceE6 } from "@/lib/oraclePrice";
 import { assertKnownProgram, assertCanonicalMatcher } from "@/lib/programAllowlist";
@@ -727,10 +729,29 @@ export function useTrade(slabAddress: string) {
                 }
               : undefined,
           });
+          // v2.2 QA Q-7b / U-1 / R-1 (lib/v22/trade-refresh.ts): on a multi-asset market at >= 3 legs the trade carries
+          // the SDK's [LP observe, taker, LP] refresh shape; a 121 gets the stale peers' refresh cranks in the SAME tx.
+          const v22Refresh = isV17Market && isDevnetV22Enabled() && raw
+            ? { programId, market: slabPk, marketData: raw, cranker: wallet.publicKey, takerPortfolio: accountA, lpPortfolio: accountB, body: instructions }
+            : null;
+          const multiAsset = v22Refresh !== null && (marketAssetSlots(raw as Uint8Array) ?? 1) > 1;
           const sendOrder = async (): Promise<string> => {
             try {
+              if (v22Refresh && multiAsset) {
+                const plan = await planTradeRefresh(connection, v22Refresh);
+                if (plan.cranks.length > 0) console.info(`[useTrade] v2.2 refresh shape: ${plan.cranks.map((c) => c.role).join(", ")}`);
+                return await sendTrade(plan.instructions);
+              }
               return await sendTrade(instructions);
             } catch (e) {
+              if (v22Refresh && isLossStaleError(e, programId.toBase58())) {
+                // 121: refresh the stale positioned peers in this transaction instead of waiting for the keeper.
+                const plan = await planTradeRefresh(connection, v22Refresh, { withPeers: true });
+                if (plan.cranks.some((c) => c.role === "peer")) {
+                  console.info(`[useTrade] 121: refreshing ${plan.cranks.filter((c) => c.role === "peer").length} stale peer(s) in the same tx`);
+                  return sendTrade(plan.instructions);
+                }
+              }
               // Devnet v2.1: the allocation refused (Custom 100) after the pre-check passed (state moved).
               // It is never needed for the trade: send the trade without it, once.
               if (allocateIxs.length > 0 && isAllocateRefusal(e)) return sendTrade(instructions.filter((ix) => !allocateIxs.includes(ix)));

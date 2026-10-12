@@ -45,6 +45,9 @@ import { readU64LE } from "@/lib/u64le";
 import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 import { fetchTradeFeeBps } from "@/lib/limits/trade-fee-resolve";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
+import { marketAssetSlots } from "@/lib/v22/trade-refresh";
+import { planTradeRefresh } from "@/lib/v22/trade-refresh-wire";
+import { isLossStaleError } from "@/lib/v21/loss-stale-retry";
 
 /** CU cap for [deposit, trade]: the trade's cap + the deposit. */
 const FUND_AND_TRADE_CU_CAP = tradeCuCap(1) + 60_000;
@@ -96,7 +99,7 @@ export interface FundAndTradeResult {
 export function useFirstTrade(slabAddress: string) {
   const wallet = useWalletCompat();
   const { connection } = useConnectionCompat();
-  const { config: mktConfig, programId: slabProgramId, wrapperConfigV17, refresh: refreshSlab } = useSlabState();
+  const { config: mktConfig, programId: slabProgramId, wrapperConfigV17, refresh: refreshSlab, raw: slabRaw } = useSlabState();
   const [loading, setLoading] = useState(false);
 
   const fundAndTrade = useCallback(
@@ -153,6 +156,28 @@ export function useFirstTrade(slabAddress: string) {
         const recordFill = async (signature: string, portfolio: PublicKey, beforeQ: bigint | null) =>
           recordFillResult(signature, await measureFill(connection, portfolio, signature, beforeQ, p.size, marketId));
 
+        // v2.2 QA U-1 / R-1 / Q-7b (lib/v22/trade-refresh.ts): the multi-asset refresh shape when the LP or the taker
+        // holds >= 3 legs, and the stale peers' refresh cranks in the SAME tx when the order is refused 121.
+        const sendRefreshed = async (body: TransactionInstruction[], takerPortfolio: PublicKey | null, o: { signers?: Keypair[]; cap: number }): Promise<string> => {
+          const send = (ixs: TransactionInstruction[]) =>
+            sendTx({ connection, wallet, instructions: ixs, ...(o.signers ? { signers: o.signers } : {}), computeUnitsFromSim: { cap: o.cap }, onProgress: p.onConfirming });
+          if (!isDevnetV22Enabled() || !slabRaw) return send(body);
+          const input = { programId, market, marketData: slabRaw, cranker: owner, takerPortfolio, lpPortfolio: lp.accountB, body };
+          try {
+            if ((marketAssetSlots(slabRaw) ?? 1) > 1) return await send((await planTradeRefresh(connection, input)).instructions);
+            return await send(body);
+          } catch (e) {
+            if (isLossStaleError(e, programId.toBase58())) {
+              const plan = await planTradeRefresh(connection, input, { withPeers: true });
+              if (plan.cranks.some((c) => c.role === "peer")) {
+                console.info(`[first-trade] 121: refreshing ${plan.cranks.filter((c) => c.role === "peer").length} stale peer(s) in the same tx`);
+                return send(plan.instructions);
+              }
+            }
+            throw e;
+          }
+        };
+
         // ── Returning user: the account exists — [Deposit, Trade] in ONE tx (1 prompt). ──
         const existing = await findV17Portfolio(connection, programId, market, owner);
         if (existing) {
@@ -161,13 +186,7 @@ export function useFirstTrade(slabAddress: string) {
           const beforeInfo = await connection.getAccountInfo(existing, "confirmed").catch(() => null);
           const beforeQ = beforeInfo ? signedPositionForAsset(new Uint8Array(beforeInfo.data), 0, marketId) : null;
           const signature = await withPresignWait(() =>
-            sendTx({
-              connection,
-              wallet,
-              instructions: buildFundAndTradeIxs(ixp(existing), { portfolioId: id.portfolioId, sequence: id.matcherSequence, positionEpoch: id.positionEpoch }),
-              computeUnitsFromSim: { cap: FUND_AND_TRADE_CU_CAP },
-              onProgress: p.onConfirming,
-            }),
+            sendRefreshed(buildFundAndTradeIxs(ixp(existing), { portfolioId: id.portfolioId, sequence: id.matcherSequence, positionEpoch: id.positionEpoch }), existing, { cap: FUND_AND_TRADE_CU_CAP }),
           );
           await recordFill(signature, existing, beforeQ);
           invalidatePortfolio();
@@ -191,9 +210,7 @@ export function useFirstTrade(slabAddress: string) {
             ...buildFundAndTradeIxs(ixp(kp.publicKey), { portfolioId: predictPortfolioId(next), sequence: 0n, positionEpoch: 0n }),
           ];
           try {
-            const signature = await withPresignWait(() =>
-              sendTx({ connection, wallet, instructions: ixs, signers: [kp], computeUnitsFromSim: { cap: FIRST_TRADE_CU_CAP }, onProgress: p.onConfirming }),
-            );
+            const signature = await withPresignWait(() => sendRefreshed(ixs, null, { signers: [kp], cap: FIRST_TRADE_CU_CAP }));
             // A brand-new portfolio holds no position before this transaction.
             await recordFill(signature, kp.publicKey, 0n);
             invalidatePortfolio();
