@@ -330,6 +330,8 @@ export function useTrade(slabAddress: string) {
       onWaitingLong?: () => void;
       /** v2.2 QA Q-3: false = surface a waitable refusal now (resolved market / nobody pushing the price). */
       shouldWait?: (e: SimulationRefusal) => boolean;
+      /** v2.2 QA Q-7: total wait budget before the refusal is surfaced (lib/tx.ts WaitExhaustedError). */
+      maxWaitMs?: number;
       /**
        * Devnet v2.1: true while an order refused Custom(121) EngineLossStale waits to be sent
        * again ("Refreshing positions…"), false once it is done either way (lib/v21/loss-stale-retry.ts).
@@ -698,6 +700,7 @@ export function useTrade(slabAddress: string) {
             keepWaiting: params.keepWaiting,
             onWaitingLong: params.onWaitingLong,
             shouldWait: params.shouldWait,
+            maxWaitMs: params.maxWaitMs,
             computeUnitsFromSim: { cap: tradeCuCap(legs.length) },
             // P0b: prepend ExpireBackingBucket / FinalizeResetSide only if this
             // trade/close would otherwise revert 19/21 on them (lib/self-heal.ts).

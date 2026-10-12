@@ -13,6 +13,10 @@ import { STAKE_ERRORS_V5 } from "./sdk";
 import { STAKE_ERR_DEPOSIT_BELOW_MIN_LIQUIDITY, STAKE_ERR_V5, WRAPPER_ERR_V22 } from "./wrapper-errors";
 import { V22_COPY } from "./copy";
 
+/** percolator-stake error.rs: TrancheNotEnabled = 19, WrongTranche = 21. */
+export const STAKE_ERR_TRANCHE_NOT_ENABLED = 19;
+export const STAKE_ERR_WRONG_TRANCHE = 21;
+
 type Build = (kind: string, variant: StatusVariant, title: string, body: string, extra?: Partial<UserMessage>) => UserMessage;
 
 export function v22WrapperMessage(code: number, ctx: MessageContext & { minPositionLabel?: string }, m: Build): UserMessage | null {
@@ -71,6 +75,13 @@ export function v22WrapperMessage(code: number, ctx: MessageContext & { minPosit
 
 /** Stake v5 codes 33..=45, plus 28 (first deposit too small). Only call for an error attributed to the stake program. */
 export function v22StakeMessage(code: number, m: Build): UserMessage | null {
+  // v2.2 QA copy round: two pre-v5 stake codes (percolator-stake src/error.rs) that showed "Something went wrong".
+  if (code === STAKE_ERR_TRANCHE_NOT_ENABLED) {
+    return m("stake-no-tiers", "info", "Not available", "This pool has a single tier, so there is no senior or junior side to choose. Nothing was sent.");
+  }
+  if (code === STAKE_ERR_WRONG_TRANCHE) {
+    return m("stake-wrong-tier", "info", "Other tier in use", "This wallet already has a deposit in the other tier of this pool. Use that tier, or another wallet. Nothing was sent.");
+  }
   const info = STAKE_ERRORS_V5[code];
   if (!info) return null;
   switch (code) {

@@ -13,6 +13,8 @@ export interface ConfirmedTradeParams {
   onWaitingLong?: () => void;
   /** v2.2 QA Q-3: false = surface a waitable refusal now (lib/limits/price-stall.ts waitPolicy). */
   shouldWait?: (e: import("@/lib/tx").SimulationRefusal) => boolean;
+  /** v2.2 QA Q-7: total wait budget (ms) before a refusal that never clears is surfaced. */
+  maxWaitMs?: number;
   /** Devnet v2.1: a Custom(121) order waits to be resent ("Refreshing positions…"). */
   onRefreshingPositions?: (refreshing: boolean) => void;
 }

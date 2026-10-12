@@ -118,7 +118,7 @@ import { OpenModeMarketNotes } from "@/components/v22/OpenModeMarketNotes";
 import { useBandRentView } from "@/hooks/useBandRentView";
 import { useLotTradingGuard } from "@/hooks/useLotTradingGuard";
 import { FixPricingAction } from "@/components/trade/FixPricingAction";
-import { waitPolicy } from "@/lib/limits/price-stall";
+import { waitPolicy, TRADE_WAIT_BUDGET_MS } from "@/lib/limits/price-stall";
 import { resolveUserMessage, type UserMessage, type UserMessageAction } from "@/lib/limits/user-message";
 import { TICKET_COPY } from "@/lib/limits/copy";
 import { decodeMarketEngineView } from "@/lib/limits/decode";
@@ -1085,6 +1085,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
                 onWaitingLong: () => setWaitingLong(true),
                 // v2.2 QA Q-3: never wait on a settled market or a price nobody is pushing.
                 shouldWait: waitPolicy(() => stallRef.current),
+                // v2.2 QA Q-7: a refusal that never clears (e.g. a 19 the program will not lift) ends after 2 minutes.
+                ...(isDevnetV22Enabled() ? { maxWaitMs: TRADE_WAIT_BUDGET_MS } : {}),
                 onRefreshingPositions: setRefreshingPositions,
                 abortSignal: waitAbort.signal,
               },
