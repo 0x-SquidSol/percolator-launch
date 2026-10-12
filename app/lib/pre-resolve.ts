@@ -23,7 +23,7 @@
 import { decodeAssetVaultLpP3, parseLpVaultRegistry } from "@/lib/v22/records";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { fetchMarketTailsV22 } from "@/lib/v22/market-tails";
-import { buildLpVaultCrankFeesIxBoundV22 } from "@/lib/v22/sdk";
+import { buildLpVaultCrankFeesIxBoundV22, decodeStakePoolV5 } from "@/lib/v22/sdk";
 import {
   PublicKey,
   SystemProgram,
@@ -115,6 +115,21 @@ export interface PoolState {
   isInitialized: boolean;
   percolatorProgram: PublicKey;
   vault: PublicKey;
+}
+
+/**
+ * v2.2 QA D-1: a v2.2 stake pool is the v5 layout (480 bytes, version byte 5). The installed SDK's `decodeStakePool`
+ * refuses it ("unsupported version: 5 !== 4"), which read as "no initialised stake pool" and marked the stake leg stuck.
+ * Flag on: the v5 decoder (it accepts only an initialised v5 pool). Flag off: the installed decoder, unchanged.
+ */
+export function decodePreResolvePool(data: Uint8Array): PoolState {
+  const floorFlags = readStakeFloorFlags(data);
+  if (isDevnetV22Enabled()) {
+    const d = decodeStakePoolV5(data);
+    return { slab: d.slab, poolMode: d.poolMode, totalLpSupply: d.totalLpSupply, floorFlags, isInitialized: data[0] === 1, percolatorProgram: d.percolatorProgram, vault: d.vault };
+  }
+  const d = decodeStakePool(data);
+  return { slab: d.slab, poolMode: d.poolMode, totalLpSupply: d.totalLpSupply, floorFlags, isInitialized: d.isInitialized, percolatorProgram: d.percolatorProgram, vault: d.vault };
 }
 
 export type StakeLegPlan = { action: "push" } | { action: "none" } | { action: "stuck"; reason: string };
@@ -319,16 +334,7 @@ export async function readAndPlanPreResolve(
   let pool: PoolState | null = null;
   if (pi && pi.owner.equals(p.stakeProgramId)) {
     try {
-      const d = decodeStakePool(new Uint8Array(pi.data));
-      pool = {
-        slab: d.slab,
-        poolMode: d.poolMode,
-        totalLpSupply: d.totalLpSupply,
-        floorFlags: readStakeFloorFlags(new Uint8Array(pi.data)),
-        isInitialized: d.isInitialized,
-        percolatorProgram: d.percolatorProgram,
-        vault: d.vault,
-      };
+      pool = decodePreResolvePool(new Uint8Array(pi.data));
     } catch {
       pool = null;
     }

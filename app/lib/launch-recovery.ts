@@ -24,6 +24,7 @@
 import { PublicKey, type Connection, type VersionedTransactionResponse } from "@solana/web3.js";
 import { IX_TAG } from "@percolatorct/sdk";
 import { bpsPct } from "@/lib/format";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import {
   INIT_MARKET_TAG,
   KEEPER_REGISTER_MEMO_FAMILY,
@@ -63,7 +64,11 @@ const u64At = (d: Uint8Array, off: number): bigint => new DataView(d.buffer, d.b
  * tradeFeeBaseBps(u64) ...
  */
 export function decodeInitMarketData(data: Uint8Array): InitMarketFacts | null {
-  if (data.length !== INIT_MARKET_DATA_LEN || data[0] !== INIT_MARKET_TAG) return null;
+  // v2.2 QA D-1: a v2.2 InitMarket is the same 219 bytes followed by the growth / rent / band trailer
+  // (lib/v22/sdk/v22-wire.ts encodeInitMarketV22), so the exact-length check refused every v2.2 launch and resume
+  // reported "no creation tx". Flag on: the 219-byte prefix is read, a longer payload is accepted.
+  const lenOk = isDevnetV22Enabled() ? data.length >= INIT_MARKET_DATA_LEN : data.length === INIT_MARKET_DATA_LEN;
+  if (!lenOk || data[0] !== INIT_MARKET_TAG) return null;
   return {
     maxPortfolioAssets: new DataView(data.buffer, data.byteOffset, data.byteLength).getUint16(1, true),
     initialPriceE6: u64At(data, 19),

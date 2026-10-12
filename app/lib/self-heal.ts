@@ -74,7 +74,8 @@ import { defaultCrankObservations } from "@/lib/v18-wire";
 
 import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 import { decodeAssetVaultLp } from "@/lib/limits/decode";
-import { marketOffsets } from "@/lib/v22/market-offsets";
+import { marketOffsets, marketOffsetsOrNull } from "@/lib/v22/market-offsets";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
 // ── Wire tags (deployed wrapper decode arms) ─────────────────────────────────
 export const EXPIRE_BACKING_BUCKET_TAG = 89;
 export const FINALIZE_RESET_SIDE_TAG = 45;
@@ -347,8 +348,22 @@ const ASSET_SLOT_LAST_REL = 41;
 const CONFIG_MAX_ACCRUAL_DT_REL = 118;
 
 /** Local readers (no SDK constants at import time: this module is loaded by sendTx everywhere). */
+/**
+ * v2.2 QA D-1: the market group is 48 bytes longer on v2.2 (806 vs 758) and `current_slot` moved (661 vs 613), so the
+ * v2.1 constants read other fields there: the catch-up plan saw no lag and never cranked. Flag on, both offsets come
+ * from the account's VERSION (lib/v22/market-offsets.ts); an unknown VERSION plans nothing. Flag off: the constants.
+ */
+function catchUpOffsets(d: Uint8Array): { slotLast: number; currentSlot: number } | null {
+  if (!isDevnetV22Enabled()) {
+    return { slotLast: MARKET_GROUP_OFF + MARKET_GROUP_LEN + ASSET_WRAPPER_LEN + ASSET_SLOT_LAST_REL, currentSlot: MARKET_GROUP_OFF + GROUP_CURRENT_SLOT_REL };
+  }
+  const M = marketOffsetsOrNull(d, "planCatchUp");
+  return M ? { slotLast: M.engineOff(0) + ASSET_SLOT_LAST_REL, currentSlot: M.g + M.layout.group.currentSlot } : null;
+}
 function readSlotLast(d: Uint8Array): bigint | null {
-  const off = MARKET_GROUP_OFF + MARKET_GROUP_LEN + ASSET_WRAPPER_LEN + ASSET_SLOT_LAST_REL;
+  const o = catchUpOffsets(d);
+  if (!o) return null;
+  const off = o.slotLast;
   if (off + 8 > d.length) return null;
   const v = view(d).getBigUint64(off, true);
   return v > 0n ? v : null;
@@ -363,7 +378,8 @@ function readMaxAccrualDt(d: Uint8Array): bigint | null {
 export function planCatchUp(data: Uint8Array, readSlot: bigint, userCu: number): CatchUpPlan {
   const slotLast = readSlotLast(data);
   const dt = readMaxAccrualDt(data);
-  const headerSlot = data.length >= MARKET_GROUP_OFF + GROUP_CURRENT_SLOT_REL + 8 ? view(data).getBigUint64(MARKET_GROUP_OFF + GROUP_CURRENT_SLOT_REL, true) : 0n;
+  const cur = catchUpOffsets(data)?.currentSlot ?? null;
+  const headerSlot = cur !== null && data.length >= cur + 8 ? view(data).getBigUint64(cur, true) : 0n;
   const now = readSlot > headerSlot ? readSlot : headerSlot;
   if (slotLast === null || dt === null || now <= slotLast) return { k: 0, lagSlots: 0n, dtSlots: dt, beyondCap: false };
   const lag = now - slotLast;
