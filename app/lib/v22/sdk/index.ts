@@ -23,4 +23,5 @@ export * from "./v22-lp-share-ix";
 export * from "./v22-fill-events";
 export * from "./errors-v22";
 export * from "./v22-trade-fee";
+export * from "./v22-multi-asset-trade";
 export * as v22Slab from "./slab";
