@@ -6,7 +6,12 @@
  * "source guard" tests assert a component/hook imports and uses the lot helper at its display sites; they prove the
  * wiring exists (a dropped conversion fails them), the pure maths is covered by the behavioural tests around them.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, beforeAll, afterAll } from "vitest";
+
+// These cases feed indexer rows to the candle provider: an indexer is attested (on the v2.2 preview there is none and
+// the provider does not ask at all; lib/v22/indexer.ts, minor-qa-retest3.test.tsx).
+beforeAll(() => { process.env.NEXT_PUBLIC_V22_INDEXER_LOT_AWARE = "1"; });
+afterAll(() => { delete process.env.NEXT_PUBLIC_V22_INDEXER_LOT_AWARE; });
 import fs from "node:fs";
 import path from "node:path";
 import { PublicKey } from "@solana/web3.js";

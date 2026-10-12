@@ -1,4 +1,9 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, beforeAll, afterAll } from "vitest";
+
+// These cases feed indexer rows to the candle provider: an indexer is attested (on the v2.2 preview there is none and
+// the provider does not ask at all; lib/v22/indexer.ts, minor-qa-retest3.test.tsx).
+beforeAll(() => { process.env.NEXT_PUBLIC_V22_INDEXER_LOT_AWARE = "1"; });
+afterAll(() => { delete process.env.NEXT_PUBLIC_V22_INDEXER_LOT_AWARE; });
 import { applyMarkTick, applyTrade, bucketStart, normalizeBars, type ProviderBar } from "@/lib/tv/data/provider";
 import { HISTORY_PROBE_INTERVAL_MS, createCandlesApiProvider, parseUdf, type MarkStream } from "@/lib/tv/data/candlesApiProvider";
 import { createTradeStream, parseTradeMessage, type LiveTrade, type TradeStream } from "@/lib/tv/data/tradeStream";
