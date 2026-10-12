@@ -8,6 +8,7 @@ import { VAULT_LP_MATCHER_CTX_LEN } from "@/lib/limits/constants";
 import { MATCHER_CONTEXT_LEN } from "@percolatorct/sdk";
 import { portfolioAccountLen } from "@/lib/v22/layout";
 import { SHARE_NAMING_NET_LAMPORTS, isShareNamingEnabled } from "@/lib/v22/share-naming";
+import { rentSol } from "@/lib/rent";
 
 interface CostEstimateProps {
   lpCollateral: string;
@@ -16,22 +17,6 @@ interface CostEstimateProps {
   tokenDecimals: number;
   tokenPriceUsd?: number;
   className?: string;
-}
-
-/**
- * Rent-exempt minimum per account: (data bytes + 128) × lamports per byte. The rate was
- * 6960; getMinimumBalanceForRentExemption on devnet AND mainnet now returns 5080/byte
- * (0 B → 650,240; 33,900 B → 172,862,240), so 6960 over-quoted every launch by ~37%.
- * ponytail: hard-coded rate — if rent changes again, read it once from
- * getMinimumBalanceForRentExemption(0) / 128 instead.
- */
-const RENT_PER_BYTE = 5080;
-const RENT_OVERHEAD_BYTES = 128;
-const LAMPORTS_PER_SOL = 1_000_000_000;
-
-/** Rent-exempt minimum, in SOL, for accounts of the given data sizes. */
-function rentSol(...sizes: number[]): number {
-  return sizes.reduce((sum, bytes) => sum + (bytes + RENT_OVERHEAD_BYTES) * RENT_PER_BYTE, 0) / LAMPORTS_PER_SOL;
 }
 
 /** Estimated transaction fees for the ~9-10 signed-transaction creation flow (see
@@ -118,7 +103,7 @@ export function computeCreateMarketSolCost(
   const earnVaultStakeRentSol = rentSol(...EARN_VAULT_AND_STAKE_ACCOUNT_BYTES);
 
   // v2.2: naming the Earn share token (tag 122) costs the Metaplex record's rent + create fee.
-  const shareNamingSol = isShareNamingEnabled() ? SHARE_NAMING_NET_LAMPORTS / LAMPORTS_PER_SOL : null;
+  const shareNamingSol = isShareNamingEnabled() ? SHARE_NAMING_NET_LAMPORTS / 1_000_000_000 : null;
 
   const totalSolCost =
     slabRentSol + tokenAccountRentSol + lpPortfolioMatcherRentSol + earnVaultStakeRentSol + TX_FEE_ESTIMATE_SOL + (shareNamingSol ?? 0);
