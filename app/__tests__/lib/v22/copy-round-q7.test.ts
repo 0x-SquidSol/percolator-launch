@@ -48,6 +48,6 @@ describe("copy round", () => {
     const tx = readFileSync(path.join(__dirname, "../../../lib/tx.ts"), "utf8");
     expect(tx).toMatch(/if \(waitBudgetSpent\(waited, maxWaitMs\)\) \{\s+onWaiting\?\.\(false\);\s+throw new WaitExhaustedError\(e\);/);
     const ticket = readFileSync(path.join(__dirname, "../../../components/trade/OrderTicket.tsx"), "utf8");
-    expect(ticket).toContain("maxWaitMs: TRADE_WAIT_BUDGET_MS");
+    expect(ticket).toContain("maxWaitMs: waitBudgetMs");
   });
 });

@@ -41,6 +41,8 @@ export interface BandRentView {
     recoveryMinutes: number;
   };
   price: {
+    /** `max_price_move_bps_per_slot`: how fast the effective price may walk toward the target (round i wait estimate). */
+    capBpsPerSlot: bigint;
     /** Per-lot e6. */
     markE6: bigint;
     targetE6: bigint;
@@ -77,7 +79,7 @@ export function readBandRentView(data: Uint8Array | null | undefined, assetIndex
       minLegNotionalAtoms: v.config.bandMinLegNotional,
       recoveryMinutes: v.band.recoveryMinutes,
     },
-    price: { markE6: v.price.markE6, targetE6: v.price.targetE6, lagging: v.price.lagging, floorStuck: v.price.floorStuck, favourableCloseSide: v.price.favourableCloseSide },
+    price: { capBpsPerSlot: v.config.maxPriceMoveBpsPerSlot, markE6: v.price.markE6, targetE6: v.price.targetE6, lagging: v.price.lagging, floorStuck: v.price.floorStuck, favourableCloseSide: v.price.favourableCloseSide },
     rent: { enabled: v.rentRates.enabled, maxE9PerSlot: v.config.rentMaxE9PerSlot, kinkBps: v.rent.rentKinkBps, rateLongE9: v.rentRates.long, rateShortE9: v.rentRates.short },
   };
 }

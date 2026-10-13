@@ -288,3 +288,30 @@ describe("SILENT-1: a confirmed order that cannot reach the wallet always says w
     expect(mocks.fund).not.toHaveBeenCalled();
   });
 });
+
+describe("round i: the waiting ticket says how long, from the market account", () => {
+  afterEach(() => { __setDevnetV22ForTest(null); });
+  it("a 20 bps gap at cap 1 (20 slots) shows 'Price is catching up — about 15 seconds. Goes through automatically.' with Stop", async () => {
+    __setDevnetV22ForTest(true);
+    mocks.bandView = { assetIndex: 0, lotExp: 0, band: { enabled: true, bandBps: 130, epochSlots: 600n, pinSlots: 9000n, maxPositionsPerSide: 256n, minLegNotionalAtoms: 1_000_000n, recoveryMinutes: 64 }, price: { capBpsPerSlot: 1n, markE6: 100_000_000n, targetE6: 100_200_000n, lagging: true, floorStuck: false, favourableCloseSide: "long" }, rent: { enabled: false, maxE9PerSlot: 0n, kinkBps: 0, rateLongE9: 0n, rateShortE9: 0n } };
+    mocks.fund.mockImplementationOnce(async (p: { onWaiting?: (w: boolean) => void }) => { p.onWaiting?.(true); await new Promise(() => {}); });
+    render(<OrderTicket slabAddress={SLAB} />);
+    await waitFor(() => expect(screen.queryByTestId("trade-submit")).not.toBeNull());
+    size("5");
+    await place();
+    await waitFor(() => expect(screen.queryByTestId("trade-catchup-estimate")).not.toBeNull());
+    expect(screen.getByTestId("trade-catchup-estimate").textContent).toContain("Price is catching up — about 15 seconds. Goes through automatically.");
+    expect(screen.getByTestId("trade-catchup-estimate").textContent).toContain("Stop");
+  });
+  it("NEGATIVE: no band / no gap -> no estimate line (the old wait copy stays)", async () => {
+    __setDevnetV22ForTest(true);
+    mocks.bandView = null;
+    mocks.fund.mockImplementationOnce(async (p: { onWaiting?: (w: boolean) => void }) => { p.onWaiting?.(true); await new Promise(() => {}); });
+    render(<OrderTicket slabAddress={SLAB} />);
+    await waitFor(() => expect(screen.queryByTestId("trade-submit")).not.toBeNull());
+    size("5");
+    await place();
+    await waitFor(() => expect(screen.getByTestId("trade-submit").textContent).toContain("Waiting for the latest price"));
+    expect(screen.queryByTestId("trade-catchup-estimate")).toBeNull();
+  });
+});

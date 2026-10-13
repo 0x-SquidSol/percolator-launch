@@ -122,7 +122,8 @@ import { OpenModeMarketNotes } from "@/components/v22/OpenModeMarketNotes";
 import { useBandRentView } from "@/hooks/useBandRentView";
 import { useLotTradingGuard } from "@/hooks/useLotTradingGuard";
 import { FixPricingAction } from "@/components/trade/FixPricingAction";
-import { waitPolicy, TRADE_WAIT_BUDGET_MS } from "@/lib/limits/price-stall";
+import { waitPolicy } from "@/lib/limits/price-stall";
+import { CATCHUP_COPY, catchUpBudgetMs, catchUpEstimate, catchUpLine, measureSlotMs, retryOnceAfterShortLag, SLOT_MS_DEFAULT } from "@/lib/limits/catchup-estimate";
 import { resolveUserMessage, type UserMessage, type UserMessageAction } from "@/lib/limits/user-message";
 import { TICKET_COPY } from "@/lib/limits/copy";
 import { decodeMarketEngineView } from "@/lib/limits/decode";
@@ -304,6 +305,11 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const mintAddress = mktConfig?.collateralMint?.toBase58() ?? "";
   const collateralSymbol = sanitizeSymbol(tokenMeta?.symbol, mintAddress);
   const bandView = useBandRentView();
+  // Round i: how long the price catch-up will take, from the market account (cap, effective, target); null without a gap source.
+  const [slotMs, setSlotMs] = useState(SLOT_MS_DEFAULT);
+  const catchUp = bandView?.band.enabled ? catchUpEstimate({ effectiveE6: bandView.price.markE6, targetE6: bandView.price.targetE6, capBpsPerSlot: bandView.price.capBpsPerSlot, slotMs }) : null;
+  const catchUpMsRef = useRef<number | null>(null);
+  catchUpMsRef.current = catchUp ? catchUp.ms : null;
   // v2.2 (N2): a market with lots is not traded until every surface is lot-aware (null with the flag off).
   const lotGuard = useLotTradingGuard(slabAddress);
   // v2.2 lot markets (lib/v22/lot.ts): the mark, entry and every position q are PER LOT. The size box is in TOKENS, so
@@ -1098,13 +1104,31 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     waitAbortRef.current = waitAbort;
     const submitPriceE6 = getLivePriceSnapshot(slabAddress).priceE6 ?? livePriceE6 ?? 0n;
     setTradePhase("submitting");
+    // Round i: the wait budget follows the estimate (max(2 min, 1.5 x estimate), at most 10 min); one silent retry covers a lag
+    // that clears in about a keeper sweep (a 21 right after the approval).
+    const measuredSlotMs = isDevnetV22Enabled() ? await measureSlotMs(connection).catch(() => SLOT_MS_DEFAULT) : SLOT_MS_DEFAULT;
+    setSlotMs(measuredSlotMs);
+    const submitEstimate = bandView?.band.enabled
+      ? catchUpEstimate({ effectiveE6: bandView.price.markE6, targetE6: bandView.price.targetE6, capBpsPerSlot: bandView.price.capBpsPerSlot, slotMs: measuredSlotMs })
+      : null;
+    const waitBudgetMs = catchUpBudgetMs(submitEstimate ? submitEstimate.ms : null);
+    const lagRetry = <T,>(run: () => Promise<T>): Promise<T> =>
+      isDevnetV22Enabled()
+        ? retryOnceAfterShortLag(run, {
+            // Only a refusal AFTER the wallet signed (the send hit 21): a pre-wallet SimulationRefusal is already waited on by sendTxWaiting.
+            isLagRefusal: (e) => (e as { name?: string } | null)?.name !== "SimulationRefusal" && resolveUserMessage(e, { surface: "trade" }).kind === "engine-catching-up",
+            estimateMs: () => catchUpMsRef.current,
+            onWaiting: (w) => setTradePhase((ph) => (w ? "waiting" : ph === "waiting" ? "submitting" : ph)),
+            aborted: () => waitAbort.signal.aborted,
+          })
+        : run();
     try {
       const size = direction === "short" ? -effectiveSize : effectiveSize;
       // Confirmed submissions carry the exact worst-fill bound reviewed
       // in the modal. Other callers retain useTrade's live-mark fallback.
       const sig = fundingMode
         ? (
-            await fundAndTrade({
+            await lagRetry(() => fundAndTrade({
               size,
               depositAtoms: fundAtoms,
               limitPriceE6:
@@ -1118,20 +1142,20 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
               // v2.2 QA RT5b: the same waiting as the plain trade below (was three re-checks in 4.5 s, then a failure).
               ...(isDevnetV22Enabled()
                 ? {
-                    maxWaitMs: TRADE_WAIT_BUDGET_MS,
+                    maxWaitMs: waitBudgetMs,
                     shouldWait: waitPolicy(() => stallRef.current),
                     onWaiting: (w: boolean) => setTradePhase((ph) => (w ? "waiting" : ph === "waiting" ? "submitting" : ph)),
                     onWaitingLong: () => setWaitingLong(true),
                     abortSignal: waitAbort.signal,
                   }
                 : {}),
-            })
+            }))
           ).signature
         : await withTransientRetry(
         async () => {
           // A retry signs again: back to "Confirm in wallet…" until that one is broadcast too.
           setTradePhase("submitting");
-          return trade(
+          return lagRetry(() => trade(
             bindConfirmedLimitPrice(
               {
                 lpIdx,
@@ -1150,7 +1174,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
                 // v2.2 QA Q-3: never wait on a settled market or a price nobody is pushing.
                 shouldWait: waitPolicy(() => stallRef.current),
                 // v2.2 QA Q-7: a refusal that never clears (e.g. a 19 the program will not lift) ends after 2 minutes.
-                ...(isDevnetV22Enabled() ? { maxWaitMs: TRADE_WAIT_BUDGET_MS } : {}),
+                ...(isDevnetV22Enabled() ? { maxWaitMs: waitBudgetMs } : {}),
                 onRefreshingPositions: setRefreshingPositions,
                 abortSignal: waitAbort.signal,
                 // #49: signed and sent. "pending" is the ticket's "Confirming…" label.
@@ -1158,7 +1182,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
               },
               snapshotLimitPriceE6,
             ),
-          );
+          ));
         },
         { maxRetries: 2, delayMs: 3000 },
       );
@@ -1486,6 +1510,17 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       return (
         <div data-testid="trade-position-cap">
           <StatusLine message={{ kind: "position-cap", variant: "error", title: "Position limit reached", body: V22_POSITION_CAP_COPY }} />
+        </div>
+      );
+    }
+    // Round i: while the order waits for the price walk, say how long (live from the market account), with Stop from the start.
+    if (tradePhase === "waiting" && catchUp && catchUp.ms > 0 && catchUpLine(catchUp.ms)) {
+      return (
+        <div data-testid="trade-catchup-estimate">
+          <StatusLine
+            message={{ kind: "waiting-estimate", variant: "wait", title: CATCHUP_COPY.title, body: catchUpLine(catchUp.ms) as string, action: { id: "stop", label: TICKET_COPY.waitingLong.stop } }}
+            onAction={onSlotAction}
+          />
         </div>
       );
     }

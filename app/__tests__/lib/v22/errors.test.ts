@@ -156,3 +156,14 @@ describe("F10 honest copy", () => {
     expect(m.autoRetry).toBeFalsy();
   });
 });
+
+describe("round i: a 104 close never reads as the 'catching up' of a 21", () => {
+  it("104 on a close: title says the close is on hold; 21 on a close keeps the market-catching-up line", () => {
+    const m104 = resolveUserMessage(fail(WRAPPER_ERR_V22.PriceBandPinned), { surface: "close" });
+    expect(m104.title).toBe("Close on hold");
+    expect(m104.title.toLowerCase()).not.toContain("catching");
+    const m21 = resolveUserMessage(fail(21), { surface: "close" });
+    expect(m21.kind).toBe("engine-catching-up");
+    expect(m21.body).toContain("Try again in a moment");
+  });
+});

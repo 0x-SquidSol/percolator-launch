@@ -26,7 +26,7 @@ export function v22WrapperMessage(code: number, ctx: MessageContext & { minPosit
       // No autoRetry: nothing consumes it for a close, and a pin can last about an hour (band_max_pin_slots), so the line stays
       // calm and short and the honest part sits in Details.
       // QA P-4: 104 refuses only the close the stale pinned price would favour (the other direction is allowed).
-      return m("band-catching-up", "wait", "Price catching up", V22_COPY.band.pinnedClose, { why: V22_COPY.band.catchingUpWhy });
+      return m("band-catching-up", "wait", "Close on hold", V22_COPY.band.pinnedClose, { why: V22_COPY.band.catchingUpWhy });
     case V.PriceBandConfigInvalid:
       return m("band-config", "error", "Price protection not valid", "These price-protection settings aren't valid for this market. Adjust them and try again. Nothing was sent.");
     case V.HoldingRentConfigInvalid:
