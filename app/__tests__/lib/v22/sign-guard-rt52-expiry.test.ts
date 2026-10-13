@@ -8,6 +8,7 @@ import { Keypair, Transaction, TransactionInstruction, PublicKey } from "@solana
 import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import { DEVNET_GENESIS_HASH } from "@/lib/v22/devnet-guard";
 import { __resetSignGuardForTest, guardSign, noteBlockhash, WalletRequestClosedError, WALLET_EXPIRY_MIN_MS, isSignDebugEnabled, signLog } from "@/lib/v22/sign-guard";
+import { firstTradeCancelledExtras, FIRST_TRADE_COPY } from "@/lib/first-trade";
 import { resolveUserMessage } from "@/lib/limits/user-message";
 
 const BH = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
@@ -32,6 +33,53 @@ async function reject(err: Error, afterMs: number): Promise<unknown> {
     sign: async () => { clock += afterMs; throw err; },
   }).catch((e) => e);
 }
+
+/** Round f: the blockhash was noted `ageAtOpenMs` before the wallet opened; the wallet answers `afterMs` later; the RPC says `valid`. */
+async function rejectWithBlockhash(err: unknown, ageAtOpenMs: number, afterMs: number, valid: boolean | "throws" = true): Promise<unknown> {
+  let clock = 1_000_000;
+  const c = { getGenesisHash: conn.getGenesisHash, isBlockhashValid: vi.fn(async () => { if (valid === "throws") throw new Error("rpc down"); return { context: { slot: 1 }, value: valid }; }) };
+  noteBlockhash(BH, "sendTx attempt 1", c, clock - ageAtOpenMs);
+  return guardSign({
+    txs: [tx()], via: "adapter signTransaction", connection: c, chain: "solana:devnet", now: () => clock,
+    sign: async () => { clock += afterMs; throw err; },
+  }).catch((e) => e);
+}
+// What Solflare really throws: a JsonRpcError-like plain object, not an Error.
+const jsonRpcLike = () => ({ code: -32000, message: "Transaction cancelled", name: "JsonRpcError" });
+
+describe("RT5-2 round f: the transaction expired while the popup was open", () => {
+  beforeEach(() => { __setDevnetV22ForTest(true); __resetSignGuardForTest(); vi.spyOn(console, "error").mockImplementation(() => {}); vi.spyOn(console, "info").mockImplementation(() => {}); });
+  afterEach(() => { __setDevnetV22ForTest(null); vi.restoreAllMocks(); });
+
+  it("a plain {code,message} JsonRpcError after the threshold -> timeout copy", async () => {
+    const thrown = await reject(jsonRpcLike() as unknown as Error, 70_000);
+    expect(thrown).toBeInstanceOf(WalletRequestClosedError);
+    expect(resolveUserMessage(thrown, { surface: "trade" }).body).toBe(TIMEOUT_COPY);
+  });
+  it("answered quickly, but the blockhash is already older than the window by then -> timeout copy", async () => {
+    expect(await rejectWithBlockhash(solflareCancel(), 50_000, 6_000)).toBeInstanceOf(WalletRequestClosedError);
+  });
+  it("answered quickly, blockhash no longer valid on the RPC -> timeout copy", async () => {
+    expect(await rejectWithBlockhash(solflareCancel(), 5_000, 3_000, false)).toBeInstanceOf(WalletRequestClosedError);
+  });
+  it("fast decline with a fresh, valid blockhash stays Cancelled; an RPC failure proves nothing", async () => {
+    for (const v of [true, "throws"] as const) {
+      const thrown = await rejectWithBlockhash(solflareCancel(), 5_000, 3_000, v);
+      expect(thrown).not.toBeInstanceOf(WalletRequestClosedError);
+      expect(resolveUserMessage(thrown, { surface: "trade" }).body).toBe("Cancelled.");
+    }
+  });
+  it("the Phantom Testnet-Mode hint is Phantom-only: absent for Solflare, null and unknown wallets", () => {
+    expect(firstTradeCancelledExtras("Phantom", true).why).toContain("Phantom");
+    for (const n of ["Solflare", "Backpack", null, undefined]) expect(firstTradeCancelledExtras(n, true)).toEqual({ body: FIRST_TRADE_COPY.cancelled });
+    expect(firstTradeCancelledExtras("Phantom", false).why).toBeUndefined();
+  });
+  it("a timeout never takes the 'cancelled' branch (so never carries the hint)", async () => {
+    const um = resolveUserMessage(await reject(solflareCancel(), 70_000), { surface: "trade", oneShot: true });
+    expect(um.kind).toBe("wallet-request-closed");
+    expect(um.quiet).toBeFalsy();
+  });
+});
 
 describe("RT5-2 expiry vs decline", () => {
   beforeEach(() => { __setDevnetV22ForTest(true); __resetSignGuardForTest(); vi.spyOn(console, "error").mockImplementation(() => {}); vi.spyOn(console, "info").mockImplementation(() => {}); });
@@ -87,5 +135,49 @@ describe("RT5-2 expiry vs decline", () => {
       win.location.search = "";
       expect(isSignDebugEnabled()).toBe(false);
     } finally { vi.unstubAllGlobals(); }
+  });
+});
+
+import { formatSignEntry, signLog as signLogRT } from "@/lib/v22/sign-guard";
+import { HANDOFF_BLOCKHASH_MAX_AGE_MS, refreshBlockhashBeforeHandoff, getFreshBlockhash } from "@/lib/tx";
+
+describe("NB-2 round f: what the sign log now records, and the hand-off refresh", () => {
+  beforeEach(() => { __setDevnetV22ForTest(true); __resetSignGuardForTest(); vi.spyOn(console, "error").mockImplementation(() => {}); vi.spyOn(console, "info").mockImplementation(() => {}); });
+  afterEach(() => { __setDevnetV22ForTest(null); vi.restoreAllMocks(); });
+
+  it("the log carries the fetch commitment, lastValidBlockHeight, age and the pre-hand-off validity check", async () => {
+    noteBlockhash(BH, "sendTx attempt 1", conn, 1_000, { commitment: "confirmed", lastValidBlockHeight: 123_456 });
+    await guardSign({ txs: [tx()], via: "adapter signTransaction", connection: conn, chain: "solana:devnet", now: () => 3_000, sign: async () => "ok" });
+    const e = signLogRT()[0];
+    expect(e).toMatchObject({ fetchCommitment: "confirmed", lastValidBlockHeight: 123_456, blockhashAgeMs: 2_000, validAtHandoff: true });
+    expect(formatSignEntry(e)).toContain("fetched@confirmed lvbh 123456 valid@handoff true");
+  });
+
+  it("a blockhash the RPC no longer knows at hand-off is reported (stale) in the log", async () => {
+    const c = { ...conn, isBlockhashValid: vi.fn(async () => ({ context: { slot: 1 }, value: false })) };
+    noteBlockhash(BH, "sendTx attempt 1", c, 1_000, { commitment: "confirmed", lastValidBlockHeight: 1 });
+    await guardSign({ txs: [tx()], via: "adapter signTransaction", connection: c, chain: "solana:devnet", now: () => 2_000, sign: async () => "ok" });
+    expect(signLogRT()[0]).toMatchObject({ verdict: "stale-blockhash", validAtHandoff: false });
+  });
+
+  it("sendTx hand-off: a blockhash fetched before the planning/simulation is replaced when it has aged; a fresh one is kept", async () => {
+    let n = 0;
+    const c = { getGenesisHash: conn.getGenesisHash, isBlockhashValid: conn.isBlockhashValid, getLatestBlockhash: vi.fn(async () => ({ blockhash: `BH${++n}`, lastValidBlockHeight: 100 + n })) };
+    const first = await getFreshBlockhash(c as never, true, "t");
+    const t = { recentBlockhash: first };
+    // fresh: untouched
+    expect(await refreshBlockhashBeforeHandoff(c as never, t, Date.now())).toBe(false);
+    expect(t.recentBlockhash).toBe("BH1");
+    // aged past the limit: replaced by a newly fetched one
+    expect(await refreshBlockhashBeforeHandoff(c as never, t, Date.now() + HANDOFF_BLOCKHASH_MAX_AGE_MS + 1)).toBe(true);
+    expect(t.recentBlockhash).toBe("BH2");
+    expect(c.getLatestBlockhash).toHaveBeenCalledWith("confirmed");
+  });
+
+  it("flag off: nothing is replaced", async () => {
+    __setDevnetV22ForTest(false);
+    const t = { recentBlockhash: "X" };
+    expect(await refreshBlockhashBeforeHandoff({} as never, t, Date.now() + 999_999)).toBe(false);
+    expect(t.recentBlockhash).toBe("X");
   });
 });

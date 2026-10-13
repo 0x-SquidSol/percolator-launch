@@ -44,7 +44,7 @@ import { computeNotionalNative } from "@/lib/notional";
 import { availableLeverage as availableLeverageFor, nextLeverageInputState, clampSliderLeverage, LEVERAGE_STEP } from "@/lib/leverage-control";
 import { useTrade, prewarmTradeSubmission, resolveLpTradeAccounts } from "@/hooks/useTrade";
 import { useFirstTrade } from "@/hooks/useFirstTrade";
-import { FIRST_TRADE_COPY, FirstTradeDepositError, fundDepositAtoms, tradableMarginAtoms } from "@/lib/first-trade";
+import { FIRST_TRADE_COPY, FirstTradeDepositError, firstTradeCancelledExtras, fundDepositAtoms, tradableMarginAtoms } from "@/lib/first-trade";
 import { useMarketFillCap } from "@/hooks/useMarketFillCap";
 import { UNLIMITED_CAPACITY } from "@/lib/marketCapacity";
 import { isBlockedSlab } from "@/lib/blocklist";
@@ -251,7 +251,8 @@ function DiffRow({
  * needed.
  */
 const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
-  const { connected: walletConnected, publicKey } = useWalletCompat();
+  const { connected: walletConnected, publicKey, wallet: connectedWallet } = useWalletCompat();
+  const walletAdapterName = (connectedWallet as { adapter?: { name?: string } } | null | undefined)?.adapter?.name ?? null;
   const { connection } = useConnectionCompat();
   const realUserAccount = useUserAccount();
   const mockMode = isMockMode() && isMockSlab(slabAddress);
@@ -1329,8 +1330,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             ...um,
             quiet: false,
             title: "Cancelled",
-            body: FIRST_TRADE_COPY.cancelled,
-            ...(getNetwork() === "devnet" ? { why: FIRST_TRADE_COPY.cancelledDevnetWhy } : {}),
+            ...firstTradeCancelledExtras(walletAdapterName, getNetwork() === "devnet"),
           });
         }
         setTradePhase("idle");
