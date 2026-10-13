@@ -67,7 +67,7 @@ export const dynamic = "force-dynamic";
 // Tight enough to stop price manipulation while allowing normal market moves.
 const DEFAULT_MAX_CHANGE_E2BPS = 1_000n;
 
-/** Load crank keypair from CRANK_KEYPAIR (JSON array format only — same as advance-phase). */
+/** Load crank keypair from CRANK_KEYPAIR (JSON array format only). */
 function loadCrankKeypair(): Keypair | null {
   const raw = process.env.CRANK_KEYPAIR;
   if (!raw) return null;

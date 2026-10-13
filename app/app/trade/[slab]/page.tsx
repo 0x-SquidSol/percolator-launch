@@ -20,7 +20,6 @@ import { MarketLimitsStrip } from "@/components/limits/MarketLimitsStrip";
 import { MarketHeaderStatus, TradeMarketHealthBanner } from "@/components/market/MarketHealthBadges";
 import { AnalyticsDock } from "@/components/trade/AnalyticsDock";
 import { useIsLargeScreen } from "@/hooks/useIsLargeScreen";
-import { useAdvanceOraclePhase } from "@/hooks/useAdvanceOraclePhase";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { useLivePriceHasData, livePriceJsonFetcher } from "@/hooks/useLivePrice";
@@ -311,7 +310,6 @@ function TradePageInner({ slab }: { slab: string }) {
   const isLargeScreen = useIsLargeScreen();
 
   const { engine, config, header, loading: slabLoading, error: slabError } = useSlabState();
-  useAdvanceOraclePhase(slab);
   // Boolean presence subscription, NOT the full live-price state: this keeps the
   // trade-page shell OFF the ~4-5/sec price-tick re-render path (it only needs to
   // know whether a price exists, for the no-data gate below). See useLivePriceHasData.
