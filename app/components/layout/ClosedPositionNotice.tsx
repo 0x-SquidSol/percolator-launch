@@ -5,6 +5,7 @@ import { useRef } from "react";
 import { useClosedPositionNotices } from "@/hooks/useClosedPositionNotices";
 import { useOtherModalOpen } from "@/hooks/useOtherModalOpen";
 import { formatUsdPriceE6 } from "@/lib/format";
+import { describeLiqPrice } from "@/lib/liq-price-display";
 import type { ClosedNotice } from "@/lib/closed-positions";
 
 /** Notices shown at once; the rest wait behind them (each is dismissed on its own). */
@@ -24,8 +25,18 @@ export function sinceLabel(fromMs: number, nowMs: number = Date.now()): string {
 /** The notice's sentence parts, kept pure for tests. */
 export function noticeCopy(n: ClosedNotice, nowMs: number = Date.now()) {
   const name = n.symbol ? `${n.symbol} ${n.side}` : `${n.side} position`;
-  const liq = BigInt(n.liqPriceE6 || "0");
-  const liqText = liq > 0n && liq < 18446744073709551615n ? ` Its liquidation price was ${formatUsdPriceE6(liq)}.` : "";
+  // The shared liquidation-price display decides whether there is a real price to state (margin-health-surfaces
+  // guard). The remembered row has no capital or entry, so only a real price is said; "covered"/"unknown" say nothing.
+  const liq = describeLiqPrice({
+    liqPriceE6: BigInt(n.liqPriceE6 || "0"),
+    positionSize: BigInt(n.sizeAbs || "0") * (n.side === "short" ? -1n : 1n),
+    capital: null,
+    markPriceE6: BigInt(n.markE6 || "0"),
+    maintenanceMarginBps: 0n,
+    hasResolvedEntry: false,
+    formatPrice: formatUsdPriceE6,
+  });
+  const liqText = liq.kind === "price" ? ` Its liquidation price was ${liq.text}.` : "";
   return {
     title: `Your ${name} was closed`,
     body: `You hadn't traded it since we last saw it open ${sinceLabel(n.lastSeenAt, nowMs)}, so the protocol closed it: most likely a liquidation, or the market was settled.${liqText} Any margin left is on that market's Withdraw tab.`,
