@@ -46,6 +46,7 @@ export function parseDialInput(text: string, o: { min: number; max: number; step
   } else {
     t = t.replace(/,/g, "");
   }
+  t = t.replace(/\.$/, ""); // "4." -> "4" (typed a point, then Enter)
   if (!/^-?\d*\.?\d+$/.test(t)) return null;
   const n = Number(t);
   if (!Number.isFinite(n)) return null;
@@ -274,6 +275,9 @@ export const RotaryDial: FC<RotaryDialProps> = ({
   const commit = useCallback(
     (next: number) => {
       const v = clamp(next);
+      // Any committed change (slider, -/+, keys, or the typed value itself) ends an in-progress
+      // edit, so a half-typed or stale number can't overwrite it when the box later loses focus.
+      setDraft(null);
       pulse(v);
       if (v !== value) onChange(v);
     },
@@ -349,6 +353,8 @@ export const RotaryDial: FC<RotaryDialProps> = ({
           direction: "rtl",
           height: SIZE - 8,
           width: 22,
+          // A drag that starts on the slider moves the slider, never the page (touch screens).
+          touchAction: "none",
           // Same look as the trade ticket's leverage slider: a 4px track filled up to the value,
           // painted as a centred strip so the whole 22px column stays an easy touch target.
           background: `linear-gradient(to top, var(--accent) ${fillPct}%, var(--border) ${fillPct}%) center / 4px 100% no-repeat`,
@@ -368,7 +374,7 @@ export const RotaryDial: FC<RotaryDialProps> = ({
           −
         </button>
       <div
-        className="min-w-[74px] rounded-[2px] border border-[var(--border)] bg-[var(--dial-readout-bg)] px-2 py-1 text-center transition-colors duration-100"
+        className="min-w-[74px] rounded-[2px] border border-[var(--border)] bg-[var(--dial-readout-bg)] focus-within:border-[var(--accent)] text-center transition-colors duration-100"
         style={{
           boxShadow: ticking
             ? "inset 0 1px 3px rgba(0,0,0,0.9), 0 0 10px rgba(153,69,255,0.35)"
@@ -399,7 +405,7 @@ export const RotaryDial: FC<RotaryDialProps> = ({
               requestAnimationFrame(() => (e.target as HTMLInputElement).blur());
             }
           }}
-          className="w-[74px] bg-transparent text-center text-[13px] leading-none text-[var(--dial-readout-text)] outline-none disabled:cursor-not-allowed"
+          className="w-[90px] bg-transparent px-2 py-1 text-center text-[13px] leading-none text-[var(--dial-readout-text)] outline-none disabled:cursor-not-allowed"
           style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}
         />
       </div>

@@ -53,6 +53,7 @@ describe("RotaryDial typed value (numbers only, within the dial's limits)", () =
   it("snaps to the step and clamps to the limits; rejects non-numbers", () => {
     expect(parseDialInput("4.3", lev)).toBe(4.5);
     expect(parseDialInput("4,5", lev)).toBe(4.5);
+    expect(parseDialInput("4.", lev)).toBe(4);
     expect(parseDialInput("50", lev)).toBe(10);
     expect(parseDialInput("1", lev)).toBe(2);
     expect(parseDialInput("1,000", lp)).toBe(1000);
@@ -76,6 +77,17 @@ describe("RotaryDial typed value (numbers only, within the dial's limits)", () =
     fireEvent.keyDown(box, { key: "Escape" });
     expect(onChange).not.toHaveBeenCalled();
     expect(box.value).toBe("5x");
+  });
+  it("a slider or -/+ change during an edit wins; leaving the box afterwards does not undo it", () => {
+    const { onChange } = mount();
+    const box = screen.getByRole("textbox", { name: "Leverage value" }) as HTMLInputElement;
+    fireEvent.focus(box);
+    fireEvent.change(box, { target: { value: "3" } });
+    fireEvent.change(screen.getByTestId("Leverage-vertical-slider"), { target: { value: "8" } });
+    expect(onChange).toHaveBeenLastCalledWith(8);
+    onChange.mockClear();
+    fireEvent.blur(box);
+    expect(onChange).not.toHaveBeenCalled();
   });
 });
 
