@@ -12,6 +12,7 @@ import type { MessageContext, StatusVariant, UserMessage } from "@/lib/limits/us
 import { STAKE_ERRORS_V5 } from "./sdk";
 import { STAKE_ERR_DEPOSIT_BELOW_MIN_LIQUIDITY, STAKE_ERR_V5, WRAPPER_ERR_V22 } from "./wrapper-errors";
 import { V22_COPY } from "./copy";
+import { V22_COUNTERPARTY_CAP_COPY, V22_POSITION_CAP_REACHED_COPY } from "./trade-refusal-9-copy";
 
 /** percolator-stake error.rs: TrancheNotEnabled = 19, WrongTranche = 21. */
 export const STAKE_ERR_TRANCHE_NOT_ENABLED = 19;
@@ -68,6 +69,13 @@ export function v22WrapperMessage(code: number, ctx: MessageContext & { minPosit
       return m("bond-full", "paused", "Bond is full", V22_COPY.bond.full);
     case V.BondSlippage:
       return m("bond-requote", "wait", "Price moved", "The bond price moved past your minimum. Getting a new quote.", { requote: true });
+    case V.G9AllowlistTimelock:
+      return m("g9-timelock", "info", "Still waiting", "This feed-allowlist change is still in its waiting period. Nothing was changed.");
+    case V.PositionCapReached:
+      // Same line the ticket's own pre-check and the classified Custom(9) show (lib/v22/trade-refusal-9-copy.ts).
+      return m("position-cap", "error", "Position limit reached", V22_POSITION_CAP_REACHED_COPY);
+    case V.CounterpartyPositionCapReached:
+      return m("counterparty-cap", "paused", "Market is at its limit", V22_COUNTERPARTY_CAP_COPY);
     default:
       return null;
   }

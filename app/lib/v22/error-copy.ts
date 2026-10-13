@@ -4,6 +4,7 @@
  */
 import { WRAPPER_ERR_V22 } from "./wrapper-errors";
 import { V22_COPY } from "./copy";
+import { V22_COUNTERPARTY_CAP_COPY, V22_POSITION_CAP_REACHED_COPY } from "./trade-refusal-9-copy";
 import { STAKE_ERRORS_V5 } from "./sdk";
 
 export const V22_ERROR_CODE_MAP: Record<number, string> = {
@@ -25,6 +26,9 @@ export const V22_ERROR_CODE_MAP: Record<number, string> = {
   [WRAPPER_ERR_V22.LotConfigInvalid]: "Pick a launch price between $10 and $10,000 per lot.",
   [WRAPPER_ERR_V22.BondDepositAboveCap]: V22_COPY.bond.full,
   [WRAPPER_ERR_V22.BondSlippage]: "The bond price moved past your minimum. Getting a new quote.",
+  [WRAPPER_ERR_V22.G9AllowlistTimelock]: "This feed-allowlist change is still in its waiting period. Nothing was changed.",
+  [WRAPPER_ERR_V22.PositionCapReached]: V22_POSITION_CAP_REACHED_COPY,
+  [WRAPPER_ERR_V22.CounterpartyPositionCapReached]: V22_COUNTERPARTY_CAP_COPY,
 };
 
 export const V22_STAKE_ERROR_CODE_MAP: Record<number, string> = Object.fromEntries(

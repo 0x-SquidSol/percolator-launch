@@ -1,5 +1,5 @@
 /**
- * The Devnet v2.2 wrapper error codes 104..=119, 123, 124 (percolator-prog release/v22-wrapper, waves A to D),
+ * The Devnet v2.2 wrapper error codes 104..=119, 123..=127 (percolator-prog release/v22-wrapper, waves A to D),
  * kept OUT of `WRAPPER_ERR` and `WRAPPER_ERR_V21` for the same reason: those are pinned to the deployed wrapper.
  * Names are the Rust variant names (as in the SDK table `PERCOLATOR_ERRORS_V22`); codes 120..=122 stay in
  * `WRAPPER_ERR_V21`. Only interpreted when `NEXT_PUBLIC_DEVNET_V22` is on.
@@ -23,6 +23,9 @@ export const WRAPPER_ERR_V22 = {
   LotConfigInvalid: 119,
   BondDepositAboveCap: 123,
   BondSlippage: 124,
+  G9AllowlistTimelock: 125,
+  PositionCapReached: 126,
+  CounterpartyPositionCapReached: 127,
 } as const;
 
 export type WrapperErrorV22Name = keyof typeof WRAPPER_ERR_V22;

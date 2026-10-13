@@ -9,6 +9,7 @@ import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import { resolveUserMessage } from "@/lib/limits/user-message";
 import { humanizeError } from "@/lib/errorMessages";
 import { resolveDevnetProgramIds } from "@/lib/program-ids";
+import { V22_COUNTERPARTY_CAP_COPY, V22_CUSTOM9_COPY, V22_CUSTOM9_GENERIC, V22_POSITION_CAP_COPY } from "@/lib/v22/trade-refusal-9-copy";
 import { V22_ERROR_CODE_MAP, V22_STAKE_ERROR_CODE_MAP } from "@/lib/v22/error-copy";
 import { WRAPPER_ERR_V22, STAKE_ERR_V5, STAKE_ERR_DEPOSIT_BELOW_MIN_LIQUIDITY } from "@/lib/v22/wrapper-errors";
 
@@ -34,8 +35,8 @@ afterEach(() => {
 
 describe("every new code has a calm one-line message", () => {
   const wrapperCodes = Object.values(WRAPPER_ERR_V22);
-  it("covers wrapper 104..119, 123, 124", () => {
-    expect([...wrapperCodes].sort((a, b) => a - b)).toEqual([104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 123, 124]);
+  it("covers wrapper 104..119, 123..127", () => {
+    expect([...wrapperCodes].sort((a, b) => a - b)).toEqual([104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 123, 124, 125, 126, 127]);
   });
   it.each(wrapperCodes)("wrapper %i: structured message and plain string, one line, no jargon", (code) => {
     const m = resolveUserMessage(fail(code), { surface: "any", minPositionLabel: "100 USDC" });
@@ -115,6 +116,34 @@ describe("special handling", () => {
   });
   it("124 re-quotes the bond price", () => {
     expect(resolveUserMessage(fail(124), { surface: "any" }).requote).toBe(true);
+  });
+});
+
+describe("126 / 127: named position-cap refusals (percolator-prog fix/v22-p1-position-cap-error)", () => {
+  it("126 shows the same line as the ticket pre-check / classified 9, in both resolvers", () => {
+    const m = resolveUserMessage(fail(126), { surface: "trade" });
+    expect(m).toMatchObject({ kind: "position-cap", title: "Position limit reached", body: V22_CUSTOM9_COPY["position-cap"] });
+    expect(m.body.startsWith(V22_POSITION_CAP_COPY.replace(/ Close one.*$/, ""))).toBe(true);
+    expect(humanizeError(raw(126))).toBe(V22_CUSTOM9_COPY["position-cap"]);
+  });
+  it("127 names the counterparty, not the user", () => {
+    const m = resolveUserMessage(fail(127), { surface: "trade" });
+    expect(m.kind).toBe("counterparty-cap");
+    expect(m.body).toBe(V22_COUNTERPARTY_CAP_COPY);
+    expect(m.body).toMatch(/other side/);
+    expect(m.body).not.toBe(resolveUserMessage(fail(126), { surface: "trade" }).body);
+    expect(humanizeError(raw(127))).toBe(V22_COUNTERPARTY_CAP_COPY);
+  });
+  it("negative control: a bare 9 on a trade is unchanged (generic, no cap claim) and 128 is unknown", () => {
+    expect(humanizeError(raw(9), "trade")).toBe(V22_CUSTOM9_GENERIC);
+    expect(resolveUserMessage(fail(9), { surface: "trade" }).kind).not.toMatch(/cap/);
+    expect(resolveUserMessage(fail(128), { surface: "trade" }).kind).not.toMatch(/cap/);
+    expect(V22_ERROR_CODE_MAP[128]).toBeUndefined();
+  });
+  it("flag off: 126 / 127 are not interpreted", () => {
+    __setDevnetV22ForTest(false);
+    expect(resolveUserMessage(fail(126), { surface: "trade" }).kind).not.toMatch(/cap/);
+    expect(humanizeError(raw(127))).not.toBe(V22_COUNTERPARTY_CAP_COPY);
   });
 });
 

@@ -1,5 +1,5 @@
 /*
- * LOCAL ADAPTER PORT, not original code: the v2.2 additions to PERCOLATOR_ERRORS (codes 104-119, 123, 124) verbatim from percolator-sdk
+ * LOCAL ADAPTER PORT, not original code: the v2.2 additions to PERCOLATOR_ERRORS (codes 104-119, 123-127; 125-127 added from feat/v22-sdk b60b36d) verbatim from percolator-sdk
  * feat/v22-sdk @ ecb6215 (draft dcccrypto/percolator-sdk#406) src/abi/errors.ts, lifted into their own table because the installed
  * @percolatorct/sdk 8.0.0 table stops at 122. Delete when @percolatorct/sdk >= 9.0.0 ships. Do not edit here; fix upstream.
  */
@@ -81,5 +81,18 @@ export const PERCOLATOR_ERRORS_V22: Readonly<Record<number, ErrorInfo>> = Object
   124: {
     name: "BondSlippage",
     hint: "The bond price moved past your minimum; retry or lower it.",
+  },
+  // percolator-sdk feat/v22-sdk b60b36d: 125..=127 (G9 timelock; P-1 named position-cap refusal).
+  125: {
+    name: "G9AllowlistTimelock",
+    hint: "This feed-allowlist change is still in its waiting period. Operators: propose, wait the delay, then commit; removals alone apply immediately.",
+  },
+  126: {
+    name: "PositionCapReached",
+    hint: "This account already holds the maximum number of positions on this market. Close one first.",
+  },
+  127: {
+    name: "CounterpartyPositionCapReached",
+    hint: "The other side of this trade is at its position limit, which is not caused by your account. Try another asset or try again later.",
   },
   });

@@ -18,6 +18,14 @@ export const V22_CUSTOM9_COPY: Record<V22Custom9Cause, string> = {
 /** Immediate (pre-diagnosis) line for a v2.2 trade refused 9: no slippage guess, no jargon. */
 export const V22_CUSTOM9_GENERIC = V22_CUSTOM9_COPY.undetermined;
 
+/**
+ * Wrapper codes 126 / 127 (percolator-prog fix/v22-p1-position-cap-error): the named version of the position-cap refusal that
+ * used to come back as a bare 9. 126 = the user's own account (same line the pre-check and the classified 9 show);
+ * 127 = the counterparty / LP is at its cap, which is not the user's doing.
+ */
+export const V22_POSITION_CAP_REACHED_COPY = V22_CUSTOM9_COPY["position-cap"];
+export const V22_COUNTERPARTY_CAP_COPY = "The other side of this trade is at its position limit, so the order was not placed and nothing changed. Try another asset, or try again later.";
+
 /** Q-6: the ticket blocks a 5th asset up front (the program refuses it 49 or 9 depending on margin). */
 export const V22_POSITION_CAP_COPY = "This account already has the maximum of 4 positions. Close one to open a position in another asset.";
 
