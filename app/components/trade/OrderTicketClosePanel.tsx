@@ -216,6 +216,8 @@ export const OrderTicketClosePanel: FC<OrderTicketClosePanelProps> = ({
         submitTitle={submitTitle}
         onSubmitIntent={() => prewarmRef.current(closeTarget)}
       />
+      {/* SC-1: a partial close leaves the position open, so the empty-state link never shows; show it here. */}
+      <LastCloseTxLink slabAddress={slabAddress} className="mt-2" />
     </div>
   );
 };

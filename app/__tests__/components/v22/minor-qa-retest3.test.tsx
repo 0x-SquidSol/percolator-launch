@@ -26,7 +26,7 @@ describe("close tx stays visible", () => {
     expect(lastCloseTx("SLAB_A", Date.now() + LAST_CLOSE_TTL_MS + 1)).toBeNull();
   });
   it("useClosePosition records it; the ticket's Close tab and the positions dock render it in their empty state", () => {
-    expect(src("hooks/useClosePosition.ts")).toContain("recordCloseTx(slabAddress, sig);");
+    expect(src("hooks/useClosePosition.ts")).toContain("recordCloseTx(slabAddress, sig, Date.now(), closePercent < 100);");
     expect(src("components/trade/OrderTicketClosePanel.tsx")).toContain("<LastCloseTxLink slabAddress={slabAddress}");
     expect(src("components/trade/PositionsDock.tsx")).toContain("<LastCloseTxLink slabAddress={slabAddress}");
   });

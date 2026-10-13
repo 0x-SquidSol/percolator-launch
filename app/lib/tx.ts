@@ -523,7 +523,7 @@ export function getClockDriftWarning(): string | null {
  *  confirm-click → wallet-popup critical path. Retries always force-refresh
  *  (a stale blockhash is a plausible cause of the failure being retried). */
 const BLOCKHASH_FRESH_MS = 20_000;
-let cachedBlockhash: { blockhash: string; ts: number } | null = null;
+let cachedBlockhash: { blockhash: string; ts: number; lastValidBlockHeight: number } | null = null;
 
 export async function getFreshBlockhash(connection: Connection, forceFresh = false, path = "getFreshBlockhash"): Promise<string> {
   // v2.2 QA NB-2: never a blockhash from a non-devnet connection, and never a reused one (always fetched now).
@@ -532,10 +532,26 @@ export async function getFreshBlockhash(connection: Connection, forceFresh = fal
   if (!forceFresh && cachedBlockhash && Date.now() - cachedBlockhash.ts < BLOCKHASH_FRESH_MS) {
     return cachedBlockhash.blockhash;
   }
-  const { blockhash } = await connection.getLatestBlockhash("confirmed");
-  cachedBlockhash = { blockhash, ts: Date.now() };
-  noteBlockhash(blockhash, path, connection);
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+  const ts = Date.now();
+  cachedBlockhash = { blockhash, ts, lastValidBlockHeight };
+  noteBlockhash(blockhash, path, connection, ts, { commitment: "confirmed", lastValidBlockHeight });
   return blockhash;
+}
+
+/** NB-2 (round f): a blockhash fetched more than this long before the wallet opens is replaced right before the request. */
+export const HANDOFF_BLOCKHASH_MAX_AGE_MS = 5_000;
+/**
+ * v2.2: the wallet must be handed a blockhash fetched moments ago. sendTx fetches it at the START of an attempt, then plans
+ * (self-heal, fee, balance) and simulates; on a busy path that is seconds. Re-fetch (confirmed) right before the request when
+ * it has aged. Nothing is signed yet, so changing it is safe; the simulation does not depend on it.
+ */
+export async function refreshBlockhashBeforeHandoff(connection: Connection, tx: { recentBlockhash?: string }, now: number = Date.now()): Promise<boolean> {
+  if (!isDevnetV22Enabled()) return false;
+  const c = cachedBlockhash;
+  if (c && tx.recentBlockhash === c.blockhash && now - c.ts <= HANDOFF_BLOCKHASH_MAX_AGE_MS) return false;
+  tx.recentBlockhash = await getFreshBlockhash(connection, true, "sendTx hand-off refresh");
+  return true;
 }
 
 /**
@@ -1064,6 +1080,7 @@ export async function sendTx({
         }
       } else if (wallet.signTransaction) {
         // Fallback: signTransaction + sendRawTransaction (legacy path)
+        await refreshBlockhashBeforeHandoff(connection, tx).catch(() => false);
         const signed = await wallet.signTransaction(tx);
 
         // Add keypair signatures AFTER wallet signs — Privy embedded wallets

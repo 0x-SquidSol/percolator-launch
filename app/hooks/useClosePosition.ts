@@ -546,7 +546,7 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
         }
 
         setLastSig(sig ?? null);
-        recordCloseTx(slabAddress, sig); // stays linkable after the row is gone (lib/last-close-tx.ts)
+        recordCloseTx(slabAddress, sig, Date.now(), closePercent < 100); // stays linkable after the row is gone (lib/last-close-tx.ts)
         // P1: a confirmed TradeCpi can be a ZERO fill (the wrapper clipped the close to
         // LP headroom 0). useTrade measured it (lib/limits/fill-check.ts); a zero fill is
         // NOT a close — throw so every caller keeps its modal open and shows the reason.

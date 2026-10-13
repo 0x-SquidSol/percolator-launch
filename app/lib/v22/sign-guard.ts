@@ -27,7 +27,7 @@ const ORIGIN_TTL_MS = 180_000;
 const LOG_MAX = 50;
 
 type GuardConnection = Pick<Connection, "getGenesisHash" | "isBlockhashValid"> & Partial<Pick<Connection, "getMultipleAccountsInfo">>;
-interface Origin { path: string; ts: number; connection: GuardConnection | null }
+interface Origin { path: string; ts: number; connection: GuardConnection | null; commitment: string | null; lastValidBlockHeight: number | null }
 
 export type SignVerdict = "ok" | "stale-blockhash" | "untagged-blockhash" | "REFUSED-wrong-cluster" | "REFUSED-blockhash-not-on-devnet";
 export interface SignLogEntry {
@@ -38,6 +38,10 @@ export interface SignLogEntry {
   path: string;
   blockhash: string;
   blockhashAgeMs: number | null;
+  /** NB-2 (round f): commitment the blockhash was fetched at, its lastValidBlockHeight, and whether `isBlockhashValid(confirmed)` on the app connection passed right before the wallet opened (null = not checked / RPC did not answer). */
+  fetchCommitment: string | null;
+  lastValidBlockHeight: number | null;
+  validAtHandoff: boolean | null;
   /** program:tag per instruction, e.g. "cb,cb,cb,w:10". */
   shape: string;
   chain: string;
@@ -59,10 +63,13 @@ const listeners = new Set<() => void>();
 let lastProblem: SignLogEntry | null = null;
 
 /** Record where a blockhash came from. Call right after every `getLatestBlockhash` whose result is signed. */
-export function noteBlockhash(blockhash: string, path: string, connection: GuardConnection | null = null, now: number = Date.now()): void {
+export function noteBlockhash(
+  blockhash: string, path: string, connection: GuardConnection | null = null, now: number = Date.now(),
+  meta?: { commitment: string; lastValidBlockHeight: number },
+): void {
   if (!isDevnetV22Enabled()) return;
   for (const [k, o] of origins) if (now - o.ts > ORIGIN_TTL_MS) origins.delete(k);
-  origins.set(blockhash, { path, ts: now, connection });
+  origins.set(blockhash, { path, ts: now, connection, commitment: meta?.commitment ?? null, lastValidBlockHeight: meta?.lastValidBlockHeight ?? null });
 }
 
 const KNOWN: Record<string, string> = {
@@ -109,7 +116,7 @@ export function __resetSignGuardForTest(): void {
 export function formatSignEntry(e: SignLogEntry): string {
   const age = e.blockhashAgeMs === null ? "unknown" : `${(e.blockhashAgeMs / 1000).toFixed(1)}s`;
   const absent = e.absentOnDevnet === null ? "accounts not checked" : e.absentOnDevnet.length === 0 ? "all accounts on devnet" : `not on devnet: ${e.absentOnDevnet.join(" ")}`;
-  return `${e.verdict} | wallet ${e.wallet} | built by ${e.path} | ${e.via} | tx ${e.shape} | blockhash ${e.blockhash.slice(0, 8)} age ${age} | chain ${e.chain} | ${absent} | ${e.at}`;
+  return `${e.verdict} | wallet ${e.wallet} | built by ${e.path} | ${e.via} | tx ${e.shape} | blockhash ${e.blockhash.slice(0, 8)} age ${age} fetched@${e.fetchCommitment ?? "?"} lvbh ${e.lastValidBlockHeight ?? "?"} valid@handoff ${e.validAtHandoff ?? "?"} | chain ${e.chain} | ${absent} | ${e.at}`;
 }
 
 function record(e: SignLogEntry): void {
@@ -164,6 +171,26 @@ export function asWalletRequestError(err: unknown): unknown {
  * who actively declines almost never waits that long (and if they do, "nothing was sent, try again" is still true).
  */
 export const WALLET_EXPIRY_MIN_MS = 55_000;
+
+/**
+ * RT5-2 round f: Solflare's "Transaction expired" is the TRANSACTION expiring, not a fixed 70 s on the popup: the
+ * blockhash was fetched before the simulation and the wait for the user, so the popup can die well under 55 s after it
+ * opened. So a decline-class rejection is an expiry when ANY of: the wallet request was open >= WALLET_EXPIRY_MIN_MS; the
+ * blockhash (as fetched through a tagged path) is now older than BLOCKHASH_EXPIRY_MS; or the RPC says the blockhash is no
+ * longer valid. The RPC call has the guard's 4 s limit and proves nothing on failure.
+ */
+export const BLOCKHASH_EXPIRY_MS = 55_000;
+async function expiredWhileOpen<T>(p: GuardSignParams<T>, first: SignLogEntry, openedAt: number, now: () => number, timeoutMs: number): Promise<boolean> {
+  const t = now();
+  if (t - openedAt >= WALLET_EXPIRY_MIN_MS) return true;
+  if (first.blockhashAgeMs !== null && first.blockhashAgeMs + (t - openedAt) >= BLOCKHASH_EXPIRY_MS) return true;
+  if (!first.blockhash) return false;
+  const valid = await within(
+    Promise.resolve().then(() => p.connection.isBlockhashValid(first.blockhash, { commitment: "confirmed" })).then((r) => r.value),
+    timeoutMs,
+  ).then((v) => (v === "timeout" ? null : v), () => null);
+  return valid === false;
+}
 
 /** Decline-class rejection (not a locked wallet): the kind a Solflare expiry is reported as. */
 function isDeclineClass(err: unknown): boolean {
@@ -250,13 +277,23 @@ export async function guardSign<T>(p: GuardSignParams<T>): Promise<T> {
       path: origin?.path ?? "UNTAGGED (blockhash not fetched through a tagged path)",
       blockhash,
       blockhashAgeMs: origin ? now() - origin.ts : null,
+      fetchCommitment: origin?.commitment ?? null,
+      lastValidBlockHeight: origin?.lastValidBlockHeight ?? null,
+      validAtHandoff: null,
       shape: txShape(tx, p.wrapperProgramId),
       chain: p.chain,
       verdict: "ok",
       absentOnDevnet: null,
       wallet: "pending",
     };
-    e.absentOnDevnet = await absentAccounts(tx, p.connection, timeoutMs);
+    const [absent, valid] = await Promise.all([
+      absentAccounts(tx, p.connection, timeoutMs),
+      blockhash
+        ? within(Promise.resolve().then(() => p.connection.isBlockhashValid(blockhash, { commitment: "confirmed" })).then((r) => r.value), timeoutMs).then((v) => (v === "timeout" ? null : v), () => null)
+        : Promise.resolve(null),
+    ]);
+    e.absentOnDevnet = absent;
+    e.validAtHandoff = valid;
     try {
       await within(assertDevnetConnection(origin?.connection ?? p.connection), timeoutMs);
       if (origin?.connection && origin.connection !== p.connection) await within(assertDevnetConnection(p.connection), timeoutMs);
@@ -270,7 +307,7 @@ export async function guardSign<T>(p: GuardSignParams<T>): Promise<T> {
         timeoutMs,
       ).then((v) => (v === "timeout" ? null : v), () => null);
       e.verdict = known === false ? "REFUSED-blockhash-not-on-devnet" : "untagged-blockhash";
-    } else if (e.verdict === "ok" && e.blockhashAgeMs !== null && e.blockhashAgeMs > STALE_BLOCKHASH_MS) {
+    } else if (e.verdict === "ok" && ((e.blockhashAgeMs !== null && e.blockhashAgeMs > STALE_BLOCKHASH_MS) || e.validAtHandoff === false)) {
       e.verdict = "stale-blockhash";
     }
     if (e.verdict.startsWith("REFUSED")) {
@@ -305,8 +342,7 @@ export async function guardSign<T>(p: GuardSignParams<T>): Promise<T> {
     }
     // A declined request is how a wallet-side "Network mismatch" reaches us: show which path built that transaction.
     flag(entries[0]);
-    if (now() - openedAt >= WALLET_EXPIRY_MIN_MS && isDeclineClass(err)) {
-      for (const e of entries) e.wallet = "declined";
+    if (isDeclineClass(err) && (await expiredWhileOpen(p, entries[0], openedAt, now, timeoutMs))) {
       throw new WalletRequestClosedError(err);
     }
     throw asWalletRequestError(err);

@@ -47,7 +47,8 @@ describe("NB-2 sign guard", () => {
     const sign = vi.fn(async () => "signed");
     await expect(guardSign({ txs: [tradeTx()], via: "adapter signTransaction", connection: c, chain: "solana:devnet", wrapperProgramId: WRAPPER.toBase58(), sign, now: () => 3_500 })).resolves.toBe("signed");
     expect(sign).toHaveBeenCalledTimes(1);
-    expect(c.isBlockhashValid).not.toHaveBeenCalled();
+    // Round f: a tagged blockhash is also checked at `confirmed` right before the wallet opens, and the log says so.
+    expect(c.isBlockhashValid).toHaveBeenCalledTimes(1);
     expect(signLog()).toHaveLength(1);
     expect(signLog()[0]).toMatchObject({ verdict: "ok", wallet: "signed", path: "sendTx attempt 1", blockhashAgeMs: 2_500, shape: "cb,w:10", chain: "solana:devnet" });
     expect(lastSignProblem()).toBeNull();
@@ -119,7 +120,7 @@ describe("NB-2 sign guard", () => {
     await expect(guardSign({ txs: [tradeTx(), tradeTx("4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi")], via: "adapter signAllTransactions", connection: c, chain: "solana:devnet", sign, now: () => 1_200 })).rejects.toBeInstanceOf(SignGuardError);
     expect(sign).not.toHaveBeenCalled();
     expect(signLog().map((e) => [e.via, e.verdict, e.wallet])).toEqual([
-      ["adapter signAllTransactions[1/2]", "ok", "not-asked"],
+      ["adapter signAllTransactions[1/2]", "stale-blockhash", "not-asked"],
       ["adapter signAllTransactions[2/2]", "REFUSED-blockhash-not-on-devnet", "not-asked"],
     ]);
   });

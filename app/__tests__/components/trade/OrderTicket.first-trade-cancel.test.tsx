@@ -2,6 +2,7 @@
  * GH#2959: a first fund-and-trade the user turns down in the wallet must leave a calm line in the
  * ticket ("Trade cancelled in your wallet."), never a silent reset. Other cancels stay quiet.
  */
+import { WalletRequestClosedError } from "@/lib/v22/sign-guard";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { PublicKey } from "@solana/web3.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -103,8 +104,9 @@ describe("GH#2959 wallet rejection on the first trade", () => {
     expect(screen.queryByTestId("status-line")).toBeNull();
   });
 
-  it("devnet: 'Why?' explains the usual cause, a wallet still on Mainnet", async () => {
+  it("devnet: 'Why?' explains the usual cause, a wallet still on Mainnet (Phantom)", async () => {
     vi.stubEnv("NEXT_PUBLIC_DEFAULT_NETWORK", "devnet");
+    mocks.useWalletCompat.mockReturnValue({ publicKey: new PublicKey("11111111111111111111111111111111"), connected: true, wallet: { adapter: { name: "Phantom" } } });
     try {
       mocks.fund.mockRejectedValueOnce(rejected());
       render(<OrderTicket slabAddress={SLAB} />);
@@ -118,6 +120,45 @@ describe("GH#2959 wallet rejection on the first trade", () => {
       const details = screen.getByTestId("status-line-details").textContent ?? "";
       expect(details).toContain("probably still on Mainnet");
       expect(details).toContain("Testnet Mode");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("RT5-2 round f: devnet + Solflare: a decline says cancelled with NO Phantom hint", async () => {
+    vi.stubEnv("NEXT_PUBLIC_DEFAULT_NETWORK", "devnet");
+    mocks.useWalletCompat.mockReturnValue({ publicKey: new PublicKey("11111111111111111111111111111111"), connected: true, wallet: { adapter: { name: "Solflare" } } });
+    try {
+      mocks.fund.mockRejectedValueOnce(rejected());
+      render(<OrderTicket slabAddress={SLAB} />);
+      await waitFor(() => expect(screen.queryByTestId("trade-submit")).not.toBeNull());
+      size("5");
+      await place();
+      await waitFor(() => expect(screen.queryByTestId("status-line")).not.toBeNull());
+      expect(screen.getByTestId("status-line").textContent).toContain("Trade cancelled in your wallet.");
+      const why = screen.queryByTestId("status-line-why");
+      if (why) await act(async () => fireEvent.click(why)); // the generic Details toggle may exist; it must not carry the hint
+      expect(document.body.textContent).not.toContain("Testnet Mode");
+      expect(document.body.textContent).not.toContain("still on Mainnet");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("RT5-2 round f: an expired popup (WalletRequestClosedError) shows the timeout copy, not cancelled, no Phantom hint", async () => {
+    vi.stubEnv("NEXT_PUBLIC_DEFAULT_NETWORK", "devnet");
+    mocks.useWalletCompat.mockReturnValue({ publicKey: new PublicKey("11111111111111111111111111111111"), connected: true, wallet: { adapter: { name: "Phantom" } } });
+    try {
+      mocks.fund.mockRejectedValueOnce(new WalletRequestClosedError(rejected()));
+      render(<OrderTicket slabAddress={SLAB} />);
+      await waitFor(() => expect(screen.queryByTestId("trade-submit")).not.toBeNull());
+      size("5");
+      await place();
+      await waitFor(() => expect(screen.queryByTestId("status-line")).not.toBeNull());
+      const text = screen.getByTestId("status-line").textContent ?? "";
+      expect(text).toContain("The wallet request timed out. Nothing was sent");
+      expect(text).not.toContain("cancelled in your wallet");
+      expect(document.body.textContent).not.toContain("Testnet Mode");
     } finally {
       vi.unstubAllEnvs();
     }

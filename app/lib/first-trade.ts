@@ -164,6 +164,20 @@ export const FIRST_TRADE_COPY = {
     "If your wallet said you don't have enough SOL, or warned about this site, it is probably still on Mainnet. In Phantom: Settings > Developer Settings > turn on Testnet Mode and pick Solana Devnet, then try again.",
 } as const;
 
+/** True only for the Phantom wallet (adapter name). The Mainnet-mode hint above is Phantom's setting, so it is never shown to Solflare etc. */
+export function isPhantomWalletName(name: string | null | undefined): boolean {
+  return typeof name === "string" && /phantom/i.test(name);
+}
+
+/**
+ * GH#2959 + RT5-2 (round f): the extra line for a fund-and-trade the user turned down. `why` (the Phantom Testnet-Mode
+ * hint) only for Phantom on devnet; a timeout is never a "cancelled" and has no hint (it never reaches here: kind
+ * "wallet-request-closed" is not quiet).
+ */
+export function firstTradeCancelledExtras(walletName: string | null | undefined, devnet: boolean): { body: string; why?: string } {
+  return { body: FIRST_TRADE_COPY.cancelled, ...(devnet && isPhantomWalletName(walletName) ? { why: FIRST_TRADE_COPY.cancelledDevnetWhy } : {}) };
+}
+
 // ── The instructions (shared by hooks/useFirstTrade.ts and the LiteSVM bridge) ──────────────
 
 export interface FirstTradeIxParams {

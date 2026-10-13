@@ -7,13 +7,13 @@ import { useSyncExternalStore } from "react";
 
 export const LAST_CLOSE_TTL_MS = 10 * 60_000;
 
-interface Entry { signature: string; at: number }
+interface Entry { signature: string; at: number; /** SC-1: a partial close (the position is still open). */ partial: boolean }
 const entries = new Map<string, Entry>();
 const listeners = new Set<() => void>();
 
-export function recordCloseTx(slab: string, signature: string | null | undefined, now = Date.now()): void {
+export function recordCloseTx(slab: string, signature: string | null | undefined, now = Date.now(), partial = false): void {
   if (!signature) return;
-  entries.set(slab, { signature, at: now });
+  entries.set(slab, { signature, at: now, partial });
   for (const l of listeners) l();
 }
 
@@ -27,6 +27,11 @@ export function lastCloseTx(slab: string, now = Date.now()): string | null {
   return e.signature;
 }
 
+/** SC-1: the entry itself (stable object per record), so the link can word a partial close differently. */
+export function lastCloseEntry(slab: string, now = Date.now()): Entry | null {
+  return lastCloseTx(slab, now) ? entries.get(slab) ?? null : null;
+}
+
 /** Test seam. */
 export function __clearCloseTxs(): void {
   entries.clear();
@@ -36,6 +41,14 @@ export function useLastCloseTx(slab: string): string | null {
   return useSyncExternalStore(
     (cb) => { listeners.add(cb); return () => { listeners.delete(cb); }; },
     () => lastCloseTx(slab),
+    () => null,
+  );
+}
+
+export function useLastCloseEntry(slab: string): { signature: string; partial: boolean } | null {
+  return useSyncExternalStore(
+    (cb) => { listeners.add(cb); return () => { listeners.delete(cb); }; },
+    () => lastCloseEntry(slab),
     () => null,
   );
 }
