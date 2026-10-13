@@ -401,6 +401,8 @@ export type SelfHealOutcome =
   | "not-repairable"
   | "repaired"
   | "repair-did-not-help"
+  /** A repaired list that simulates clean but would not fit one 1232-byte packet once signed (set by sendTx, never by planSelfHeal). */
+  | "oversize"
   | "rpc-error";
 
 export interface SelfHealResult {
