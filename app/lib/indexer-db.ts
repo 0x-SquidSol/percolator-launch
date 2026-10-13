@@ -372,7 +372,7 @@ export async function queryStatsAggregate(): Promise<StatsAggregate> {
         0
       )::text                                          AS volume_24h_raw
     FROM trades
-    WHERE network = ${getServerNetwork()}
+    WHERE network = ${getServerNetwork()} AND is_liquidation IS NOT TRUE
   `;
   const row = rows[0];
   return {
@@ -433,6 +433,10 @@ export async function queryLeaderboard(
   const sql = getSql();
 
   let rows: RawLeaderboardRow[];
+  // Liquidation markers (percolator-indexer db/v17_baseline.sql; no longer written since indexer
+  // #203, but the old rows remain) carry trader = a portfolio address and NULL size/price, and
+  // "MUST be excluded" from aggregates: a marker-only group sums to NULL, which sorts first under
+  // DESC and put those addresses on the podium at $0.
   if (period === "24h") {
     rows = await sql<RawLeaderboardRow[]>`
       SELECT
@@ -443,6 +447,7 @@ export async function queryLeaderboard(
       FROM trades
       WHERE created_at >= NOW() - INTERVAL '24 hours'
         AND network = ${getServerNetwork()}
+        AND is_liquidation IS NOT TRUE
         AND NOT (slab_address = ANY(${excludeSlabs}::text[]))
       GROUP BY trader
       ORDER BY SUM(ABS(size::numeric) * price::numeric / 1e6) DESC
@@ -458,6 +463,7 @@ export async function queryLeaderboard(
       FROM trades
       WHERE created_at >= NOW() - INTERVAL '7 days'
         AND network = ${getServerNetwork()}
+        AND is_liquidation IS NOT TRUE
         AND NOT (slab_address = ANY(${excludeSlabs}::text[]))
       GROUP BY trader
       ORDER BY SUM(ABS(size::numeric) * price::numeric / 1e6) DESC
@@ -472,6 +478,7 @@ export async function queryLeaderboard(
         MAX(created_at)           AS last_trade_at
       FROM trades
       WHERE network = ${getServerNetwork()}
+        AND is_liquidation IS NOT TRUE
         AND NOT (slab_address = ANY(${excludeSlabs}::text[]))
       GROUP BY trader
       ORDER BY SUM(ABS(size::numeric) * price::numeric / 1e6) DESC
@@ -661,7 +668,8 @@ export interface TraderTradesPageResult {
 }
 
 /**
- * Paginated trade history for a specific wallet, optionally filtered by slab.
+ * Paginated trade history for a specific wallet, optionally filtered by slab and by side. The side
+ * predicate sits in both the count and the page query, so `total` counts the filtered set.
  */
 export async function queryTraderTradesPage(
   wallet: string,
@@ -669,6 +677,7 @@ export async function queryTraderTradesPage(
   offset: number,
   slabFilter?: string,
   excludeSlabs: string[] = [],
+  side?: "long" | "short",
 ): Promise<TraderTradesPageResult> {
   const sql = getSql();
 
@@ -679,12 +688,14 @@ export async function queryTraderTradesPage(
         WHERE trader = ${wallet} AND slab_address = ${slabFilter}
           AND network = ${getServerNetwork()}
           AND NOT (slab_address = ANY(${excludeSlabs}::text[]))
+          AND (${side ?? null}::text IS NULL OR side = ${side ?? null}::text)
       `
     : await sql<Array<{ cnt: string }>>`
         SELECT COUNT(*)::text AS cnt FROM trades
         WHERE trader = ${wallet}
           AND network = ${getServerNetwork()}
           AND NOT (slab_address = ANY(${excludeSlabs}::text[]))
+          AND (${side ?? null}::text IS NULL OR side = ${side ?? null}::text)
       `;
   const total = Number(countRows[0]?.cnt ?? "0");
 
@@ -709,6 +720,7 @@ export async function queryTraderTradesPage(
         WHERE trader = ${wallet} AND slab_address = ${slabFilter}
           AND network = ${getServerNetwork()}
           AND NOT (slab_address = ANY(${excludeSlabs}::text[]))
+          AND (${side ?? null}::text IS NULL OR side = ${side ?? null}::text)
         ORDER BY created_at DESC
         LIMIT ${limit} OFFSET ${offset}
       `
@@ -720,6 +732,7 @@ export async function queryTraderTradesPage(
         WHERE trader = ${wallet}
           AND network = ${getServerNetwork()}
           AND NOT (slab_address = ANY(${excludeSlabs}::text[]))
+          AND (${side ?? null}::text IS NULL OR side = ${side ?? null}::text)
         ORDER BY created_at DESC
         LIMIT ${limit} OFFSET ${offset}
       `;

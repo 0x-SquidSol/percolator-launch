@@ -13,6 +13,7 @@ import { computeNotionalNative } from "@/lib/notional";
 import { describeLiqPrice, type LiqPriceDisplay } from "@/lib/liq-price-display";
 import { LiqPriceValue } from "./LiqPriceValue";
 import { orderHeading } from "@/lib/trading";
+import { FIRST_TRADE_COPY } from "@/lib/first-trade";
 
 interface TradeConfirmationModalProps {
   direction: "long" | "short";
@@ -50,6 +51,8 @@ interface TradeConfirmationModalProps {
   riskLeverage?: number | null;
   /** Wallet deposit signed together with this trade (fund-and-trade), in collateral atoms. */
   depositAmount?: bigint;
+  /** This trade creates the market's portfolio account (first trade): show its one-time SOL rent. */
+  createsAccount?: boolean;
   /** Underlying asset symbol (e.g. SOL). Used to label the position size. */
   symbol: string;
   /** Collateral token symbol (e.g. USDC). Used to label margin/fee. */
@@ -81,6 +84,7 @@ export const TradeConfirmationModal: FC<TradeConfirmationModalProps> = ({
   accountEquity,
   riskLeverage: riskLeverageAfter,
   depositAmount,
+  createsAccount = false,
   symbol,
   collateralSymbol,
   decimals,
@@ -298,6 +302,12 @@ export const TradeConfirmationModal: FC<TradeConfirmationModalProps> = ({
               {formatTokenAmount(tradingFee, decimals)} {settleSymbol}
             </span>
           </div>
+          {createsAccount && (
+            <div className="flex justify-between" data-testid="confirm-account-rent">
+              <span className="text-[var(--text-secondary)]">{FIRST_TRADE_COPY.rentRow.label}:</span>
+              <span className="font-mono font-medium text-[var(--text)]">{FIRST_TRADE_COPY.rentRow.value}</span>
+            </div>
+          )}
           <div className="flex justify-between border-t border-[var(--border)]/30 pt-2">
             <span className="text-[var(--text-secondary)]">Est. Liquidation Price:</span>
             <LiqPriceValue
