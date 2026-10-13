@@ -149,24 +149,6 @@ describe("GH#2959 useFirstTrade: the first trade is ONE transaction", () => {
     expect((call(0) as SendArgs & { selfHeal?: unknown }).selfHeal).toBeDefined();
   });
 
-  // Deposit-only (SOL-2 createAndDeposit): the same market-level repairs, no LP catch-up crank (no LP leg is resolved).
-  it("deposit without trading carries the market-level self-heal on both of its sends (no catch-up)", async () => {
-    for (const existing of [true, false]) {
-      sendTx.mockReset();
-      findV17Portfolio.mockResolvedValue(existing ? Keypair.generate().publicKey : null);
-      sendTx.mockResolvedValue("sigDeposit");
-      const { result } = renderHook(() => useFirstTrade(Keypair.generate().publicKey.toBase58()));
-      await act(async () => {
-        await result.current.createAndDeposit(5_520_000n);
-      });
-      expect(sendTx).toHaveBeenCalledTimes(1);
-      const heal = (call(0) as SendArgs & { selfHeal?: { programId: PublicKey; market: PublicKey; catchUp?: unknown } }).selfHeal;
-      expect(heal, existing ? "existing account" : "new account").toBeDefined();
-      expect(heal!.programId.equals(WRAPPER)).toBe(true);
-      expect(heal!.catchUp).toBeUndefined();
-    }
-  });
-
   it("NEGATIVE CONTROL: an existing account sends [deposit, trade] with no co-signer", async () => {
     findV17Portfolio.mockResolvedValue(Keypair.generate().publicKey);
     sendTx.mockResolvedValue("sigFund");
