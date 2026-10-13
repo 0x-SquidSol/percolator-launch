@@ -57,7 +57,7 @@ describe("#3476: the dead AdvanceOraclePhase crank path stays removed", () => {
   });
 
   it("the walk sees the API tree (guards the directory scan)", () => {
-    expect(dirsNamed("set-price-cap")).toEqual([join("oracle", "set-price-cap")]);
+    expect(dirsNamed("resolve")).toEqual([join("oracle", "resolve")]);
   });
 
   it("has no advance-phase directory anywhere under app/api (route groups included)", () => {
