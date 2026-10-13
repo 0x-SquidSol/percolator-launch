@@ -181,3 +181,31 @@ describe("NB-2 round f: what the sign log now records, and the hand-off refresh"
     expect(t.recentBlockhash).toBe("X");
   });
 });
+
+import { WalletSignTransactionError } from "@solana/wallet-adapter-base";
+describe("RT5-2 round g: lower threshold, wrapped errors, classification in the log", () => {
+  beforeEach(() => { __setDevnetV22ForTest(true); __resetSignGuardForTest(); vi.spyOn(console, "error").mockImplementation(() => {}); vi.spyOn(console, "info").mockImplementation(() => {}); });
+  afterEach(() => { __setDevnetV22ForTest(null); vi.restoreAllMocks(); });
+  it("the window is 45 s: a popup that dies at 48 s (not 55) is an expiry", async () => {
+    expect(WALLET_EXPIRY_MIN_MS).toBe(45_000);
+    expect(await reject(solflareCancel(), 48_000)).toBeInstanceOf(WalletRequestClosedError);
+  });
+  it("wallet-adapter's WalletSignTransactionError: the wallet's {code} sits on .error, not the outer error", async () => {
+    const wrapped = new WalletSignTransactionError("Something else entirely", { code: 4001, message: "Something else entirely" });
+    expect(await reject(wrapped, 50_000)).toBeInstanceOf(WalletRequestClosedError);
+    const fast = await reject(new WalletSignTransactionError("Something else entirely", { code: 4001 }), 2_000);
+    expect(fast).not.toBeInstanceOf(WalletRequestClosedError); // a fast decline by code only is still a decline
+  });
+  it("the log (and the debug line) say elapsed, raw error layers and which branch classified it", async () => {
+    await reject(new WalletSignTransactionError("Transaction cancelled", { code: -32603, message: "Transaction cancelled" }), 50_000);
+    const e = signLog()[0];
+    expect(e.classified).toBe("timeout copy (expired: open-time)");
+    expect(e.elapsedMs).toBe(50_000);
+    expect(e.rawError).toContain("WalletSignTransactionError");
+    expect(e.rawError).toContain("-32603");
+    expect(formatSignEntry(e)).toContain("open 50.0s");
+    __resetSignGuardForTest();
+    await reject(solflareCancel(), 1_000);
+    expect(signLog()[0].classified).toBe("cancelled (decline-class, not expired)");
+  });
+});

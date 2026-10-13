@@ -16,7 +16,7 @@ const view = (over: Partial<BandRentView> = {}): BandRentView => ({
 describe("BandMarketNotice", () => {
   it("shows the minimum position and NOT the mark line while mark equals target", () => {
     render(<BandMarketNotice view={view()} collateralDecimals={6} collateralSymbol="USDC" />);
-    expect(screen.getByTestId("band-min-position").textContent).toBe("Minimum position 100 USDC");
+    expect(screen.getByTestId("band-min-position").textContent).toBe("Minimum position 100 USDC (2 lots)");
     expect(screen.queryByTestId("band-mark-vs-target")).toBeNull();
   });
   it("shows mark versus target (per token, through the lot exponent) only when they differ", () => {

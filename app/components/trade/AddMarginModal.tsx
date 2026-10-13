@@ -1,6 +1,8 @@
 "use client";
 
 import { FC, useState } from "react";
+import { explorerTxUrl } from "@/lib/config";
+import { recordCloseTx } from "@/lib/last-close-tx";
 import type { PublicKey } from "@solana/web3.js";
 import { useDeposit } from "@/hooks/useDeposit";
 import { useWalletAtaBalance } from "@/hooks/useWalletAtaBalance";
@@ -50,6 +52,7 @@ export const AddMarginModal: FC<AddMarginModalProps> = ({ slabAddress, userIdx, 
     try {
       const sig = await deposit({ userIdx, amount: parsedAmount, accountExists: true, portfolioPk });
       setLastSig(sig ?? null);
+      recordCloseTx(slabAddress, sig, Date.now(), false, "Margin added.");
       setAmount("");
 
     // Add margin mutates the slab account. Refresh immediately so capital,
@@ -128,7 +131,10 @@ export const AddMarginModal: FC<AddMarginModalProps> = ({ slabAddress, userIdx, 
         )}
         {lastSig && (
           <p className="mt-2 text-[10px] text-[var(--text-secondary)]" style={{ fontFamily: "var(--font-mono)" }}>
-            Tx: {lastSig.slice(0, 16)}…
+            Margin added.{" "}
+            <a href={explorerTxUrl(lastSig)} target="_blank" rel="noopener noreferrer" title={lastSig} className="underline">
+              View transaction {lastSig.slice(0, 4)}…{lastSig.slice(-4)} <span aria-hidden="true">↗</span>
+            </a>
           </p>
         )}
       </div>

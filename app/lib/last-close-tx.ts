@@ -7,13 +7,13 @@ import { useSyncExternalStore } from "react";
 
 export const LAST_CLOSE_TTL_MS = 10 * 60_000;
 
-interface Entry { signature: string; at: number; /** SC-1: a partial close (the position is still open). */ partial: boolean }
+interface Entry { signature: string; at: number; /** SC-1: a partial close (the position is still open). */ partial: boolean; /** SC-1 follow-up: opens / adds / margin use the same link with their own lead-in. */ label?: string }
 const entries = new Map<string, Entry>();
 const listeners = new Set<() => void>();
 
-export function recordCloseTx(slab: string, signature: string | null | undefined, now = Date.now(), partial = false): void {
+export function recordCloseTx(slab: string, signature: string | null | undefined, now = Date.now(), partial = false, label?: string): void {
   if (!signature) return;
-  entries.set(slab, { signature, at: now, partial });
+  entries.set(slab, { signature, at: now, partial, ...(label ? { label } : {}) });
   for (const l of listeners) l();
 }
 
@@ -45,7 +45,7 @@ export function useLastCloseTx(slab: string): string | null {
   );
 }
 
-export function useLastCloseEntry(slab: string): { signature: string; partial: boolean } | null {
+export function useLastCloseEntry(slab: string): { signature: string; partial: boolean; label?: string } | null {
   return useSyncExternalStore(
     (cb) => { listeners.add(cb); return () => { listeners.delete(cb); }; },
     () => lastCloseEntry(slab),

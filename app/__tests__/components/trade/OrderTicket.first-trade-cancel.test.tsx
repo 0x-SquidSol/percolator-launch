@@ -5,9 +5,11 @@
 import { WalletRequestClosedError } from "@/lib/v22/sign-guard";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { PublicKey } from "@solana/web3.js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  bandView: null as unknown,
+  scanPending: false,
   useWalletCompat: vi.fn(),
   useConnectionCompat: vi.fn(),
   useUserAccount: vi.fn(),
@@ -19,13 +21,14 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/hooks/useWalletCompat", () => ({ useWalletCompat: mocks.useWalletCompat, useConnectionCompat: mocks.useConnectionCompat }));
-vi.mock("@/hooks/useUserAccount", () => ({ useUserAccount: mocks.useUserAccount, useUserAccountScanPending: () => false }));
+vi.mock("@/hooks/useUserAccount", () => ({ useUserAccount: mocks.useUserAccount, useUserAccountScanPending: () => mocks.scanPending }));
 vi.mock("@/components/providers/SlabProvider", () => ({ useSlabState: mocks.useSlabState }));
 vi.mock("@/hooks/useEngineState", () => ({ useEngineState: mocks.useEngineState }));
 vi.mock("@/hooks/useInitUser", () => ({ useInitUser: () => ({ initUser: mocks.initUser, loading: false, error: null }) }));
 vi.mock("@/hooks/useFirstTrade", () => ({ useFirstTrade: () => ({ fundAndTrade: mocks.fund, loading: false }) }));
 vi.mock("@solana/spl-token", () => ({ getAssociatedTokenAddressSync: vi.fn(() => new PublicKey("11111111111111111111111111111111")) }));
 vi.mock("@/hooks/useTrade", () => ({ useTrade: () => ({ trade: mocks.trade, loading: false, error: null }), prewarmTradeSubmission: vi.fn() }));
+vi.mock("@/hooks/useBandRentView", () => ({ useBandRentView: () => mocks.bandView }));
 vi.mock("@/hooks/useMarketFillCap", () => ({ useMarketFillCap: () => null }));
 vi.mock("@/hooks/useTokenMeta", () => ({ useTokenMeta: () => ({ symbol: "USDC", decimals: 6 }) }));
 vi.mock("@/hooks/useMarketInfo", () => ({ useMarketInfo: () => ({ market: { symbol: "SOL-PERP", max_leverage: 10 } }) }));
@@ -56,6 +59,8 @@ function wallet(amount: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.bandView = null;
+  mocks.scanPending = false;
   mocks.useWalletCompat.mockReturnValue({ publicKey: new PublicKey("11111111111111111111111111111111"), connected: true });
   wallet("12000000"); // 12 USDC in the wallet
   mocks.useUserAccount.mockReturnValue(null); // no trading account on this market yet
@@ -191,5 +196,95 @@ describe("GH#2959 wallet rejection on the first trade", () => {
     await place();
     await waitFor(() => expect(mocks.fund).toHaveBeenCalledTimes(2));
     expect(screen.queryByText("Trade cancelled in your wallet.")).toBeNull();
+  });
+});
+
+// ── RT5-2 round g: drive the REAL guardSign through the ticket's submit with the wallet-adapter's error shape ──────────────
+import { WalletSignTransactionError } from "@solana/wallet-adapter-base";
+import { Keypair, Transaction } from "@solana/web3.js";
+import { __setDevnetV22ForTest } from "@/lib/v22/flag";
+import { DEVNET_GENESIS_HASH } from "@/lib/v22/devnet-guard";
+import { __resetSignGuardForTest, guardSign, noteBlockhash } from "@/lib/v22/sign-guard";
+
+describe("RT5-2 round g: an expired Solflare popup through guardSign -> the ticket", () => {
+  const BH = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
+  const guardConn = { getGenesisHash: async () => DEVNET_GENESIS_HASH, isBlockhashValid: async () => ({ context: { slot: 1 }, value: true }) };
+  let clock = 0;
+  beforeEach(() => {
+    __setDevnetV22ForTest(true); __resetSignGuardForTest();
+    vi.spyOn(console, "error").mockImplementation(() => {}); vi.spyOn(console, "info").mockImplementation(() => {});
+  });
+  afterEach(() => { __setDevnetV22ForTest(null); vi.restoreAllMocks(); });
+
+  /** What wallet-adapter's StandardWalletAdapter throws: WalletSignTransactionError(error?.message, error). */
+  const wrap = (inner: Record<string, unknown>) => new WalletSignTransactionError(String(inner.message), inner);
+
+  function fundThroughGuard(inner: Record<string, unknown>, waitMs: number) {
+    mocks.fund.mockImplementationOnce(async () => {
+      clock = 5_000_000;
+      const tx = new Transaction(); tx.recentBlockhash = BH; tx.feePayer = Keypair.generate().publicKey;
+      noteBlockhash(BH, "sendTx attempt 1 (+1 keypair signer)", guardConn, clock - 2_000, { commitment: "confirmed", lastValidBlockHeight: 1 });
+      return guardSign({
+        txs: [tx], via: "adapter signTransaction", connection: guardConn, chain: "solana:devnet", now: () => clock,
+        sign: async () => { clock += waitMs; throw wrap(inner); },
+      });
+    });
+  }
+  async function run() {
+    mocks.useWalletCompat.mockReturnValue({ publicKey: new PublicKey("11111111111111111111111111111111"), connected: true, wallet: { adapter: { name: "Solflare" } } });
+    vi.stubEnv("NEXT_PUBLIC_DEFAULT_NETWORK", "devnet");
+    render(<OrderTicket slabAddress={SLAB} />);
+    await waitFor(() => expect(screen.queryByTestId("trade-submit")).not.toBeNull());
+    size("5");
+    await place();
+    await waitFor(() => expect(screen.queryByTestId("status-line")).not.toBeNull());
+    const why = screen.queryByTestId("status-line-why");
+    if (why) await act(async () => fireEvent.click(why));
+    return document.body.textContent ?? "";
+  }
+
+  for (const [label, inner] of [
+    ["code 4001", { code: 4001, message: "Transaction cancelled" }],
+    ["code -32603", { code: -32603, message: "Transaction cancelled" }],
+    ["no code", { message: "Transaction cancelled" }],
+  ] as const) {
+    it(`70 s then 'Transaction cancelled' (${label}) -> timeout copy, no Phantom hint`, async () => {
+      fundThroughGuard({ ...inner }, 70_000);
+      const text = await run();
+      expect(text).toContain("The wallet request timed out");
+      expect(text).not.toContain("cancelled in your wallet");
+      expect(text).not.toContain("Testnet Mode");
+    });
+  }
+  it("a quick decline (3 s, fresh blockhash) is still 'Trade cancelled', Solflare has no hint", async () => {
+    fundThroughGuard({ code: 4001, message: "Transaction cancelled" }, 3_000);
+    const text = await run();
+    expect(text).toContain("Trade cancelled in your wallet.");
+    expect(text).not.toContain("Testnet Mode");
+  });
+});
+
+describe("MIN-1: the ticket refuses a sub-minimum leg BEFORE the wallet, naming the real minimum", () => {
+  it("band min 100 USDC at 32.12 per lot: 3 lots is refused with '4 lots (about 128.47 USDC)'; nothing is sent", async () => {
+    mocks.bandView = { assetIndex: 0, lotExp: 0, band: { enabled: true, bandBps: 130, epochSlots: 600n, pinSlots: 9000n, maxPositionsPerSide: 256n, minLegNotionalAtoms: 100_000_000n, recoveryMinutes: 64 }, price: { markE6: 32_116_513n, targetE6: 32_116_513n, lagging: false, floorStuck: false, favourableCloseSide: null }, rent: { enabled: false, maxE9PerSlot: 0n, kinkBps: 0, rateLongE9: 0n, rateShortE9: 0n } };
+    render(<OrderTicket slabAddress={SLAB} />);
+    await waitFor(() => expect(screen.queryByTestId("trade-submit")).not.toBeNull());
+    size("3");
+    await place();
+    await waitFor(() => expect(document.body.textContent).toContain("4 lots (about 128.47 USDC)"));
+    expect(mocks.fund).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Minimum position 128.47 USDC (4 lots)".replace(" (4 lots)", "")); // the notice states the same number
+  });
+});
+
+describe("SILENT-1: a confirmed order that cannot reach the wallet always says why", () => {
+  it("account scan still pending when the order is confirmed: a visible line, no wallet, no silent return", async () => {
+    render(<OrderTicket slabAddress={SLAB} />);
+    await waitFor(() => expect(screen.queryByTestId("trade-submit")).not.toBeNull());
+    size("5");
+    mocks.scanPending = true; // the account read starts again after the confirm modal opened (e.g. a refresh after the previous tx)
+    await place();
+    await waitFor(() => expect(document.body.textContent).toContain("Still loading your account on this market"));
+    expect(mocks.fund).not.toHaveBeenCalled();
   });
 });

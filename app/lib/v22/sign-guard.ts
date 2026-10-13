@@ -55,6 +55,10 @@ export interface SignLogEntry {
   /** What the wallet did with it. */
   wallet: "pending" | "signed" | "declined" | "not-asked";
   walletError?: string;
+  /** RT5-2 round g: ms the wallet request was open, the raw error layers (name/code/message), and how the rejection was classified. */
+  elapsedMs?: number;
+  rawError?: string;
+  classified?: string;
 }
 
 const origins = new Map<string, Origin>();
@@ -116,7 +120,7 @@ export function __resetSignGuardForTest(): void {
 export function formatSignEntry(e: SignLogEntry): string {
   const age = e.blockhashAgeMs === null ? "unknown" : `${(e.blockhashAgeMs / 1000).toFixed(1)}s`;
   const absent = e.absentOnDevnet === null ? "accounts not checked" : e.absentOnDevnet.length === 0 ? "all accounts on devnet" : `not on devnet: ${e.absentOnDevnet.join(" ")}`;
-  return `${e.verdict} | wallet ${e.wallet} | built by ${e.path} | ${e.via} | tx ${e.shape} | blockhash ${e.blockhash.slice(0, 8)} age ${age} fetched@${e.fetchCommitment ?? "?"} lvbh ${e.lastValidBlockHeight ?? "?"} valid@handoff ${e.validAtHandoff ?? "?"} | chain ${e.chain} | ${absent} | ${e.at}`;
+  return `${e.verdict} | wallet ${e.wallet} | built by ${e.path} | ${e.via} | tx ${e.shape} | blockhash ${e.blockhash.slice(0, 8)} age ${age} fetched@${e.fetchCommitment ?? "?"} lvbh ${e.lastValidBlockHeight ?? "?"} valid@handoff ${e.validAtHandoff ?? "?"} | chain ${e.chain} | ${absent} | ${e.at}${e.classified ? ` | open ${((e.elapsedMs ?? 0) / 1000).toFixed(1)}s | raw ${e.rawError} | => ${e.classified}` : ""}`;
 }
 
 function record(e: SignLogEntry): void {
@@ -153,9 +157,9 @@ export class WalletRequestClosedError extends Error {
 }
 /** A declined prompt, a locked wallet and the app's own explained errors keep their meaning; the rest is "closed". */
 export function asWalletRequestError(err: unknown): unknown {
-  const o = err as { code?: unknown; statusCode?: unknown } | null;
   // 4001 = declined (EIP-1193 style), 0x6985 = denied on a Ledger: the same two codes lib/privy-batch-sign.ts checks.
-  if (typeof o === "object" && o !== null && (o.code === 4001 || o.statusCode === 0x6985)) return err;
+  // wallet-adapter keeps the wallet's own object on `.error` of its WalletError, so look through the layers.
+  if (errorLayers(err).some((o) => o.code === 4001 || o.statusCode === 0x6985)) return err;
   if (typeof UserFacingError === "function" && err instanceof UserFacingError) return err;
   const msg = err instanceof Error ? `${err.name} ${err.message}` : String((err as { message?: unknown } | null)?.message ?? err);
   // Text the send loop already acts on (an expired blockhash, a rate limit) keeps its retry.
@@ -170,7 +174,7 @@ export function asWalletRequestError(err: unknown): unknown {
  * is read as an expiry. Solflare's popup lives ~70 s; 55 s leaves margin for clock/scheduling skew while a person
  * who actively declines almost never waits that long (and if they do, "nothing was sent, try again" is still true).
  */
-export const WALLET_EXPIRY_MIN_MS = 55_000;
+export const WALLET_EXPIRY_MIN_MS = 45_000;
 
 /**
  * RT5-2 round f: Solflare's "Transaction expired" is the TRANSACTION expiring, not a fixed 70 s on the popup: the
@@ -179,25 +183,43 @@ export const WALLET_EXPIRY_MIN_MS = 55_000;
  * blockhash (as fetched through a tagged path) is now older than BLOCKHASH_EXPIRY_MS; or the RPC says the blockhash is no
  * longer valid. The RPC call has the guard's 4 s limit and proves nothing on failure.
  */
-export const BLOCKHASH_EXPIRY_MS = 55_000;
-async function expiredWhileOpen<T>(p: GuardSignParams<T>, first: SignLogEntry, openedAt: number, now: () => number, timeoutMs: number): Promise<boolean> {
+export const BLOCKHASH_EXPIRY_MS = 45_000;
+async function expiredWhileOpen<T>(p: GuardSignParams<T>, first: SignLogEntry, openedAt: number, now: () => number, timeoutMs: number): Promise<"open-time" | "blockhash-age" | "rpc-invalid" | null> {
   const t = now();
-  if (t - openedAt >= WALLET_EXPIRY_MIN_MS) return true;
-  if (first.blockhashAgeMs !== null && first.blockhashAgeMs + (t - openedAt) >= BLOCKHASH_EXPIRY_MS) return true;
-  if (!first.blockhash) return false;
+  if (t - openedAt >= WALLET_EXPIRY_MIN_MS) return "open-time";
+  if (first.blockhashAgeMs !== null && first.blockhashAgeMs + (t - openedAt) >= BLOCKHASH_EXPIRY_MS) return "blockhash-age";
+  if (!first.blockhash) return null;
   const valid = await within(
     Promise.resolve().then(() => p.connection.isBlockhashValid(first.blockhash, { commitment: "confirmed" })).then((r) => r.value),
     timeoutMs,
   ).then((v) => (v === "timeout" ? null : v), () => null);
-  return valid === false;
+  return valid === false ? "rpc-invalid" : null;
+}
+
+/** The shapes a wallet error can take: wallet-adapter wraps the wallet's `{code,message}` object as `.error` of a WalletError. */
+function errorLayers(err: unknown): Array<{ name?: unknown; code?: unknown; statusCode?: unknown; message?: unknown }> {
+  const out: Array<{ name?: unknown; code?: unknown; statusCode?: unknown; message?: unknown }> = [];
+  let cur: unknown = err;
+  for (let i = 0; i < 4 && typeof cur === "object" && cur !== null; i++) {
+    out.push(cur as never);
+    const o = cur as { error?: unknown; cause?: unknown };
+    cur = o.error ?? o.cause;
+  }
+  return out;
+}
+/** For the debug line: name/code/message of the outer error and its inner `.error`. */
+function describeError(err: unknown): string {
+  return errorLayers(err).map((o) => `${String(o.name ?? "?")}/${String(o.code ?? o.statusCode ?? "-")}/${String(o.message ?? "").slice(0, 60)}`).join(" > ") || String(err).slice(0, 80);
 }
 
 /** Decline-class rejection (not a locked wallet): the kind a Solflare expiry is reported as. */
 function isDeclineClass(err: unknown): boolean {
-  const o = err as { code?: unknown; statusCode?: unknown } | null;
-  if (typeof o === "object" && o !== null && (o.code === 4001 || o.statusCode === 0x6985)) return true;
-  const msg = err instanceof Error ? `${err.name} ${err.message}` : String((err as { message?: unknown } | null)?.message ?? err);
-  return detectWalletError(msg) === "rejected";
+  for (const o of errorLayers(err)) {
+    if (o.code === 4001 || o.statusCode === 0x6985) return true;
+    const msg = `${typeof o.name === "string" ? o.name : ""} ${typeof o.message === "string" ? o.message : ""}`;
+    if (detectWalletError(msg) === "rejected") return true;
+  }
+  return typeof err !== "object" && detectWalletError(String(err)) === "rejected";
 }
 
 /** Explicit opt-in for the yellow "sign debug:" line: `?signdebug=1` (kept in localStorage `v22.signdebug`), `?signdebug=0` clears it. */
@@ -340,11 +362,14 @@ export async function guardSign<T>(p: GuardSignParams<T>): Promise<T> {
       e.wallet = "declined";
       e.walletError = msg.slice(0, 160);
     }
+    const elapsed = now() - openedAt;
+    const decline = isDeclineClass(err);
+    const branch = decline ? await expiredWhileOpen(p, entries[0], openedAt, now, timeoutMs) : null;
+    const thrown = branch ? new WalletRequestClosedError(err) : asWalletRequestError(err);
+    const classified = branch ? `timeout copy (expired: ${branch})` : decline ? "cancelled (decline-class, not expired)" : thrown instanceof WalletRequestClosedError ? "timeout copy (non-decline wallet error)" : "passed through unchanged";
+    for (const e of entries) { e.elapsedMs = elapsed; e.rawError = describeError(err); e.classified = classified; }
     // A declined request is how a wallet-side "Network mismatch" reaches us: show which path built that transaction.
     flag(entries[0]);
-    if (isDeclineClass(err) && (await expiredWhileOpen(p, entries[0], openedAt, now, timeoutMs))) {
-      throw new WalletRequestClosedError(err);
-    }
-    throw asWalletRequestError(err);
+    throw thrown;
   }
 }

@@ -7,7 +7,7 @@
 import type { FC } from "react";
 import { displayPriceV22 } from "@/lib/v22/sdk";
 import { V22_COPY, fmtTokens } from "@/lib/v22/copy";
-import type { BandRentView } from "@/lib/v22/band-rent-state";
+import { bandMinLeg, type BandRentView } from "@/lib/v22/band-rent-state";
 
 export interface BandMarketNoticeProps {
   view: BandRentView | null;
@@ -19,7 +19,10 @@ export interface BandMarketNoticeProps {
 
 export const BandMarketNotice: FC<BandMarketNoticeProps> = ({ view, collateralDecimals, collateralSymbol }) => {
   if (!view || !view.band.enabled) return null;
-  const min = Number(view.band.minLegNotionalAtoms) / 10 ** collateralDecimals;
+  // MIN-1: the real minimum is whole lots (bandMinLeg), not the bare configured notional.
+  const real = bandMinLeg(view);
+  const min = Number(real ? real.notionalAtoms : view.band.minLegNotionalAtoms) / 10 ** collateralDecimals;
+  const lotsNote = real && view.lotExp > 0 ? ` (${real.lots} lots)` : "";
   return (
     <div data-testid="band-market-notice" className="mb-2 space-y-0.5 text-[10px] text-[var(--text-secondary)]">
       {view.price.lagging && (
@@ -27,7 +30,7 @@ export const BandMarketNotice: FC<BandMarketNoticeProps> = ({ view, collateralDe
           {V22_COPY.band.markVsTarget(displayPriceV22(view.price.markE6, view.lotExp), displayPriceV22(view.price.targetE6, view.lotExp))}
         </p>
       )}
-      {min > 0 && <p data-testid="band-min-position">{V22_COPY.band.minPosition(fmtTokens(min), collateralSymbol)}</p>}
+      {min > 0 && <p data-testid="band-min-position">{V22_COPY.band.minPosition(fmtTokens(min), collateralSymbol)}{lotsNote}</p>}
     </div>
   );
 };

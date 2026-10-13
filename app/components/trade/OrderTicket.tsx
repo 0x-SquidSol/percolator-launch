@@ -113,6 +113,9 @@ import { V21_REFRESHING_POSITIONS } from "@/lib/v21/loss-stale-retry";
 import { StatusLine } from "@/components/ui/StatusLine";
 import { V22_COPY } from "@/lib/v22/copy";
 import { parseHumanAmount } from "@/lib/parseAmount";
+import { recordCloseTx } from "@/lib/last-close-tx";
+import { LastCloseTxLink } from "@/components/trade/LastCloseTxLink";
+import { bandMinLeg, legBelowBandMin } from "@/lib/v22/band-rent-state";
 import { POS_SCALE_V22, formatLotPriceE6, lotExpOf, lotOrderQ, tokenUsdOfLotUsd } from "@/lib/v22/lot";
 import { BandMarketNotice } from "@/components/v22/BandMarketNotice";
 import { OpenModeMarketNotes } from "@/components/v22/OpenModeMarketNotes";
@@ -1041,19 +1044,36 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // the button funds and trades in one approval (UX WP-6).
   const ticketLocked = needsWallet || accountPending || ((needsAccount || needsDeposit) && !walletHasTokens) || lotGuard !== null;
 
+  const fmtUsdMin = (atoms: bigint, dec: number): string => (Number(atoms) / 10 ** dec).toLocaleString("en-US", { maximumFractionDigits: 2 });
   async function handleTrade(
     snapshotSize?: bigint,
     snapshotLimitPriceE6?: bigint,
   ) {
     const effectiveSize = snapshotSize ?? positionSize;
-    if (!marginInput || effectiveSize <= 0n) return;
+    // SILENT-1: every exit of this handler before the wallet leaves a visible line (it used to just return).
+    if (!marginInput) { setHumanError("Enter an amount to trade. Nothing was sent."); return; }
+    if (effectiveSize <= 0n) {
+      setHumanError(lotExp > 0 ? "That size is less than one lot here, so there is nothing to send. Enter a larger amount." : "That size is too small to send. Enter a larger amount.");
+      return;
+    }
     // v2.2 lots: an order is whole lots (the ticket quantises); never sign a fractional lot or a size not derived in lots.
     if (lotExp > 0 && effectiveSize % POS_SCALE_V22 !== 0n) {
       setHumanError("That size isn't a whole number of lots here. Adjust it and try again. Nothing was sent.");
       return;
     }
-    if (accountPending) return;
-    if ((!userAccount || exceedsBalance) && !fundingMode) return;
+    if (accountPending) { setHumanError("Still loading your account on this market. Try again in a moment. Nothing was sent."); return; }
+    if ((!userAccount || exceedsBalance) && !fundingMode) {
+      setHumanError(exceedsBalance ? "That is more than your available balance. Lower the amount. Nothing was sent." : "Your trading account on this market is not ready yet. Try again in a moment. Nothing was sent.");
+      return;
+    }
+    // MIN-1: the same number the notice shows (whole lots worth at least the market minimum), checked before the wallet.
+    if (bandView && legBelowBandMin(bandView, existingPositionSize, direction === "long" ? effectiveSize : -effectiveSize)) {
+      const real = bandMinLeg(bandView);
+      if (real) {
+        setHumanError(`Below the minimum position size here: ${real.lots} lots (about ${fmtUsdMin(real.notionalAtoms, decimals)} ${collateralSymbol}) or more, or close fully. Nothing was sent.`);
+        return;
+      }
+    }
 
     if (mockMode) {
       setTradePhase("submitting");
@@ -1191,6 +1211,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       });
       setTradePhase("confirming");
       setLastSig(sig ?? null);
+      // SC-1: a visible "View transaction" link for an open / add, like a close (the status line's one is behind "Details").
+      recordCloseTx(slabAddress, sig, Date.now(), false, existingPositionSize === 0n ? "Position opened." : sameDirection ? "Position increased." : "Order placed.");
       setEngineLockError(null);
       setMarginInput("");
       setSizeInput("");
@@ -1288,6 +1310,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
         priceAgeSecs: oracleReady && !oracleUnavailable ? oracleAgeSecs(oracleLastMs, oracleElapsed) : null,
         // GH#2953: fund-and-trade does not wait and resend; never promise "goes through automatically".
         oneShot: fundingMode,
+        // MIN-1: error 113 names the real minimum for this market at this mark.
+        ...(bandMinLeg(bandView) ? { minPositionLabel: `${bandMinLeg(bandView)!.lots} lots (about ${fmtUsdMin(bandMinLeg(bandView)!.notionalAtoms, decimals)} ${collateralSymbol})` } : {}),
         // GH#2959: a 49 on a new position below the market's floor is the floor, not the size.
         ...(belowImFloor ? { imFloorLabel: `$${usd2(imFloor, decimals).replace(/\.00$/, "")}` } : {}),
       });
@@ -1674,6 +1698,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       {openCloseToggle}
       {v1CloseOnly && <V1CloseOnlyBanner />}
       {statusSlot && <div className="mb-3" data-testid="ticket-status-slot">{statusSlot}</div>}
+      {ticketMode === "open" && <LastCloseTxLink slabAddress={slabAddress} className="mb-3" />}
       {/* v2.2 QA M-1: why OPEN is disabled, band, minimum size and holding fee, in OPEN mode too (flag-gated by its inputs). */}
       <OpenModeMarketNotes lotGuard={lotGuard} view={bandView} side={direction} collateralDecimals={decimals} collateralSymbol={collateralSymbol} />
       {/* Creator-only, self-hiding: the LP owner can drop the matcher's skew (lib/fix-pricing.ts). */}

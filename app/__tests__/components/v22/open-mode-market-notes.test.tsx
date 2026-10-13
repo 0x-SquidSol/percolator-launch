@@ -21,7 +21,7 @@ describe("M-1: OpenModeMarketNotes", () => {
     render(<OpenModeMarketNotes lotGuard="Trading this market isn't available in the app yet." view={view()} side="long" {...props} />);
     expect(screen.getByTestId("lot-trading-guard-open").textContent).toBe("Trading this market isn't available in the app yet.");
     expect(screen.getByTestId("band-open").textContent).toBe("Price protection ±1.3%");
-    expect(screen.getByTestId("band-min-position").textContent).toBe("Minimum position 100 USDC");
+    expect(screen.getByTestId("band-min-position").textContent).toBe("Minimum position 100 USDC (2 lots)");
     expect(screen.getByTestId("holding-fee-open").textContent).toBe("Holding fee 0.22% per day");
   });
   it("short side shows its own rate; no band market shows only what applies", () => {

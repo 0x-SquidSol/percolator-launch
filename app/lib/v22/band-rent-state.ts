@@ -96,3 +96,25 @@ export function legBelowHalfMin(absQ: bigint, markE6: bigint, minLegNotionalAtom
   const notional = (absQ * markE6) / 1_000_000n;
   return notional * 2n < minLegNotionalAtoms;
 }
+
+/**
+ * MIN-1: the REAL smallest order on a band market. The program checks the leg's notional (q * mark / POS_SCALE, in
+ * collateral atoms) against `minLegNotionalAtoms`, and an order is whole lots (POS_SCALE_V22 = 1e6 Q per lot), so the
+ * smallest valid leg is ceil(min / mark-per-lot) whole lots, which is more than the bare minimum whenever one lot is
+ * worth more than a fraction of it (swordcat: min 100 USDC, one lot = 32.12 USDC -> 4 lots = 128.47 USDC; a 120 USDC
+ * order rounds down to 3 lots = 96.35 and is refused 113). The copy, the notice and the pre-sign check all use this.
+ */
+export function bandMinLeg(view: BandRentView | null): { lots: bigint; minQ: bigint; notionalAtoms: bigint } | null {
+  if (!view || !view.band.enabled || view.band.minLegNotionalAtoms <= 0n || view.price.markE6 <= 0n) return null;
+  const lots = (view.band.minLegNotionalAtoms + view.price.markE6 - 1n) / view.price.markE6; // mark is per lot, atoms
+  return { lots, minQ: lots * 1_000_000n, notionalAtoms: lots * view.price.markE6 };
+}
+
+/** Would an order of signed size `orderQ` on top of `existingQ` leave a non-zero leg under the minimum? (A full close to zero is fine.) */
+export function legBelowBandMin(view: BandRentView | null, existingQ: bigint, orderQ: bigint): boolean {
+  const min = bandMinLeg(view);
+  if (!min) return false;
+  const after = existingQ + orderQ;
+  const abs = after < 0n ? -after : after;
+  return abs !== 0n && abs < min.minQ;
+}
