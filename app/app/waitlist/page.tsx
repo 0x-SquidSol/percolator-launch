@@ -242,7 +242,7 @@ function Hero() {
         <span className="text-[var(--text)]">Anatoly Yakovenko&apos;s</span> Percolator · External audit early Q1 2027
       </p>
 
-      <p className="mt-8 font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--text-dim)]">
+      <p className="mt-8 font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--text-secondary)]">
         Invite-only · referral code required
       </p>
     </div>
