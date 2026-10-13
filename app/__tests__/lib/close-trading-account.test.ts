@@ -1,7 +1,7 @@
 // @vitest-environment node
 /**
  * #3426: `assessPortfolioBytes` / `isPortfolioClosable` mirror the engine's `is_empty_for_dematerialization`
- * (percolator v16.rs:6302) + the wrapper's ClosePortfolio authority rule (v16_program.rs:19778). Real v2.1 and
+ * (percolator v16.rs:6302) + the wrapper's ClosePortfolio authority rule (v16_program.rs:19777). Real v2.1 and
  * v2.2 portfolio bytes, edited one field at a time.
  */
 import { afterEach, describe, expect, it } from "vitest";

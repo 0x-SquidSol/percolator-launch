@@ -40,11 +40,15 @@ import { seedFromOnChain } from "@/lib/priceStore/priceStore";
 import { computeLimitPriceE6 } from "@/lib/slippage";
 import { firstTradeDepositAtoms } from "@/lib/first-trade";
 import { parsePortfolio } from "@/lib/v22/layout";
+import { DEVNET_GENESIS_HASH } from "@/lib/v22/devnet-guard";
 
 const SLAB = process.env.LIVE_SLAB ?? "BYFuWyuoUGhP1n8wpD8gXH2ciDsegyF1UJCQvBiVx7T5";
+const V22_FRESH_WRAPPER = "6kpg2wi7vwkn7E9rvodXSktYRhna8TWjiZrC1dBek6NM";
 
 describe.skipIf(!RPC)("LIVE #3426: close trading account", () => {
   it("refused while funded / positioned, accepted once empty, rent returned", async () => {
+    // Devnet only: checked before the wallet key is even read.
+    expect(await conn.getGenesisHash()).toBe(DEVNET_GENESIS_HASH);
     const kp = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(process.env.LIVE_WALLET ?? "", "utf8"))));
     const sign = async (tx: Transaction) => { tx.partialSign(kp); return tx; };
     const w: WalletApi = { publicKey: kp.publicKey, connected: true, connecting: false, wallet: null, signTransaction: sign, signAndSendTransaction: undefined, signMessage: undefined, signAllTransactions: async (txs: Transaction[]) => Promise.all(txs.map(sign)), disconnect: async () => {} };
@@ -58,6 +62,8 @@ describe.skipIf(!RPC)("LIVE #3426: close trading account", () => {
     await waitFor(() => expect(result.current.slab.config).toBeTruthy(), { timeout: 30_000 });
     const programId = result.current.slab.programId as PublicKey;
     const market = new PublicKey(SLAB);
+    // The fresh v2.2 wrapper only (the cluster was checked before anything was read).
+    expect(programId.toBase58()).toBe(V22_FRESH_WRAPPER);
     LOG(`wallet=${kp.publicKey.toBase58()} market=${SLAB} program=${programId.toBase58()} slot=${await conn.getSlot("confirmed")}`);
 
     const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
