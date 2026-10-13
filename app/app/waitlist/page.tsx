@@ -219,7 +219,7 @@ function Hero() {
         className="text-[40px] font-bold leading-[1.04] tracking-[-0.025em] text-[var(--text)] sm:text-[54px] md:text-[64px]"
         style={{ fontFamily: "var(--font-heading)" }}
       >
-        Perpetual futures for{" "}
+        Perps on Solana tokens;{" "}
         <span
           className="bg-clip-text text-transparent"
           style={{
@@ -227,14 +227,14 @@ function Hero() {
               "linear-gradient(110deg, #B97AFF 0%, #9945FF 35%, #14F195 100%)",
           }}
         >
-          every Solana token
+          before anyone else
         </span>
         .
       </h1>
 
       <p className="mt-6 max-w-[540px] text-[16px] leading-[1.6] text-[var(--text-secondary)] sm:text-[17px]">
-        Launch a leveraged market for any SPL token with a DEX pool in about a minute. Trade it long or short, or
-        provide liquidity and earn from its trading fees.
+        Any Solana token with an active DEX pool can have a leveraged market in about a minute, long before the big
+        exchanges get to it. Trade it long or short, or provide liquidity and earn its fees.
       </p>
 
       <p className="mt-6 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--text-secondary)]">
