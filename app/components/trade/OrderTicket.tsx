@@ -294,7 +294,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const { engine, params, insuranceBalance: liveInsuranceBalance, totalOI: liveTotalOI, hasData: engineHasData } = useEngineState();
   const { accounts, config: mktConfig, header, refresh: refreshSlab, programId: slabProgramId, raw: slabRaw, adlFactors: slabAdlFactors, wrapperConfigV17: slabWrapperV17 } = useSlabState();
   // F-3 / R1 (not flag-gated — deployed engine behaviour): ADL reduce-only after a bankruptcy.
-  const adlReduceOnly = useMemo(() => (slabRaw ? isAdlReduceOnly(decodeMarketEngineView(slabRaw)) : false), [slabRaw]);
+  // The slab's engine view, decoded once per slab update (ADL reduce-only below, and #3459's open limit).
+  const engineView = useMemo(() => (slabRaw ? decodeMarketEngineView(slabRaw) : null), [slabRaw]);
+  const adlReduceOnly = useMemo(() => isAdlReduceOnly(engineView), [engineView]);
   const tokenMeta = useTokenMeta(mktConfig?.collateralMint ?? null);
   // Non-reactive — see file-header comment. NOT `useLivePrice()`.
   const { priceUsd, priceE6: livePriceE6 } = getLivePriceSnapshot(slabAddress);
@@ -965,7 +967,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const buildOpenLimitE6 = (signedSize: bigint): bigint =>
     openLimitE6({
       isV17: slabWrapperV17 != null,
-      engine: slabRaw ? decodeMarketEngineView(slabRaw) : null,
+      engine: engineView,
       feedE6: getLivePriceSnapshot(slabAddress).priceE6 ?? livePriceE6,
       onChainRefE6: () => (mktConfig ? resolveMarketPriceE6({ ...mktConfig, oracleModeByte: slabWrapperV17?.oracleMode }) : null),
       size: signedSize,
