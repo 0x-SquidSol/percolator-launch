@@ -71,7 +71,7 @@ describe("sendTx keeps a self-heal only when the final transaction fits the pack
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const onSelfHeal = vi.fn();
     await sendTx({ connection: conn as never, wallet, instructions: [userIx()], selfHeal: { programId: PROG, market }, onSelfHeal });
-    expect(onSelfHeal.mock.calls[0][0].outcome).toBe("rpc-error");
+    expect(onSelfHeal.mock.calls[0][0].outcome).toBe("oversize");
     expect(signed[0].instructions.some((ix) => ix.data.length === n)).toBe(false); // repair not signed
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/do not fit one transaction/));
     warn.mockRestore();

@@ -870,7 +870,7 @@ export async function sendTx({
           // Keep it only if the final tx fits; otherwise send unchanged, as when it doesn't simulate.
           const fits = heal.outcome !== "repaired" || finalTxWireSize(heal.instructions, feePayer) <= PACKET_DATA_SIZE;
           if (!fits) console.warn("[self-heal] repairs do not fit one transaction; the keeper must catch up");
-          onSelfHeal?.(fits ? heal : { ...heal, instructions, computeUnits, repairs: [], outcome: "rpc-error" });
+          onSelfHeal?.(fits ? heal : { ...heal, instructions, computeUnits, repairs: [], catchUpCranks: 0, outcome: "oversize" });
           if (fits && heal.outcome === "repaired") {
             healedInstructions = heal.instructions;
             healedComputeUnits = heal.computeUnits;
