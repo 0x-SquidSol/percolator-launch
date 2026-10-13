@@ -22,6 +22,9 @@ import { isSentinelValue } from "@/lib/health";
 import { useConvertibleProfit } from "@/hooks/useConvertibleProfit";
 import { settlingProfitMessage } from "@/lib/convert-released-pnl";
 import { useWalletBalanceRefreshKey } from "@/lib/wallet-balance-invalidation";
+import { getPortfolioRawSnapshot, makePortfolioScanKey } from "@/lib/userAccountScan";
+import { CloseTradingAccountRow } from "./CloseTradingAccountRow";
+import { CLOSE_ACCOUNT_COPY, lamportsToSolText } from "@/lib/close-trading-account";
 
 interface DepositWithdrawCardProps {
   slabAddress: string;
@@ -52,7 +55,9 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
   const { deposit, loading: depositLoading, error: depositError } = useDeposit(slabAddress);
   const { withdraw, loading: withdrawLoading, error: withdrawError, notice: withdrawNotice } = useWithdraw(slabAddress);
   const { initUser, loading: initLoading, error: initError } = useInitUser(slabAddress);
-  const { config: mktConfig } = useSlabState();
+  const { config: mktConfig, programId: slabProgramId } = useSlabState();
+  // #3426: set after this card's trading account was closed, so the create-account view can say so.
+  const [closedNote, setClosedNote] = useState<string | null>(null);
   const tokenMeta = useTokenMeta(mktConfig?.collateralMint ?? null);
   const symbol = tokenMeta?.symbol ?? "Token";
 
@@ -233,6 +238,7 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
     const hasTokens = walletBalance !== null && walletBalance > 0n;
     return (
       <div className="relative rounded-none border border-[var(--border)]/50 bg-[var(--bg)]/80 p-3">
+        {closedNote && <p data-testid="close-account-done" role="status" className="mb-2 text-[10px] text-[var(--text-secondary)]">{closedNote}</p>}
         <p className="mb-1 text-[10px] uppercase tracking-[0.15em] text-[var(--text-secondary)]">Create Account</p>
         {walletBalance !== null && (
           <p className="mb-2 text-[10px] text-[var(--text-secondary)]" style={{ fontFamily: "var(--font-mono)" }}>
@@ -490,6 +496,18 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
       {mode === "withdraw" && !error && withdrawNotice && (
         <p data-testid="withdraw-notice" role="status" className="mt-2 text-[10px] text-[var(--text-secondary)]">{withdrawNotice}</p>
       )}
+      {mode === "withdraw" && !mockMode && publicKey && slabProgramId && userAccount.pubkey && (() => {
+        // #3426: the EXACT account this card shows, as last scanned (the hook re-reads it before signing).
+        const scanned = getPortfolioRawSnapshot(makePortfolioScanKey(slabProgramId, slabAddress, publicKey));
+        return scanned && scanned.pubkey.equals(userAccount.pubkey!) ? (
+          <CloseTradingAccountRow
+            slabAddress={slabAddress}
+            portfolioPk={scanned.pubkey}
+            portfolio={scanned.portfolio}
+            onClosed={(l) => setClosedNote(CLOSE_ACCOUNT_COPY.done(lamportsToSolText(l)))}
+          />
+        ) : null;
+      })()}
       {lastSig && <p className="mt-2 text-[10px] text-[var(--text-dim)]" style={{ fontFamily: "var(--font-mono)" }}>Tx: <a href={`${explorerTxUrl(lastSig)}`} target="_blank" rel="noopener noreferrer" className="text-[var(--accent)] hover:underline">{lastSig.slice(0, 12)}...</a></p>}
     </div>
   );

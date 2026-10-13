@@ -46,7 +46,14 @@ import { GET as GET_IMAGE } from "@/app/api/earn-share/[market]/image/route";
 import { getConfig } from "@/lib/config";
 
 const PROGRAM = new PublicKey(getConfig().programId);
-const market = Keypair.generate().publicKey;
+// The "M + 1" case below must be an invalid key: about 1 random key in 58 still decodes to 32 bytes with a "1" appended.
+function marketKey(): PublicKey {
+  for (;;) {
+    const k = Keypair.generate().publicKey;
+    try { new PublicKey(k.toBase58() + "1"); } catch { return k; }
+  }
+}
+const market = marketKey();
 const [registry] = deriveLpVaultRegistry(PROGRAM, market);
 const [mint] = deriveInsuranceLpMint(PROGRAM, market);
 const [meta] = deriveLpShareMetadataPdaV22(mint);
