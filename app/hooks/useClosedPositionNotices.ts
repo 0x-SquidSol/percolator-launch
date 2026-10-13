@@ -88,15 +88,22 @@ export function useClosedPositionNotices(): { notices: ClosedNotice[]; dismiss: 
     const now = Date.now();
     const open = seenFromPositions(portfolio.positions, wallet);
     const prev = loadSnapshot(wallet, now);
+    // A position the wallet wrapped in a Position NFT drops out of `open` (wrapped rows are excluded
+    // above) but is not closed: it is listed as nftWrapped, and wrapped rows carry no reliable idx, so
+    // match on the market. Such a position is neither remembered as missing nor noticed.
+    const wrappedSlabs = new Set(
+      portfolio.positions.filter((p) => p.nftWrapped && (p.account?.positionSize ?? 0n) !== 0n).map((p) => p.slabAddress),
+    );
     if (prev) {
       for (const v of vanishedSince(prev, open)) {
+        if (wrappedSlabs.has(v.slab)) continue;
         if (!missing.current.has(v.key)) {
           missing.current.set(v.key, { seen: v, lastOpenAt: v.lastOpenAt ?? prev.savedAt, missingSince: now });
         }
       }
     }
     // A position that is open again was never closed.
-    for (const k of [...missing.current.keys()]) if (k in open) missing.current.delete(k);
+    for (const [k, m] of [...missing.current]) if (k in open || wrappedSlabs.has(m.seen.slab)) missing.current.delete(k);
     saveSnapshot(wallet, rememberedPositions(open, missing.current, now), now);
   }, [wallet, portfolio.loading, portfolio.error, portfolio.positions]);
 
