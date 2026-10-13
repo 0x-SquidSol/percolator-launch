@@ -1577,7 +1577,9 @@ function Origin() {
         We forked it and built it into a product: per-market LP vaults, insurance funds, transferable NFT positions
         and a matcher for pricing, plus the SDK, indexer, keepers and this app around it.
       </p>
-      <p className="text-[var(--text)]">Both co-founders won one of his public bounties.</p>
+      <p className="text-[var(--text)]">
+        Our co-founders won 6 of the 7 public bounties he posted for Percolator.
+      </p>
     </div>
   );
 }
