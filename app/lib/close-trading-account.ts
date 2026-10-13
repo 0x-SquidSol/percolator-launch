@@ -7,17 +7,17 @@
  *
  * On-chain rules mirrored (percolator-prog devnet/v22-fresh-ids 81ed7fdf, src/v16_program.rs):
  *   handle_close_portfolio  :19711  accounts [closer s,w][market w][portfolio w], both owned by the wrapper,
- *                                   portfolio at the market's exact account length (InvalidAccountLen);
- *   identity binding        :19740  portfolio_id + matcher_sequence + position_epoch must equal the live
+ *                                   portfolio at the market's exact account length (:19729, InvalidAccountLen);
+ *   identity binding        :19747  portfolio_id + matcher_sequence + position_epoch must equal the live
  *                                   account (else EngineStale 19), so a close built while empty cannot land
  *                                   after a deposit / trade;
- *   authority               :19778  `portfolio.header.owner == closer` (the MUTABLE owner: an NFT-wrapped
+ *   authority               :19760/:19777  `portfolio.header.owner == closer` (the MUTABLE owner: an NFT-wrapped
  *                                   portfolio's owner is the escrow PDA, so the wallet cannot close it);
  *                                   anything else is Unauthorized 8 on a live market;
  *   emptiness               :19785  group.deregister_empty_materialized_portfolio_not_atomic -> engine
  *                                   `is_empty_for_dematerialization` (percolator v16.rs:6302 @ 3ce4cbd1);
  *                                   not empty is LockActive, mapped to EngineLockActive 21;
- *   rent                    :19795  `close_portfolio_account_to_market_slab(portfolio, closer)` (:42363)
+ *   rent                    :19793  `close_portfolio_account_to_market_slab(portfolio, closer)` (:42363)
  *                                   zeroes the account and moves ALL its lamports to the closer.
  * Engine emptiness = no active leg, capital 0, pnl 0, reserved pnl 0, fee credits 0, cancel-deposit escrow 0,
  * no stale / b-stale / rebalance / liquidation flag, close progress empty (or inert-canceled / finalized-inert),
