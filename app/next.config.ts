@@ -60,6 +60,9 @@ const TV_FRAME_CSP = [
 const nextConfig = {
   env: {
     NEXT_PUBLIC_TV_LIBRARY_VERSION: tvLibraryVersion(),
+    // v2.2 preview build tag (components/v22/BuildTag.tsx): public commit + deployment ids only, no secrets.
+    NEXT_PUBLIC_BUILD_SHA: (process.env.VERCEL_GIT_COMMIT_SHA ?? "").slice(0, 9),
+    NEXT_PUBLIC_BUILD_DEPLOYMENT: process.env.VERCEL_DEPLOYMENT_ID ?? "",
   },
   // Playground is a fast-moving devnet contributor app: don't let a lint warning block
   // `next build` (Vercel already builds this way).
