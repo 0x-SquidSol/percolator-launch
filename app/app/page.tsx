@@ -64,7 +64,7 @@ export default function Home() {
       <section className="mx-auto flex min-h-[calc(72dvh-3.5rem)] max-w-[1100px] flex-col justify-center px-6 py-20 sm:px-8">
         <div className="reveal-up">
           <div className="mb-5 text-[11px] font-medium uppercase tracking-[0.25em] text-[var(--accent-text)]">
-            // v17 · solana devnet
+            // devnet v2 · solana
           </div>
         </div>
 
@@ -79,14 +79,22 @@ export default function Home() {
               fontWeight: 600,
             }}
           >
-            Perpetual futures that can&apos;t rug you.
+            Perps on Solana tokens;{" "}
+            <span
+              className="bg-clip-text text-transparent"
+              style={{ backgroundImage: "linear-gradient(110deg, #B97AFF 0%, #9945FF 35%, #14F195 100%)" }}
+            >
+              before anyone else
+            </span>
+            .
           </h1>
         </div>
 
         <div className="reveal-up" style={{ animationDelay: "0.12s" }}>
           <p className="mt-6 max-w-[52ch] text-[15px] leading-relaxed text-[var(--text-secondary)]">
-            Every market carries its own insurance fund and prices off live Solana DEX pools, and its
-            creator can give up their admin key after launch. Fully on-chain, open to anyone, and open to any token.
+            Any Solana token with an active DEX pool can have a leveraged market in about a minute, long
+            before the big exchanges get to it. Trade it long or short, or provide liquidity and earn its
+            fees. This is devnet: everything runs on free test funds.
           </p>
         </div>
 
