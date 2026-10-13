@@ -127,15 +127,19 @@ export default function WaitlistPage() {
       <BackdropArt />
 
       <main className="relative mx-auto max-w-[1100px] px-6 pt-16 pb-24 sm:pt-20">
-        <Hero />
+        <section className="grid items-start gap-x-12 gap-y-12 lg:grid-cols-[1.1fr_1fr]">
+          <Hero />
+          {/* id="reserve": share links (/r/[code]) land on /waitlist?referrer=…#reserve. */}
+          <div id="reserve" className="flex scroll-mt-20 justify-start lg:justify-end lg:pt-2">
+            <SignupCard />
+          </div>
+        </section>
         <SeparatorMono label="Architecture" />
         <ArchitectureSection />
         <SeparatorMono label="Mainnet status" />
         <StatusReadout />
         <SeparatorMono label="Origin" />
         <OriginSection />
-        <SeparatorMono label="Reserve your spot" />
-        <SignupSection />
         <SeparatorMono label="How we'll reach you" />
         <NotifySection />
         <SeparatorMono label="FAQ" />
@@ -209,22 +213,20 @@ function SeparatorMono({ label }: { label: string }) {
 
 function Hero() {
   return (
-    <section className="max-w-[820px]">
+    <div className="max-w-[600px]">
       {/* Top status row */}
-      <div className="mb-8 flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--text-secondary)]">
+      <div className="mb-8 flex flex-wrap items-center gap-2 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--text-secondary)]">
         <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--cyan)]" />
-        <span className="text-[var(--cyan)]">live on mainnet</span>
+        <span className="text-[var(--cyan)]">devnet v2 live</span>
         <span className="text-[var(--text-dim)]">/</span>
-        <span>audit Q3 · public open after</span>
+        <span>mainnet in testing</span>
       </div>
 
       <h1
-        className="text-[44px] font-bold leading-[1.02] tracking-[-0.025em] text-[var(--text)] sm:text-[60px] md:text-[76px]"
+        className="text-[40px] font-bold leading-[1.04] tracking-[-0.025em] text-[var(--text)] sm:text-[54px] md:text-[64px]"
         style={{ fontFamily: "var(--font-heading)" }}
       >
-        Perp futures
-        <br />
-        for{" "}
+        Perpetual futures for{" "}
         <span
           className="bg-clip-text text-transparent"
           style={{
@@ -237,59 +239,19 @@ function Hero() {
         .
       </h1>
 
-      <p className="mt-6 max-w-[640px] text-[16px] leading-[1.6] text-[var(--text-secondary)] sm:text-[17px]">
-        A creator launches a leveraged market on any SPL token in 60 seconds — no team approval, no auction. Forked from{" "}
-        <span className="text-[var(--text)]">Anatoly Yakovenko&apos;s</span> open-source reference program and extended on chain with LP vault, transferable Token-2022 NFT positions, dispute resolution, and audit-crank invariants.
+      <p className="mt-6 max-w-[540px] text-[16px] leading-[1.6] text-[var(--text-secondary)] sm:text-[17px]">
+        Launch a leveraged market for any SPL token with a DEX pool in about a minute. Trade it long or short, or
+        provide liquidity and earn from its trading fees.
       </p>
 
-      {/* Specs row — looks like a struct field block, not a trust-badge row */}
-      <div className="mt-9 grid max-w-[640px] grid-cols-2 gap-x-6 gap-y-2.5 sm:grid-cols-4">
-        <SpecField k="status" v="lab mode" highlight="cyan" />
-        <SpecField k="proofs" v="422 / 422 ✓" highlight="cyan" />
-        <SpecField k="repos" v="17 · Apache 2.0" />
-        <SpecField k="markets" v="220 on devnet" />
-      </div>
+      <p className="mt-6 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--text-secondary)]">
+        Open source · Built on{" "}
+        <span className="text-[var(--text)]">Anatoly Yakovenko&apos;s</span> Percolator · External audit early Q1 2027
+      </p>
 
-      {/* Hero CTA — clean, confident, no theatrics */}
-      <div className="mt-12 flex flex-wrap items-center gap-5">
-        <a
-          href="#reserve"
-          className="inline-flex items-center gap-2.5 rounded-md bg-[var(--accent)] px-6 py-3 text-[14px] font-semibold text-white shadow-[0_4px_14px_-4px_rgba(153,69,255,0.4)] transition-all duration-200 hover:bg-[var(--accent-muted)] hover:shadow-[0_8px_24px_-6px_rgba(153,69,255,0.55)]"
-        >
-          Reserve your spot
-          <span aria-hidden className="text-[15px] leading-none">↓</span>
-        </a>
-        <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--text-secondary)]">
-          invite-only · referral code required
-        </span>
-      </div>
-    </section>
-  );
-}
-
-function SpecField({
-  k,
-  v,
-  highlight,
-}: {
-  k: string;
-  v: string;
-  highlight?: "cyan" | "purple";
-}) {
-  const color =
-    highlight === "cyan"
-      ? "text-[var(--cyan)]"
-      : highlight === "purple"
-        ? "text-[var(--accent)]"
-        : "text-[var(--text)]";
-  return (
-    <div className="flex flex-col gap-0.5 border-l border-[var(--border)] pl-3">
-      <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--text-secondary)]">
-        {k}
-      </span>
-      <span className={`font-mono text-[12.5px] ${color}`} style={{ fontVariantNumeric: "tabular-nums" }}>
-        {v}
-      </span>
+      <p className="mt-8 font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--text-dim)]">
+        Invite-only · referral code required
+      </p>
     </div>
   );
 }
@@ -1493,61 +1455,6 @@ const swrFetcher = (url: string) =>
   fetch(url).then((r) => (r.ok ? r.json() : Promise.reject(r.status)));
 
 // ============================================================================
-// SIGNUP SECTION — anchored card, the actual reservation step
-// ============================================================================
-
-function SignupSection() {
-  return (
-    <section
-      id="reserve"
-      className="scroll-mt-20 grid gap-x-12 gap-y-10 lg:grid-cols-[1fr_1.1fr]"
-    >
-      <div>
-        <h2
-          className="text-[28px] font-semibold leading-[1.1] tracking-[-0.015em] text-[var(--text)]"
-          style={{ fontFamily: "var(--font-heading)" }}
-        >
-          Invite-only.
-          <br />
-          Code required.
-        </h2>
-        <p className="mt-4 max-w-[420px] text-[14px] leading-[1.65] text-[var(--text-secondary)]">
-          The waitlist is gated. Bring a referral code from an existing member — paste it in, the form unlocks, you finish in under a minute on wallet or email.
-        </p>
-        <div className="mt-6 space-y-3 font-mono text-[12px] text-[var(--text-secondary)]">
-          <SignupBullet color="cyan">Got a code from someone? Paste it. Form unlocks. Pick wallet or email.</SignupBullet>
-          <SignupBullet color="cyan">Landed via a share link? Code is already pre-filled — just finish.</SignupBullet>
-          <SignupBullet color="cyan">No code yet? Follow @percolatortrade — we drop codes on tweets every so often.</SignupBullet>
-        </div>
-      </div>
-      <div className="flex justify-start lg:justify-end">
-        <SignupCard />
-      </div>
-    </section>
-  );
-}
-
-function SignupBullet({
-  children,
-  color,
-}: {
-  children: React.ReactNode;
-  color: "cyan" | "purple";
-}) {
-  const c = color === "cyan" ? "var(--cyan)" : "var(--accent)";
-  return (
-    <div className="flex items-start gap-2.5">
-      <span
-        aria-hidden
-        className="mt-[7px] inline-block h-1 w-3 shrink-0 rounded-sm"
-        style={{ background: c, opacity: 0.85 }}
-      />
-      <span>{children}</span>
-    </div>
-  );
-}
-
-// ============================================================================
 // NOTIFY — how we actually reach you when mainnet opens
 // ============================================================================
 
@@ -1988,7 +1895,7 @@ function Footer() {
       <div className="flex items-center gap-3 font-mono">
         <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--cyan)]" />
         <span className="text-[10.5px] uppercase tracking-[0.18em] text-[var(--text-secondary)]">
-          live · pre-audit · audit Q3
+          devnet v2 live · mainnet beta Q4 2026
         </span>
       </div>
       <div className="font-mono text-[11.5px]">
