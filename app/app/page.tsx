@@ -177,6 +177,9 @@ export default function Home() {
       {/* ─── More: why it's different / how it works, closed until clicked ─── */}
       <section className="mx-auto max-w-[1100px] px-6 pb-24 sm:px-8">
         <ScrollReveal>
+          <h2 className="mb-4 text-[10px] font-medium uppercase tracking-[0.25em] text-[var(--accent-text)]">
+            // about percolator
+          </h2>
           <InfoTabs
             tabs={[
               {
