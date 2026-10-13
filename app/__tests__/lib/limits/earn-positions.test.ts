@@ -1,5 +1,6 @@
 // @vitest-environment node
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import { AccountLayout, ACCOUNT_SIZE, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 
@@ -23,6 +24,10 @@ const tokenAcct = (amount: bigint) => {
   AccountLayout.encode({ mint: PublicKey.default, owner: WALLET, amount, delegateOption: 0, delegate: PublicKey.default, state: 1, isNativeOption: 0, isNative: 0n, delegatedAmount: 0n, closeAuthorityOption: 0, closeAuthority: PublicKey.default }, d);
   return { data: d, owner: TOKEN_PROGRAM_ID, lamports: 1, executable: false };
 };
+
+// v2.1 account fixtures: decoded by the v2.1 parsers (v2.2 flag off), the convention from 02e50adc.
+beforeEach(() => __setDevnetV22ForTest(false));
+afterEach(() => __setDevnetV22ForTest(null));
 
 describe("readEarnPositions", () => {
   it("values the wallet's LP ATA (a creator's seed) + escrow at the program NAV", async () => {

@@ -9,17 +9,20 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { V17_PORTFOLIO_ACCOUNT_LEN } from "@percolatorct/sdk";
 import { FIRST_TRADE_COPY, FIRST_TRADE_RENT_SOL } from "@/lib/first-trade";
+import { portfolioAccountLen } from "@/lib/v22/layout";
 import { resolveUserMessage } from "@/lib/limits/user-message";
 import { TradeConfirmationModal } from "@/components/trade/TradeConfirmationModal";
 
 const RENT = 49_230_280; // live, for V17_PORTFOLIO_ACCOUNT_LEN = 9563
+const RENT_V22 = 54_513_480; // (10,603 + 128) x 5,080: the v2.2 portfolio
 
 describe("first trade: the account rent is shown", () => {
   afterEach(cleanup);
 
   it("the rent figure matches the live rent for the SDK's portfolio size", () => {
     expect(V17_PORTFOLIO_ACCOUNT_LEN).toBe(9563);
-    expect(FIRST_TRADE_RENT_SOL).toBe(RENT / 1e9);
+    // The figure follows the build's portfolio size (lib/v22/layout portfolioAccountLen): 9,563 B, or 10,603 B on a v2.2 build.
+    expect(FIRST_TRADE_RENT_SOL).toBe((portfolioAccountLen() === 9563 ? RENT : RENT_V22) / 1e9);
     expect(FIRST_TRADE_COPY.line).toBe("First trade on this market sets up your trading account (one approval, plus ~0.05 SOL one-time account rent)");
   });
 

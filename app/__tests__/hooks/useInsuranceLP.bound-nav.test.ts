@@ -3,7 +3,8 @@
  * gate must be fed the program's `bound_vault_nav`, not `shares + feeDistributionTotal`.
  * `state.backingNavAtoms` is what those call sites read.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import { renderHook, waitFor } from "@testing-library/react";
 import { PublicKey } from "@solana/web3.js";
 import { useInsuranceLP } from "../../hooks/useInsuranceLP";
@@ -114,6 +115,10 @@ const pot = (principal: bigint, held: bigint, earnings = 0n): DomainState => ({
   source: src,
   ledger: { totalPrincipal: principal, totalEarnings: earnings, totalEarningsWithdrawn: 0n, lastObsBucketEarnings: 0n, cumulativeLoss: 0n, cumulativeRecovery: 0n, lastObsUnavailable: 0n },
 });
+
+// v2.1 account fixtures: decoded by the v2.1 parsers (v2.2 flag off), the convention from 02e50adc.
+beforeEach(() => __setDevnetV22ForTest(false));
+afterEach(() => __setDevnetV22ForTest(null));
 
 describe("useInsuranceLP backing NAV (M-9)", () => {
   const programId = new PublicKey("5BZWY6XWPxuWFxs2nPCLLsVaKRWZVnzZh3FkJDLJBkJf");

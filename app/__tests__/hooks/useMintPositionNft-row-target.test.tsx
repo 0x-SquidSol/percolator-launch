@@ -6,7 +6,8 @@
  * shows one. The hook now wraps exactly the account the row names, through the #3301 target gate.
  * The real verifyPortfolioTarget runs; the account bytes decode per account below.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, afterEach } from "vitest";
+import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import { act, renderHook } from "@testing-library/react";
 import { Keypair, PublicKey, type Transaction } from "@solana/web3.js";
 
@@ -77,6 +78,10 @@ async function wrap(pk: PublicKey) {
   return { sig, error: result.current.error };
 }
 const mintIx = () => (h.signed[0] as Transaction).instructions.find((ix) => ix.programId.equals(PERCOLATOR_NFT_PROGRAM_ID))!;
+
+// v2.1 account fixtures: decoded by the v2.1 parsers (v2.2 flag off), the convention from 02e50adc.
+beforeEach(() => __setDevnetV22ForTest(false));
+afterEach(() => __setDevnetV22ForTest(null));
 
 describe("Wrap as NFT wraps exactly the row's account", () => {
   beforeEach(() => {
