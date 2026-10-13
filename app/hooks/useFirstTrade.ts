@@ -311,15 +311,12 @@ export function useFirstTrade(slabAddress: string) {
         const ataBalance = ataInfo && ataInfo.data.length >= 72 ? readU64LE(ataInfo.data, 64) : 0n;
         assertDepositWithinBalance(depositAtoms, ataBalance);
         const legs = (portfolio: PublicKey) => ({ programId, owner, market, portfolio, userAta, vaultTokenAta, depositAtoms });
-        // Deposit-only: the market-level repairs (ExpireBackingBucket / FinalizeResetSide, non-signer) a refused
-        // 19/21 needs. No LP catch-up crank here: a deposit has no LP leg, so no LP accounts are resolved.
-        const depositSelfHeal = { programId, market };
 
         const existing = await findV17Portfolio(connection, programId, market, owner);
         if (existing) {
           const id = await fetchPortfolioIdentity(connection, existing);
           const signature = await withPresignWait(() =>
-            sendTx({ connection, wallet, instructions: [buildFirstDepositIx(legs(existing), { portfolioId: id.portfolioId, sequence: id.matcherSequence })], selfHeal: depositSelfHeal }),
+            sendTx({ connection, wallet, instructions: [buildFirstDepositIx(legs(existing), { portfolioId: id.portfolioId, sequence: id.matcherSequence })] }),
           );
           invalidatePortfolio();
           refreshSlab();
@@ -338,7 +335,7 @@ export function useFirstTrade(slabAddress: string) {
           ];
           try {
             const signature = await withPresignWait(() =>
-              sendTx({ connection, wallet, instructions: ixs, signers: [kp], computeUnitsFromSim: { cap: FIRST_TRADE_CU_CAP }, selfHeal: depositSelfHeal }),
+              sendTx({ connection, wallet, instructions: ixs, signers: [kp], computeUnitsFromSim: { cap: FIRST_TRADE_CU_CAP } }),
             );
             invalidatePortfolio();
             refreshSlab();
