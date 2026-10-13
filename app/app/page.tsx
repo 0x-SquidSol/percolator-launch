@@ -2,11 +2,11 @@
 
 import Link from "next/link";
 import { ButtonLink } from "@/components/ui/Button";
-import { GlassCard } from "@/components/ui/GlassCard";
 import { ScrollReveal } from "@/components/ui/ScrollReveal";
 import { LiveMarketRail } from "@/components/landing/LiveMarketRail";
 import { MAX_LEVERAGE_X } from "@/lib/market-params";
 import { TrendingTokensRail } from "@/components/landing/TrendingTokensRail";
+import { InfoTabs } from "@/components/waitlist/InfoTabs";
 
 const ARROW = (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
@@ -22,13 +22,13 @@ const PROOF_POINTS = [
   },
   {
     index: "02",
-    title: "Admin key can be burned",
-    body: "Creators can permanently renounce admin control after launch. Once burned, no one can change config, pause the market, or touch its funds — it runs on its own code.",
+    title: "Earn as a liquidity provider",
+    body: "Deposit into a market's LP vault to take the other side of its trades and earn a share of its fees. Each vault belongs to one market.",
   },
   {
     index: "03",
-    title: "Deploy in ~60s",
-    body: "Launch a perpetual market for any Solana token in one on-chain transaction. No listing committee, no gatekeeper.",
+    title: "Launch in about a minute",
+    body: "Open a perpetual market for any Solana token with an active DEX pool. No listing committee, no gatekeeper.",
   },
   {
     index: "04",
@@ -46,7 +46,7 @@ const HOW_IT_WORKS = [
   {
     step: "02",
     title: "Pick a market",
-    body: "Trade any of the live markets below, or launch your own for any Solana token.",
+    body: "Trade any live market, or launch your own for a Solana token with an active DEX pool.",
   },
   {
     step: "03",
@@ -174,47 +174,43 @@ export default function Home() {
         </ScrollReveal>
       </section>
 
-      {/* ─── Proof band ─── */}
-      <section className="mx-auto max-w-[1100px] px-6 pb-20 sm:px-8">
-        <ScrollReveal>
-          <h2 className="mb-6 text-[10px] font-medium uppercase tracking-[0.25em] text-[var(--accent-text)]">
-            // why it&apos;s different
-          </h2>
-        </ScrollReveal>
-        {/* Cards are direct children of ScrollReveal (grid classes live on
-            ScrollReveal itself) — `stagger` only staggers direct children;
-            wrapping them in an extra grid <div> made `el.children.length`
-            always 1, so the stagger silently no-op'd and every card faded
-            in as one block. */}
-        <ScrollReveal stagger={0.08} className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {PROOF_POINTS.map((p) => (
-            <GlassCard key={p.index} padding="md" elevation="sm">
-              <div className="mb-3 font-mono text-[11px] text-[var(--text-secondary)]">{p.index}</div>
-              <h3 className="mb-2 text-[13px] font-semibold leading-snug text-[var(--text)]">{p.title}</h3>
-              <p className="text-[12px] leading-relaxed text-[var(--text-secondary)]">{p.body}</p>
-            </GlassCard>
-          ))}
-        </ScrollReveal>
-      </section>
-
-      {/* ─── How it works ─── */}
+      {/* ─── More: why it's different / how it works, closed until clicked ─── */}
       <section className="mx-auto max-w-[1100px] px-6 pb-24 sm:px-8">
         <ScrollReveal>
-          <h2 className="mb-6 text-[10px] font-medium uppercase tracking-[0.25em] text-[var(--accent-text)]">
-            // how it works
-          </h2>
-        </ScrollReveal>
-
-        {/* Steps are direct children of ScrollReveal — see proof-band comment
-            above for why the stagger needs this instead of a nested grid <div>. */}
-        <ScrollReveal stagger={0.08} className="grid grid-cols-1 gap-8 sm:grid-cols-3">
-          {HOW_IT_WORKS.map((s) => (
-            <div key={s.step} className="border-t border-[var(--border)] pt-4">
-              <div className="mb-2 font-mono text-[11px] text-[var(--accent-text)]">{s.step}</div>
-              <h3 className="mb-1.5 text-[14px] font-semibold text-[var(--text)]">{s.title}</h3>
-              <p className="text-[13px] leading-relaxed text-[var(--text-secondary)]">{s.body}</p>
-            </div>
-          ))}
+          <InfoTabs
+            tabs={[
+              {
+                id: "why",
+                label: "Why it's different",
+                content: (
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    {PROOF_POINTS.map((p) => (
+                      <div key={p.index} className="rounded-md border border-[var(--border)] p-4">
+                        <div className="mb-3 font-mono text-[11px] text-[var(--text-secondary)]">{p.index}</div>
+                        <h3 className="mb-2 text-[13px] font-semibold leading-snug text-[var(--text)]">{p.title}</h3>
+                        <p className="text-[12px] leading-relaxed text-[var(--text-secondary)]">{p.body}</p>
+                      </div>
+                    ))}
+                  </div>
+                ),
+              },
+              {
+                id: "how",
+                label: "How it works",
+                content: (
+                  <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
+                    {HOW_IT_WORKS.map((s) => (
+                      <div key={s.step} className="border-t border-[var(--border)] pt-4">
+                        <div className="mb-2 font-mono text-[11px] text-[var(--accent-text)]">{s.step}</div>
+                        <h3 className="mb-1.5 text-[14px] font-semibold text-[var(--text)]">{s.title}</h3>
+                        <p className="text-[13px] leading-relaxed text-[var(--text-secondary)]">{s.body}</p>
+                      </div>
+                    ))}
+                  </div>
+                ),
+              },
+            ]}
+          />
         </ScrollReveal>
 
         <ScrollReveal delay={0.15}>
