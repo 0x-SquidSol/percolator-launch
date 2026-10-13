@@ -3,15 +3,18 @@
 /**
  * v2.2 QA NB-2: the visible debug line for lib/v22/sign-guard.ts. Shows the last signature request that the guard
  * refused or reported, or that the wallet declined, with the path that built the transaction. Renders nothing until
- * then, and nothing at all when the v2.2 flag is off. QA instrumentation for the preview only.
+ * then, and nothing at all when the v2.2 flag is off. QA instrumentation for the preview only; hidden unless `?signdebug=1` (stored in localStorage `v22.signdebug`).
  */
-import { useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
-import { dismissSignProblem, formatSignEntry, lastSignProblem, subscribeSignGuard } from "@/lib/v22/sign-guard";
+import { dismissSignProblem, formatSignEntry, isSignDebugEnabled, lastSignProblem, subscribeSignGuard } from "@/lib/v22/sign-guard";
 
 export function SignGuardLine() {
   const req = useSyncExternalStore(subscribeSignGuard, lastSignProblem, () => null);
-  if (!isDevnetV22Enabled() || !req) return null;
+  // Opt-in only (?signdebug=1): ordinary users never see it. The data stays in window.__v22SignLog either way.
+  const [optIn, setOptIn] = useState(false);
+  useEffect(() => setOptIn(isSignDebugEnabled()), []);
+  if (!isDevnetV22Enabled() || !optIn || !req) return null;
   return (
     <div
       role="status"

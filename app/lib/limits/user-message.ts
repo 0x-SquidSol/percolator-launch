@@ -268,7 +268,7 @@ function resolveUserMessageInner(err: unknown, ctx: MessageContext): UserMessage
   const lower = p.raw.toLowerCase();
 
   // ── Wallet / network conditions (no program code) ──────────────────────────
-  if (/user rejected|rejected the request|user declined|transaction rejected|request rejected|\b4001\b/i.test(p.raw)) {
+  if (/user rejected|transaction cancell?ed|signing cancell?ed by user|rejected the request|user declined|transaction rejected|request rejected|\b4001\b/i.test(p.raw)) {
     return m("cancelled", "info", "Cancelled", "Cancelled.", { quiet: true });
   }
   // Earn deposit refused BEFORE the wallet opened (earn-split-pot planEarnDeposit): a pot is

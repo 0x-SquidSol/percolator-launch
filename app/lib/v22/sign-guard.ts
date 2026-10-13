@@ -156,6 +156,37 @@ export function asWalletRequestError(err: unknown): unknown {
   return new WalletRequestClosedError(err);
 }
 
+/**
+ * v2.2 QA RT5-2 (retest 6): a wallet popup that EXPIRES is rejected by some wallets with the same text as a decline
+ * (Solflare: JsonRpcError "Transaction cancelled" after ~70 s, popup shows "Transaction expired"). The text cannot
+ * tell the two apart, so the time can: a decline-class rejection that arrives this long after the request was opened
+ * is read as an expiry. Solflare's popup lives ~70 s; 55 s leaves margin for clock/scheduling skew while a person
+ * who actively declines almost never waits that long (and if they do, "nothing was sent, try again" is still true).
+ */
+export const WALLET_EXPIRY_MIN_MS = 55_000;
+
+/** Decline-class rejection (not a locked wallet): the kind a Solflare expiry is reported as. */
+function isDeclineClass(err: unknown): boolean {
+  const o = err as { code?: unknown; statusCode?: unknown } | null;
+  if (typeof o === "object" && o !== null && (o.code === 4001 || o.statusCode === 0x6985)) return true;
+  const msg = err instanceof Error ? `${err.name} ${err.message}` : String((err as { message?: unknown } | null)?.message ?? err);
+  return detectWalletError(msg) === "rejected";
+}
+
+/** Explicit opt-in for the yellow "sign debug:" line: `?signdebug=1` (kept in localStorage `v22.signdebug`), `?signdebug=0` clears it. */
+export const SIGN_DEBUG_KEY = "v22.signdebug";
+export function isSignDebugEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const q = new URLSearchParams(window.location.search).get("signdebug");
+    if (q === "1") window.localStorage.setItem(SIGN_DEBUG_KEY, "1");
+    else if (q === "0") window.localStorage.removeItem(SIGN_DEBUG_KEY);
+    return window.localStorage.getItem(SIGN_DEBUG_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 export interface GuardSignParams<T> {
   txs: Transaction[];
   /** "adapter signTransaction", "privy signAllTransactions", … */
@@ -261,6 +292,7 @@ export async function guardSign<T>(p: GuardSignParams<T>): Promise<T> {
     console.info(`[v22 sign] ${formatSignEntry(e)}`);
     if (e.verdict !== "ok") flag(e);
   }
+  const openedAt = now();
   try {
     const out = await p.sign();
     for (const e of entries) e.wallet = "signed";
@@ -273,6 +305,10 @@ export async function guardSign<T>(p: GuardSignParams<T>): Promise<T> {
     }
     // A declined request is how a wallet-side "Network mismatch" reaches us: show which path built that transaction.
     flag(entries[0]);
+    if (now() - openedAt >= WALLET_EXPIRY_MIN_MS && isDeclineClass(err)) {
+      for (const e of entries) e.wallet = "declined";
+      throw new WalletRequestClosedError(err);
+    }
     throw asWalletRequestError(err);
   }
 }
