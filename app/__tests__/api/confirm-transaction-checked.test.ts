@@ -128,7 +128,8 @@ describe("GH#2517: no API route discards a confirmTransaction result", () => {
     // to match, keeping the same ~1-site margin below the real count.
     //
     // #3469: devnet-mint-token/route.ts deleted with its two call sites (8 -> 6).
-    expect(callSites().length).toBeGreaterThanOrEqual(5);
+    // #3473: devnet-mirror-mint/route.ts deleted with its one call site (6 -> 5).
+    expect(callSites().length).toBeGreaterThanOrEqual(4);
   });
 
   it("checks every one of them", () => {
@@ -145,7 +146,6 @@ describe("GH#2517: no API route discards a confirmTransaction result", () => {
     // sendAndConfirmSignedTx's poll-based confirmation), so it has nothing to
     // import this helper for.
     const named = [
-      "devnet-mirror-mint/route.ts",
       "playground/faucet/route.ts",
     ];
     for (const rel of named) {
