@@ -686,7 +686,7 @@ function MarketsPageInner() {
               <h1 className="text-2xl font-medium tracking-[-0.01em] text-[var(--text)]" style={{ fontFamily: "var(--font-display)" }}>
                 <span className="font-normal text-[var(--text)]">All </span>Markets
               </h1>
-              <p className="mt-2 text-[13px] text-[var(--text-secondary)]">perpetual futures, pick your poison.</p>
+              <p className="mt-2 text-[13px] text-[var(--text-secondary)]">Pick a market to trade long or short, or launch your own.</p>
             </div>
             <GlowButton href="/create" aria-label="Launch a new market" size="sm">+ LAUNCH MARKET</GlowButton>
           </div>
