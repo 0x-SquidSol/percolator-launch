@@ -237,11 +237,12 @@ describe("item 12: N is derived from the post-fill requirement the program check
     const v = view({ oiEffLongQ: 80_000_000n });
     expect(growthMaxLeverageForOrder(v, "short", 0n, 5_000_000n)).toBe(5.49);
   });
-  it("negative controls: a reduce, a zero size, and a fill past capacity give NO figure", () => {
+  it("negative controls: a reduce and a zero size give NO figure; an ask past capacity is judged on the CLIPPED fill (lands on N_cap = 1x)", () => {
     const v = view({ oiEffLongQ: 80_000_000n });
     expect(growthMaxLeverageForOrder(v, "short", 5_000_000n, 1_000_000n)).toBeNull(); // reduces a long
     expect(growthMaxLeverageForOrder(v, "long", 0n, 0n)).toBeNull();
-    expect(growthMaxLeverageForOrder(v, "long", 0n, 30_000_000n)).toBeNull(); // 110M > N_cap: that is 93, not 92
+    // 110M > N_cap: the program trims the ask to the 20M of room (a fill may land exactly on N_cap, at 100% IMR), it is not refused (QA LEV-8)
+    expect(growthMaxLeverageForOrder(v, "long", 0n, 30_000_000n)).toBe(1);
   });
   it("end to end: the resolver prints that very number", () => {
     const v = view({ oiEffLongQ: 80_000_000n });

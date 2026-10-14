@@ -8,6 +8,8 @@
  * (display only); `executedQ` is the wrapper's own statement.
  */
 import type { Connection, PublicKey } from "@solana/web3.js";
+import { TICKET_COPY } from "@/lib/limits/copy";
+import { sizeLots, sizeTokens } from "@/lib/v22/growth-room";
 import { decodeTxEventsV22, FILL_FLAG_V22, type FillRecordV22 } from "@/lib/v22/sdk/v22-fill-events";
 
 export interface ClippedFill {
@@ -60,4 +62,18 @@ export async function readClippedFill(
     if (i < tries - 1) await sleep(700);
   }
   return null;
+}
+
+/**
+ * "Partially filled: X of Y JUP (x of y lots)". Sizes are TOKENS like everywhere on the ticket (q is in lots, POS_SCALE 1e6 per lot,
+ * a token size is `q / 1e6 * 10^lotExp`); on a lot market the lot count is added so the two units cannot be mistaken for each other
+ * (JUP lot_exp 2: 3.130361 lots = 313.0361 JUP).
+ */
+export function clippedFillBody(cf: ClippedFill, lotExp: number, ticker: string): string {
+  return TICKET_COPY.result.clipped(
+    sizeTokens(cf.executedQ, lotExp),
+    sizeTokens(cf.requestedQ, lotExp),
+    ticker,
+    lotExp > 0 ? { filled: sizeLots(cf.executedQ), requested: sizeLots(cf.requestedQ) } : undefined,
+  );
 }

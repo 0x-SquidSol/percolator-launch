@@ -13,6 +13,7 @@ import {
   dynImrBps,
   isBankruptcyHlockActive,
   leverageX100ForImrBps,
+  openingPartQ,
   previewGrowthOpenFee,
   quoteMaxLeverage,
   type AssetGrowthV19,
@@ -140,6 +141,36 @@ export function isReducingOrder(takerEffQ: bigint, direction: "long" | "short", 
   return (takerEffQ > 0n) === (after > 0n) && (after < 0n ? -after : after) <= (takerEffQ < 0n ? -takerEffQ : takerEffQ);
 }
 
+export interface GrowthFill {
+  /** The opening part of the order the program would try to open (Q, unsigned). */
+  openingQ: bigint;
+  /** Room left on this side: `N_cap - users' OI` (Q); null when growth does not apply (a reduce / close, growth off). */
+  roomQ: bigint | null;
+  /** The size that will actually fill (Q, unsigned): the closing part plus `min(opening, room)`. Equals `sizeQ` when nothing is trimmed. */
+  fillQ: bigint;
+  /** The program trims this order to the side's room (it still lands; the fill is smaller than the ask). */
+  trimmed: boolean;
+}
+
+/**
+ * What the wrapper does to an order BEFORE the matcher (`p1_cpi_preflight_before_matcher`): an opening TradeCpi is clipped to
+ * `min(ask, N_cap - users' OI on the side, LP headroom)`; a fill may land exactly on N_cap. A reduce / close is never clipped; a
+ * flip keeps its closing part and only the opening part is clipped. Pure: `roomQ` is the quote's `headroomQ` (same N_cap and
+ * same users' OI the program reads). A closed side has room 0.
+ */
+export function growthFillForOrder(view: GrowthMarketView, direction: "long" | "short", takerEffQ: bigint, sizeQ: bigint): GrowthFill {
+  const quote = direction === "long" ? view.long : view.short;
+  const none: GrowthFill = { openingQ: 0n, roomQ: null, fillQ: sizeQ, trimmed: false };
+  if (sizeQ <= 0n || !quote.growthOn) return none;
+  const signed = direction === "long" ? sizeQ : -sizeQ;
+  const openingQ = openingPartQ(takerEffQ, takerEffQ + signed);
+  if (openingQ === 0n) return none;
+  const roomQ = quote.headroomQ ?? (quote.closed ? 0n : null);
+  if (roomQ === null) return { ...none, openingQ };
+  const fillOpening = openingQ < roomQ ? openingQ : roomQ;
+  return { openingQ, roomQ, fillQ: sizeQ - openingQ + fillOpening, trimmed: fillOpening < openingQ };
+}
+
 export interface GrowthTicketDecision {
   /** The side quote the slider cap comes from. */
   quote: MaxLeverageQuote;
@@ -153,6 +184,12 @@ export interface GrowthTicketDecision {
   fee: GrowthOpenFeePreview | null;
   /** The order is a reduce or close: growth does not apply. */
   reducing: boolean;
+  /** Room left on this side in Q (N_cap - users' OI, 0 when closed); null when growth does not apply. */
+  roomQ: bigint | null;
+  /** The size that will actually fill (Q); equals the ask unless the program trims it to the room. */
+  fillQ: bigint;
+  /** The program trims this order to the room (it lands as a partial fill; it is not refused). */
+  trimmed: boolean;
 }
 
 export function growthTicketDecision(
@@ -164,11 +201,16 @@ export function growthTicketDecision(
   const quote = direction === "long" ? view.long : view.short;
   const reducing = isReducingOrder(takerEffQ, direction, sizeQ);
   const utilisation = quote.utilizationBps === null ? null : Math.min(1, Number(quote.utilizationBps) / 10_000);
-  const signed = direction === "long" ? sizeQ : -sizeQ;
-  const fee = sizeQ > 0n ? previewGrowthOpenFee(view.quoteInput, takerEffQ, signed, view.tradeFeeBaseBps) : null;
+  const fill = growthFillForOrder(view, direction, takerEffQ, sizeQ);
+  // The fee (and the users' OI after) is charged on the size that FILLS, not on the ask.
+  const signedFill = direction === "long" ? fill.fillQ : -fill.fillQ;
+  const fee = fill.fillQ > 0n ? previewGrowthOpenFee(view.quoteInput, takerEffQ, signedFill, view.tradeFeeBaseBps) : null;
   return {
     quote,
     reducing,
+    roomQ: reducing ? null : fill.roomQ ?? (quote.growthOn ? quote.headroomQ : null),
+    fillQ: fill.fillQ,
+    trimmed: fill.trimmed,
     maxLeverage: reducing || quote.closed ? null : quote.maxLeverageX100 / 100,
     closed: !reducing && quote.closed,
     utilisation,
@@ -203,4 +245,29 @@ export function growthMaxLeverageForOrder(
   if (dyn === null) return null;
   const x100 = leverageX100ForImrBps(dyn);
   return x100 === null || x100 <= 0n ? null : Number(x100) / 100;
+}
+
+/**
+ * The ticket's leverage pre-check (Custom 92's mirror). Returns the max leverage to name when the order is genuinely over-leveraged,
+ * else `null`.
+ *
+ * An order that the program trims to the side's room is judged on what FILLS, never on the ask: the margin the trader set aside for
+ * the ask now backs `fillQ` only, so its leverage is `leverage * fillQ / sizeQ`, compared with the leverage the program allows at the
+ * post-fill users' OI of that clipped size ({@link growthMaxLeverageForOrder}). An untrimmed order keeps the quote's marginal cap.
+ */
+export function growthLeverageRefusal(
+  view: GrowthMarketView,
+  direction: "long" | "short",
+  takerEffQ: bigint,
+  sizeQ: bigint,
+  leverage: number,
+): number | null {
+  const d = growthTicketDecision(view, direction, takerEffQ, sizeQ);
+  if (d.reducing || d.closed || sizeQ <= 0n) return null;
+  if (!d.trimmed) return d.maxLeverage !== null && leverage > d.maxLeverage ? d.maxLeverage : null;
+  if (d.fillQ <= 0n) return null;
+  const allowed = growthMaxLeverageForOrder(view, direction, takerEffQ, sizeQ);
+  if (allowed === null) return null;
+  const effective = (leverage * Number(d.fillQ)) / Number(sizeQ);
+  return effective > allowed ? allowed : null;
 }

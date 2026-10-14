@@ -12,7 +12,7 @@ import { maxTradeSizePerSide, sameOwnerBlocked, sameOwnerRoomQ, type Side, type 
 import { preTradeQuote, quoteFailsLimit, type PreTradeQuote } from "./matcher-quote";
 import { stepDownMaxLeverage } from "./vault-tranche";
 import { V21_COPY } from "@/lib/v21/copy";
-import { growthTicketDecision, type GrowthMarketView, type GrowthTicketDecision } from "@/lib/v21/growth-market";
+import { growthLeverageRefusal, growthTicketDecision, type GrowthMarketView, type GrowthTicketDecision } from "@/lib/v21/growth-market";
 
 export interface TicketIssue {
   kind: "halted" | "same-owner" | "step-down" | "quote-slippage" | "limits-unavailable" | "fee-over-max" | "growth-closed" | "growth-leverage";
@@ -164,8 +164,12 @@ export function deriveTicketLimits(i: TicketLimitsInput): TicketLimits {
   if (growth && growthBlocks) {
     out.halted[i.direction] = true;
     out.issues.push({ kind: "growth-closed", severity: "error", title: "This side is full", message: V21_COPY.growthClosed(i.direction, growth.quote.closedReason) });
-  } else if (growth && growth.maxLeverage !== null && i.leverage > growth.maxLeverage) {
-    out.issues.push({ kind: "growth-leverage", severity: "error", title: "Leverage adjusted", message: V21_COPY.growthLeverage(String(growth.maxLeverage), i.direction) });
+  } else if (growth && i.growth) {
+    // LEV-8: judged on the size that will FILL (the program trims an over-capacity open to the side's room and lands it), never on the ask.
+    const over = growthLeverageRefusal(i.growth, i.direction, i.takerPosQ, i.sizeQ, i.leverage);
+    if (over !== null) {
+      out.issues.push({ kind: "growth-leverage", severity: "error", title: "Leverage adjusted", message: V21_COPY.growthLeverage(String(over), i.direction) });
+    }
   }
   const utilFeeBps = growth?.fee ? BigInt(growth.fee.utilFeeBps) : 0n;
 

@@ -101,7 +101,7 @@ import { publishTicketRow } from "@/lib/limits/ticket-status-store";
 import { fmtQ as fmtQLots } from "@/lib/limits/format";
 import { takeFillResult } from "@/lib/limits/fill-check";
 import { feeRaiseCopy, takeFeeRaise } from "@/lib/v22/fee-raise-note";
-import { readClippedFill } from "@/lib/v22/clipped-fill";
+import { clippedFillBody, readClippedFill } from "@/lib/v22/clipped-fill";
 import { isPortfolioClosable } from "@/lib/close-trading-account";
 import { defaultFeeCapMarginBps } from "@/lib/limits/fee-channel";
 import { OrderTicketLimits, reasonCopy } from "@/components/limits/OrderTicketLimits";
@@ -1265,7 +1265,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
         void readClippedFill(connection, sigKey, slabProgramId, { market: new PublicKey(slabAddress) }).then((cf) => {
           if (!cf || cf.zero) return; // a zero fill has its own line
           clippedSigsRef.current.add(sigKey);
-          setResult((prev) => (prev && prev.sig === sigKey ? { kind: "partial", body: TICKET_COPY.result.clipped(fmtQ(cf.executedQ), fmtQ(cf.requestedQ), baseTicker), sig: sigKey, tryQ: null } : prev));
+          setResult((prev) => (prev && prev.sig === sigKey ? { kind: "partial", body: clippedFillBody(cf, lotExp, baseTicker), sig: sigKey, tryQ: null } : prev));
         });
       }
       setTradePhase("confirming");
@@ -2054,7 +2054,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       </div>
 
       {marketLimits.growth && ticketLimits.growth && (
-        <GrowthTicketPanelLive view={marketLimits.growth} decision={ticketLimits.growth} direction={direction} raw={slabRaw} bandBps={bandView ? bandView.band.bandBps : null} />
+        <GrowthTicketPanelLive view={marketLimits.growth} decision={ticketLimits.growth} direction={direction} sizeFormat={{ lotExp, ticker: baseTicker }} sidePaused={sidePaused[direction]} raw={slabRaw} bandBps={bandView ? bandView.band.bandBps : null} />
       )}
 
       {stepDownNote && (
