@@ -18,7 +18,6 @@ import {
   type QuoteMaxLeverageInput,
 } from "./sdk";
 import { decodeAssetGrowthV19 } from "../v22/records";
-import { DEPTH_MAX_AGE_SLOTS } from "../v22/sdk/growth-depth";
 import { growthRecordBytes, readGrowthDepth } from "../v22/growth-unlock";
 import { layoutOf } from "../v22/layout";
 
@@ -95,8 +94,12 @@ export function growthMarketView(i: GrowthMarketInput): GrowthMarketView | null 
   if (!decoded || !i.lp || i.lpEffectiveQ === null) return null;
   // v2.2 depth fields ride the reserved bytes of the record (not in the decoder's output).
   const depth = i.v22 ? readGrowthDepth(growthRecordBytes(i.raw, i.assetIndex ?? 0)) : null;
+  // Clock unknown = the MOST conservative reading, never looser than any slot-known reading: source forced to "none" (tier 0:
+  // lambda 1x, ceiling capped at launch) AND the stored depth read as fresh (the "now" is its own slot), so the tier-0 kappa
+  // cap (0.5 x min(depth, prev)) still applies whenever a depth is stored. Slot-known readings only ever loosen from here.
+  const unknownClock = !!i.v22 && i.v22.nowSlot === null;
   const record: AssetGrowthV19 = depth
-    ? { ...decoded, depthSource: depth.source, depthE6: depth.depthE6, depthSlot: depth.depthSlot, depthPrevE6: depth.prevE6 }
+    ? { ...decoded, depthSource: unknownClock ? 0 : depth.source, depthE6: depth.depthE6, depthSlot: depth.depthSlot, depthPrevE6: depth.prevE6 }
     : decoded;
   const hlockActive = readBankruptcyHlockActive(i.raw);
   const quoteInput: QuoteMaxLeverageInput = {
@@ -112,7 +115,7 @@ export function growthMarketView(i: GrowthMarketInput): GrowthMarketView | null 
     priceE6: i.engine.effectivePriceE6,
     bankruptcyHlockActive: hlockActive,
     // Slot unknown: read the depth as stale (a slot past its max age) so the quote is tier 0 / lambda 1x / no kappa cap.
-    ...(i.v22 ? { v22: { bandBps: i.v22.bandBps, nowSlot: i.v22.nowSlot ?? (depth?.depthSlot ?? 0n) + DEPTH_MAX_AGE_SLOTS + 1n } } : {}),
+    ...(i.v22 ? { v22: { bandBps: i.v22.bandBps, nowSlot: i.v22.nowSlot ?? depth?.depthSlot ?? 0n } } : {}),
   };
   return {
     record,

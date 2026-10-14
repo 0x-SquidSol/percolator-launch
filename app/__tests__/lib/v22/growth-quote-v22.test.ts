@@ -75,11 +75,37 @@ describe("ticket quote follows the program's depth rules (simulation finding 4)"
     expect(old.long.nCapQ).toBe(nCapQ(1_013n * USD, 10_000, PRICE, 1_000_000n));
   });
 
-  it("clock unknown: the conservative reading (depth absent: tier 0, lambda 1x, no kappa cap), never a looser ceiling", () => {
+  it("clock unknown: tier 0, ceiling capped at launch, and the stored depth still caps room at 0.5 x depth ($200)", () => {
     const v = growthMarketView({ ...base(raw, OI), v22: { bandBps: 0, nowSlot: null } })!;
     expect(v.long.tier).toBe(0);
     expect(v.long.ceilingX100).toBeLessThanOrEqual(500);
-    expect(v.long.nCapQ).toBe(nCapQ(1_013n * USD, 10_000, PRICE, 1_000_000n));
+    expect(v.long.nCapQ).toBe(growthMarketView({ ...base(raw, OI), v22: { bandBps: 0, nowSlot: NOW } })!.long.nCapQ);
+    expect((Number(v.long.nCapQ!) * Number(PRICE)) / 1e12).toBeCloseTo(200, 0);
+  });
+
+  it("property: with the clock unknown, no side, ceiling or room is ever above ANY slot-known reading", () => {
+    const vectors = [
+      { depth: { source: 1, usd: 400n, prevUsd: 400n }, band: 0 },
+      { depth: { source: 1, usd: 30_000n, prevUsd: 30_000n }, band: 0 }, // tier 1: kappa 1.0 when known
+      { depth: { source: 1, usd: 30_000n, prevUsd: 30_000n }, band: 130 }, // band market, graduation possible
+      { depth: { source: 1, usd: 30_000n, prevUsd: 0n }, band: 0 }, // prev 0 = absent when known
+      { depth: { source: 2, usd: 900n, prevUsd: 900n }, band: 0 }, // non-attested source
+      { depth: null, band: 0 },
+    ];
+    for (const vec of vectors) {
+      const unknown = growthMarketView({ ...base(market(vec.depth ? { ...vec.depth, slot: NOW - 10n } : null), OI), v22: { bandBps: vec.band, nowSlot: null } })!;
+      for (const nowSlot of [NOW, NOW - 12n, NOW + 5n, NOW + 100_000n]) {
+        const known = growthMarketView({ ...base(market(vec.depth ? { ...vec.depth, slot: NOW - 10n } : null), OI), v22: { bandBps: vec.band, nowSlot } })!;
+        for (const side of ["long", "short"] as const) {
+          const u = unknown[side];
+          const k = known[side];
+          expect(u.ceilingX100).toBeLessThanOrEqual(k.ceilingX100);
+          expect(u.nCapQ ?? 0n).toBeLessThanOrEqual(k.nCapQ ?? 0n);
+          expect(u.headroomQ ?? 0n).toBeLessThanOrEqual(k.headroomQ ?? 0n);
+          expect(u.closed ? 0 : u.maxLeverageX100).toBeLessThanOrEqual(k.closed ? 0 : k.maxLeverageX100 || 0);
+        }
+      }
+    }
   });
 
   it("stale depth (over 150 slots old) is absent: no kappa cap, tier 0", () => {
