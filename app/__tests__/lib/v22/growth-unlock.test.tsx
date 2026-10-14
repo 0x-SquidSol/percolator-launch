@@ -1,5 +1,6 @@
 import "@testing-library/jest-dom";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import { cleanup, render, screen } from "@testing-library/react";
 import { GrowthTicketPanel } from "@/components/trade/GrowthTicketPanel";
 import { growthMarketView, growthTicketDecision } from "@/lib/v21/growth-market";
@@ -22,7 +23,12 @@ import {
 } from "@/lib/v22/growth-unlock";
 import { ENGINE, marketRaw } from "../v21/fixtures";
 
-afterEach(cleanup);
+// The fixtures are v2.1-layout markets: pin the v2.1 geometry whatever the suite-wide flag is.
+beforeEach(() => __setDevnetV22ForTest(false));
+afterEach(() => {
+  cleanup();
+  __setDevnetV22ForTest(null);
+});
 
 const NOW = 1_000_000n;
 const BAND = 130; // d = 1.3%
