@@ -27,10 +27,25 @@ export interface GrowthTicketPanelProps {
   unlock?: GrowthUnlockView | null;
 }
 
-/** A closed side takes no new risk now: 0x (the line below says why). */
-const levLabel = (x100: number, closed: boolean): string => (closed ? "0x" : `${(x100 / 100).toFixed(x100 % 100 === 0 ? 0 : 1)}x`);
+const levLabel = (x100: number): string => `${(x100 / 100).toFixed(x100 % 100 === 0 ? 0 : 1)}x`;
+
+/** "Full" reasons get the plan's wording; a paused market (loss recovery, not set up, unreadable) keeps its own line. */
+const isFullReason = (r: GrowthMarketView["long"]["closedReason"]): boolean => r === "capacity-full" || r === "capacity-zero" || r === null;
 
 export const GrowthTicketPanel: FC<GrowthTicketPanelProps> = ({ view, decision, direction, unlock = null }) => {
+  const openSides = (["long", "short"] as const).filter((side) => !(side === "long" ? view.long : view.short).closed);
+  const closedSides = (["long", "short"] as const).filter((side) => (side === "long" ? view.long : view.short).closed);
+  const reasonOf = (side: "long" | "short") => (side === "long" ? view.long : view.short).closedReason;
+  const closedLine: string | null =
+    closedSides.length === 0
+      ? null
+      : closedSides.length === 2
+        ? closedSides.every((s) => isFullReason(reasonOf(s)))
+          ? V22_COPY.growth.bothPaused
+          : V21_COPY.growthClosed(direction, reasonOf(direction))
+        : isFullReason(reasonOf(closedSides[0] as "long" | "short"))
+          ? V22_COPY.growth.sidePaused(closedSides[0] as "long" | "short")
+          : V21_COPY.growthClosed(closedSides[0] as string, reasonOf(closedSides[0] as "long" | "short"));
   const graduating = !!unlock && unlock.graduation;
   const tier = graduating ? unlock.tier : null;
   const nextLine = graduating ? unlockLine(unlock.unlock) : null;
@@ -48,20 +63,23 @@ export const GrowthTicketPanel: FC<GrowthTicketPanelProps> = ({ view, decision, 
           </span>
         )}
       </div>
-      <p className="mt-1.5 text-[var(--text)]" style={{ fontVariantNumeric: "tabular-nums" }} data-testid="growth-max-now">
-        {V22_COPY.growth.maxNow}:{" "}
-        {(["long", "short"] as const).map((side, i) => {
-          const q = side === "long" ? view.long : view.short;
-          return (
-            <span key={side}>
-              {i > 0 && " · "}
-              <span className={side === direction ? "text-[var(--text)]" : "text-[var(--text-dim)]"} data-testid={`growth-max-${side}`}>
-                <span className="font-mono">{levLabel(q.maxLeverageX100, q.closed)}</span> {side}
+      {openSides.length > 0 && (
+        <p className="mt-1.5 text-[var(--text)]" style={{ fontVariantNumeric: "tabular-nums" }} data-testid="growth-max-now">
+          {V22_COPY.growth.maxNow}:{" "}
+          {openSides.map((side, i) => {
+            const q = side === "long" ? view.long : view.short;
+            return (
+              <span key={side}>
+                {i > 0 && " · "}
+                <span className={side === direction ? "text-[var(--text)]" : "text-[var(--text-dim)]"} data-testid={`growth-max-${side}`}>
+                  <span className="font-mono">{levLabel(q.maxLeverageX100)}</span> {side}
+                </span>
               </span>
-            </span>
-          );
-        })}
-      </p>
+            );
+          })}
+        </p>
+      )}
+      {closedLine && <p className="mt-1.5 text-[var(--short)]" data-testid="growth-closed">{closedLine}</p>}
       {nextLine && (
         <p className="mt-1 text-[var(--text-secondary)]" data-testid="growth-unlock">{nextLine}</p>
       )}
@@ -83,7 +101,6 @@ export const GrowthTicketPanel: FC<GrowthTicketPanelProps> = ({ view, decision, 
           </div>
         </div>
       )}
-      {decision.closed && <p className="mt-2 text-[var(--short)]" data-testid="growth-closed">{V21_COPY.growthClosed(direction, decision.quote.closedReason)}</p>}
       {feePct && <p className="mt-2 text-[var(--text-secondary)]" data-testid="growth-fee">{V21_COPY.ticket.fee(feePct)}</p>}
       <p className="mt-2 text-[10px] text-[var(--text-dim)]">{V21_COPY.ticket.closeAlways}</p>
     </section>

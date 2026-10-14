@@ -75,7 +75,7 @@ describe("V22LaunchOptions creator seed line (S1)", () => {
   it("says, in one line, what happens to the insurance seed at close", () => {
     mount();
     expect(screen.getByTestId("v22-creator-seed")).toHaveTextContent(
-      "If this market closes, what is left of your insurance seed after any losses comes back to you. All of it comes back if nobody staked.",
+      "If you add an insurance seed and this market later closes, what is left of it after any losses comes back to you — all of it if nobody staked.",
     );
   });
 });

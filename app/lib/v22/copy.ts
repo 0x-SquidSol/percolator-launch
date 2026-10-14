@@ -121,10 +121,16 @@ export const V22_COPY = {
     tierTip: "Liquidity tier is how much trading depth sits close to the price; deeper markets can offer more leverage.",
     unlockDepth: (x: string, usd: string) => `${x} unlocks when pool depth reaches ${usd}`,
     unlockDepthAndCapital: (x: string, depth: string, more: string) => `${x} unlocks at ${depth} pool depth and ${more} more market backing`,
-    unlockCapital: (x: string, usd: string) => `${x} unlocks when pool capital reaches ${usd}`,
+    unlockCapital: (x: string, usd: string) => `${x} unlocks when market backing reaches ${usd}`,
     nextStepAfter: (x: string, when: string) => `Next step: ${x} after ${when}`,
     nextStepNow: (x: string) => `Next step: ${x} at the next update`,
-    creatorSeed: "If this market closes, what is left of your insurance seed after any losses comes back to you. All of it comes back if nobody staked.",
+    creatorSeed: "If you add an insurance seed and this market later closes, what is left of it after any losses comes back to you — all of it if nobody staked.",
+    /** A full side: new risk on it is paused, the other side and every close stay open. */
+    sidePaused: (side: "long" | "short") =>
+      side === "long"
+        ? "New longs paused: this side is full. Closes and shorts are open."
+        : "New shorts paused: this side is full. Closes and longs are open.",
+    bothPaused: "New positions paused: this market is full. Closes are open.",
   },
   // ── First-loss staking (stake v5) ────────────────────────────────────────
   stake: {

@@ -170,7 +170,7 @@ describe("the one next-unlock line", () => {
     expect(line({ launch: 500, ceil: 500, depth: { usd: 30_000 } })).toBeNull();
   });
   it("tier 1 with the ceiling at its capital step: names the capital for the next step", () => {
-    expect(line({ depth: { usd: 30_000 } })).toBe("4x unlocks when pool capital reaches $200");
+    expect(line({ depth: { usd: 30_000 } })).toBe("4x unlocks when market backing reaches $200");
   });
   it("earned but not yet applied: the ratchet step with a time", () => {
     const grown = { depth: { usd: 30_000 }, lpCapital: 250n * USD, ceil: 300 };
@@ -230,6 +230,29 @@ describe("GrowthTicketPanel: max line, tier badge, unlock line", () => {
     expect(screen.queryByTestId("growth-tier")).toBeNull();
     expect(screen.queryByTestId("growth-unlock")).toBeNull();
     expect(screen.getByTestId("growth-max-now")).toBeInTheDocument();
+  });
+  it("a full side is not shown as 0x: the open side only, plus one paused line", () => {
+    const { view } = scenario({ lpCapital: 100n * USD });
+    const full = growthMarketView({ raw: marketRaw({ launch: 300, ceil: 300, gap: GAP }), engine: { ...ENGINE, oiEffShortQ: 100_000_000n }, lp: { capital: 100n * USD, pnl: 0n, feeCredits: 0n }, lpEffectiveQ: 50_000_000n, bound: true })!;
+    expect(full.short.closed).toBe(true);
+    render(<GrowthTicketPanel view={full} decision={growthTicketDecision(full, "long", 0n, 1_000_000n)} direction="long" />);
+    expect(screen.getByTestId("growth-max-now").textContent).not.toMatch(/(^|[^.\d])0x|short/);
+    expect(screen.getByTestId("growth-closed")).toHaveTextContent("New shorts paused: this side is full. Closes and longs are open.");
+    expect(view.long.closed).toBe(false);
+  });
+  it("both sides full: no max line, one market-level line", () => {
+    const { view: ok } = scenario({});
+    const none = growthMarketView({ raw: marketRaw({ launch: 300, ceil: 300, gap: GAP }), engine: ENGINE, lp: { capital: 0n, pnl: 0n, feeCredits: 0n }, lpEffectiveQ: 0n, bound: true })!;
+    expect(ok.long.closed).toBe(false);
+    expect(none.long.closed && none.short.closed).toBe(true);
+    render(<GrowthTicketPanel view={none} decision={growthTicketDecision(none, "long", 0n, 1_000_000n)} direction="long" />);
+    expect(screen.queryByTestId("growth-max-now")).toBeNull();
+    expect(screen.getByTestId("growth-closed")).toHaveTextContent("New positions paused: this market is full. Closes are open.");
+  });
+  it("a market paused for another reason keeps its own line, not 'full'", () => {
+    const hl = growthMarketView({ raw: marketRaw({ launch: 300, ceil: 300, gap: GAP }, 1), engine: ENGINE, lp: { capital: 100n * USD, pnl: 0n, feeCredits: 0n }, lpEffectiveQ: 0n, bound: true })!;
+    render(<GrowthTicketPanel view={hl} decision={growthTicketDecision(hl, "long", 0n, 1_000_000n)} direction="long" />);
+    expect(screen.getByTestId("growth-closed")).toHaveTextContent(/recovers from a loss/);
   });
   it("no unlock prop (flag off / not a growth ticket): same as before", () => {
     draw({}, false);
