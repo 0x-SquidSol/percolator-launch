@@ -18,6 +18,8 @@ import {
   type QuoteMaxLeverageInput,
 } from "./sdk";
 import { decodeAssetGrowthV19 } from "../v22/records";
+import { DEPTH_MAX_AGE_SLOTS } from "../v22/sdk/growth-depth";
+import { growthRecordBytes, readGrowthDepth } from "../v22/growth-unlock";
 import { layoutOf } from "../v22/layout";
 
 /**
@@ -69,6 +71,12 @@ export interface GrowthMarketInput {
   lpEffectiveQ: bigint | null;
   /** The market's LP IS the asset's bound vault LP. */
   bound: boolean;
+  /**
+   * Devnet v2.2: engine `band_bps` and the polled cluster slot (null = unknown). Present, the quote applies the depth tier
+   * (lambda_eff, kappa cap), graduation and the stored ratchet; with the slot unknown the CONSERVATIVE reading is used
+   * (depth absent: tier 0, lambda 1x, no kappa cap). Absent, the growth-1 quote (flag off).
+   */
+  v22?: { bandBps: number; nowSlot: bigint | null };
 }
 
 export interface GrowthMarketView {
@@ -83,8 +91,13 @@ export interface GrowthMarketView {
 
 /** Null when growth is OFF for this asset or the LP is not read yet (then nothing is claimed). */
 export function growthMarketView(i: GrowthMarketInput): GrowthMarketView | null {
-  const record = decodeGrowthRecord(i.raw, i.assetIndex ?? 0);
-  if (!record || !i.lp || i.lpEffectiveQ === null) return null;
+  const decoded = decodeGrowthRecord(i.raw, i.assetIndex ?? 0);
+  if (!decoded || !i.lp || i.lpEffectiveQ === null) return null;
+  // v2.2 depth fields ride the reserved bytes of the record (not in the decoder's output).
+  const depth = i.v22 ? readGrowthDepth(growthRecordBytes(i.raw, i.assetIndex ?? 0)) : null;
+  const record: AssetGrowthV19 = depth
+    ? { ...decoded, depthSource: depth.source, depthE6: depth.depthE6, depthSlot: depth.depthSlot, depthPrevE6: depth.prevE6 }
+    : decoded;
   const hlockActive = readBankruptcyHlockActive(i.raw);
   const quoteInput: QuoteMaxLeverageInput = {
     engineImrBps: i.engine.initialMarginBps,
@@ -98,6 +111,8 @@ export function growthMarketView(i: GrowthMarketInput): GrowthMarketView | null 
     oiEffShortQ: i.engine.oiEffShortQ,
     priceE6: i.engine.effectivePriceE6,
     bankruptcyHlockActive: hlockActive,
+    // Slot unknown: read the depth as stale (a slot past its max age) so the quote is tier 0 / lambda 1x / no kappa cap.
+    ...(i.v22 ? { v22: { bandBps: i.v22.bandBps, nowSlot: i.v22.nowSlot ?? (depth?.depthSlot ?? 0n) + DEPTH_MAX_AGE_SLOTS + 1n } } : {}),
   };
   return {
     record,

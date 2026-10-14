@@ -51,6 +51,9 @@ import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
 import { resolveMarketLp } from "@/lib/market-lp";
 import { isDevnetV21Enabled } from "@/lib/v21/flag";
 import { growthMarketView, type GrowthMarketView } from "@/lib/v21/growth-market";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
+import { readBandRentView } from "@/lib/v22/band-rent-state";
+import { useClusterSlot } from "@/hooks/useClusterSlot";
 
 const POLL_MS = 20_000;
 /** Background retries after a failed same-owner LP resolution (never blocking). */
@@ -184,6 +187,7 @@ function growthFor(
   lpRealQ: bigint | null,
   raw: Uint8Array | null,
   assetIndex: number,
+  nowSlot: bigint | null,
 ): GrowthMarketView | null {
   const engine = slabPart?.engine;
   const lp = accPart?.lp;
@@ -199,6 +203,8 @@ function growthFor(
     lp: { capital: lp.capital, pnl: lp.pnl, feeCredits: lp.feeCredits },
     lpEffectiveQ: lpRealQ,
     bound,
+    // v2.2: the quote must see the band, the depth and the clock (lambda_eff, kappa cap, stored ratchet); unknown clock = conservative reading.
+    ...(isDevnetV22Enabled() ? { v22: { bandBps: readBandRentView(raw, assetIndex)?.band.bandBps ?? 0, nowSlot } } : {}),
   });
 }
 
@@ -219,6 +225,8 @@ export function useMarketLimits(
   const anyOn = flags.p1 || flags.p2 || flags.p3 || v21;
   const { connection } = useConnectionCompat();
   const { raw, programId, assetProfile } = useSlabState();
+  // Only a v2.2 growth deployment needs the clock (the quote reads depth age); everywhere else no slot poll is started.
+  const clusterSlot = useClusterSlot(isDevnetV22Enabled() && isDevnetV21Enabled());
   const programIdStr = programId?.toBase58() ?? null;
   const assetAdminObj = assetProfile?.assetAdmin ?? null;
   const assetAdminBytes = useMemo(
@@ -447,7 +455,7 @@ export function useMarketLimits(
       sameOwnerLpOwner: null,
       sameOwnerPending: false,
       sameOwnerUnresolved: false,
-      growth: v21 ? growthFor(slabPart, accPart, lpRealQ, raw, assetIndex) : null,
+      growth: v21 ? growthFor(slabPart, accPart, lpRealQ, raw, assetIndex, clusterSlot) : null,
     };
   }, [
     v21,
@@ -457,6 +465,7 @@ export function useMarketLimits(
     slabAddress,
     slabPart,
     raw,
+    clusterSlot,
     assetAdminBytes,
     sameOwnerKey,
     sameOwnerLp,

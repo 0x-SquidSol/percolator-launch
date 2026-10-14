@@ -47,6 +47,7 @@ export interface GrowthCeilingRecord {
 export function effectiveDepthE6(depthE6: bigint, depthPrevE6: bigint, depthSlot: bigint, nowSlot: bigint): bigint {
   // Display tolerance (differs from the chain on purpose): the polled cluster slot can lag the push's slot by a few
   // slots, so a push "in the future" reads as age 0 here instead of absent. On chain it is absent (fail closed).
+  if (depthE6 === 0n || depthPrevE6 === 0n) return 0n; // either read 0 = absent (as the chain)
   const age = nowSlot > depthSlot ? nowSlot - depthSlot : 0n;
   if (age > DEPTH_MAX_AGE_SLOTS) return 0n;
   return depthE6 < depthPrevE6 ? depthE6 : depthPrevE6;

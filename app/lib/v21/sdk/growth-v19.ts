@@ -23,6 +23,9 @@ import {
   IX_TAG_P1, IX_TAG_P3,
   type InitMarketV17Args, type InitMarketArgs, type MatcherCallExt,
 } from "@percolatorct/sdk";
+// TODO(repin): v2.2 additions (QuoteMaxLeverageInput.v22, ceiling/tier fields, nCapQWithDepth) mirror percolator-sdk
+// feat/v22-sdk-growth @ ef446a8 src/abi/growth-v19.ts `quoteMaxLeverage`; the depth math is the in-app copy in v22/sdk/growth-depth.ts.
+import { growthCeilingView, kappaDepth, lambdaDepthBps, type SdkNextUnlock } from "../../v22/sdk/growth-depth";
 
 // ============================================================================
 // Constants
@@ -150,6 +153,11 @@ export interface AssetGrowthV19 {
   flags: number;
   /** N-2: stored utilisation-fee dial at `u = 1` (bps); 0 = {@link GROWTH_UTIL_FEE_DEFAULT_BPS}. */
   utilFeeMaxBps: number;
+  /** v2.2 G8 depth fields (absent = 0 = no depth). */
+  depthSource?: number;
+  depthE6?: bigint;
+  depthSlot?: bigint;
+  depthPrevE6?: bigint;
 }
 
 /**
@@ -473,6 +481,11 @@ export interface QuoteMaxLeverageInput {
   bankruptcyHlockActive: boolean;
   /** Engine `POS_SCALE` (default 1_000_000n). */
   posScale?: bigint;
+  /**
+   * v2.2 growth: engine `band_bps` and the current slot. When present the quote applies the depth tier (lambda_eff, kappa cap),
+   * graduation and the stored ratchet; when absent it is the growth-1 quote (`min(L_launch, L_tier)`, no depth).
+   */
+  v22?: { bandBps: number; nowSlot: bigint };
 }
 
 /** Why a side is closed. */
@@ -522,6 +535,37 @@ export interface MaxLeverageQuote {
    * pays at least this: use {@link previewGrowthOpenFee} for the exact charge and the fee to sign.
    */
   utilisationFeeBps: number | null;
+  /** v2.2: the ceiling in force (x100); the growth-1 `min(L_launch, L_tier)` without `v22` input; 0 when growth is off. */
+  ceilingX100: number;
+  /** v2.2: liquidity tier 0..3 (0 without `v22` input). */
+  tier: number;
+  /** v2.2: what raises the ceiling next. */
+  nextUnlock: SdkNextUnlock;
+  /** v2.2: graduation above `L_launch` is allowed (clamp enforced and tier >= 1). */
+  graduationOn: boolean;
+}
+
+/** Inputs of {@link nCapQWithDepth}. */
+export interface NCapDepthInput {
+  cM: bigint;
+  lambdaBps: number;
+  tier: number;
+  priceE6: bigint;
+  /** 0 = absent / stale: no depth cap. */
+  effectiveDepth: bigint;
+  posScale?: bigint;
+}
+
+/** `N_cap = min(lambda_eff * C_m / P, kappa_depth * depth / P)`, `lambda_eff = min(stored, lambda_depth(tier))`; the kappa cap only while depth is present. */
+export function nCapQWithDepth(i: NCapDepthInput): bigint | null {
+  const posScale = i.posScale ?? GROWTH_POS_SCALE;
+  const lambdaEff = Math.min(i.lambdaBps, lambdaDepthBps(i.tier));
+  const n = nCapQ(i.cM, lambdaEff, i.priceE6, posScale);
+  if (n === null || i.effectiveDepth === 0n) return n;
+  const num = i.effectiveDepth * BigInt(kappaDepth(i.tier)) * posScale;
+  if (num > U128_MAX) return null;
+  const cap = num / (GROWTH_BPS * i.priceE6);
+  return cap < n ? cap : n;
 }
 
 /**
@@ -562,9 +606,11 @@ export function quoteMaxLeverage(input: QuoteMaxLeverageInput, side: "long" | "s
   const crowd = side === "long" ? lp <= 0n : lp >= 0n;
   const g = input.growth;
   const e = input.engineImrBps;
+  let meta: Partial<MaxLeverageQuote> = {};
   const out = (p: Partial<MaxLeverageQuote>): MaxLeverageQuote => ({
     side, crowd, closed: false, closedReason: null, maxLeverageX100: 0, imrBps: null,
-    utilizationBps: null, nCapQ: null, growthOn: g !== null, headroomQ: null, reduceOnlyCapacityExempt: true, utilisationFeeBps: null, ...p,
+    utilizationBps: null, nCapQ: null, growthOn: g !== null, headroomQ: null, reduceOnlyCapacityExempt: true, utilisationFeeBps: null,
+    ceilingX100: 0, tier: 0, nextUnlock: { kind: "none" }, graduationOn: false, ...meta, ...p,
   });
   const lev = (imr: bigint): number => {
     const l = leverageX100ForImrBps(imr);
@@ -577,13 +623,22 @@ export function quoteMaxLeverage(input: QuoteMaxLeverageInput, side: "long" | "s
     if (e === 0n || e > GROWTH_MAX_IMR_BPS) return closed("invalid-config");
     return out({ imrBps: e, maxLeverageX100: lev(e) });
   }
-  const lCeil = Math.min(g.lLaunchX100, g.lTierX100);
+  const cM = conservativeEquity(input.lpCapital, input.lpPnl, input.lpFeeCredits);
+  const view = input.v22
+    ? growthCeilingView(
+        { cLaunchAtoms: g.cLaunchAtoms, lLaunchX100: g.lLaunchX100, lTierX100: g.lTierX100, ceilX100: g.ceilX100, rGapBps: g.rGapBps,
+          depthSource: g.depthSource ?? 0, depthE6: g.depthE6 ?? 0n, depthSlot: g.depthSlot ?? 0n, depthPrevE6: g.depthPrevE6 ?? 0n },
+        input.v22.bandBps, input.v22.nowSlot, cM, input.bankruptcyHlockActive)
+    : null;
+  const lCeil = view ? view.ceilingX100 : Math.min(g.lLaunchX100, g.lTierX100);
+  meta = { ceilingX100: lCeil, tier: view?.tier ?? 0, nextUnlock: view?.nextUnlock ?? { kind: "none" }, graduationOn: view?.graduationOn ?? false };
   const base = ceilingImrBps(e, lCeil);
   if (base === null) return closed("invalid-config");
   // N-1: growth opens only against the asset's BOUND vault LP (wrapper 97 / 95 otherwise).
   if (!input.assetBound) return closed("not-bound", { headroomQ: 0n });
-  const cM = conservativeEquity(input.lpCapital, input.lpPnl, input.lpFeeCredits);
-  const nCap = nCapQ(cM, g.lambdaBps, input.priceE6, input.posScale ?? GROWTH_POS_SCALE);
+  const nCap = view
+    ? nCapQWithDepth({ cM, lambdaBps: g.lambdaBps, tier: view.tier, priceE6: input.priceE6, effectiveDepth: view.effectiveDepthE6, posScale: input.posScale })
+    : nCapQ(cM, g.lambdaBps, input.priceE6, input.posScale ?? GROWTH_POS_SCALE);
   // N-1: utilisation is the USERS' open interest on this side (the engine OI minus the vault
   // LP's own leg on it), the same number the wrapper gates on (`users_side_oi_q`).
   const usersOi = usersSideOiQ(side === "long" ? input.oiEffLongQ : input.oiEffShortQ, lp, side === "long");
