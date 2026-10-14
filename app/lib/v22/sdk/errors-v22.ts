@@ -95,4 +95,9 @@ export const PERCOLATOR_ERRORS_V22: Readonly<Record<number, ErrorInfo>> = Object
     name: "CounterpartyPositionCapReached",
     hint: "The other side of this trade is at its position limit, which is not caused by your account. Try another asset or try again later.",
   },
+  // TODO(repin): percolator-sdk feat/v22-sdk-growth (error 128, tag 63 44-byte depth wire). Align name and hint to the SDK table when it lands.
+  128: {
+    name: "DepthInputInvalid",
+    hint: "The depth reading attached to a price push was not accepted (unknown depth mode). Operators: send depth_mode 0 or 1.",
+  },
   });

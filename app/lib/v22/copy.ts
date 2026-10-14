@@ -30,6 +30,9 @@ export const STAKE_CONSENT_TEXT_V2: readonly string[] = Object.freeze([
  */
 export const consentDisplay = (para: string): string => para.replace("`deploy_target_bps`", "the deployment target");
 
+/** Wrapper 128 `DepthInputInvalid`: only a keeper's price push can hit it, so a trader should essentially never see this. */
+export const V22_DEPTH_INPUT_COPY = "The market's depth reading was not accepted, so nothing changed. Try again in a moment.";
+
 export const V22_COPY = {
   // ── Band markets ("price protection") ────────────────────────────────────
   band: {

@@ -10,6 +10,7 @@ import { resolveUserMessage } from "@/lib/limits/user-message";
 import { humanizeError } from "@/lib/errorMessages";
 import { resolveDevnetProgramIds } from "@/lib/program-ids";
 import { V22_COUNTERPARTY_CAP_COPY, V22_CUSTOM9_COPY, V22_CUSTOM9_GENERIC, V22_POSITION_CAP_COPY } from "@/lib/v22/trade-refusal-9-copy";
+import { V22_DEPTH_INPUT_COPY } from "@/lib/v22/copy";
 import { V22_ERROR_CODE_MAP, V22_STAKE_ERROR_CODE_MAP } from "@/lib/v22/error-copy";
 import { WRAPPER_ERR_V22, STAKE_ERR_V5, STAKE_ERR_DEPOSIT_BELOW_MIN_LIQUIDITY } from "@/lib/v22/wrapper-errors";
 
@@ -35,8 +36,8 @@ afterEach(() => {
 
 describe("every new code has a calm one-line message", () => {
   const wrapperCodes = Object.values(WRAPPER_ERR_V22);
-  it("covers wrapper 104..119, 123..127", () => {
-    expect([...wrapperCodes].sort((a, b) => a - b)).toEqual([104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 123, 124, 125, 126, 127]);
+  it("covers wrapper 104..119, 123..128", () => {
+    expect([...wrapperCodes].sort((a, b) => a - b)).toEqual([104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 123, 124, 125, 126, 127, 128]);
   });
   it.each(wrapperCodes)("wrapper %i: structured message and plain string, one line, no jargon", (code) => {
     const m = resolveUserMessage(fail(code), { surface: "any", minPositionLabel: "100 USDC" });
@@ -134,16 +135,30 @@ describe("126 / 127: named position-cap refusals (percolator-prog fix/v22-p1-pos
     expect(m.body).not.toBe(resolveUserMessage(fail(126), { surface: "trade" }).body);
     expect(humanizeError(raw(127))).toBe(V22_COUNTERPARTY_CAP_COPY);
   });
-  it("negative control: a bare 9 on a trade is unchanged (generic, no cap claim) and 128 is unknown", () => {
+  it("negative control: a bare 9 on a trade is unchanged (generic, no cap claim) and 129 is unknown", () => {
     expect(humanizeError(raw(9), "trade")).toBe(V22_CUSTOM9_GENERIC);
     expect(resolveUserMessage(fail(9), { surface: "trade" }).kind).not.toMatch(/cap/);
-    expect(resolveUserMessage(fail(128), { surface: "trade" }).kind).not.toMatch(/cap/);
-    expect(V22_ERROR_CODE_MAP[128]).toBeUndefined();
+    expect(resolveUserMessage(fail(129), { surface: "trade" }).kind).not.toMatch(/cap/);
+    expect(V22_ERROR_CODE_MAP[129]).toBeUndefined();
   });
   it("flag off: 126 / 127 are not interpreted", () => {
     __setDevnetV22ForTest(false);
     expect(resolveUserMessage(fail(126), { surface: "trade" }).kind).not.toMatch(/cap/);
     expect(humanizeError(raw(127))).not.toBe(V22_COUNTERPARTY_CAP_COPY);
+  });
+});
+
+describe("128: DepthInputInvalid (a keeper price push; a trader should essentially never see it)", () => {
+  it("is calm, one line, says nothing changed, and is named for the SDK table", () => {
+    const m = resolveUserMessage(fail(128), { surface: "trade" });
+    expect(m).toMatchObject({ kind: "depth-input", body: V22_DEPTH_INPUT_COPY });
+    expect(V22_DEPTH_INPUT_COPY).toBe("The market's depth reading was not accepted, so nothing changed. Try again in a moment.");
+    expect(humanizeError(raw(128))).toBe(V22_DEPTH_INPUT_COPY);
+    expect(m.kind).not.toMatch(/cap/);
+  });
+  it("flag off: 128 is not interpreted", () => {
+    __setDevnetV22ForTest(false);
+    expect(humanizeError(raw(128))).not.toBe(V22_DEPTH_INPUT_COPY);
   });
 });
 
