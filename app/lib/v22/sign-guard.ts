@@ -14,7 +14,7 @@
  *
  * QA instrumentation for the preview: remove (or put behind a debug switch) before any release.
  */
-import type { Connection, Transaction } from "@solana/web3.js";
+import { PublicKey, type Connection, type Transaction } from "@solana/web3.js";
 import { assertDevnetConnection, WrongClusterError } from "./devnet-guard";
 import { isDevnetV22Enabled } from "./flag";
 import { detectWalletError, isTransientError, UserFacingError } from "@/lib/errorMessages";
@@ -52,6 +52,13 @@ export interface SignLogEntry {
    * recorded for diagnosis (it is in the debug line), never a reason to refuse.
    */
   absentOnDevnet: string[] | null;
+  /**
+   * NB-2 (2026-10-14): absent accounts that are OFF the ed25519 curve, i.e. program-derived addresses (the vault
+   * authority, a matcher delegate, ...). A PDA signer is never an account on any cluster (the wrapper signs for it with
+   * invoke_signed), so it is absent on devnet AND mainnet by design and says nothing about the cluster. Listed here, not
+   * in `absentOnDevnet`, so a mainnet-only account is not buried among them.
+   */
+  absentPdas?: string[];
   /** What the wallet did with it. */
   wallet: "pending" | "signed" | "declined" | "not-asked";
   walletError?: string;
@@ -79,6 +86,23 @@ export function noteBlockhash(
   if (!isDevnetV22Enabled()) return;
   for (const [k, o] of origins) if (now - o.ts > ORIGIN_TTL_MS) origins.delete(k);
   origins.set(blockhash, { path, ts: now, connection, commitment: meta?.commitment ?? null, lastValidBlockHeight: meta?.lastValidBlockHeight ?? null });
+}
+
+const isOnCurve = (k: PublicKey): boolean => {
+  try { return PublicKey.isOnCurve(k.toBytes()); } catch { return true; }
+};
+
+/**
+ * NB-2: every account key (and program id) of the transaction that is in `forbidden` (base58). The app must never put an
+ * address that only exists on mainnet (a market's `mainnet_ca`, its `dex_pool_address`, ...) into a devnet transaction.
+ */
+export function forbiddenKeysIn(tx: Pick<Transaction, "instructions">, forbidden: ReadonlySet<string>): string[] {
+  const hit = new Set<string>();
+  for (const ix of tx.instructions ?? []) {
+    if (forbidden.has(ix.programId.toBase58())) hit.add(ix.programId.toBase58());
+    for (const k of ix.keys) if (forbidden.has(k.pubkey.toBase58())) hit.add(k.pubkey.toBase58());
+  }
+  return [...hit];
 }
 
 const KNOWN: Record<string, string> = {
@@ -126,7 +150,8 @@ export function __resetSignGuardForTest(): void {
 export function formatSignEntry(e: SignLogEntry): string {
   const age = e.blockhashAgeMs === null ? "unknown" : `${(e.blockhashAgeMs / 1000).toFixed(1)}s`;
   const absent = e.absentOnDevnet === null ? "accounts not checked" : e.absentOnDevnet.length === 0 ? "all accounts on devnet" : `not on devnet: ${e.absentOnDevnet.join(" ")}`;
-  return `${e.verdict} | wallet ${e.wallet} | built by ${e.path} | ${e.via} | tx ${e.shape} | blockhash ${e.blockhash.slice(0, 8)} age ${age} fetched@${e.fetchCommitment ?? "?"} lvbh ${e.lastValidBlockHeight ?? "?"} valid@handoff ${e.validAtHandoff ?? "?"} | chain ${e.chain}${e.signer ? ` | signer ${e.signer}` : ""}${e.sinceLastMs != null ? ` | ${(e.sinceLastMs / 1000).toFixed(1)}s since the previous request` : ""} | ${absent} | ${e.at}${e.classified ? ` | open ${((e.elapsedMs ?? 0) / 1000).toFixed(1)}s | raw ${e.rawError} | => ${e.classified}` : ""}`;
+  const pdas = e.absentPdas && e.absentPdas.length > 0 ? ` (+${e.absentPdas.length} program-derived address${e.absentPdas.length === 1 ? "" : "es"} with no account by design)` : "";
+  return `${e.verdict} | wallet ${e.wallet} | built by ${e.path} | ${e.via} | tx ${e.shape} | blockhash ${e.blockhash.slice(0, 8)} age ${age} fetched@${e.fetchCommitment ?? "?"} lvbh ${e.lastValidBlockHeight ?? "?"} valid@handoff ${e.validAtHandoff ?? "?"} | chain ${e.chain}${e.signer ? ` | signer ${e.signer}` : ""}${e.sinceLastMs != null ? ` | ${(e.sinceLastMs / 1000).toFixed(1)}s since the previous request` : ""} | ${absent}${pdas} | ${e.at}${e.classified ? ` | open ${((e.elapsedMs ?? 0) / 1000).toFixed(1)}s | raw ${e.rawError} | => ${e.classified}` : ""}`;
 }
 
 function record(e: SignLogEntry): void {
@@ -268,7 +293,7 @@ function within<T>(p: Promise<T>, ms: number): Promise<T | "timeout"> {
 }
 
 /** Every account key of the transaction that the devnet connection does not have. null = could not check. */
-async function absentAccounts(tx: Transaction, connection: GuardConnection, timeoutMs: number): Promise<string[] | null> {
+async function absentAccounts(tx: Transaction, connection: GuardConnection, timeoutMs: number): Promise<{ suspect: string[]; pdas: string[] } | null> {
   try {
     if (typeof connection.getMultipleAccountsInfo !== "function") return null;
     const writable = new Map<string, boolean>();
@@ -281,10 +306,12 @@ async function absentAccounts(tx: Transaction, connection: GuardConnection, time
       }
     }
     const list = [...keys.values()];
-    if (list.length === 0) return [];
+    if (list.length === 0) return { suspect: [], pdas: [] };
     const infos = await within(connection.getMultipleAccountsInfo(list), timeoutMs);
     if (infos === "timeout") return null;
-    return list.filter((_, n) => infos[n] === null).map((k) => `${writable.get(k.toBase58()) ? "w" : "r"}:${k.toBase58()}`);
+    const absent = list.filter((_, n) => infos[n] === null);
+    const label = (k: PublicKey) => `${writable.get(k.toBase58()) ? "w" : "r"}:${k.toBase58()}`;
+    return { suspect: absent.filter((k) => isOnCurve(k)).map(label), pdas: absent.filter((k) => !isOnCurve(k)).map(label) };
   } catch {
     return null;
   }
@@ -324,7 +351,8 @@ export async function guardSign<T>(p: GuardSignParams<T>): Promise<T> {
         ? within(Promise.resolve().then(() => p.connection.isBlockhashValid(blockhash, { commitment: "confirmed" })).then((r) => r.value), timeoutMs).then((v) => (v === "timeout" ? null : v), () => null)
         : Promise.resolve(null),
     ]);
-    e.absentOnDevnet = absent;
+    e.absentOnDevnet = absent === null ? null : absent.suspect;
+    if (absent && absent.pdas.length > 0) e.absentPdas = absent.pdas;
     e.validAtHandoff = valid;
     try {
       await within(assertDevnetConnection(origin?.connection ?? p.connection), timeoutMs);
