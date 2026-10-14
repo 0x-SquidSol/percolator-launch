@@ -329,6 +329,8 @@ export const TICKET_COPY = {
     unmeasured: ORDER_CONFIRMED_UNMEASURED,
     partial: (filled: string, requested: string, sym: string) =>
       `Opened ${filled} of ${requested} ${sym}. The market had room for part of your order.`,
+    /** The landed transaction's FILL event says the order was clipped to the market's room (v2.2 CLIPPED flag): filled vs requested. */
+    clipped: (filled: string, requested: string, sym: string) => `Partially filled: ${filled} of ${requested} ${sym}. The market had room for part of your order.`,
     zero: "Not filled: the market had no room for this trade when it landed. Nothing changed and no fee was charged.",
     tryChip: (size: string) => `Try ${size}`,
   },

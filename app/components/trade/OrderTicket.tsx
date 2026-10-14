@@ -100,6 +100,7 @@ import { balanceMaxQ, deriveTicketState, maxInUnit, oneMaxQ, sideRoomIsFull, typ
 import { publishTicketRow } from "@/lib/limits/ticket-status-store";
 import { fmtQ as fmtQLots } from "@/lib/limits/format";
 import { takeFillResult } from "@/lib/limits/fill-check";
+import { readClippedFill } from "@/lib/v22/clipped-fill";
 import { defaultFeeCapMarginBps } from "@/lib/limits/fee-channel";
 import { OrderTicketLimits, reasonCopy } from "@/components/limits/OrderTicketLimits";
 import { GrowthTicketPanel } from "@/components/trade/GrowthTicketPanel";
@@ -451,6 +452,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   /** WP-3 row 9: the size was just reduced to the max; the helper turns --warning for 4 s. */
   const [clampedToQ, setClampedToQ] = useState<bigint | null>(null);
   /** WP-3 result line (§3.3): full / partial / zero fill of the last order, in the status slot. */
+  const clippedSigsRef = useRef<Set<string>>(new Set());
   const [result, setResult] = useState<{ kind: "full" | "partial" | "zero" | "sent"; body: string; sig: string | null; tryQ: bigint | null } | null>(null);
   /** WP-3: the wait loop passed ~30 s; "We'll keep trying" + Stop. */
   const [waitingLong, setWaitingLong] = useState(false);
@@ -1234,9 +1236,19 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
         } else {
           next = { kind: outcome.partial ? "partial" : "full", body: orderResultBody(outcome, fmtQ, baseTicker, price), sig: sigKey, tryQ: null };
         }
-        // Only if the ticket still shows this order's line (a newer order clears or replaces it).
-        setResult((prev) => (prev && prev.sig === sigKey ? next : prev));
+        // Only if the ticket still shows this order's line (a newer order clears or replaces it). A clipped fill the chain
+        // itself reported (below) is not overwritten by the position-change inference.
+        setResult((prev) => (prev && prev.sig === sigKey && !(sigKey && clippedSigsRef.current.has(sigKey)) ? next : prev));
       });
+      // v2.2 QA: the program clips an over-size order to the vault LP's room and returns Ok. The landed transaction's FILL event
+      // carries the CLIPPED flag with the requested and the executed size: say "Partially filled: X of Y" from that.
+      if (isDevnetV22Enabled() && sigKey && slabProgramId) {
+        void readClippedFill(connection, sigKey, slabProgramId, { market: new PublicKey(slabAddress) }).then((cf) => {
+          if (!cf || cf.zero) return; // a zero fill has its own line
+          clippedSigsRef.current.add(sigKey);
+          setResult((prev) => (prev && prev.sig === sigKey ? { kind: "partial", body: TICKET_COPY.result.clipped(fmtQ(cf.executedQ), fmtQ(cf.requestedQ), baseTicker), sig: sigKey, tryQ: null } : prev));
+        });
+      }
       setTradePhase("confirming");
       setLastSig(sig ?? null);
       // SC-1: a visible "View transaction" link for an open / add, like a close (the status line's one is behind "Details").
@@ -1571,7 +1583,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     }
     if (result) {
       const kind = result.kind === "zero" ? "zero-fill" : result.kind === "partial" ? "partial-fill" : result.kind === "sent" ? "sent" : "filled";
-      const title = result.kind === "zero" ? "Not filled" : result.kind === "partial" ? "Partly filled" : result.kind === "sent" ? "Order sent" : "Order filled";
+      const title = result.kind === "zero" ? "Not filled" : result.kind === "partial" ? "Partially filled" : result.kind === "sent" ? "Order sent" : "Order filled";
       const line = (
         <StatusLine
           message={{

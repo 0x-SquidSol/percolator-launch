@@ -345,3 +345,38 @@ describe("v2.2 QA: PROFIT SETTLING with capital 0 still reaches the Withdraw car
     expect(t.textContent).not.toContain("Claim");
   });
 });
+
+describe("v2.2 QA: a clipped (partial) fill says 'Partially filled' with filled vs requested, from the landed FILL event", () => {
+  const WRAPPER = new PublicKey("6kpg2wi7vwkn7E9rvodXSktYRhna8TWjiZrC1dBek6NM");
+  afterEach(() => { __setDevnetV22ForTest(null); });
+  async function placeOrderWithLogs(flags: number, executed: bigint) {
+    __setDevnetV22ForTest(true);
+    const { fillEventLogs } = await import("../../helpers/fill-event-fixture");
+    mocks.useSlabState.mockReturnValue({ accounts: [], config: { collateralMint: MINT, decimals: 6 }, header: null, refresh: vi.fn(), programId: WRAPPER });
+    mocks.useConnectionCompat.mockReturnValue({
+      connection: {
+        getTokenAccountBalance: vi.fn().mockResolvedValue({ value: { amount: "12000000", decimals: 6 } }),
+        getTransaction: vi.fn().mockResolvedValue({ meta: { err: null, logMessages: fillEventLogs(WRAPPER, new PublicKey(SLAB), [{ flags, requestedQ: 5_000_000n, executedQ: executed }]) } }),
+      },
+    });
+    mocks.fund.mockResolvedValue({ signature: "sigClipped", portfolio: new PublicKey("11111111111111111111111111111111"), prompts: 1, created: true });
+    render(<OrderTicket slabAddress={SLAB} />);
+    await waitFor(() => expect(screen.queryByTestId("trade-submit")).not.toBeNull());
+    size("5");
+    await place();
+  }
+  it("CLIPPED flag, 3.2 of 5 executed -> 'Partially filled' title and 'of' body", async () => {
+    await placeOrderWithLogs(9, 3_200_000n);
+    await waitFor(() => expect(screen.queryByTestId("limits-fill-result")?.getAttribute("data-kind")).toBe("partial"));
+    const line = screen.getByTestId("limits-fill-result").textContent ?? "";
+    expect(line).toContain("Partially filled");
+    expect(line).toMatch(/Partially filled: .+ of .+/);
+  });
+  it("NEGATIVE CONTROL: no CLIPPED flag -> no partial line", async () => {
+    await placeOrderWithLogs(8, 5_000_000n);
+    await waitFor(() => expect(document.body.textContent).toContain("Order")); // the result line rendered
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByTestId("limits-fill-result")?.getAttribute("data-kind")).not.toBe("partial");
+    expect(document.body.textContent).not.toContain("Partially filled");
+  });
+});
