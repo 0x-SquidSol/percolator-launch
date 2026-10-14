@@ -32,7 +32,7 @@ describe("v22 exit error mapping (flag on)", () => {
   it("104 -> the band-pin close line (QA P-4, SDK 3985c76 wording), not red", () => {
     __setDevnetV22ForTest(true);
     const m = resolveUserMessage(refusal(104), { surface: "close" });
-    expect(m.body).toBe("Close on hold while the price catches up. Try again once it has.");
+    expect(m.body).toBe("The price is still catching up after a big move. Closing reopens when it has; this usually takes a few minutes.");
     expect(m.variant).toBe("wait");
   });
   it("flag OFF: 117/118 are not interpreted by the v2.2 table", () => {

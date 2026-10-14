@@ -44,8 +44,9 @@ describe("copy branches", () => {
     expect(waitWords(38_000)).toBe("about 40 seconds");
     expect(waitWords(131_000)).toBe("about 3 minutes");
     expect(catchUpLine(38_000)).toBe("Price is catching up — about 40 seconds. Goes through automatically.");
-    expect(catchUpLine(500_000)).toBe(CATCHUP_COPY.long);
-    expect(CATCHUP_COPY.long).toContain("several minutes");
+    expect(catchUpLine(500_000)).toBe(CATCHUP_COPY.long(500_000));
+    expect(CATCHUP_COPY.long(500_000)).toBe("Price is catching up after a big move — about 9 minutes. You can stop and try again later.");
+    expect(catchUpLine(2_700_000)).toBe("Price is catching up after a big move — about 45 minutes. You can stop and try again later.");
     expect(catchUpLine(null)).toBeNull();
     expect(catchUpLine(0)).toBeNull();
   });

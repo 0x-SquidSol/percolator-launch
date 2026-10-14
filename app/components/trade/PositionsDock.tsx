@@ -27,6 +27,7 @@
  * `OrderTicket` already owns the deposit entry point (its account row).
  */
 
+import { catchUpAvailableLine } from "@/lib/limits/catchup-estimate";
 import { LastCloseTxLink } from "@/components/trade/LastCloseTxLink";
 import { computeMarginCushion, severityFromCushion } from "@/lib/liquidation-risk";
 import { FC, memo, useMemo, useState } from "react";
@@ -42,7 +43,7 @@ import { useSlabState } from "@/components/providers/SlabProvider";
 import { useBandRentView } from "@/hooks/useBandRentView";
 import { useLotTradingGuard } from "@/hooks/useLotTradingGuard";
 import { HoldingFeeChip } from "@/components/v22/HoldingFeeChip";
-import { closeBlockedByBand, legBelowHalfMin } from "@/lib/v22/band-rent-state";
+import { bandCatchUpMs, closeBlockedByBand, legBelowHalfMin } from "@/lib/v22/band-rent-state";
 import { V22_COPY } from "@/lib/v22/copy";
 import { formatLotPriceE6, formatLotQ, lotExpOf } from "@/lib/v22/lot";
 import { useMarketLimits } from "@/hooks/useMarketLimits";
@@ -606,7 +607,7 @@ const PositionRow: FC<{ slabAddress: string; wrappedRow?: boolean }> = memo(func
                     onClick={() => { resetPhase(); prewarmClose(closeTarget); setShowCloseModal(true); }}
                     data-testid="position-close"
                     disabled={closeLoading || lpUnderfunded || !hasValidMark || engineStale || bandCloseBlocked || lotGuard !== null}
-                    title={!hasValidMark ? "Waiting for price data…" : engineStale ? "Prices are catching up. Closing resumes once the market has caught up." : bandCloseBlocked ? V22_COPY.band.catchingUp : lotGuard ?? undefined}
+                    title={!hasValidMark ? "Waiting for price data…" : engineStale ? catchUpAvailableLine(bandCatchUpMs(bandView), "close") : bandCloseBlocked ? V22_COPY.band.catchingUp : lotGuard ?? undefined}
                     className="rounded-none border border-[var(--short)]/30 px-3 py-1 text-[9px] font-medium uppercase tracking-[0.1em] text-[var(--short)] transition-colors duration-150 hover:bg-[var(--short)]/8 hover:border-[var(--short)]/50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     Close
@@ -685,6 +686,7 @@ const PositionRow: FC<{ slabAddress: string; wrappedRow?: boolean }> = memo(func
           priceAgeSecs={priceAgeSecs}
           settleMarkE6={onChainPriceE6}
           engineCatchingUp={!mockMode && engineStale}
+          catchUpMs={bandCatchUpMs(bandView)}
           maxFillAbs={fillCaps?.maxFillAbs ?? null}
           onConfirm={handleConfirmClose}
           onCancel={() => setShowCloseModal(false)}

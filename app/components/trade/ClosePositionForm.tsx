@@ -1,5 +1,6 @@
 "use client";
 
+import { catchUpAvailableLine } from "@/lib/limits/catchup-estimate";
 import { priceBehindLine } from "@/lib/oracle-stale-gate";
 import { FC, useId, useMemo, useState } from "react";
 import { formatTokenAmount } from "@/lib/format";
@@ -51,6 +52,8 @@ export interface ClosePositionFormProps {
   settleMarkE6?: bigint | null;
   /** Blocks close + says the market is catching up (engine lag, not the oracle). */
   engineCatchingUp?: boolean;
+  /** Estimated catch-up wait (ms), when the market lets us compute it; absent = "usually a few minutes". */
+  catchUpMs?: number | null;
   error?: string | null;
   /** Per-fill cap — a close bigger than this executes as several batch legs. */
   maxFillAbs?: bigint | null;
@@ -99,6 +102,7 @@ export const ClosePositionForm: FC<ClosePositionFormProps> = ({
   priceAgeSecs = 0,
   settleMarkE6 = null,
   engineCatchingUp = false,
+  catchUpMs = null,
   error = null,
   maxFillAbs = null,
   previewUnavailable = false,
@@ -339,7 +343,7 @@ export const ClosePositionForm: FC<ClosePositionFormProps> = ({
         <div data-testid="close-catching-up" className="mb-4 rounded-none border border-[var(--warning)]/30 bg-[var(--warning)]/[0.07] p-2.5">
           <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-[var(--warning)]">Catching up</p>
           <p className="mt-1 text-[9px] text-[var(--text-secondary)] leading-relaxed">
-            Prices are catching up. Closing resumes once the market has caught up.
+            {catchUpAvailableLine(catchUpMs, "close")}
           </p>
         </div>
       ) : oraclePriceBehind ? (

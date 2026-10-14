@@ -79,7 +79,7 @@ describe("product copy is calm, one line, and has no protocol mechanics", () => 
     }
   });
   it("the band line is exact: ONE 104 line, 'Close on hold' (round i)", () => {
-    expect(V22_COPY.band.catchingUp).toBe("Close on hold while the price catches up. Try again once it has.");
+    expect(V22_COPY.band.catchingUp).toBe("The price is still catching up after a big move. Closing reopens when it has; this usually takes a few minutes.");
   });
   it("bond copy is honest about order, coupon and exit", () => {
     expect(V22_COPY.bond.absorbs).toMatch(/after .*first-loss.* before Earn/i);

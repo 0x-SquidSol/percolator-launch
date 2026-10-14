@@ -1,5 +1,6 @@
 "use client";
 
+import { catchUpAvailableLine } from "@/lib/limits/catchup-estimate";
 import { LastCloseTxLink } from "@/components/trade/LastCloseTxLink";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { onChainMarkE6 } from "@/lib/position-pnl";
@@ -182,7 +183,7 @@ export const OrderTicketClosePanel: FC<OrderTicketClosePanelProps> = ({
   const submitTitle = !hasValidMark
     ? "Waiting for price data…"
     : engineStale
-      ? "Prices are catching up. Closing resumes once the market has caught up."
+      ? catchUpAvailableLine(null, "close")
       : lpUnderfunded
         ? "The LP has no capital, so a close cannot fill."
         : undefined;

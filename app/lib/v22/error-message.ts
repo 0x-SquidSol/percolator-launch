@@ -11,6 +11,7 @@
 import type { MessageContext, StatusVariant, UserMessage } from "@/lib/limits/user-message";
 import { STAKE_ERRORS_V5 } from "./sdk";
 import { STAKE_ERR_DEPOSIT_BELOW_MIN_LIQUIDITY, STAKE_ERR_V5, WRAPPER_ERR_V22 } from "./wrapper-errors";
+import { catchUpAvailableLine } from "@/lib/limits/catchup-estimate";
 import { V22_COPY, V22_DEPTH_INPUT_COPY, V22_DEPTH_SOURCE_COPY, V22_TIER_CONFIG_COPY } from "./copy";
 import { V22_COUNTERPARTY_CAP_COPY, V22_CUSTOM9_OFF_TICKET, V22_SIDE_FULL_COPY, positionCapCopy } from "./trade-refusal-9-copy";
 import { WRAPPER_ERR } from "@/lib/wrapper-errors";
@@ -35,7 +36,7 @@ export function v22WrapperMessage(code: number, ctx: MessageContext & { minPosit
       // No autoRetry: nothing consumes it for a close, and a pin can last about an hour (band_max_pin_slots), so the line stays
       // calm and short and the honest part sits in Details.
       // QA P-4: 104 refuses only the close the stale pinned price would favour (the other direction is allowed).
-      return m("band-catching-up", "wait", "Close on hold", V22_COPY.band.catchingUp, { why: V22_COPY.band.catchingUpWhy });
+      return m("band-catching-up", "wait", "Close on hold", catchUpAvailableLine(ctx.catchUpMs, "close"), { why: V22_COPY.band.catchingUpWhy });
     case V.PriceBandConfigInvalid:
       return m("band-config", "error", "Price protection not valid", "These price-protection settings aren't valid for this market. Adjust them and try again. Nothing was sent.");
     case V.HoldingRentConfigInvalid:

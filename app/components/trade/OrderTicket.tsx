@@ -120,7 +120,7 @@ import { V22_COPY } from "@/lib/v22/copy";
 import { parseHumanAmount } from "@/lib/parseAmount";
 import { recordCloseTx } from "@/lib/last-close-tx";
 import { LastCloseTxLink } from "@/components/trade/LastCloseTxLink";
-import { bandMinLeg, bandMinLegExactQ, legBelowBandMin } from "@/lib/v22/band-rent-state";
+import { bandCatchUpMs, bandMinLeg, bandMinLegExactQ, legBelowBandMin } from "@/lib/v22/band-rent-state";
 import { POS_SCALE_V22, formatLotPriceE6, lotExpOf, lotOrderQ, tokenUsdOfLotUsd } from "@/lib/v22/lot";
 import { BandMarketNotice } from "@/components/v22/BandMarketNotice";
 import { OpenModeMarketNotes } from "@/components/v22/OpenModeMarketNotes";
@@ -1387,6 +1387,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
         // 126: the market's own cap on positions per account.
         ...(maxPositions !== null ? { maxPositions } : {}),
         priceAgeSecs: oracleReady && !oracleUnavailable ? oracleAgeSecs(oracleLastMs, oracleElapsed) : null,
+        // The price catch-up wait, computed from the market, so a 21 says how long (never "a few seconds").
+        catchUpMs: bandCatchUpMs(bandView, slotMs),
         // GH#2953: fund-and-trade does not wait and resend; never promise "goes through automatically".
         oneShot: fundingMode,
         // MIN-1: error 113 names the real minimum for this market at this mark.

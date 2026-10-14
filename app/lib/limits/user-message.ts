@@ -19,6 +19,7 @@ import { V22_NAME_BY_CODE } from "../v22/wrapper-errors";
 import { v22StakeMessage, v22WrapperMessage } from "../v22/error-message";
 import { resolveDevnetProgramIds } from "../program-ids";
 import { isLongStale, PRICE_STALLED } from "./price-stall";
+import { MAX_WAIT_BUDGET_MS, catchUpAvailableLine } from "./catchup-estimate";
 import { WALLET_REQUEST_CLOSED_COPY } from "../wallet-request-copy";
 
 export type StatusVariant = "info" | "wait" | "paused" | "error";
@@ -73,6 +74,8 @@ export interface MessageContext {
   minPositionLabel?: string;
   /** v2.2 QA Q-3: seconds since the market's last on-chain price. Past LONG_STALE_SECS a stale refusal is not "a few seconds". */
   priceAgeSecs?: number | null;
+  /** How long the price catch-up is estimated to last (ms; lib/limits/catchup-estimate.ts). Null/absent: no estimate, the copy says "usually a few minutes". */
+  catchUpMs?: number | null;
 }
 
 export interface UserMessageAction {
@@ -104,6 +107,19 @@ export interface UserMessage {
   /** Nothing to show (the user cancelled): the caller just restores the button. */
   quiet?: boolean;
   details: UserMessageDetails;
+}
+
+/**
+ * Wrapper 21 (the price is still catching up): no seconds promise. With an estimate it says when the action is available; without one,
+ * that this usually takes a few minutes. The ticket (which waits and resends) adds that the trade goes through by itself, but only when
+ * the wait fits what the app is willing to hold (10 minutes).
+ */
+function engineCatchUpBody(ctx: MessageContext, waits: boolean): string {
+  const what = ctx.surface === "trade" ? "open" : ctx.surface === "close" ? "close" : "any";
+  const ms = ctx.catchUpMs;
+  const base = catchUpAvailableLine(ms, what);
+  const fitsTheWait = ms === null || ms === undefined || ms <= 0 || ms <= MAX_WAIT_BUDGET_MS / 1.5;
+  return waits && fitsTheWait ? `${base} Your trade goes through automatically when it's ready.` : base;
 }
 
 /** The v2.1 growth / lock codes (92–103, 120–122) are also v2.2 codes: v2.2 builds on v2.1, so a v2.2-only build reads them too. */
@@ -178,7 +194,7 @@ function mmss(secs: number): string {
 
 /** GH#2953: the one-shot form of a waitable line (see MessageContext.oneShot). */
 const ONE_SHOT_BODY: Record<string, string> = {
-  "engine-catching-up": "The market is catching up with the latest prices. Nothing was sent. Try again in a moment.",
+  "engine-catching-up": "The price is still catching up after a big move. Nothing was sent. This usually takes a few minutes; try again then.",
   "price-wait": "Waiting for a fresh price. Nothing was sent. Try again in a few seconds.",
 };
 
@@ -447,8 +463,8 @@ function resolveUserMessageInner(err: unknown, ctx: MessageContext): UserMessage
         return ctx.surface === "trade"
           // Only the trade ticket waits through this and resends (sendTxWaiting); nothing reads
           // autoRetry elsewhere, and Earn, close, deposit and withdraw do not resend.
-          ? m("engine-catching-up", "wait", "Catching up", "The market is catching up with the latest prices. Your trade goes through automatically when it's ready.", { autoRetry: true })
-          : m("engine-catching-up", "wait", "Catching up", "The market is catching up with the latest prices. Try again in a moment.");
+          ? m("engine-catching-up", "wait", "Catching up", engineCatchUpBody(ctx, true), { autoRetry: true })
+          : m("engine-catching-up", "wait", "Catching up", engineCatchUpBody(ctx, false));
       case W.OracleStale:
       case W.OracleInvalid:
         return m("price-wait", "wait", "Waiting for price", "Waiting for a fresh price. This usually takes a few seconds.", { autoRetry: true });
@@ -468,8 +484,8 @@ function resolveUserMessageInner(err: unknown, ctx: MessageContext): UserMessage
         return ctx.surface === "trade"
           // Only the trade ticket waits through this and resends (sendTxWaiting); nothing reads
           // autoRetry elsewhere, and Earn, close, deposit and withdraw do not resend.
-          ? m("engine-catching-up", "wait", "Catching up", "The market is catching up with the latest prices. Your trade goes through automatically when it's ready.", { autoRetry: true })
-          : m("engine-catching-up", "wait", "Catching up", "The market is catching up with the latest prices. Try again in a moment.");
+          ? m("engine-catching-up", "wait", "Catching up", engineCatchUpBody(ctx, true), { autoRetry: true })
+          : m("engine-catching-up", "wait", "Catching up", engineCatchUpBody(ctx, false));
       }
       case W.EngineNonProgress:
         // v2.2 QA copy round: the engine had nothing to do for this request (already up to date / nothing to settle).

@@ -42,7 +42,8 @@ export const V22_COPY = {
   // ── Band markets ("price protection") ────────────────────────────────────
   band: {
     /** Error 104 on a close, the ONE line everywhere (round i: "Close on hold"). QA P-4: it refuses only the close the stale pinned price would favour. */
-    catchingUp: "Close on hold while the price catches up. Try again once it has.",
+    /** No estimate available: honest and calm, never a seconds promise. With an estimate see catchUpAvailableLine. */
+    catchingUp: "The price is still catching up after a big move. Closing reopens when it has; this usually takes a few minutes.",
     catchingUpWhy: "After a sharp move the market price walks toward the new price in small steps. That usually takes a few minutes and can take up to about an hour. Closing opens again as soon as it has caught up.",
     /** Mark versus the oracle target, shown only when they differ. */
     markVsTarget: (mark: string, target: string) => `Mark ${mark} · catching up to ${target}`,

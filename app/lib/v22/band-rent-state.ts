@@ -7,6 +7,7 @@
  *  - rent rate:         `rentRateE9FailClosedV22`.
  * The app-facing names (`readBandRentView`, `closeBlockedByBand`, ...) are kept so the surfaces do not change.
  */
+import { catchUpEstimate } from "@/lib/limits/catchup-estimate";
 import {
   rentPercentPerDayV22,
   rentRateE9FailClosedV22,
@@ -82,6 +83,13 @@ export function readBandRentView(data: Uint8Array | null | undefined, assetIndex
     price: { capBpsPerSlot: v.config.maxPriceMoveBpsPerSlot, markE6: v.price.markE6, targetE6: v.price.targetE6, lagging: v.price.lagging, floorStuck: v.price.floorStuck, favourableCloseSide: v.price.favourableCloseSide },
     rent: { enabled: v.rentRates.enabled, maxE9PerSlot: v.config.rentMaxE9PerSlot, kinkBps: v.rent.rentKinkBps, rateLongE9: v.rentRates.long, rateShortE9: v.rentRates.short },
   };
+}
+
+/** How long the price catch-up is estimated to last on a band market (ms; the gap between target and effective price over the per-slot cap); null = no estimate. */
+export function bandCatchUpMs(view: BandRentView | null, slotMs?: number): number | null {
+  if (!view || !view.band.enabled || !view.price.lagging) return null;
+  const e = catchUpEstimate({ effectiveE6: view.price.markE6, targetE6: view.price.targetE6, capBpsPerSlot: view.price.capBpsPerSlot, slotMs });
+  return e && e.ms > 0 ? e.ms : null;
 }
 
 /** Is this side's close refused right now by the band (104)? SDK rule: lagging, not floor-stuck, favourable side. */

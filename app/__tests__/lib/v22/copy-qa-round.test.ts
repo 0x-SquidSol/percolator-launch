@@ -160,8 +160,8 @@ describe("items 5 + 9: plain messages for 28, 29, 93, stake 29, a bare 9 and 104
     expect(m.body).toBe(V22_COPY.band.catchingUp);
     expect(V22_ERROR_CODE_MAP[104]).toBe(V22_COPY.band.catchingUp);
     expect(humanizeError(raw(104))).toBe(m.body);
-    expect(m.body).toMatch(/^Close on hold/);
-    expect(PERCOLATOR_ERRORS_V22[104].hint).toContain(V22_COPY.band.catchingUp); // the vendored SDK table says the same
+    expect(m.body).toMatch(/^The price is still catching up after a big move/);
+    expect(PERCOLATOR_ERRORS_V22[104].hint).not.toMatch(/seconds/); // the vendored SDK table (upstream wording, details only) promises no seconds
     expect(JSON.stringify(V22_COPY)).not.toContain("pinned at the band edge");
   });
 });

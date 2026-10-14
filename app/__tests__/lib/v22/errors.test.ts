@@ -95,7 +95,7 @@ describe("special handling", () => {
     const m = resolveUserMessage(fail(WRAPPER_ERR_V22.PriceBandPinned), { surface: "close" });
     expect(m.variant).toBe("wait");
     expect(m.variant).not.toBe("error");
-    expect(m.body).toBe("Close on hold while the price catches up. Try again once it has.");
+    expect(m.body).toBe("The price is still catching up after a big move. Closing reopens when it has; this usually takes a few minutes.");
     expect(m.kind).toBe("band-catching-up");
   });
   it("117 re-quotes (and does not stop the user)", () => {
@@ -228,6 +228,6 @@ describe("round i: a 104 close never reads as the 'catching up' of a 21", () => 
     expect(m104.title.toLowerCase()).not.toContain("catching");
     const m21 = resolveUserMessage(fail(21), { surface: "close" });
     expect(m21.kind).toBe("engine-catching-up");
-    expect(m21.body).toContain("Try again in a moment");
+    expect(m21.body).toBe("The price is still catching up after a big move. Closing reopens when it has; this usually takes a few minutes.");
   });
 });

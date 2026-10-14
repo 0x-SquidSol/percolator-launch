@@ -47,24 +47,52 @@ export function exceedsBudgetCap(estimateMs: number): boolean {
   return estimateMs * 1.5 > MAX_WAIT_BUDGET_MS;
 }
 
-/** "a few seconds", "about 40 seconds", "about 3 minutes". */
+/** "a few seconds", "about 40 seconds", "about 3 minutes", "about 45 minutes", "about 2 hours". Seconds only below a minute. */
 export function waitWords(ms: number): string {
   const s = Math.ceil(ms / 1000);
   if (s <= 10) return "a few seconds";
-  if (s < 90) return `about ${Math.ceil(s / 5) * 5} seconds`;
-  return `about ${Math.ceil(s / 60)} minutes`;
+  if (s < 60) return `about ${Math.ceil(s / 5) * 5} seconds`;
+  const m = Math.ceil(s / 60);
+  if (m >= 100) return `about ${Math.round(m / 60)} hours`;
+  if (m >= 55) return "about an hour";
+  return m <= 1 ? "about a minute" : `about ${m} minutes`;
+}
+
+/** The wait for the "available in …" sentence: no seconds promise at all ("under a minute" below one minute). */
+export function availableInWords(ms: number): string {
+  return Math.ceil(ms / 1000) < 60 ? "under a minute" : waitWords(ms);
 }
 
 export const CATCHUP_COPY = {
   title: "Catching up",
   line: (ms: number) => `Price is catching up — ${waitWords(ms)}. Goes through automatically.`,
-  long: "Price is catching up — this can take several minutes. It goes through automatically, or you can stop and try later.",
+  /** Beyond what the app waits for on its own: the honest time, and that it will not go through by itself. */
+  long: (ms: number) => `Price is catching up after a big move — ${waitWords(ms)}. You can stop and try again later.`,
 } as const;
 
 /** The line for the current estimate (null = no estimate: the generic wait copy stays). */
 export function catchUpLine(estimateMs: number | null | undefined): string | null {
   if (estimateMs === null || estimateMs === undefined || estimateMs <= 0) return null;
-  return exceedsBudgetCap(estimateMs) ? CATCHUP_COPY.long : CATCHUP_COPY.line(estimateMs);
+  return exceedsBudgetCap(estimateMs) ? CATCHUP_COPY.long(estimateMs) : CATCHUP_COPY.line(estimateMs);
+}
+
+/** What the catch-up is holding back, for the one-sentence form. */
+export type CatchUpWhat = "close" | "open" | "any";
+
+const AVAILABLE: Record<Exclude<CatchUpWhat, "any">, string> = { close: "Closing is available", open: "New positions are available" };
+const WHEN_GENERIC: Record<Exclude<CatchUpWhat, "any">, string> = { close: "Closing reopens", open: "New positions reopen" };
+
+/**
+ * Honest, calm copy for a refusal caused by the price still catching up (the catch-up cap: errors 21 / 104). The wait is computed from
+ * the market (gap between the target and effective price over the per-slot cap, see {@link catchUpEstimate}); with no estimate it says
+ * only that this usually takes a few minutes. It never promises seconds.
+ */
+export function catchUpAvailableLine(estimateMs: number | null | undefined, what: CatchUpWhat): string {
+  const lead = "The price is still catching up after a big move.";
+  const known = estimateMs !== null && estimateMs !== undefined && Number.isFinite(estimateMs) && estimateMs > 0;
+  if (what === "any") return known ? `${lead} Try again in ${availableInWords(estimateMs)}.` : `${lead} This usually takes a few minutes; try again then.`;
+  if (!known) return `${lead} ${WHEN_GENERIC[what]} when it has; this usually takes a few minutes.`;
+  return `${lead} ${AVAILABLE[what]} in ${availableInWords(estimateMs)}.`;
 }
 
 /** Measured slot time (ms) from the RPC's recent performance samples; SLOT_MS_DEFAULT on any failure. Cached for 5 minutes. */

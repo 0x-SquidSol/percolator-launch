@@ -34,6 +34,8 @@ interface ClosePositionModalProps {
   settleMarkE6?: bigint | null;
   /** Engine lag (not the oracle): blocks the close with its own "Catching up" note. */
   engineCatchingUp?: boolean;
+  /** Estimated catch-up wait (ms) for the "Catching up" note; absent = "usually a few minutes". */
+  catchUpMs?: number | null;
   /** PERC-2312: Surfaced close-tx failure (from useClosePosition's `error`). */
   error?: string | null;
   /** The market's per-fill cap (matcherCaps.maxFillAbs), when known. */
@@ -77,6 +79,7 @@ export const ClosePositionModal: FC<ClosePositionModalProps> = ({
   priceAgeSecs = 0,
   settleMarkE6 = null,
   engineCatchingUp = false,
+  catchUpMs = null,
   error = null,
   maxFillAbs = null,
   previewUnavailable = false,
@@ -192,6 +195,7 @@ export const ClosePositionModal: FC<ClosePositionModalProps> = ({
           priceAgeSecs={priceAgeSecs}
           settleMarkE6={settleMarkE6}
           engineCatchingUp={engineCatchingUp}
+          catchUpMs={catchUpMs}
           error={error}
           maxFillAbs={maxFillAbs}
           previewUnavailable={previewUnavailable}

@@ -7,7 +7,7 @@
  * known to be flat is a real staleness case and keeps the catching-up line.
  */
 export const WITHDRAW_OPEN_POSITIONS_MESSAGE = "Close your positions before withdrawing.";
-export const WITHDRAW_STALE_MESSAGE = "The market is catching up with the latest prices. Try again in a moment.";
+export const WITHDRAW_STALE_MESSAGE = "The price is still catching up after a big move. This usually takes a few minutes; try again then.";
 
 /**
  * The line for a Custom(19) on a withdrawal. `openLegs`: true / false when the portfolio was read before
