@@ -33,6 +33,8 @@ const STATIC_PLAYGROUND_SLAB_META: Record<string, {
    * Re-discover and update if a market's LP portfolio is ever re-seeded.
    */
   lp_portfolio_address: string;
+  /** v2.2 preview env entry only: the market is kept for holders to close and withdraw (lib/v22/market-meta.ts). */
+  withdraw_only?: boolean;
 }> = {
   // RELAUNCH 2026-10-01: empty. Every curated slab above belonged to the ABANDONED pre-relaunch
   // wrapper (GnwdeQr...), so listing them showed dead markets. Markets on the fresh wrapper are

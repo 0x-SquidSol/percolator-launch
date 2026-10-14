@@ -40,6 +40,7 @@ import {
 } from "@/lib/first-trade";
 import { invalidatePortfolio } from "@/lib/portfolio-invalidation";
 import { measureFill, recordFillResult } from "@/lib/limits/fill-check";
+import { recordFeeRaise, type FeeRaise } from "@/lib/v22/fee-raise-note";
 import { signedPositionForAsset } from "@/lib/limits/decode";
 import { readU64LE } from "@/lib/u64le";
 import { WRAPPER_ERR } from "@/lib/wrapper-errors";
@@ -158,8 +159,11 @@ export function useFirstTrade(slabAddress: string) {
           ? await fetchTradeFeeBps(connection, market, lp.matcherCtx, { fallback: p.feeBps ?? wrapperConfigV17?.tradeFeeBps })
           : p.feeBps;
         // v2.2 QA U-2: on a 98 the body is rebuilt ONCE with the cap that covers the utilisation fee (sendWithUtilFeeRetry).
+        let feeRaise: FeeRaise | null = null;
         const raiseFee = async (): Promise<void> => {
+          const before = feeBps;
           feeBps = await fetchTradeFeeBps(connection, market, lp.matcherCtx, { fallback: feeBps, withUtilMax: true });
+          if (before !== undefined && feeBps !== undefined) feeRaise = { fromBps: before, toBps: feeBps };
         };
         // The same liveness repairs a normal trade gets (useTrade): a lagging engine clock or a lapsed
         // backing bucket otherwise refuses every deposit-and-trade, the path new wallets onboard on.
@@ -222,6 +226,7 @@ export function useFirstTrade(slabAddress: string) {
               return sendRefreshed(buildFundAndTradeIxs(ixp(existing), { portfolioId: id.portfolioId, sequence: id.matcherSequence, positionEpoch: id.positionEpoch }), existing, { cap: FUND_AND_TRADE_CU_CAP });
             }),
           );
+          recordFeeRaise(signature, feeRaise);
           await recordFill(signature, existing, beforeQ);
           invalidatePortfolio();
           refreshSlab();
@@ -251,6 +256,7 @@ export function useFirstTrade(slabAddress: string) {
               }),
             );
             // A brand-new portfolio holds no position before this transaction.
+            recordFeeRaise(signature, feeRaise);
             await recordFill(signature, kp.publicKey, 0n);
             invalidatePortfolio();
             refreshSlab();

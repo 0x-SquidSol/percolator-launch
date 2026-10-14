@@ -20,7 +20,8 @@ import { isMockMode } from "@/lib/mock-mode";
 import { isMockSlab, getMockUserAccount } from "@/lib/mock-trade-data";
 import { isSentinelValue } from "@/lib/health";
 import { useConvertibleProfit } from "@/hooks/useConvertibleProfit";
-import { settlingProfitMessage } from "@/lib/convert-released-pnl";
+import { heldProfitMessage, settlingProfitMessage } from "@/lib/convert-released-pnl";
+import { useProfitHold } from "@/hooks/useProfitHold";
 import { useWalletBalanceRefreshKey } from "@/lib/wallet-balance-invalidation";
 import { getPortfolioRawSnapshot, makePortfolioScanKey } from "@/lib/userAccountScan";
 import { CloseTradingAccountRow } from "./CloseTradingAccountRow";
@@ -217,6 +218,9 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
     (userAccount?.account.positionSize ?? 0n) !== 0n,
   );
 
+  // v2.2 W-1/W-2: tag 28 simulating to nothing for a few minutes reads as "Held: waiting on backing" (with the amount).
+  const profitHold = useProfitHold(mockMode ? null : userAccount?.pubkey?.toBase58() ?? null, convertQuote);
+
   if (!connected) {
     return (
       <div className="relative rounded-none border border-[var(--border)]/50 bg-[var(--bg)]/80 p-3">
@@ -315,7 +319,9 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
       ? convertQuote.postCapital
       : capital;
   const settlingProfitLine = !hasOpenPosition && convertQuote?.status === "settling"
-    ? settlingProfitMessage(convertQuote.code)
+    ? profitHold.held && profitHold.amount !== null
+      ? heldProfitMessage(`${formatTokenAmount(profitHold.amount, decimals, 3)} ${symbol}`)
+      : settlingProfitMessage(convertQuote.code)
     : null;
   const loading = mode === "deposit" ? depositLoading : withdrawLoading;
   const error = mode === "deposit" ? depositError : withdrawError;
@@ -372,7 +378,7 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
   return (
     <div className="relative rounded-none border border-[var(--border)]/50 bg-[var(--bg)]/80 p-3">
       {/* Onboarding hint for new users */}
-      {capital === 0n && !mockMode && (
+      {capital === 0n && !mockMode && !(mode === "withdraw" && (userAccount.account.pnl ?? 0n) > 0n && !isSentinelValue(userAccount.account.pnl)) && (
         <div className="mb-3 border-b border-[var(--border)]/30 pb-3">
           <p className="text-[11px] font-medium uppercase tracking-[0.1em] text-[var(--accent)] mb-1">Getting Started</p>
           <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed">
@@ -468,7 +474,7 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
           <p className="mt-1 text-[10px] text-[var(--short)]">{validationError}</p>
         )}
         {mode === "withdraw" && settlingProfitLine && (
-          <p data-testid="settling-profit" className="mt-1 text-[10px] text-[var(--text-secondary)]">{settlingProfitLine}</p>
+          <p data-testid="settling-profit" data-held={profitHold.held ? "true" : undefined} className="mt-1 text-[10px] text-[var(--text-secondary)]">{settlingProfitLine}</p>
         )}
       </div>
 

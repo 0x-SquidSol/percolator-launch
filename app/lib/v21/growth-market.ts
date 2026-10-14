@@ -9,7 +9,10 @@
  * reads the network and nothing here throws on short or foreign bytes.
  */
 import {
+  ceilingImrBps,
+  dynImrBps,
   isBankruptcyHlockActive,
+  leverageX100ForImrBps,
   previewGrowthOpenFee,
   quoteMaxLeverage,
   type AssetGrowthV19,
@@ -171,4 +174,33 @@ export function growthTicketDecision(
     utilisation,
     fee: reducing ? null : fee,
   };
+}
+
+/**
+ * The most leverage the program lets THIS order open (Custom 92's own limit), as a plain number (x, 2 dp, rounded DOWN so the
+ * figure always passes). The wrapper checks the requirement at the users' open interest AFTER the fill, so on the crowd side this is
+ * `floor(1e6 / dynImr(OI_users + opening part, N_cap, base, kink))`, not the current-OI quote (an upper bound); on the thin side it is
+ * the launch ceiling. `null` when growth does not apply to the order (a reduce / close, a closed side, an unreadable view) or the
+ * fill would push the side past capacity (that is Custom 93, not 92): the caller then says nothing numeric.
+ */
+export function growthMaxLeverageForOrder(
+  view: GrowthMarketView,
+  direction: "long" | "short",
+  takerEffQ: bigint,
+  sizeQ: bigint,
+): number | null {
+  const d = growthTicketDecision(view, direction, takerEffQ, sizeQ);
+  if (d.reducing || d.closed || sizeQ <= 0n) return null;
+  const q = d.quote;
+  if (!q.growthOn) return null;
+  if (!q.crowd) return q.maxLeverageX100 > 0 ? q.maxLeverageX100 / 100 : null;
+  const nCap = q.nCapQ;
+  const g = view.record;
+  const base = ceilingImrBps(view.quoteInput.engineImrBps, Math.min(g.lLaunchX100, g.lTierX100));
+  const usersAfter = d.fee?.usersOiAfterQ;
+  if (nCap === null || base === null || usersAfter === undefined) return null;
+  const dyn = dynImrBps(usersAfter, nCap, base, g.kinkBps);
+  if (dyn === null) return null;
+  const x100 = leverageX100ForImrBps(dyn);
+  return x100 === null || x100 <= 0n ? null : Number(x100) / 100;
 }

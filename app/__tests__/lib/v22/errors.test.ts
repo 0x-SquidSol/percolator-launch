@@ -95,7 +95,7 @@ describe("special handling", () => {
     const m = resolveUserMessage(fail(WRAPPER_ERR_V22.PriceBandPinned), { surface: "close" });
     expect(m.variant).toBe("wait");
     expect(m.variant).not.toBe("error");
-    expect(m.body).toBe("The price is pinned at the band edge; this close would get a better price than the market. Try again once the price catches up.");
+    expect(m.body).toBe("Close on hold while the price catches up. Try again once it has.");
     expect(m.kind).toBe("band-catching-up");
   });
   it("117 re-quotes (and does not stop the user)", () => {
@@ -195,7 +195,7 @@ describe("F10 honest copy", () => {
   });
   it("104 says which close is refused (QA P-4), keeps 'up to about an hour' only in Details (why), and does not auto-retry", () => {
     const m = resolveUserMessage(fail(104), { surface: "close" });
-    expect(m.body).toBe(V22_COPY.band.pinnedClose);
+    expect(m.body).toBe(V22_COPY.band.catchingUp);
     expect(m.why).toMatch(/up to about an hour/);
     expect(m.autoRetry).toBeFalsy();
   });

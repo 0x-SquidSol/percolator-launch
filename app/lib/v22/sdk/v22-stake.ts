@@ -421,6 +421,8 @@ export const STAKE_ERRORS_V5: Readonly<Record<number, ErrorInfo>> = Object.freez
   // Not a v5 code: the stake-side refusal the v2.2 deposit UI can reach. A first deposit of 1,000 atoms or less into an EMPTY
   // pool / senior / junior sub-pool cannot lock its dead-share floor (percolator-stake R-1, aebbff6). Nothing is locked.
   28: { name: "DepositBelowMinimumLiquidity", hint: "First deposit into this pool must be more than 1,000 units." },
+  // Not a v5 code either (percolator-stake F3 dead-share guard): AccrueFees refused while only the dead-share floor is staked.
+  29: { name: "NoRealLpHolders", hint: "There are no stakers in this pool yet, so there are no fees to book. Nothing changed; this works after the first real deposit." },
   33: { name: "ConsentRequired", hint: "Please review and accept the current risk text, then try again." },
   34: { name: "DeprecatedV5", hint: "This action was removed in stake v5; deployment now happens through the automatic sync." },
   35: { name: "InsuranceUnitsInvalid", hint: "The market's insurance record is not available right now; try again in a moment." },

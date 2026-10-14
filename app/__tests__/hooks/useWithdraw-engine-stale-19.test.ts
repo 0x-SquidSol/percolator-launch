@@ -165,6 +165,27 @@ describe("useWithdraw: Custom(19) and open-leg copy (v2.2 QA P-2)", () => {
     expect(result.current.error).toBe(WITHDRAW_STALE_MESSAGE);
   });
 
+  it("copy QA item 11: a wallet-worded 19 (hex) on a flat account is the catching-up line, never 'close your open position first'", async () => {
+    vi.mocked(sendTx).mockRejectedValue(new Error("Transaction simulation failed: Error processing Instruction 1: custom program error: 0x13"));
+    const { result } = renderHook(() => useWithdraw(mockSlabAddress));
+    await act(async () => {
+      await result.current.withdraw({ userIdx: 1, amount: 1n, portfolioPk: fastPathPortfolioPk }).catch(() => {});
+    });
+    expect(result.current.error).toBe(WITHDRAW_STALE_MESSAGE);
+    expect(result.current.error).not.toMatch(/close your open position first/i);
+  });
+
+  it("copy QA item 11 negative control: the same hex 19 with an open leg read still says close positions (true there)", async () => {
+    // The open leg is caught before signing, so sendTx must not even be reached.
+    vi.mocked(parsePortfolioV17).mockReturnValue({ ...walletOwnedPortfolio(), legs: [{ active: true, basisPosQ: 5n }] } as any);
+    vi.mocked(sendTx).mockRejectedValue(new Error("custom program error: 0x13"));
+    const { result } = renderHook(() => useWithdraw(mockSlabAddress));
+    await act(async () => {
+      await result.current.withdraw({ userIdx: 1, amount: 1n, portfolioPk: fastPathPortfolioPk }).catch(() => {});
+    });
+    expect(result.current.error).toBe(WITHDRAW_OPEN_POSITIONS_MESSAGE);
+  });
+
   it("a Custom(19) when the portfolio could not be read says close positions (the engine's flat-only rule)", () => {
     expect(engineStaleWithdrawMessage(null)).toBe(WITHDRAW_OPEN_POSITIONS_MESSAGE);
     expect(engineStaleWithdrawMessage(true)).toBe(WITHDRAW_OPEN_POSITIONS_MESSAGE);

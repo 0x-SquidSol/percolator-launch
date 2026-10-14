@@ -19,6 +19,7 @@
  */
 import { extractErrorCode } from "@/lib/errorMessages";
 import { isDevnetV21Enabled } from "./flag";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { WRAPPER_ERR_V21 } from "./wrapper-errors";
 
 /** The calm one-line state while an order waits to be sent again (button label + status body). */
@@ -28,11 +29,19 @@ export const V21_REFRESHING_POSITIONS = "Refreshing positions…";
 export const LOSS_STALE_RETRY_DELAYS_MS: readonly number[] = [1_000, 1_500, 2_000, 2_000, 2_000, 2_000, 2_000, 2_000];
 
 /**
+ * The 121 handling (retry; the stale peers' refresh cranks in the same tx on v2.2) runs on a v2.1 build or a v2.2 build: v2.2 builds on
+ * the v2.1 programs, so a deployment that sets only NEXT_PUBLIC_DEVNET_V22 must get it too (QA FUND-6 / E-121). Neither flag: off, as before.
+ */
+export function lossStaleHandlingEnabled(): boolean {
+  return isDevnetV21Enabled() || isDevnetV22Enabled();
+}
+
+/**
  * The error is the WRAPPER's Custom(121). A refusal that names its program (lib/tx.ts
  * SimulationRefusal.programId) must name the wrapper: CPI callees reuse small numbers.
  */
 export function isLossStaleError(err: unknown, wrapperProgramId?: string): boolean {
-  if (!isDevnetV21Enabled()) return false;
+  if (!lossStaleHandlingEnabled()) return false;
   if (err === null || err === undefined) return false;
   const pid = typeof err === "object" ? (err as { programId?: unknown }).programId : undefined;
   if (typeof pid === "string" && wrapperProgramId !== undefined && pid !== wrapperProgramId) return false;

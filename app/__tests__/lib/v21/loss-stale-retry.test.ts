@@ -5,9 +5,11 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __setDevnetV21ForTest } from "@/lib/v21/flag";
+import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import {
   LOSS_STALE_RETRY_DELAYS_MS,
   isLossStaleError,
+  lossStaleHandlingEnabled,
   withLossStaleRetry,
 } from "@/lib/v21/loss-stale-retry";
 
@@ -26,7 +28,7 @@ beforeEach(() => {
   __setDevnetV21ForTest(true);
   noSleep.mockClear();
 });
-afterEach(() => __setDevnetV21ForTest(null));
+afterEach(() => { __setDevnetV21ForTest(null); __setDevnetV22ForTest(null); });
 
 describe("isLossStaleError", () => {
   it("is the wrapper's Custom(121), in every message form", () => {
@@ -42,6 +44,7 @@ describe("isLossStaleError", () => {
     expect(isLossStaleError(new Error("User rejected the request."), WRAPPER)).toBe(false);
     expect(isLossStaleError(null, WRAPPER)).toBe(false);
     __setDevnetV21ForTest(false);
+    __setDevnetV22ForTest(false); // the v2.2 flag now also enables the 121 handling (QA FUND-6)
     expect(isLossStaleError(refusal(121), WRAPPER)).toBe(false);
   });
 });
@@ -123,6 +126,7 @@ describe("withLossStaleRetry", () => {
 
   it("flag off: a 121 is not retried (today's programs never raise it)", async () => {
     __setDevnetV21ForTest(false);
+    __setDevnetV22ForTest(false); // the v2.2 flag now also enables the 121 handling (QA FUND-6)
     const e121 = refusal(121);
     const send = vi.fn<() => Promise<string>>().mockRejectedValue(e121);
     await expect(withLossStaleRetry(send, { wrapperProgramId: WRAPPER, sleep: noSleep })).rejects.toBe(e121);
@@ -141,6 +145,17 @@ describe("withLossStaleRetry", () => {
       expect(send).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
+    }
+  });
+});
+
+describe("v2.2 QA FUND-6 / E-121: the flag matrix", () => {
+  afterEach(() => { __setDevnetV21ForTest(null); __setDevnetV22ForTest(null); });
+  it("v2.1 only: handled (unchanged); v2.2 only: handled; both: handled; neither: not handled", () => {
+    for (const [v21, v22, want] of [[true, false, true], [false, true, true], [true, true, true], [false, false, false]] as const) {
+      __setDevnetV21ForTest(v21); __setDevnetV22ForTest(v22);
+      expect(lossStaleHandlingEnabled()).toBe(want);
+      expect(isLossStaleError(refusal(121), WRAPPER)).toBe(want);
     }
   });
 });

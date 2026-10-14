@@ -13,6 +13,8 @@ import { useSingleMarketHealth } from "@/hooks/useMarketHealth";
 import { marketHeaderStatus, type HeaderStatus } from "@/lib/market-header-status";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { lotExpOf, tokenUsdOfLotUsd } from "@/lib/v22/lot";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
+import { decodeFundingV22, fundingDirectionText } from "@/lib/v22/funding";
 import { usePriceFlash } from "@/hooks/usePriceFlash";
 import { MarketSwitcher } from "@/components/trade/MarketSwitcher";
 import { WatchButton } from "@/components/market/WatchButton";
@@ -129,7 +131,9 @@ export const MarketInfoBar: FC<MarketInfoBarProps> = ({ slabAddress, symbol, log
   const change24hDisplay = change24h ?? 0;
   const isUp = change24hDisplay >= 0;
 
-  const funding8h = fundingRate != null ? fundingRateBpsTo8h(fundingRate) : null;
+  // v2.2 (QA FUND-7): the engine stores no rate; it is derived from the market account (lib/v22/funding.ts). null = not decodable.
+  const fundingV22 = useMemo(() => (isDevnetV22Enabled() && slabRawForLot ? decodeFundingV22(slabRawForLot, 0) : null), [slabRawForLot]);
+  const funding8h = fundingV22 ? fundingV22.pctPer8h : fundingRate != null ? fundingRateBpsTo8h(fundingRate) : null;
   // GH#funding-display: this used to invert the convention used everywhere
   // else in the terminal (FundingRateCard.tsx, MarketStatsCard.tsx) — positive
   // rate (longs pay shorts) was colored --long (green) here but --short (red)
@@ -306,6 +310,11 @@ export const MarketInfoBar: FC<MarketInfoBarProps> = ({ slabAddress, symbol, log
             <span className={`text-xs font-semibold ${fundingColor}`} style={{ fontFamily: "var(--font-mono)" }}>
               {funding8h >= 0 ? "+" : ""}{funding8h.toFixed(4)}%
             </span>
+            {fundingV22 && (
+              <span data-testid="funding-direction" className="text-[9px] text-[var(--text-secondary)]" title="Positive: longs pay shorts. Negative: shorts pay longs. Paid continuously, only while both sides hold positions.">
+                {fundingDirectionText(fundingV22.direction)}
+              </span>
+            )}
           </div>
         )}
 

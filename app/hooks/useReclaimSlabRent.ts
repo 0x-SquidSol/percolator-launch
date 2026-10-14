@@ -49,7 +49,7 @@ function friendlyReclaimError(err: unknown): string {
   }
   // 0xf = Custom:15 — reserved for skip-thrash in keeper, unlikely here but map it
   if (lower.includes("0xf") || lower.includes("custom: 15")) {
-    return "Program rejected the request (error 0xf). The slab may still be initialised.";
+    return "The program refused this request. The slab may still be initialised.";
   }
   // 0x0 = InstructionError (slab is already initialized — magic byte set)
   if (lower.includes("custom: 0") || lower.includes("0x0 ")) {
@@ -68,7 +68,7 @@ function friendlyReclaimError(err: unknown): string {
       const code = parseInt(customMatch[1], 16);
       if (code === 0) return "This slab is already initialised. Use the market close flow to reclaim rent.";
       if (code === 4) return "Slab account is not owned by a recognised Percolator program.";
-      return `Program rejected with error code 0x${customMatch[1]}. Try again or contact support.`;
+      return "The program refused this request, so nothing changed. Try again, or contact support.";
     }
     return "Transaction simulation failed. The slab state may have changed — please refresh and try again.";
   }

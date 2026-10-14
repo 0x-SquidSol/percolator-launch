@@ -26,7 +26,7 @@ const RAW_9 =
 describe("Q-6 position cap", () => {
   it("4 distinct assets held, a new one => blocked", () => {
     expect(positionCapBlocksOpen([0, 1, 2, 3], 4)).toBe(true);
-    expect(V22_POSITION_CAP_COPY.startsWith("This account already has the maximum of 4 positions.")).toBe(true);
+    expect(V22_POSITION_CAP_COPY.startsWith("This account already holds ")).toBe(true);
   });
   it("NEGATIVE CONTROLS: adding to a held asset, or 3 held, is not blocked", () => {
     expect(positionCapBlocksOpen([0, 1, 2, 3], 2)).toBe(false);

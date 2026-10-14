@@ -42,6 +42,7 @@ import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 import { verifyPortfolioTarget } from "@/lib/portfolio-target";
 import type { TransactionInstruction } from "@solana/web3.js";
 import { parsePortfolio, isWrapperAccount } from "@/lib/v22/layout";
+import { parseFailure } from "@/lib/limits/user-message";
 import { engineStaleWithdrawMessage, WITHDRAW_OPEN_POSITIONS_MESSAGE } from "@/lib/withdraw-copy";
 import { marketAssetSlots } from "@/lib/v22/trade-refresh";
 
@@ -55,15 +56,15 @@ import { marketAssetSlots } from "@/lib/v22/trade-refresh";
 // errorMessages.ts's own extractCustomIndex regex) and override the message
 // without touching the shared error-copy table other flows still rely on.
 const ENGINE_STALE_CODE = 19;
+// QA: the wallet-side wording is hex ("custom program error: 0x13"); the two regexes this used to carry missed it, so a
+// real 19 on a flat account fell through to humanizeError's "close your open position first". parseFailure reads all three.
 function isEngineStaleWithdrawError(msg: string): boolean {
-  const m = msg.match(/Custom\((\d+)\)/) ?? msg.match(/"Custom"\s*:\s*(\d+)/);
-  return m !== null && parseInt(m[1], 10) === ENGINE_STALE_CODE;
+  return parseFailure(msg).code === ENGINE_STALE_CODE;
 }
 // The profit leg of a convert+withdraw lost a race (released/backed amount moved
 // between the quote and landing): same calm line as the pre-sign refusal.
 function isLockActiveError(msg: string): boolean {
-  const m = msg.match(/Custom\((\d+)\)/) ?? msg.match(/"Custom"\s*:\s*(\d+)/);
-  return m !== null && parseInt(m[1], 10) === WRAPPER_ERR.EngineLockActive;
+  return parseFailure(msg).code === WRAPPER_ERR.EngineLockActive;
 }
 // VERIFIED against the deployed engine 2026-07-27: `withdraw_not_atomic`
 // (percolator/src/v16.rs:14412) returns `Stale` (Custom 19) UNCONDITIONALLY

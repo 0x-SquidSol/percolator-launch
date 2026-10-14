@@ -1,6 +1,7 @@
 "use client";
 
 import { STAKE_COPY, cooldownDuration } from "@/lib/stake-copy";
+import { Tooltip } from "@/components/ui/Tooltip";
 import { useStakeCooldown } from "@/hooks/useStakeCooldown";
 import { useEffect, useId, useState, useCallback, useSyncExternalStore, type CSSProperties } from "react";
 import { DEVNET_PROGRAM_IDS } from "@/lib/program-ids";
@@ -1507,7 +1508,7 @@ function StakeSidebar() {
         </h3>
         <div className="space-y-2">
           <SidebarStep num={1} title="Deposit" desc="Stake sim-USDC into a market's insurance pool" />
-          <SidebarStep num={2} title="Back the fund" desc="Your deposit becomes first-loss backing" />
+          <SidebarStep num={2} title="Back the fund" desc={STAKE_COPY.backStep} />
           <SidebarStep num={3} title="Withdraw" desc={STAKE_COPY.sidebar} />
         </div>
       </div>
@@ -1516,9 +1517,9 @@ function StakeSidebar() {
       <div className="border border-[var(--border)] bg-[var(--panel-bg)] p-4 hud-corners">
         <div className="mb-2 text-[10px] uppercase tracking-[0.15em] text-[var(--warning)]">⚠ Risk Notice</div>
         <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">
-          Staked funds are first-loss insurance capital. Admin flushes permanently reduce your
-          redeemable value, and any fee income depends on trading volume. Only stake
-          what you can afford to lose.
+          <Tooltip text={STAKE_COPY.risk.leadTip}><span className="underline decoration-dotted underline-offset-2">{STAKE_COPY.risk.lead}</span></Tooltip>{" "}
+          <Tooltip text={STAKE_COPY.risk.flushTip}><span className="underline decoration-dotted underline-offset-2">{STAKE_COPY.risk.flush}</span></Tooltip>{" "}
+          {STAKE_COPY.risk.tail}
         </p>
       </div>
     </div>

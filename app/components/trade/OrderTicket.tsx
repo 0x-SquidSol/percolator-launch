@@ -100,6 +100,9 @@ import { balanceMaxQ, deriveTicketState, maxInUnit, oneMaxQ, sideRoomIsFull, typ
 import { publishTicketRow } from "@/lib/limits/ticket-status-store";
 import { fmtQ as fmtQLots } from "@/lib/limits/format";
 import { takeFillResult } from "@/lib/limits/fill-check";
+import { feeRaiseCopy, takeFeeRaise } from "@/lib/v22/fee-raise-note";
+import { readClippedFill } from "@/lib/v22/clipped-fill";
+import { isPortfolioClosable } from "@/lib/close-trading-account";
 import { defaultFeeCapMarginBps } from "@/lib/limits/fee-channel";
 import { OrderTicketLimits, reasonCopy } from "@/components/limits/OrderTicketLimits";
 import { GrowthTicketPanelLive } from "@/components/trade/GrowthTicketPanelLive";
@@ -130,7 +133,9 @@ import { decodeMarketEngineView } from "@/lib/limits/decode";
 import { isAdlReduceOnly } from "@/lib/limits/adl-reduce-only";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { FirstDepositCard } from "@/components/trade/FirstDepositCard";
-import { diagnoseV22TradeCustom9, positionCapBlocksOpen, V22_POSITION_CAP_COPY } from "@/lib/v22/trade-refusal-9";
+import { diagnoseV22TradeCustom9, positionCapBlocksOpen, positionCapCopy } from "@/lib/v22/trade-refusal-9";
+import { readMaxPortfolioAssets } from "@/lib/v22/market-cap";
+import { growthMaxLeverageForOrder } from "@/lib/v21/growth-market";
 import { getPortfolioRawSnapshot, makePortfolioScanKey } from "@/lib/userAccountScan";
 
 const SIZE_PRESETS = [25, 50, 75, 100];
@@ -451,6 +456,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   /** WP-3 row 9: the size was just reduced to the max; the helper turns --warning for 4 s. */
   const [clampedToQ, setClampedToQ] = useState<bigint | null>(null);
   /** WP-3 result line (§3.3): full / partial / zero fill of the last order, in the status slot. */
+  const [feeRaiseNote, setFeeRaiseNote] = useState<{ sig: string | null; text: string } | null>(null);
+  const clippedSigsRef = useRef<Set<string>>(new Set());
   const [result, setResult] = useState<{ kind: "full" | "partial" | "zero" | "sent"; body: string; sig: string | null; tryQ: bigint | null } | null>(null);
   /** WP-3: the wait loop passed ~30 s; "We'll keep trying" + Stop. */
   const [waitingLong, setWaitingLong] = useState(false);
@@ -469,6 +476,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // back to a neutral "TOKEN" (never the collateral symbol — sizing is in
   // base units, and the collateral is sim-USDC on every playground market).
   const baseTicker = (marketInfo?.symbol ?? "").replace(/-PERP$/i, "").trim() || "TOKEN";
+  // The market's own cap on positions per account (config max_portfolio_assets); null = unread, then the copy drops the number.
+  const maxPositions = slabRaw ? readMaxPortfolioAssets(slabRaw) : null;
   const initialMarginBps = params?.initialMarginBps ?? 1000n;
   const maintenanceMarginBps = params?.maintenanceMarginBps ?? 500n;
   const tradingFeeBps = params?.tradingFeeBps ?? 30n;
@@ -791,6 +800,19 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const needsWallet = !connected;
   const needsAccount = connected && !userAccount && !accountPending;
   const needsDeposit = connected && !!userAccount && capital === 0n;
+  // v2.2 QA (ANSEM / swordcat / CHILLHOUSE): a flat winner with capital 0 and released profit ("profit settling") had no
+  // way to reach the Withdraw card, because the Deposit/Withdraw toggles were hidden for capital 0. The Withdraw card
+  // converts the profit (tag 28) and withdraws it in one transaction, or says it is held.
+  const claimableProfit = connected && !accountPending && !!userAccount && capital === 0n && existingPositionSize === 0n && safeExistingPnl > 0n;
+  // #3458 (QA retest 7): "Close trading account" lives in the Withdraw card, which a capital-0 flat account could not reach
+  // (no toggle) - so the control never rendered at 0 balance. An empty, closable account (same test the row applies) gets an entry.
+  const closableEmptyAccount = (() => {
+    if (!connected || accountPending || !userAccount?.pubkey || !publicKey || !slabProgramId) return false;
+    if (capital !== 0n || existingPositionSize !== 0n || safeExistingPnl !== 0n) return false;
+    const scanned = getPortfolioRawSnapshot(makePortfolioScanKey(slabProgramId, slabAddress, publicKey));
+    return !!scanned && scanned.pubkey.equals(userAccount.pubkey) && isPortfolioClosable(scanned.portfolio, publicKey).closable;
+  })();
+  const withdrawEntryAtZero = claimableProfit || closableEmptyAccount;
   const walletHasTokens = (walletAtaBalance ?? 0n) > 0n;
   // UX WP-6 (§3.2): with sim-USDC in the wallet, "fund and trade" is ONE approval — no account
   // yet: [InitUser] + [Deposit, Trade] signed together; account short of margin: [Deposit, Trade].
@@ -1189,6 +1211,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       setWaitingLong(false);
       // P1: a confirmed TradeCpi can be a partial or ZERO fill (lib/limits/fill-check.ts).
       const limitsFillResult = takeFillResult(sig);
+      // U-2: the silent retry at a raised fee cap (no second confirmation) gets a small note once the order has landed.
+      const raisedFee = takeFeeRaise(sig);
+      setFeeRaiseNote(raisedFee ? { sig: sig ?? null, text: feeRaiseCopy(raisedFee) } : null);
       setClampedToQ(null);
       if (limitsFillResult?.kind === "zero") {
         // Never "Confirmed!" for a no-op: nothing filled, nothing to save. Offer a smaller size.
@@ -1230,9 +1255,19 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
         } else {
           next = { kind: outcome.partial ? "partial" : "full", body: orderResultBody(outcome, fmtQ, baseTicker, price), sig: sigKey, tryQ: null };
         }
-        // Only if the ticket still shows this order's line (a newer order clears or replaces it).
-        setResult((prev) => (prev && prev.sig === sigKey ? next : prev));
+        // Only if the ticket still shows this order's line (a newer order clears or replaces it). A clipped fill the chain
+        // itself reported (below) is not overwritten by the position-change inference.
+        setResult((prev) => (prev && prev.sig === sigKey && !(sigKey && clippedSigsRef.current.has(sigKey)) ? next : prev));
       });
+      // v2.2 QA: the program clips an over-size order to the vault LP's room and returns Ok. The landed transaction's FILL event
+      // carries the CLIPPED flag with the requested and the executed size: say "Partially filled: X of Y" from that.
+      if (isDevnetV22Enabled() && sigKey && slabProgramId) {
+        void readClippedFill(connection, sigKey, slabProgramId, { market: new PublicKey(slabAddress) }).then((cf) => {
+          if (!cf || cf.zero) return; // a zero fill has its own line
+          clippedSigsRef.current.add(sigKey);
+          setResult((prev) => (prev && prev.sig === sigKey ? { kind: "partial", body: TICKET_COPY.result.clipped(fmtQ(cf.executedQ), fmtQ(cf.requestedQ), baseTicker), sig: sigKey, tryQ: null } : prev));
+        });
+      }
       setTradePhase("confirming");
       setLastSig(sig ?? null);
       // SC-1: a visible "View transaction" link for an open / add, like a close (the status line's one is behind "Details").
@@ -1331,6 +1366,10 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
         symbol: marketInfo?.symbol ?? undefined,
         maxNow: sideMaxQ !== null && sideMaxQ > 0n && sideMaxQ < UNLIMITED_CAPACITY ? fmtQ(sideMaxQ) : undefined,
         health: { lpDepleted, lpIsVault, adlReduceOnly, resolved: marketResolved },
+        // LEV-4: Custom 92 names the leverage the program allows at THIS size (post-fill requirement), not a generic line.
+        ...(marketLimits.growth ? (() => { const n = growthMaxLeverageForOrder(marketLimits.growth, direction, existingPositionSize, positionSize); return n === null ? {} : { maxLeverage: n }; })() : {}),
+        // 126: the market's own cap on positions per account.
+        ...(maxPositions !== null ? { maxPositions } : {}),
         priceAgeSecs: oracleReady && !oracleUnavailable ? oracleAgeSecs(oracleLastMs, oracleElapsed) : null,
         // GH#2953: fund-and-trade does not wait and resend; never promise "goes through automatically".
         oneShot: fundingMode,
@@ -1447,7 +1486,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       ? getPortfolioRawSnapshot(makePortfolioScanKey(slabProgramId, slabAddress, publicKey))
       : null;
   const positionCapReached = ownPortfolioRaw
-    ? positionCapBlocksOpen(ownPortfolioRaw.portfolio.legs.filter((l) => l.active).map((l) => l.assetIndex), 0)
+    ? positionCapBlocksOpen(ownPortfolioRaw.portfolio.legs.filter((l) => l.active).map((l) => l.assetIndex), 0, maxPositions ?? undefined)
     : false;
 
   const submitDisabled =
@@ -1509,7 +1548,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     if (positionCapReached) {
       return (
         <div data-testid="trade-position-cap">
-          <StatusLine message={{ kind: "position-cap", variant: "error", title: "Position limit reached", body: V22_POSITION_CAP_COPY }} />
+          <StatusLine message={{ kind: "position-cap", variant: "error", title: "Position limit reached", body: positionCapCopy(maxPositions) }} />
         </div>
       );
     }
@@ -1567,7 +1606,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     }
     if (result) {
       const kind = result.kind === "zero" ? "zero-fill" : result.kind === "partial" ? "partial-fill" : result.kind === "sent" ? "sent" : "filled";
-      const title = result.kind === "zero" ? "Not filled" : result.kind === "partial" ? "Partly filled" : result.kind === "sent" ? "Order sent" : "Order filled";
+      const title = result.kind === "zero" ? "Not filled" : result.kind === "partial" ? "Partially filled" : result.kind === "sent" ? "Order sent" : "Order filled";
       const line = (
         <StatusLine
           message={{
@@ -1581,7 +1620,13 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
           txUrl={result.sig ? explorerTxUrl(result.sig) : undefined}
         />
       );
-      return result.kind === "full" ? line : <div data-testid="limits-fill-result" data-kind={result.kind}>{line}</div>;
+      const shown = result.kind === "full" ? line : <div data-testid="limits-fill-result" data-kind={result.kind}>{line}</div>;
+      return feeRaiseNote && feeRaiseNote.sig === result.sig && result.kind !== "zero" ? (
+        <>
+          {shown}
+          <p data-testid="fee-raise-note" className="mt-1 text-[10px] leading-snug text-[var(--text-muted)]">{feeRaiseNote.text}</p>
+        </>
+      ) : shown;
     }
     if (networkWarning) {
       return <StatusLine message={{ kind: "wallet-network", variant: "info", title: "Check your wallet's network", body: networkWarning }} />;
@@ -2251,7 +2296,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             );
           })()}
           {(initCtaError || initError) && <p data-testid="deposit-error" className="mt-1 text-[10px] text-[var(--short)]">{initCtaError ?? initError}</p>}
-          {showInlineDeposit && (
+          {showInlineDeposit && !(withdrawEntryAtZero && inlineDepositMode === "withdraw") && (
             <div className="mt-1.5" data-deposit-trigger>
               <DepositWithdrawCard slabAddress={slabAddress} />
             </div>
@@ -2363,6 +2408,17 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             </button>
           </div>
         )}
+        {withdrawEntryAtZero && (
+          <div className="flex shrink-0 items-center gap-1.5">
+            <button
+              onClick={() => toggleInlineDeposit("withdraw")}
+              data-testid="withdraw-toggle"
+              className="rounded-sm border border-[var(--long)]/50 bg-[var(--long)]/[0.1] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--long)] transition-all duration-150 hover:bg-[var(--long)]/[0.18] hover:brightness-110"
+            >
+              {claimableProfit ? "Claim profit" : "Close account"}
+            </button>
+          </div>
+        )}
         {connected && !accountPending && !needsAccount && !needsDeposit && (
           <div className="flex shrink-0 items-center gap-1.5">
             <button
@@ -2382,7 +2438,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
           </div>
         )}
       </div>
-      {connected && !accountPending && showInlineDeposit && !((needsAccount || needsDeposit) && !walletHasTokens) && (
+      {connected && !accountPending && showInlineDeposit && (!((needsAccount || needsDeposit) && !walletHasTokens) || (withdrawEntryAtZero && inlineDepositMode === "withdraw")) && (
         <div className="mt-1.5" data-deposit-trigger>
           <DepositWithdrawCard slabAddress={slabAddress} initialMode={inlineDepositMode} offerFaucet={fundOverWallet} />
         </div>

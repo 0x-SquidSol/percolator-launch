@@ -70,6 +70,13 @@ function sanitizeTokenName(input: string, maxLen: number): string {
   return sanitizeDisplayName(input, maxLen);
 }
 
+/**
+ * The sim-USDC mint THIS deployment uses (NEXT_PUBLIC_TEST_USDC_MINT, same read as hooks/useTokenMeta.ts and lib/config.ts).
+ * A fresh playground mint carries no on-chain symbol, so without this entry a portfolio card showed the truncated mint
+ * ("DJ54...N8eC") instead of "USDC".
+ */
+const SIM_USDC_MINT = process.env.NEXT_PUBLIC_TEST_USDC_MINT?.trim() || "DJ54k4wH92NTtNP8RuHAwG8si1bevXEknzctDdqYN8eC";
+
 /** Well-known tokens that don't need a Jupiter lookup. */
 const KNOWN_TOKENS: Record<string, { symbol: string; name: string }> = {
   A16Gd8AfaPnG6rohE6iPFDf6mr9gk519d6aMUJAperc: { symbol: "PERC", name: "Percolator" },
@@ -83,6 +90,7 @@ const KNOWN_TOKENS: Record<string, { symbol: string; name: string }> = {
   // `tokenMetasLoading` in app/app/portfolio/page.tsx on a round trip that
   // could never return anything different.
   DJ54k4wH92NTtNP8RuHAwG8si1bevXEknzctDdqYN8eC: { symbol: "USDC", name: "Sim USDC (devnet)" },
+  [SIM_USDC_MINT]: { symbol: "USDC", name: "Sim USDC (devnet)" },
 };
 
 /** Format a truncated mint address for display (e.g. "A16G...perc") */
