@@ -14,7 +14,8 @@ import { getConfig } from "@/lib/config";
 import { getServerConnection } from "@/lib/server-rpc";
 import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
 import { readRegisteredMarkets, type RegisteredMarket } from "@/lib/playground-registered-markets";
-import { parseV17RiskParams } from "@/lib/v17-engine-config";
+import { parseV17RiskParams, readMaxPortfolioAssets } from "@/lib/v17-engine-config";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { leverageFromMarginBps } from "@/lib/market-params";
 import { qToUsd } from "@/lib/q-usd";
 import { getClientIp } from "@/lib/get-client-ip";
@@ -280,6 +281,7 @@ function discoveredToApiRow(
   registered?: RegisteredMarket,
   riskParams?: RiskParams | null,
   lotExp = 0,
+  maxPortfolioAssets: number | null = null,
 ): Record<string, unknown> {
   const slabAddress = m.slabAddress.toBase58();
   const programId = m.programId.toBase58();
@@ -333,6 +335,11 @@ function discoveredToApiRow(
       mark_price: markPriceUsd,
       // v2.2 lot market only (absent otherwise): tokens per lot = 10^lot_exp. last_price / OI above are already per token.
       ...(lotExp > 0 ? { lot_exp: lotExp } : {}),
+      // v2.2 only (absent otherwise): the on-chain max_portfolio_assets. > 1 marks a multi-asset test market, which
+      // the listing surfaces hide (the ticket trades asset 0 only); the row stays in this payload for direct links.
+      ...(maxPortfolioAssets !== null ? { max_portfolio_assets: maxPortfolioAssets } : {}),
+      // Curated v2.2 entry kept only so holders can close and withdraw (NEXT_PUBLIC_V22_MARKETS_JSON `withdraw_only`).
+      ...(playgroundMeta?.withdraw_only ? { withdraw_only: true } : {}),
       index_price: null,
       volume_24h: 0,
       trade_count_24h: 0,
@@ -434,6 +441,7 @@ async function discoverMarketsOnChain(
     const v17Stats = new Map<string, V17MarketGroupOI>();
     const v17Lot = new Map<string, number>();
     const v17RiskParams = new Map<string, RiskParams | null>();
+    const v17MaxAssets = new Map<string, number>();
     const v17Markets = unique.filter((m) => m.configV17);
     // getMultipleAccountsInfo caps at 100 accounts per call — chunk the reads.
     const CHUNK = 100;
@@ -448,6 +456,10 @@ async function discoverMarketsOnChain(
           const slab = chunk[i].slabAddress.toBase58();
           v17Stats.set(slab, parseMarketOI(data));
           v17Lot.set(slab, lotExpOf(data));
+          if (isDevnetV22Enabled()) {
+            const maxAssets = readMaxPortfolioAssets(data);
+            if (maxAssets !== null) v17MaxAssets.set(slab, maxAssets);
+          }
           v17RiskParams.set(slab, parseV17RiskParams(data, chunk[i].configV17!.tradeFeeBps));
         });
       } catch {
@@ -457,7 +469,7 @@ async function discoverMarketsOnChain(
 
     return unique.map((m) => {
       const slab = m.slabAddress.toBase58();
-      return discoveredToApiRow(m, v17Stats.get(slab), registeredBySlab?.get(slab), v17RiskParams.get(slab), v17Lot.get(slab) ?? 0);
+      return discoveredToApiRow(m, v17Stats.get(slab), registeredBySlab?.get(slab), v17RiskParams.get(slab), v17Lot.get(slab) ?? 0, v17MaxAssets.get(slab) ?? null);
     });
   } catch {
     return [];
