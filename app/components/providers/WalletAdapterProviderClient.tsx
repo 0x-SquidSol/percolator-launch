@@ -12,7 +12,7 @@
  * autoConnect: true — re-connects the last used wallet on page load (standard UX).
  */
 
-import { FC, ReactNode, useMemo } from "react";
+import { FC, ReactNode, useCallback, useMemo, useRef } from "react";
 import {
   ConnectionProvider,
   WalletProvider as SolanaWalletProvider,
@@ -28,7 +28,7 @@ import { WalletApiContext, type WalletApi } from "@/hooks/walletApiContext";
 import { useConnectionCompat } from "@/hooks/useWalletCompat";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { guardSign, noteBlockhash, SIGN_CHAIN_DEVNET } from "@/lib/v22/sign-guard";
-import { standardDevnetSigner } from "@/lib/v22/standard-sign";
+import { chainSignerNote, standardDevnetSigner } from "@/lib/v22/standard-sign";
 
 const bs58 = _bs58 as { decode(str: string): Uint8Array };
 
@@ -87,15 +87,21 @@ const AdapterWalletApiBridge: FC<{ children: ReactNode }> = ({ children }) => {
 
   // v2.2 QA NB-2: every signature goes through guardSign (devnet genesis + blockhash origin, logged), and Wallet
   // Standard wallets are told the chain. Flag off: guardSign is a pass-through and no chain signer is built.
-  const chainSigner = useMemo(
-    () => (isDevnetV22Enabled() ? standardDevnetSigner(wallet?.adapter, publicKey) : null),
-    [wallet, publicKey],
-  );
+  // The decision is taken PER REQUEST from the live adapter (`adapter.wallet.accounts` is a live getter): it used to be
+  // memoised on [wallet, publicKey], i.e. frozen at connect time, so a wallet whose accounts were (re)listed later
+  // (autoConnect before the Standard wallet registered, a `change` event) kept the stale answer for the whole session.
+  const adapterRef = useRef<{ adapter: unknown; publicKey: typeof publicKey }>({ adapter: wallet?.adapter, publicKey });
+  adapterRef.current = { adapter: wallet?.adapter, publicKey };
+  const decideChain = useCallback((): { chainSigner: ReturnType<typeof standardDevnetSigner>; note: string | undefined } => {
+    if (!isDevnetV22Enabled()) return { chainSigner: null, note: undefined };
+    const { adapter, publicKey: pk } = adapterRef.current;
+    return { chainSigner: standardDevnetSigner(adapter, pk), note: chainSignerNote(adapter, pk) };
+  }, []);
   const guarded = useMemo(
     () =>
-      <T,>(via: string, txs: Transaction[], sign: () => Promise<T>): Promise<T> =>
-        guardSign({ txs, via, connection: appConnection, chain: chainSigner ? SIGN_CHAIN_DEVNET : "none", wrapperProgramId: cfg.programId, sign }),
-    [appConnection, chainSigner, cfg.programId],
+      <T,>(via: string, txs: Transaction[], d: { chainSigner: ReturnType<typeof standardDevnetSigner>; note: string | undefined }, sign: () => Promise<T>): Promise<T> =>
+        guardSign({ txs, via, connection: appConnection, chain: d.chainSigner ? SIGN_CHAIN_DEVNET : "none", wrapperProgramId: cfg.programId, signerNote: d.note, sign }),
+    [appConnection, cfg.programId],
   );
 
   const signTransaction = useMemo(() => {
@@ -111,9 +117,10 @@ const AdapterWalletApiBridge: FC<{ children: ReactNode }> = ({ children }) => {
       if (!tx.feePayer) {
         tx.feePayer = publicKey;
       }
-      return guarded("adapter signTransaction", [tx], async () => (chainSigner ? (await chainSigner([tx]))[0] : adapterSignTx(tx)));
+      const d = decideChain();
+      return guarded("adapter signTransaction", [tx], d, async () => (d.chainSigner ? (await d.chainSigner([tx]))[0] : adapterSignTx(tx)));
     };
-  }, [adapterSignTx, publicKey, cfg.rpcUrl, guarded, chainSigner]);
+  }, [adapterSignTx, publicKey, cfg.rpcUrl, guarded, decideChain]);
 
   const signAndSendTransaction = useMemo(() => {
     if (!adapterSignTx || !publicKey) return undefined;
@@ -127,11 +134,12 @@ const AdapterWalletApiBridge: FC<{ children: ReactNode }> = ({ children }) => {
       if (!tx.feePayer) {
         tx.feePayer = publicKey;
       }
-      const signed = await guarded("adapter signAndSendTransaction", [tx], async () => (chainSigner ? (await chainSigner([tx]))[0] : adapterSignTx(tx)));
+      const d = decideChain();
+      const signed = await guarded("adapter signAndSendTransaction", [tx], d, async () => (d.chainSigner ? (await d.chainSigner([tx]))[0] : adapterSignTx(tx)));
       const sig = await conn.sendRawTransaction(signed.serialize());
       return bs58.decode(sig);
     };
-  }, [adapterSignTx, publicKey, cfg.rpcUrl, guarded, chainSigner]);
+  }, [adapterSignTx, publicKey, cfg.rpcUrl, guarded, decideChain]);
 
   /**
    * signAllTransactions: the market-launch batching fast path's primary sign
@@ -148,9 +156,10 @@ const AdapterWalletApiBridge: FC<{ children: ReactNode }> = ({ children }) => {
       for (const tx of txs) {
         if (!tx.feePayer) tx.feePayer = publicKey;
       }
-      return guarded("adapter signAllTransactions", txs, () => (chainSigner ? chainSigner(txs) : adapterSignAllTx(txs)));
+      const d = decideChain();
+      return guarded("adapter signAllTransactions", txs, d, () => (d.chainSigner ? d.chainSigner(txs) : adapterSignAllTx(txs)));
     };
-  }, [adapterSignAllTx, publicKey, guarded, chainSigner]);
+  }, [adapterSignAllTx, publicKey, guarded, decideChain]);
 
   const api = useMemo<WalletApi>(
     () => ({

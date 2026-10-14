@@ -59,12 +59,17 @@ export interface SignLogEntry {
   elapsedMs?: number;
   rawError?: string;
   classified?: string;
+  /** NB-2 round i: how the request reached the wallet (standard + chain, legacy adapter, or why the chain was skipped) and ms since the previous request ended. */
+  signer?: string;
+  sinceLastMs?: number | null;
 }
 
 const origins = new Map<string, Origin>();
 const log: SignLogEntry[] = [];
 const listeners = new Set<() => void>();
 let lastProblem: SignLogEntry | null = null;
+/** When the previous wallet request ended (signed or declined): the next entry reports the gap (NB-2: "within ~60 s of the previous tx?"). */
+let lastEndedAt: number | null = null;
 
 /** Record where a blockhash came from. Call right after every `getLatestBlockhash` whose result is signed. */
 export function noteBlockhash(
@@ -115,12 +120,13 @@ export function __resetSignGuardForTest(): void {
   origins.clear();
   log.length = 0;
   lastProblem = null;
+  lastEndedAt = null;
 }
 
 export function formatSignEntry(e: SignLogEntry): string {
   const age = e.blockhashAgeMs === null ? "unknown" : `${(e.blockhashAgeMs / 1000).toFixed(1)}s`;
   const absent = e.absentOnDevnet === null ? "accounts not checked" : e.absentOnDevnet.length === 0 ? "all accounts on devnet" : `not on devnet: ${e.absentOnDevnet.join(" ")}`;
-  return `${e.verdict} | wallet ${e.wallet} | built by ${e.path} | ${e.via} | tx ${e.shape} | blockhash ${e.blockhash.slice(0, 8)} age ${age} fetched@${e.fetchCommitment ?? "?"} lvbh ${e.lastValidBlockHeight ?? "?"} valid@handoff ${e.validAtHandoff ?? "?"} | chain ${e.chain} | ${absent} | ${e.at}${e.classified ? ` | open ${((e.elapsedMs ?? 0) / 1000).toFixed(1)}s | raw ${e.rawError} | => ${e.classified}` : ""}`;
+  return `${e.verdict} | wallet ${e.wallet} | built by ${e.path} | ${e.via} | tx ${e.shape} | blockhash ${e.blockhash.slice(0, 8)} age ${age} fetched@${e.fetchCommitment ?? "?"} lvbh ${e.lastValidBlockHeight ?? "?"} valid@handoff ${e.validAtHandoff ?? "?"} | chain ${e.chain}${e.signer ? ` | signer ${e.signer}` : ""}${e.sinceLastMs != null ? ` | ${(e.sinceLastMs / 1000).toFixed(1)}s since the previous request` : ""} | ${absent} | ${e.at}${e.classified ? ` | open ${((e.elapsedMs ?? 0) / 1000).toFixed(1)}s | raw ${e.rawError} | => ${e.classified}` : ""}`;
 }
 
 function record(e: SignLogEntry): void {
@@ -246,6 +252,8 @@ export interface GuardSignParams<T> {
   chain: string;
   wrapperProgramId?: string;
   sign: () => Promise<T>;
+  /** NB-2 diagnostics: see `chainSignerNote` (lib/v22/standard-sign.ts). */
+  signerNote?: string;
   now?: () => number;
   rpcTimeoutMs?: number;
 }
@@ -307,6 +315,8 @@ export async function guardSign<T>(p: GuardSignParams<T>): Promise<T> {
       verdict: "ok",
       absentOnDevnet: null,
       wallet: "pending",
+      ...(p.signerNote ? { signer: p.signerNote } : {}),
+      sinceLastMs: lastEndedAt === null ? null : Math.max(0, now() - lastEndedAt),
     };
     const [absent, valid] = await Promise.all([
       absentAccounts(tx, p.connection, timeoutMs),
@@ -355,8 +365,10 @@ export async function guardSign<T>(p: GuardSignParams<T>): Promise<T> {
   try {
     const out = await p.sign();
     for (const e of entries) e.wallet = "signed";
+    lastEndedAt = now();
     return out;
   } catch (err) {
+    lastEndedAt = now();
     const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
     for (const e of entries) {
       e.wallet = "declined";
