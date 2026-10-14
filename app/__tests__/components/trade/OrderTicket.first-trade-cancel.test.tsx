@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   initUser: vi.fn(),
   fund: vi.fn(),
   trade: vi.fn(),
+  rawSnap: vi.fn(() => null as unknown),
+  closable: vi.fn(() => ({ closable: false }) as { closable: boolean }),
 }));
 
 vi.mock("@/hooks/useWalletCompat", () => ({ useWalletCompat: mocks.useWalletCompat, useConnectionCompat: mocks.useConnectionCompat }));
@@ -45,6 +47,8 @@ vi.mock("@/components/trade/TradeConfirmationModal", () => ({
   TradeConfirmationModal: (p: { onConfirm: () => void }) => <button data-testid="confirm-trade" onClick={p.onConfirm}>confirm</button>,
 }));
 vi.mock("@/components/ConnectButton", () => ({ ConnectButton: () => null }));
+vi.mock("@/lib/userAccountScan", async (orig) => ({ ...(await orig<object>()), getPortfolioRawSnapshot: () => mocks.rawSnap() }));
+vi.mock("@/lib/close-trading-account", async (orig) => ({ ...(await orig<object>()), isPortfolioClosable: () => mocks.closable() }));
 
 import { OrderTicket } from "@/components/trade/OrderTicket";
 
@@ -59,6 +63,8 @@ function wallet(amount: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.rawSnap.mockReturnValue(null);
+  mocks.closable.mockReturnValue({ closable: false });
   mocks.bandView = null;
   mocks.scanPending = false;
   mocks.useWalletCompat.mockReturnValue({ publicKey: new PublicKey("11111111111111111111111111111111"), connected: true });
@@ -328,6 +334,27 @@ describe("v2.2 QA: PROFIT SETTLING with capital 0 still reaches the Withdraw car
     expect(screen.queryByTestId("deposit-card")).toBeNull();
     await act(async () => fireEvent.click(t));
     expect(screen.queryByTestId("deposit-card")).not.toBeNull();
+  });
+  it("#3458: an empty closable account (capital 0, no profit, flat) gets a 'Close account' entry that opens the Withdraw card", async () => {
+    wallet("0");
+    flat(0n, 0n);
+    mocks.rawSnap.mockReturnValue({ pubkey: PF, portfolio: { legs: [] } });
+    mocks.closable.mockReturnValue({ closable: true });
+    render(<OrderTicket slabAddress={SLAB} />);
+    const t = await screen.findByTestId("withdraw-toggle");
+    expect(t.textContent).toBe("Close account");
+    expect(screen.queryByTestId("deposit-card")).toBeNull();
+    await act(async () => fireEvent.click(t));
+    expect(screen.queryAllByTestId("deposit-card")).toHaveLength(1);
+  });
+  it("NEGATIVE CONTROL (#3458): the scan says the account is NOT closable -> no entry", async () => {
+    wallet("0");
+    flat(0n, 0n);
+    mocks.rawSnap.mockReturnValue({ pubkey: PF, portfolio: { legs: [] } });
+    mocks.closable.mockReturnValue({ closable: false });
+    render(<OrderTicket slabAddress={SLAB} />);
+    await screen.findByTestId("deposit-submit");
+    expect(screen.queryByTestId("withdraw-toggle")).toBeNull();
   });
   it("NEGATIVE CONTROL: capital 0 and no profit -> no toggle (nothing to claim)", async () => {
     wallet("0");

@@ -101,6 +101,7 @@ import { publishTicketRow } from "@/lib/limits/ticket-status-store";
 import { fmtQ as fmtQLots } from "@/lib/limits/format";
 import { takeFillResult } from "@/lib/limits/fill-check";
 import { readClippedFill } from "@/lib/v22/clipped-fill";
+import { isPortfolioClosable } from "@/lib/close-trading-account";
 import { defaultFeeCapMarginBps } from "@/lib/limits/fee-channel";
 import { OrderTicketLimits, reasonCopy } from "@/components/limits/OrderTicketLimits";
 import { GrowthTicketPanel } from "@/components/trade/GrowthTicketPanel";
@@ -797,6 +798,15 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // way to reach the Withdraw card, because the Deposit/Withdraw toggles were hidden for capital 0. The Withdraw card
   // converts the profit (tag 28) and withdraws it in one transaction, or says it is held.
   const claimableProfit = connected && !accountPending && !!userAccount && capital === 0n && existingPositionSize === 0n && safeExistingPnl > 0n;
+  // #3458 (QA retest 7): "Close trading account" lives in the Withdraw card, which a capital-0 flat account could not reach
+  // (no toggle) - so the control never rendered at 0 balance. An empty, closable account (same test the row applies) gets an entry.
+  const closableEmptyAccount = (() => {
+    if (!connected || accountPending || !userAccount?.pubkey || !publicKey || !slabProgramId) return false;
+    if (capital !== 0n || existingPositionSize !== 0n || safeExistingPnl !== 0n) return false;
+    const scanned = getPortfolioRawSnapshot(makePortfolioScanKey(slabProgramId, slabAddress, publicKey));
+    return !!scanned && scanned.pubkey.equals(userAccount.pubkey) && isPortfolioClosable(scanned.portfolio, publicKey).closable;
+  })();
+  const withdrawEntryAtZero = claimableProfit || closableEmptyAccount;
   const walletHasTokens = (walletAtaBalance ?? 0n) > 0n;
   // UX WP-6 (§3.2): with sim-USDC in the wallet, "fund and trade" is ONE approval — no account
   // yet: [InitUser] + [Deposit, Trade] signed together; account short of margin: [Deposit, Trade].
@@ -2267,7 +2277,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             );
           })()}
           {(initCtaError || initError) && <p data-testid="deposit-error" className="mt-1 text-[10px] text-[var(--short)]">{initCtaError ?? initError}</p>}
-          {showInlineDeposit && !(claimableProfit && inlineDepositMode === "withdraw") && (
+          {showInlineDeposit && !(withdrawEntryAtZero && inlineDepositMode === "withdraw") && (
             <div className="mt-1.5" data-deposit-trigger>
               <DepositWithdrawCard slabAddress={slabAddress} />
             </div>
@@ -2379,14 +2389,14 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             </button>
           </div>
         )}
-        {claimableProfit && (
+        {withdrawEntryAtZero && (
           <div className="flex shrink-0 items-center gap-1.5">
             <button
               onClick={() => toggleInlineDeposit("withdraw")}
               data-testid="withdraw-toggle"
               className="rounded-sm border border-[var(--long)]/50 bg-[var(--long)]/[0.1] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--long)] transition-all duration-150 hover:bg-[var(--long)]/[0.18] hover:brightness-110"
             >
-              Claim profit
+              {claimableProfit ? "Claim profit" : "Close account"}
             </button>
           </div>
         )}
@@ -2409,7 +2419,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
           </div>
         )}
       </div>
-      {connected && !accountPending && showInlineDeposit && (!((needsAccount || needsDeposit) && !walletHasTokens) || (claimableProfit && inlineDepositMode === "withdraw")) && (
+      {connected && !accountPending && showInlineDeposit && (!((needsAccount || needsDeposit) && !walletHasTokens) || (withdrawEntryAtZero && inlineDepositMode === "withdraw")) && (
         <div className="mt-1.5" data-deposit-trigger>
           <DepositWithdrawCard slabAddress={slabAddress} initialMode={inlineDepositMode} offerFaucet={fundOverWallet} />
         </div>
