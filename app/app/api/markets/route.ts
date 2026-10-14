@@ -738,7 +738,9 @@ export async function GET(request: NextRequest) {
     // also uses — see lib/market-registry.ts for why these two must not drift.
     const mergedRows = await loadMergedMarketRows();
     if (mergedRows === null) {
-      return fallbackMarketsResponse(request, "supabase-query-error");
+      // Supabase unreachable (e.g. 402 quota restriction): use on-chain discovery
+      // like the not-configured path, instead of a 503 when the static list is empty.
+      return await onChainOrStaticResponse(request, "supabase-query-error");
     }
 
     // Sanitize funding_rate: raw DB values from uninitialized slabs can be
