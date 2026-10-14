@@ -791,6 +791,10 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const needsWallet = !connected;
   const needsAccount = connected && !userAccount && !accountPending;
   const needsDeposit = connected && !!userAccount && capital === 0n;
+  // v2.2 QA (ANSEM / swordcat / CHILLHOUSE): a flat winner with capital 0 and released profit ("profit settling") had no
+  // way to reach the Withdraw card, because the Deposit/Withdraw toggles were hidden for capital 0. The Withdraw card
+  // converts the profit (tag 28) and withdraws it in one transaction, or says it is held.
+  const claimableProfit = connected && !accountPending && !!userAccount && capital === 0n && existingPositionSize === 0n && safeExistingPnl > 0n;
   const walletHasTokens = (walletAtaBalance ?? 0n) > 0n;
   // UX WP-6 (§3.2): with sim-USDC in the wallet, "fund and trade" is ONE approval — no account
   // yet: [InitUser] + [Deposit, Trade] signed together; account short of margin: [Deposit, Trade].
@@ -2251,7 +2255,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             );
           })()}
           {(initCtaError || initError) && <p data-testid="deposit-error" className="mt-1 text-[10px] text-[var(--short)]">{initCtaError ?? initError}</p>}
-          {showInlineDeposit && (
+          {showInlineDeposit && !(claimableProfit && inlineDepositMode === "withdraw") && (
             <div className="mt-1.5" data-deposit-trigger>
               <DepositWithdrawCard slabAddress={slabAddress} />
             </div>
@@ -2363,6 +2367,17 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             </button>
           </div>
         )}
+        {claimableProfit && (
+          <div className="flex shrink-0 items-center gap-1.5">
+            <button
+              onClick={() => toggleInlineDeposit("withdraw")}
+              data-testid="withdraw-toggle"
+              className="rounded-sm border border-[var(--long)]/50 bg-[var(--long)]/[0.1] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--long)] transition-all duration-150 hover:bg-[var(--long)]/[0.18] hover:brightness-110"
+            >
+              Claim profit
+            </button>
+          </div>
+        )}
         {connected && !accountPending && !needsAccount && !needsDeposit && (
           <div className="flex shrink-0 items-center gap-1.5">
             <button
@@ -2382,7 +2397,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
           </div>
         )}
       </div>
-      {connected && !accountPending && showInlineDeposit && !((needsAccount || needsDeposit) && !walletHasTokens) && (
+      {connected && !accountPending && showInlineDeposit && (!((needsAccount || needsDeposit) && !walletHasTokens) || (claimableProfit && inlineDepositMode === "withdraw")) && (
         <div className="mt-1.5" data-deposit-trigger>
           <DepositWithdrawCard slabAddress={slabAddress} initialMode={inlineDepositMode} offerFaucet={fundOverWallet} />
         </div>

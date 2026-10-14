@@ -312,7 +312,18 @@ export type ConvertQuote =
       /** Instructions to put in front of the withdraw: [recertify crank?] + [tag 28]. */
       prefix: TransactionInstruction[];
     }
-  | { status: "settling"; released: bigint; code: number | null };
+  | { status: "settling"; released: bigint; code: number | null; reason: SettlingReason };
+
+/**
+ * Why a flat winner's profit does not convert, read from the program itself (the gates above + the simulation of tag 28):
+ *   stale    - the certificate / market epochs are behind (19 / 16): a price-update matter, clears on its own.
+ *   backing  - tag 28 answers LockActive (21) or moves nothing although the portfolio gates pass: the market has no
+ *              backing for this profit right now (W-1 / W-2 family). Not a timing matter by itself.
+ *   locked   - liens or an opposite-side active exposure on the source domain (clears when that settles).
+ *   unbacked - the account holds no source claims at all, so there is nothing for the market to back.
+ *   unknown  - the read failed.
+ */
+export type SettlingReason = "stale" | "backing" | "locked" | "unbacked" | "unknown";
 
 export interface QuoteDeps {
   simulate: (
@@ -341,7 +352,9 @@ export async function quoteConvertible(p: QuoteParams, deps: QuoteDeps): Promise
   if (pf.legs.some((l) => l.active)) return { status: "none" }; // withdraw is flat-only (v16.rs:20416-20418)
   const gate = convertGate(pf);
   if (gate.kind === "nothing") return { status: "none" };
-  if (gate.kind !== "convertible") return { status: "settling", released: gate.released, code: WRAPPER_ERR.EngineLockActive };
+  if (gate.kind !== "convertible") {
+    return { status: "settling", released: gate.released, code: WRAPPER_ERR.EngineLockActive, reason: gate.kind === "unbacked" ? "unbacked" : "locked" };
+  }
   const convert = buildConvertReleasedPnlIx({
     programId: p.programId,
     owner: p.owner,
@@ -358,20 +371,44 @@ export async function quoteConvertible(p: QuoteParams, deps: QuoteDeps): Promise
   let lastCode: number | null = null;
   for (const prefix of plans) {
     const r = await deps.simulate(prefix, p.portfolio);
-    if (r.rpcFailed) return { status: "settling", released: gate.released, code: null };
+    if (r.rpcFailed) return { status: "settling", released: gate.released, code: null, reason: "unknown" };
     if (!r.err && r.postData) {
       const post = parsePortfolio(r.postData);
       // Read the program's own result: what tag 28 moved (and anything the recertify
       // crank settled) is exactly post.capital − capital.
       const convertible = post.capital - pf.capital;
       if (post.capital > pf.capital) return { status: "ready", postCapital: post.capital, convertible, prefix };
-      return { status: "settling", released: gate.released, code: null };
+      // The handler ran and moved nothing: the market has no backing for this profit.
+      return { status: "settling", released: gate.released, code: null, reason: "backing" };
     }
     const c = parseCustomInstructionError(r.err);
     lastCode = c && prefix[c.index]?.programId.equals(p.programId) ? c.code : null;
     if (lastCode !== WRAPPER_ERR.EngineStale) break; // only a stale certificate is worth the crank
   }
-  return { status: "settling", released: gate.released, code: lastCode };
+  const reason: SettlingReason =
+    lastCode === WRAPPER_ERR.EngineStale || lastCode === WRAPPER_ERR.EngineProvenanceMismatch ? "stale" : lastCode === WRAPPER_ERR.EngineLockActive ? "backing" : "unknown";
+  return { status: "settling", released: gate.released, code: lastCode, reason };
+}
+
+// ── Held profit: "waiting on backing" ───────────────────────────────────────────────
+
+/**
+ * v2.2 QA W-1 / W-2: a winner's profit can sit unconvertible for good when the market's backing is short (no timer
+ * clears it; a top-up does). Saying "settles automatically" forever is then false. The status switches to
+ * "Held: waiting on backing" (with the amount) when the chain read says so:
+ *   - `unbacked`: the account has no source claims at all: held at once.
+ *   - `backing` (tag 28 simulates to LockActive / moves nothing although the portfolio gates pass): held once it has
+ *     persisted HELD_AFTER_MS (a fresh close can show it for a few seconds while the other side settles).
+ * `stale`, `locked` and `unknown` never read as held: they are timing / read problems.
+ */
+export const HELD_AFTER_MS = 180_000;
+export const HELD_PROFIT_TITLE = "Held: waiting on backing";
+export function isProfitHeld(q: { reason: SettlingReason }, sinceMs: number | null, nowMs: number): boolean {
+  if (q.reason === "unbacked") return true;
+  return q.reason === "backing" && sinceMs !== null && nowMs - sinceMs >= HELD_AFTER_MS;
+}
+export function heldProfitMessage(amountLabel: string): string {
+  return `${HELD_PROFIT_TITLE}: ${amountLabel} of your profit can't move to your balance yet because the market doesn't have enough backing for it. We check again automatically.`;
 }
 
 /** A withdraw the client refuses before signing; the message is user-facing as-is. */
@@ -492,5 +529,5 @@ export function settlingProfitMessage(code: number | null): string {
   if (code === WRAPPER_ERR.EngineStale || code === WRAPPER_ERR.EngineProvenanceMismatch) {
     return "Your profit is being updated with the latest prices and will be withdrawable in a moment.";
   }
-  return "Your profit becomes withdrawable once the other side of your trade settles, which happens automatically; your deposit can be withdrawn now.";
+  return "Your profit becomes withdrawable once the other side of your trade settles, usually within a few minutes; your deposit can be withdrawn now.";
 }

@@ -315,3 +315,33 @@ describe("round i: the waiting ticket says how long, from the market account", (
     expect(screen.queryByTestId("trade-catchup-estimate")).toBeNull();
   });
 });
+
+describe("v2.2 QA: PROFIT SETTLING with capital 0 still reaches the Withdraw card", () => {
+  const PF = new PublicKey("4yjoGo9NWMv8XCfV2CZgaP6RyjwxxV6XbvMzmR7Z8b3i");
+  const flat = (capital: bigint, pnl: bigint) => mocks.useUserAccount.mockReturnValue({ idx: 0, pubkey: PF, account: { capital, pnl, positionSize: 0n, entryPrice: 0n, kind: 0 } });
+  it("capital 0, released profit, wallet empty: a 'Claim profit' toggle opens the card on Withdraw", async () => {
+    wallet("0");
+    flat(0n, 515_025n);
+    render(<OrderTicket slabAddress={SLAB} />);
+    const t = await screen.findByTestId("withdraw-toggle");
+    expect(t.textContent).toBe("Claim profit");
+    expect(screen.queryByTestId("deposit-card")).toBeNull();
+    await act(async () => fireEvent.click(t));
+    expect(screen.queryByTestId("deposit-card")).not.toBeNull();
+  });
+  it("NEGATIVE CONTROL: capital 0 and no profit -> no toggle (nothing to claim)", async () => {
+    wallet("0");
+    flat(0n, 0n);
+    render(<OrderTicket slabAddress={SLAB} />);
+    await screen.findByTestId("deposit-submit");
+    expect(screen.queryByTestId("withdraw-toggle")).toBeNull();
+  });
+  it("capital > 0 keeps the ordinary '− Withdraw' toggle", async () => {
+    wallet("0");
+    flat(5_000_000n, 0n);
+    render(<OrderTicket slabAddress={SLAB} />);
+    const t = await screen.findByTestId("withdraw-toggle");
+    expect(t.textContent).toContain("Withdraw");
+    expect(t.textContent).not.toContain("Claim");
+  });
+});
