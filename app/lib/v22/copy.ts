@@ -162,6 +162,7 @@ export const V22_COPY = {
     leverageLabel: (tier: number) => `Tier ${tier} max leverage`,
     defaultOption: (x: string) => `Default (${x})`,
     thresholdPlaceholder: (amount: string) => `Default ${amount}`,
+    collateralDecimals: (max: number) => `This collateral has more than ${max} decimals, so a leveraged market cannot use it.`,
     atLeast: (amount: string) => `At least ${amount}`,
   },
   // ── First-loss staking (stake v5) ────────────────────────────────────────

@@ -1,10 +1,11 @@
 import "@testing-library/jest-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { GrowthLaunchControls } from "@/components/create/GrowthLaunchControls";
 import { TierControls } from "@/components/create/TierControls";
 import { V22LaunchOptions, type V22OptionsState } from "@/components/create/V22LaunchOptions";
 import { planLaunchV22, type LaunchPlanInput } from "@/lib/v22/launch-plan";
-import { EMPTY_TIER_EDIT, amountLabel, isUsdLikeCollateral, tierDefaultsLine, tierLeverageOptions, validateTierEdit, type TierEdit } from "@/lib/v22/tier-config";
+import { EMPTY_TIER_EDIT, amountLabel, collateralDecimalsIssue, isUsdLikeCollateral, tierDefaultsLine, tierLeverageOptions, validateTierEdit, type TierEdit } from "@/lib/v22/tier-config";
 import { V22_COPY } from "@/lib/v22/copy";
 import { __setLotMarketsEnabledForTest } from "@/lib/v22/lot";
 
@@ -60,6 +61,34 @@ describe("collateral wording: $ only on a 6-decimal USD-like token", () => {
     render(<TierControls value={EMPTY_TIER_EDIT} onChange={vi.fn()} lLaunchX100={LAUNCH} lTierX100={MAX} defaultOpen />);
     expect(screen.getByText("Tier 1 amount ($)")).toBeInTheDocument();
     expect(screen.getByTestId("tier-explain")).toHaveTextContent("floor ($5k, $20k, $100k)");
+  });
+});
+
+describe("D-L1: collateral above 12 decimals", () => {
+  const LINE = "This collateral has more than 12 decimals, so a leveraged market cannot use it.";
+  it("one calm line, from 13 decimals up", () => {
+    expect(collateralDecimalsIssue(6)).toBeNull();
+    expect(collateralDecimalsIssue(12)).toBeNull();
+    expect(collateralDecimalsIssue(13)).toBe(LINE);
+    expect(collateralDecimalsIssue(18)).toBe(LINE);
+  });
+  it("the tier form is blocked by it, even when empty", () => {
+    const r = validateTierEdit(EMPTY_TIER_EDIT, LAUNCH, MAX, { decimals: 13, symbol: "WIDE" });
+    expect(r.ok).toBe(false);
+    expect(r.issues).toEqual([{ field: "collateral", message: LINE }]);
+    expect(validateTierEdit(edit({ t: ["10000", "", ""] }), LAUNCH, MAX, { decimals: 13 }).ok).toBe(false);
+    expect(validateTierEdit(EMPTY_TIER_EDIT, LAUNCH, MAX, { decimals: 12 }).ok).toBe(true);
+  });
+  it("TierControls shows it as the one whole-form line", () => {
+    render(<TierControls value={EMPTY_TIER_EDIT} onChange={vi.fn()} lLaunchX100={LAUNCH} lTierX100={MAX} collateral={{ decimals: 13, symbol: "WIDE" }} defaultOpen />);
+    expect(screen.getByTestId("tier-issue")).toHaveTextContent(LINE);
+  });
+  it("the growth controls show it and the wizard copy is the same sentence", () => {
+    render(<GrowthLaunchControls value={{ on: true }} onChange={vi.fn()} engineImrBps={1_000} maintenanceMarginBps={500} maxPriceMoveBpsPerSlot={1} baseFeeBps={30} juniorAtoms={100_000_000_000_000n} collateralDecimals={13} collateralSymbol="WIDE" />);
+    expect(screen.getByTestId("growth-decimals-issue")).toHaveTextContent(LINE);
+    cleanup();
+    render(<GrowthLaunchControls value={{ on: true }} onChange={vi.fn()} engineImrBps={1_000} maintenanceMarginBps={500} maxPriceMoveBpsPerSlot={1} baseFeeBps={30} juniorAtoms={100_000_000n} collateralDecimals={6} collateralSymbol="USDC" />);
+    expect(screen.queryByTestId("growth-decimals-issue")).toBeNull();
   });
 });
 

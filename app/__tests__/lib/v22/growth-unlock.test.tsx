@@ -36,7 +36,8 @@ interface Scenario {
   now?: bigint | null;
   /** Rate limiter: the last good (usable) depth and the epoch of its last rise. */
   lastGoodUsd?: bigint;
-  riseEpoch?: number;
+  /** Slots since the last rise of the usable depth (the 9,000-slot window is measured from it). */
+  riseAgo?: bigint;
   /** Per-market leverage table L1..L3 x100. */
   table?: [number, number, number];
   /** Collateral decimals (default 6). */
@@ -62,7 +63,7 @@ function scenario(s: Scenario = {}) {
     attestedMaxTier: s.attestedMaxTier ?? 0,
     collateralDecimalsP1: dec + 1,
     collateralDecimals: dec,
-    depthRiseEpoch: s.riseEpoch ?? 0,
+    depthRiseSlot64: Number((NOW - (s.riseAgo ?? 0n)) / 64n),
     ...(s.table ? { tierLeverageX100: s.table } : {}),
     ...(d
       ? {
@@ -139,7 +140,7 @@ describe("the next-unlock line: both / depth / backing / ratchet", () => {
 
 describe("rate-limited depth: the pool is deep enough, the hourly doubling limit is the only wait", () => {
   // The pool reads $30k (tier 1 needs $25k) but the usable reading was $10k and rose in the current epoch: it can double once per hour.
-  const caughtUp = { depth: { usd: 30_000n }, lastGoodUsd: 10_000n, riseEpoch: 111, backingUsd: 30_000n };
+  const caughtUp = { depth: { usd: 30_000n }, lastGoodUsd: 10_000n, riseAgo: 1_000n, backingUsd: 30_000n };
   it("usable depth is the slower of the two: tier stays 0 until it catches up", () => {
     expect(run(caughtUp).tier).toBe(0);
   });
@@ -150,23 +151,27 @@ describe("rate-limited depth: the pool is deep enough, the hourly doubling limit
     expect(line({ ...caughtUp, lastGoodUsd: 15_000n })).toBe("5x unlocks in about 54 minutes as the pool reading catches up");
   });
   it("already allowed to rise: it happens at the next update", () => {
-    expect(line({ ...caughtUp, lastGoodUsd: 15_000n, riseEpoch: 110 })).toBe("5x unlocks at the next update");
+    expect(line({ ...caughtUp, lastGoodUsd: 15_000n, riseAgo: 20_000n })).toBe("5x unlocks at the next update");
+  });
+  it("the window is 9,000 slots since the LAST RISE, not a calendar epoch: a rise 1 slot ago waits almost the full window", () => {
+    // 20k -> 30k allowed 9,000 slots after the last rise (rounded up to its 64-slot stamp): about 60 minutes, not "next epoch boundary"
+    expect(line({ ...caughtUp, lastGoodUsd: 15_000n, riseAgo: 1n })).toBe("5x unlocks in about an hour as the pool reading catches up");
   });
   it("with the backing also short, the backing is what is named", () => {
     expect(line({ ...caughtUp, backingUsd: 100n })).toBe("5x unlocks when market backing reaches $25k");
   });
   it("climb and catch-up both pending: the LATER wait is shown, one line", () => {
     // tier 1 earned (on-chain depth $30k), +1x climb pending, tier 2 needs $100k of depth: pool reads $150k but usable is $30k.
-    const both = { depth: { source: 2, usd: 150_000n }, lastGoodUsd: 30_000n, riseEpoch: 111, backingUsd: 150_000n, ceil: 300, ceilSlot: NOW - 9_000n };
+    const both = { depth: { source: 2, usd: 150_000n }, lastGoodUsd: 30_000n, riseAgo: 1_000n, backingUsd: 150_000n, ceil: 300, ceilSlot: NOW - 9_000n };
     expect(line(both)).toBe("10x unlocks in about 6 hours as the pool reading catches up"); // 1x per hour from 4x to 10x outlasts the ~2 h catch-up
   });
   it("climb and catch-up both pending, catch-up later: the catch-up wait is shown", () => {
-    const both = { depth: { source: 2, usd: 150_000n }, lastGoodUsd: 30_000n, riseEpoch: 111, backingUsd: 150_000n, ceil: 500, ceilSlot: NOW - 9_000n, table: [600, 700, 0] as [number, number, number] };
+    const both = { depth: { source: 2, usd: 150_000n }, lastGoodUsd: 30_000n, riseAgo: 1_000n, backingUsd: 150_000n, ceil: 500, ceilSlot: NOW - 9_000n, table: [600, 700, 0] as [number, number, number] };
     // stored 5x, tier-1 target 6x: one step; tier 2 is 7x: climb about 1-2 h total, catch-up about 2 h
     expect(line(both)).toBe("7x unlocks in about 2 hours as the pool reading catches up");
   });
   it("a keeper-only market that can never reach the tier says nothing, rate limit or not", () => {
-    expect(line({ depth: { usd: 150_000n }, lastGoodUsd: 30_000n, riseEpoch: 111, backingUsd: 150_000n, ceil: 500 })).toBeNull();
+    expect(line({ depth: { usd: 150_000n }, lastGoodUsd: 30_000n, riseAgo: 1_000n, backingUsd: 150_000n, ceil: 500 })).toBeNull();
   });
 });
 

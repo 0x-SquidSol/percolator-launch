@@ -14,6 +14,7 @@
  */
 import { PublicKey, SystemProgram, type TransactionInstruction } from "@solana/web3.js";
 import { deriveVaultLpExt } from "@/lib/v21/sdk";
+import { GROWTH_MAX_COLLATERAL_DECIMALS, growthCollateralDecimalsOk } from "@/lib/v22/sdk/records/growth-v19";
 import { encodeInitMarketData, type GrowthLaunch } from "@/lib/v21/growth-launch";
 import type { InitMarketV17Args } from "@percolatorct/sdk";
 import { withBoundVaultLpTailP3 } from "./sdk/records/p3-vault-lp";
@@ -27,6 +28,9 @@ const TAG_INIT_VAULT_LP = 94;
 /** InitMarket data: unchanged v2.1 bytes unless a v2.2 plan is present (then the merged trailer). */
 export function encodeInitMarketDataWithV22(args: InitMarketV17Args, growth: GrowthLaunch | undefined, v22: V22LaunchParams | undefined): Uint8Array {
   if (!v22 || !growth) return encodeInitMarketData(args, growth);
+  if (growth.collateralDecimals !== undefined && !growthCollateralDecimalsOk(growth.collateralDecimals)) {
+    throw new Error(`collateral with ${growth.collateralDecimals} decimals cannot carry a leveraged market (max ${GROWTH_MAX_COLLATERAL_DECIMALS})`);
+  }
   return encodeInitMarketV22(args, {
     rGapBps: growth.rGapBps,
     lLaunchX100: growth.lLaunchX100,

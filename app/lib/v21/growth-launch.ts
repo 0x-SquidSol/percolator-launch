@@ -19,7 +19,9 @@
  * `c_launch` is recorded at the FIRST junior deposit, so that deposit is never dust.
  */
 import type { TierConfig } from "../v22/sdk/records/growth-v19";
-import { encodeInitMarketV19, encodeInitVaultLpV19, rGapFloorBps, GROWTH_LEVERAGE_X100_ONE } from "./sdk";
+import { encodeInitVaultLpV19, rGapFloorBps, GROWTH_LEVERAGE_X100_ONE } from "./sdk";
+// D-L1: the v2.2 port also refuses collateral above 12 decimals (the wrapper answers 94). TODO(repin): with the SDK package.
+import { encodeInitMarketV19 } from "../v22/sdk/records/growth-v19";
 import { encodeInitMarket, type InitMarketV17Args } from "@percolatorct/sdk";
 
 /** Matches wrapper `GROWTH_FEE_HEADROOM`: base + 100 (matcher fee channel) + 500 (utilisation fee) = base + 600. */
@@ -89,6 +91,8 @@ export interface GrowthLaunch {
   tiers?: TierConfig;
   /** The market's built-in maximum leverage x100, so the tier block is checked again where it is encoded. */
   lTierX100?: number;
+  /** The collateral mint's decimals: above 12 a leveraged market cannot be created (the encoder throws; the wizard blocks first). */
+  collateralDecimals?: number;
 }
 
 export type GrowthLaunchIssue =
@@ -152,7 +156,7 @@ export function withGrowthInitArgs(args: InitMarketV17Args, g: GrowthLaunch | un
 
 /** InitMarket instruction data: the legacy encoding, or with the growth trailer. */
 export function encodeInitMarketData(args: InitMarketV17Args, g: GrowthLaunch | undefined): Uint8Array {
-  return g ? encodeInitMarketV19(args, g.rGapBps, g.lLaunchX100) : encodeInitMarket(args);
+  return g ? encodeInitMarketV19(args, g.rGapBps, g.lLaunchX100, g.collateralDecimals) : encodeInitMarket(args);
 }
 
 /** InitVaultLp (94) data: `[94, floor]`, plus `l_launch` on a growth market. */

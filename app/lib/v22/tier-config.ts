@@ -6,7 +6,9 @@
  * builds the tag-94 tier block. Blank = the protocol default.
  */
 import {
+  GROWTH_MAX_COLLATERAL_DECIMALS,
   TIER_LEVERAGE_DEFAULT_X100,
+  growthCollateralDecimalsOk,
   TIER_THRESHOLD_DEFAULT_USD,
   TIER_THRESHOLD_FLOOR_USD,
   tierLeverage,
@@ -50,7 +52,7 @@ export interface TierEdit {
 
 export const EMPTY_TIER_EDIT: TierEdit = { thresholds: ["", "", ""], leverage: ["", "", ""] };
 
-export type TierField = "thresholds" | "leverage";
+export type TierField = "thresholds" | "leverage" | "collateral";
 
 export interface TierEditIssue {
   field: TierField;
@@ -83,7 +85,14 @@ const levToX100 = (s: string): number | null => {
 };
 
 /** Parse and validate the form against the market's launch leverage and built-in maximum (both x100). */
+/** D-L1: collateral above 12 decimals cannot back a leveraged market. One calm line, or null. */
+export function collateralDecimalsIssue(decimals: number): string | null {
+  return growthCollateralDecimalsOk(decimals) ? null : V22_COPY.tiers.collateralDecimals(GROWTH_MAX_COLLATERAL_DECIMALS);
+}
+
 export function validateTierEdit(edit: TierEdit, lLaunchX100: number, lTierX100: number, collateral: TierCollateral = TEST_USDC): TierEditResult {
+  const decimalsIssue = collateralDecimalsIssue(collateral.decimals ?? 6);
+  if (decimalsIssue) return { ok: false, issues: [{ field: "collateral", message: decimalsIssue }] };
   const issues: TierEditIssue[] = [];
   const th: number[] = [];
   const lv: number[] = [];
@@ -103,7 +112,7 @@ export function validateTierEdit(edit: TierEdit, lLaunchX100: number, lTierX100:
   if (thresholdsUsd.every((v) => v === 0) && leverageX100.every((v) => v === 0)) return { ok: true, issues: [] };
   const r = validateTierConfig({ thresholdsUsd, leverageX100, lLaunchX100, lTierX100, collateral });
   const mapped: TierEditIssue[] = r.issues.map((i: TierConfigIssue) => ({
-    field: i.field === "thresholds" ? "thresholds" : "leverage",
+    field: i.field === "thresholds" ? "thresholds" : i.field === "collateral" ? "collateral" : "leverage",
     ...(i.tier ? { tier: i.tier } : {}),
     message: i.message,
   }));

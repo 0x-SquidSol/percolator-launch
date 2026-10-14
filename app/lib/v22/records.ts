@@ -52,7 +52,7 @@ const asV22Record = (g: ReturnType<typeof oldDecodeAssetGrowthV19>): ReturnType<
         ...g,
         depthSource: 0, depthEver: false, depthPrevReal: false, attestedMaxTier: 0,
         depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthLastGoodE6: 0n, depthLastGoodSlot: 0n,
-        collateralDecimalsP1: 0, collateralDecimals: 6, depthRiseEpoch: 0,
+        collateralDecimalsP1: 0, collateralDecimals: 6, depthRiseSlot64: 0,
         tierThresholdUsd: [0, 0, 0], tierLeverageX100: [0, 0, 0],
       };
 export const decodeAssetGrowthV19: typeof Growth.decodeAssetGrowthV19 = (d, i) => (on() ? Growth.decodeAssetGrowthV19(d, i) : asV22Record(oldDecodeAssetGrowthV19(d, i)));

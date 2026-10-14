@@ -40,7 +40,7 @@ import { GrowthLaunchControls, type GrowthLaunchState } from "./GrowthLaunchCont
 import { isDevnetV21Enabled } from "@/lib/v21/flag";
 import { V21_COPY } from "@/lib/v21/copy";
 import { defaultGrowthLaunch, growthTierX100, validateGrowthLaunch, type GrowthLaunch } from "@/lib/v21/growth-launch";
-import { EMPTY_TIER_EDIT, isUsdLikeCollateral, validateTierEdit } from "@/lib/v22/tier-config";
+import { EMPTY_TIER_EDIT, collateralDecimalsIssue, isUsdLikeCollateral, validateTierEdit } from "@/lib/v22/tier-config";
 import { V22LaunchOptions, type V22OptionsState } from "./V22LaunchOptions";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { planLaunchV22, toLaunchParams } from "@/lib/v22/launch-plan";
@@ -754,8 +754,11 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
   const tierBounds = growthLaunch ? { lLaunchX100: growthLaunch.lLaunchX100, lTierX100: growthTierX100(growthDerived.initialMarginBps) } : undefined;
   const tierResult = v22Plan?.protection && tierBounds ? validateTierEdit(wizard.v22?.tiers ?? EMPTY_TIER_EDIT, tierBounds.lLaunchX100, tierBounds.lTierX100, tierCollateral) : null;
   const tierIssue = tierResult && !tierResult.ok ? (tierResult.issues[0]?.message ?? "These leverage tiers are not valid.") : null;
-  const growthWithTiers: GrowthLaunch | undefined =
-    growthLaunch && tierResult?.config && tierBounds ? { ...growthLaunch, tiers: tierResult.config, lTierX100: tierBounds.lTierX100 } : growthLaunch;
+  // D-L1: collateral above 12 decimals cannot back a leveraged (growth / band) market: block the launch with one line.
+  const decimalsIssue = growthLaunch ? collateralDecimalsIssue(decimals) : null;
+  const growthWithTiers: GrowthLaunch | undefined = growthLaunch
+    ? { ...growthLaunch, collateralDecimals: decimals, ...(tierResult?.config && tierBounds ? { tiers: tierResult.config, lTierX100: tierBounds.lTierX100 } : {}) }
+    : undefined;
   const v22Issue = v22Plan?.issues[0] ?? null;
   /** The launch price: per LOT when a v2.2 lot applies, else the per-token price as before. */
   const launchPriceE6 = (tokenE6: bigint): bigint => (v22Params ? tokenE6 * 10n ** BigInt(v22Params.lotExp) : tokenE6);
@@ -767,7 +770,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
   const resumingLaunch = resumeFromStep !== null || chainResume !== null;
   const livePriceLimit = useLivePriceLimit(walletB58, isDevnet && resolvedOracleType === "keeper" && !resumingLaunch);
   const atLivePriceLimit = blocksNewLaunch(livePriceLimit, { keeperPriced: resolvedOracleType === "keeper", resuming: resumingLaunch });
-  const launchDisabled = !allValid || !oracleSettled || !publicKey || p3Issue !== null || growthIssue !== null || v22Issue !== null || tierIssue !== null || atLivePriceLimit;
+  const launchDisabled = !allValid || !oracleSettled || !publicKey || p3Issue !== null || growthIssue !== null || v22Issue !== null || tierIssue !== null || decimalsIssue !== null || atLivePriceLimit;
   const launchDisabledReason: string | undefined = !publicKey
     ? "Connect wallet"
     : p3Issue
@@ -778,6 +781,8 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
       ? v22Issue.message
     : tierIssue
       ? tierIssue
+    : decimalsIssue
+      ? decimalsIssue
     : !oracleSettled
       ? "Resolving price feed"
     : !registrable
