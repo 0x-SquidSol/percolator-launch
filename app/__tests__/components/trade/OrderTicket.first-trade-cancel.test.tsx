@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   initUser: vi.fn(),
   fund: vi.fn(),
   trade: vi.fn(),
+  rawSnap: vi.fn(() => null as unknown),
+  closable: vi.fn(() => ({ closable: false }) as { closable: boolean }),
 }));
 
 vi.mock("@/hooks/useWalletCompat", () => ({ useWalletCompat: mocks.useWalletCompat, useConnectionCompat: mocks.useConnectionCompat }));
@@ -45,6 +47,8 @@ vi.mock("@/components/trade/TradeConfirmationModal", () => ({
   TradeConfirmationModal: (p: { onConfirm: () => void }) => <button data-testid="confirm-trade" onClick={p.onConfirm}>confirm</button>,
 }));
 vi.mock("@/components/ConnectButton", () => ({ ConnectButton: () => null }));
+vi.mock("@/lib/userAccountScan", async (orig) => ({ ...(await orig<object>()), getPortfolioRawSnapshot: () => mocks.rawSnap() }));
+vi.mock("@/lib/close-trading-account", async (orig) => ({ ...(await orig<object>()), isPortfolioClosable: () => mocks.closable() }));
 
 import { OrderTicket } from "@/components/trade/OrderTicket";
 
@@ -59,6 +63,8 @@ function wallet(amount: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.rawSnap.mockReturnValue(null);
+  mocks.closable.mockReturnValue({ closable: false });
   mocks.bandView = null;
   mocks.scanPending = false;
   mocks.useWalletCompat.mockReturnValue({ publicKey: new PublicKey("11111111111111111111111111111111"), connected: true });
@@ -314,4 +320,125 @@ describe("round i: the waiting ticket says how long, from the market account", (
     await waitFor(() => expect(screen.getByTestId("trade-submit").textContent).toContain("Waiting for the latest price"));
     expect(screen.queryByTestId("trade-catchup-estimate")).toBeNull();
   });
+});
+
+describe("v2.2 QA: PROFIT SETTLING with capital 0 still reaches the Withdraw card", () => {
+  const PF = new PublicKey("4yjoGo9NWMv8XCfV2CZgaP6RyjwxxV6XbvMzmR7Z8b3i");
+  const flat = (capital: bigint, pnl: bigint) => mocks.useUserAccount.mockReturnValue({ idx: 0, pubkey: PF, account: { capital, pnl, positionSize: 0n, entryPrice: 0n, kind: 0 } });
+  it("capital 0, released profit, wallet empty: a 'Claim profit' toggle opens the card on Withdraw", async () => {
+    wallet("0");
+    flat(0n, 515_025n);
+    render(<OrderTicket slabAddress={SLAB} />);
+    const t = await screen.findByTestId("withdraw-toggle");
+    expect(t.textContent).toBe("Claim profit");
+    expect(screen.queryByTestId("deposit-card")).toBeNull();
+    await act(async () => fireEvent.click(t));
+    expect(screen.queryByTestId("deposit-card")).not.toBeNull();
+  });
+  it("#3458: an empty closable account (capital 0, no profit, flat) gets a 'Close account' entry that opens the Withdraw card", async () => {
+    wallet("0");
+    flat(0n, 0n);
+    mocks.rawSnap.mockReturnValue({ pubkey: PF, portfolio: { legs: [] } });
+    mocks.closable.mockReturnValue({ closable: true });
+    render(<OrderTicket slabAddress={SLAB} />);
+    const t = await screen.findByTestId("withdraw-toggle");
+    expect(t.textContent).toBe("Close account");
+    expect(screen.queryByTestId("deposit-card")).toBeNull();
+    await act(async () => fireEvent.click(t));
+    expect(screen.queryAllByTestId("deposit-card")).toHaveLength(1);
+  });
+  it("NEGATIVE CONTROL (#3458): the scan says the account is NOT closable -> no entry", async () => {
+    wallet("0");
+    flat(0n, 0n);
+    mocks.rawSnap.mockReturnValue({ pubkey: PF, portfolio: { legs: [] } });
+    mocks.closable.mockReturnValue({ closable: false });
+    render(<OrderTicket slabAddress={SLAB} />);
+    await screen.findByTestId("deposit-submit");
+    expect(screen.queryByTestId("withdraw-toggle")).toBeNull();
+  });
+  it("NEGATIVE CONTROL: capital 0 and no profit -> no toggle (nothing to claim)", async () => {
+    wallet("0");
+    flat(0n, 0n);
+    render(<OrderTicket slabAddress={SLAB} />);
+    await screen.findByTestId("deposit-submit");
+    expect(screen.queryByTestId("withdraw-toggle")).toBeNull();
+  });
+  it("capital > 0 keeps the ordinary '− Withdraw' toggle", async () => {
+    wallet("0");
+    flat(5_000_000n, 0n);
+    render(<OrderTicket slabAddress={SLAB} />);
+    const t = await screen.findByTestId("withdraw-toggle");
+    expect(t.textContent).toContain("Withdraw");
+    expect(t.textContent).not.toContain("Claim");
+  });
+});
+
+describe("v2.2 QA: a clipped (partial) fill says 'Partially filled' with filled vs requested, from the landed FILL event", () => {
+  const WRAPPER = new PublicKey("6kpg2wi7vwkn7E9rvodXSktYRhna8TWjiZrC1dBek6NM");
+  afterEach(() => { __setDevnetV22ForTest(null); });
+  async function placeOrderWithLogs(flags: number, executed: bigint) {
+    __setDevnetV22ForTest(true);
+    const { fillEventLogs } = await import("../../helpers/fill-event-fixture");
+    mocks.useSlabState.mockReturnValue({ accounts: [], config: { collateralMint: MINT, decimals: 6 }, header: null, refresh: vi.fn(), programId: WRAPPER });
+    mocks.useConnectionCompat.mockReturnValue({
+      connection: {
+        getTokenAccountBalance: vi.fn().mockResolvedValue({ value: { amount: "12000000", decimals: 6 } }),
+        getTransaction: vi.fn().mockResolvedValue({ meta: { err: null, logMessages: fillEventLogs(WRAPPER, new PublicKey(SLAB), [{ flags, requestedQ: 5_000_000n, executedQ: executed }]) } }),
+      },
+    });
+    mocks.fund.mockResolvedValue({ signature: "sigClipped", portfolio: new PublicKey("11111111111111111111111111111111"), prompts: 1, created: true });
+    render(<OrderTicket slabAddress={SLAB} />);
+    await waitFor(() => expect(screen.queryByTestId("trade-submit")).not.toBeNull());
+    size("5");
+    await place();
+  }
+  it("CLIPPED flag, 3.2 of 5 executed -> 'Partially filled' title and 'of' body", async () => {
+    await placeOrderWithLogs(9, 3_200_000n);
+    await waitFor(() => expect(screen.queryByTestId("limits-fill-result")?.getAttribute("data-kind")).toBe("partial"));
+    const line = screen.getByTestId("limits-fill-result").textContent ?? "";
+    expect(line).toContain("Partially filled");
+    expect(line).toMatch(/Partially filled: .+ of .+/);
+  });
+  it("NEGATIVE CONTROL: no CLIPPED flag -> no partial line", async () => {
+    await placeOrderWithLogs(8, 5_000_000n);
+    await waitFor(() => expect(document.body.textContent).toContain("Order")); // the result line rendered
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByTestId("limits-fill-result")?.getAttribute("data-kind")).not.toBe("partial");
+    expect(document.body.textContent).not.toContain("Partially filled");
+  });
+});
+
+// ── T-15 (QA 2026-10-14): the expired-popup copy must survive the round-i catch-up wait + silent-retry wrapper ──────────────
+describe("T-15: an expired Solflare popup after the price catch-up wait still shows the timeout copy", () => {
+  const BH = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
+  const guardConn = { getGenesisHash: async () => DEVNET_GENESIS_HASH, isBlockhashValid: async () => ({ context: { slot: 1 }, value: true }) };
+  beforeEach(() => {
+    __setDevnetV22ForTest(true); __resetSignGuardForTest();
+    vi.spyOn(console, "error").mockImplementation(() => {}); vi.spyOn(console, "info").mockImplementation(() => {});
+    mocks.bandView = { assetIndex: 0, lotExp: 0, band: { enabled: true, bandBps: 130, epochSlots: 600n, pinSlots: 9000n, maxPositionsPerSide: 256n, minLegNotionalAtoms: 1_000_000n, recoveryMinutes: 64 }, price: { capBpsPerSlot: 1n, markE6: 100_000_000n, targetE6: 100_200_000n, lagging: true, floorStuck: false, favourableCloseSide: "long" }, rent: { enabled: false, maxE9PerSlot: 0n, kinkBps: 0, rateLongE9: 0n, rateShortE9: 0n } };
+  });
+  afterEach(() => { __setDevnetV22ForTest(null); vi.restoreAllMocks(); });
+  for (const innerError of [{ code: 4001, message: "Transaction cancelled" }, { message: "Transaction cancelled" }]) {
+    it(`wait (onWaiting true/false) -> wallet opens -> 70 s -> ${JSON.stringify(innerError)} -> timeout copy, no retry popup`, async () => {
+      let clock = 5_000_000;
+      mocks.fund.mockImplementation(async (p: { onWaiting?: (w: boolean) => void }) => {
+        p.onWaiting?.(true);
+        p.onWaiting?.(false);
+        const tx = new Transaction(); tx.recentBlockhash = BH; tx.feePayer = Keypair.generate().publicKey;
+        noteBlockhash(BH, "sendTx attempt 1", guardConn, clock - 2_000, { commitment: "confirmed", lastValidBlockHeight: 1 });
+        return guardSign({ txs: [tx], via: "adapter signTransaction", connection: guardConn, chain: "solana:devnet", now: () => clock, sign: async () => { clock += 70_000; throw new WalletSignTransactionError(String(innerError.message), innerError); } });
+      });
+      mocks.useWalletCompat.mockReturnValue({ publicKey: new PublicKey("11111111111111111111111111111111"), connected: true, wallet: { adapter: { name: "Solflare" } } });
+      vi.stubEnv("NEXT_PUBLIC_DEFAULT_NETWORK", "devnet");
+      render(<OrderTicket slabAddress={SLAB} />);
+      await waitFor(() => expect(screen.queryByTestId("trade-submit")).not.toBeNull());
+      size("5");
+      await place();
+      await waitFor(() => expect(screen.queryByTestId("status-line")).not.toBeNull());
+      const text = document.body.textContent ?? "";
+      expect(text).toContain("The wallet request timed out");
+      expect(text).not.toContain("cancelled in your wallet");
+      expect(mocks.fund).toHaveBeenCalledTimes(1);
+    });
+  }
 });

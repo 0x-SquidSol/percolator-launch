@@ -20,6 +20,26 @@ interface StdWallet {
 
 export type ChainSigner = (txs: Transaction[]) => Promise<Transaction[]>;
 
+/**
+ * NB-2 diagnostics: WHY a request did or did not carry the chain (kept in the sign log / `?signdebug=1` line as `signer`).
+ * The legacy Solflare adapter (no chain param, the wallet guesses the cluster) is the other way a request can reach the wallet.
+ */
+export function chainSignerNote(adapter: unknown, publicKey: PublicKey | null): string {
+  const a = adapter as { name?: string; standard?: unknown; wallet?: StdWallet } | null | undefined;
+  if (!a) return "no adapter";
+  const name = a.name ?? "?";
+  if (a.standard !== true || !a.wallet) return `legacy adapter ${name} (no chain param: the wallet guesses the cluster)`;
+  if (!publicKey) return `standard ${name}, no public key`;
+  const sign = a.wallet.features?.[FEATURE]?.signTransaction;
+  if (typeof sign !== "function") return `standard ${name}, no ${FEATURE} feature`;
+  const accounts = a.wallet.accounts ?? [];
+  const account = accounts.find((x) => x.address === publicKey.toBase58());
+  if (!account) return `standard ${name}, account not in wallet.accounts (${accounts.length} listed)`;
+  if (!account.features.includes(FEATURE)) return `standard ${name}, account lacks ${FEATURE}`;
+  if (!account.chains.includes(SIGN_CHAIN_DEVNET)) return `standard ${name}, account chains [${account.chains.join(",")}] lack ${SIGN_CHAIN_DEVNET}`;
+  return `standard ${name} + chain ${SIGN_CHAIN_DEVNET}`;
+}
+
 export function standardDevnetSigner(adapter: unknown, publicKey: PublicKey | null): ChainSigner | null {
   const a = adapter as { standard?: unknown; wallet?: StdWallet } | null | undefined;
   if (!a || a.standard !== true || !a.wallet || !publicKey) return null;

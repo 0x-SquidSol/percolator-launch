@@ -36,7 +36,7 @@ import {
 import { planTakerCrank } from "@/lib/taker-crank";
 import { isAllocateRefusal, planAllocatePrefix } from "@/lib/v21/allocate-prefix";
 import { isDevnetV21Enabled } from "@/lib/v21/flag";
-import { isLossStaleError, withLossStaleRetry } from "@/lib/v21/loss-stale-retry";
+import { isLossStaleError, lossStaleHandlingEnabled, withLossStaleRetry } from "@/lib/v21/loss-stale-retry";
 import { getMaintenanceConfig, MaintenanceError } from "@/lib/maintenance";
 import { PartialLegSendError, SINGLE_TX_MAX_LEGS, sendLegGroups } from "@/lib/trade-leg-groups";
 import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
@@ -790,7 +790,7 @@ export function useTrade(slabAddress: string) {
           // stale portfolios' hidden-loss bound; the keeper's sweep shrinks it) is retried a few
           // times ~1-2 s apart, never bundled with refreshes (lib/v21/loss-stale-retry.ts).
           sig =
-            isV17Market && isDevnetV21Enabled()
+            isV17Market && lossStaleHandlingEnabled()
               ? await withLossStaleRetry(sendOrder, {
                   wrapperProgramId: programId.toBase58(),
                   onRefreshing: params.onRefreshingPositions,

@@ -238,3 +238,33 @@ describe("RT5-2: an expired / closed wallet popup gets one friendly line", () =>
     for (const e of [declined, coded, locked, own, expired]) expect(asWalletRequestError(e)).toBe(e);
   });
 });
+
+import { chainSignerNote } from "@/lib/v22/standard-sign";
+import { formatSignEntry as fmt } from "@/lib/v22/sign-guard";
+describe("NB-2 round i: why a request did or did not carry the chain", () => {
+  const acct = (chains: string[], features = ["solana:signTransaction"]) => ({ address: payer.publicKey.toBase58(), chains, features });
+  const std = (accounts: unknown[], withFeature = true) => ({ name: "Solflare", standard: true, wallet: { accounts, features: withFeature ? { "solana:signTransaction": { signTransaction: async () => [] } } : {} } });
+  it("names each reason", () => {
+    expect(chainSignerNote(std([acct(["solana:devnet"])]), payer.publicKey)).toBe("standard Solflare + chain solana:devnet");
+    expect(chainSignerNote({ name: "Solflare" }, payer.publicKey)).toContain("legacy adapter Solflare");
+    expect(chainSignerNote(std([]), payer.publicKey)).toContain("account not in wallet.accounts (0 listed)");
+    expect(chainSignerNote(std([acct(["solana:mainnet"])]), payer.publicKey)).toContain("lack solana:devnet");
+    expect(chainSignerNote(std([acct(["solana:devnet"], [])]), payer.publicKey)).toContain("account lacks solana:signTransaction");
+    expect(chainSignerNote(std([acct(["solana:devnet"])], false), payer.publicKey)).toContain("no solana:signTransaction feature");
+    expect(chainSignerNote(null, payer.publicKey)).toBe("no adapter");
+  });
+  it("the debug line carries signer and the gap since the previous request", async () => {
+    __setDevnetV22ForTest(true); __resetSignGuardForTest();
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const c = conn(DEVNET_GENESIS_HASH);
+    let clock = 1_000_000;
+    noteBlockhash(BH, "sendTx attempt 1", c);
+    await guardSign({ txs: [tradeTx()], via: "adapter signTransaction", connection: c, chain: "solana:devnet", signerNote: "standard Solflare + chain solana:devnet", now: () => clock, sign: async () => 1 });
+    clock += 42_000;
+    noteBlockhash(BH, "sendTx attempt 1", c);
+    await guardSign({ txs: [tradeTx()], via: "adapter signTransaction", connection: c, chain: "solana:devnet", signerNote: "standard Solflare + chain solana:devnet", now: () => clock, sign: async () => 2 });
+    expect(fmt(signLog()[1])).toContain("| signer standard Solflare + chain solana:devnet | 42.0s since the previous request |");
+    expect(fmt(signLog()[0])).not.toContain("since the previous request");
+    __setDevnetV22ForTest(null); vi.restoreAllMocks();
+  });
+});
