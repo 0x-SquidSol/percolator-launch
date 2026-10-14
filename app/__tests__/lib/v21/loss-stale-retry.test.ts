@@ -5,9 +5,11 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __setDevnetV21ForTest } from "@/lib/v21/flag";
+import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import {
   LOSS_STALE_RETRY_DELAYS_MS,
   isLossStaleError,
+  lossStaleHandlingEnabled,
   withLossStaleRetry,
 } from "@/lib/v21/loss-stale-retry";
 
@@ -141,6 +143,17 @@ describe("withLossStaleRetry", () => {
       expect(send).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
+    }
+  });
+});
+
+describe("v2.2 QA FUND-6 / E-121: the flag matrix", () => {
+  afterEach(() => { __setDevnetV21ForTest(null); __setDevnetV22ForTest(null); });
+  it("v2.1 only: handled (unchanged); v2.2 only: handled; both: handled; neither: not handled", () => {
+    for (const [v21, v22, want] of [[true, false, true], [false, true, true], [true, true, true], [false, false, false]] as const) {
+      __setDevnetV21ForTest(v21); __setDevnetV22ForTest(v22);
+      expect(lossStaleHandlingEnabled()).toBe(want);
+      expect(isLossStaleError(refusal(121), WRAPPER)).toBe(want);
     }
   });
 });
