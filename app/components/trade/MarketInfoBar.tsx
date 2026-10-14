@@ -311,7 +311,7 @@ export const MarketInfoBar: FC<MarketInfoBarProps> = ({ slabAddress, symbol, log
               {funding8h >= 0 ? "+" : ""}{funding8h.toFixed(4)}%
             </span>
             {fundingV22 && (
-              <span data-testid="funding-direction" className="text-[9px] text-[var(--text-secondary)]" title="Positive: longs pay shorts. Negative: shorts pay longs. Paid every slot, only while both sides hold positions.">
+              <span data-testid="funding-direction" className="text-[9px] text-[var(--text-secondary)]" title="Positive: longs pay shorts. Negative: shorts pay longs. Paid continuously, only while both sides hold positions.">
                 {fundingDirectionText(fundingV22.direction)}
               </span>
             )}

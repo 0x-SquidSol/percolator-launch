@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import {
   detectWalletError,
   humanizeError,
@@ -92,7 +93,19 @@ describe("humanizeError", () => {
   });
 
   it("maps invalid or unsupported instruction error (code 9)", () => {
-    expect(humanizeError(byWrapper(9, 'Custom(9)'))).toContain("matcher config may be misaligned");
+    __setDevnetV22ForTest(false);
+    try {
+      expect(humanizeError(byWrapper(9, 'Custom(9)'))).toContain("matcher config may be misaligned");
+    } finally { __setDevnetV22ForTest(null); }
+  });
+
+  it("v2.2: an unclassified bare code 9 reads as plain copy, no developer wording (QA should-fix)", () => {
+    __setDevnetV22ForTest(true);
+    try {
+      const t = humanizeError(byWrapper(9, 'Custom(9)'));
+      expect(t).toContain("refused this request");
+      expect(t).not.toMatch(/matcher config|misaligned|0x|Custom/);
+    } finally { __setDevnetV22ForTest(null); }
   });
 
   it("maps insurance errors (code 47)", () => {
