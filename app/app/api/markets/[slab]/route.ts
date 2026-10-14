@@ -353,7 +353,9 @@ export async function GET(
         Sentry.captureException(error, {
           tags: { endpoint: "/api/markets/[slab]", method: "GET", slab },
         });
-        return NextResponse.json({ error: "Failed to load market. Please try again later." }, { status: 500 });
+        // Supabase unreachable (e.g. 402 quota restriction): read the slab on-chain
+        // like the not-configured path instead of a 500.
+        return await onChainSlabFallback(slab);
       }
       data = row;
     } else {
