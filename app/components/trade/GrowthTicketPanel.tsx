@@ -12,33 +12,59 @@
 import { type FC } from "react";
 import type { GrowthMarketView, GrowthTicketDecision } from "@/lib/v21/growth-market";
 import { V21_COPY } from "@/lib/v21/copy";
+import { V22_COPY } from "@/lib/v22/copy";
+import { unlockLine, type GrowthUnlockView } from "@/lib/v22/growth-unlock";
+import { InfoIcon } from "@/components/ui/Tooltip";
 
 export interface GrowthTicketPanelProps {
   view: GrowthMarketView;
   decision: GrowthTicketDecision;
   direction: "long" | "short";
+  /**
+   * Devnet v2.2: tier badge and the next-unlock line. Absent (or `graduation` false) on every market whose ceiling
+   * is fixed at the creator's launch leverage: nothing is said there.
+   */
+  unlock?: GrowthUnlockView | null;
 }
 
-const levLabel = (x100: number, closed: boolean): string => (closed ? "full" : `${(x100 / 100).toFixed(x100 % 100 === 0 ? 0 : 1)}x`);
+/** A closed side takes no new risk now: 0x (the line below says why). */
+const levLabel = (x100: number, closed: boolean): string => (closed ? "0x" : `${(x100 / 100).toFixed(x100 % 100 === 0 ? 0 : 1)}x`);
 
-export const GrowthTicketPanel: FC<GrowthTicketPanelProps> = ({ view, decision, direction }) => {
+export const GrowthTicketPanel: FC<GrowthTicketPanelProps> = ({ view, decision, direction, unlock = null }) => {
+  const graduating = !!unlock && unlock.graduation;
+  const tier = graduating ? unlock.tier : null;
+  const nextLine = graduating ? unlockLine(unlock.unlock) : null;
   const pct = decision.utilisation === null ? null : Math.round(decision.utilisation * 100);
   const feePct = decision.fee && decision.fee.utilFeeBps > 0 ? `${(decision.fee.utilFeeBps / 100).toFixed(2)}%` : null;
   const tone = decision.closed ? "var(--short)" : pct !== null && pct >= 80 ? "var(--warning)" : "var(--accent)";
   return (
     <section aria-label="Dynamic leverage" data-testid="growth-ticket-panel" className="mb-3 border border-[var(--border)]/60 px-3 py-2 text-[11px]">
-      <p className="text-[var(--text-secondary)]" data-testid="growth-adjusts">{V21_COPY.ticket.adjusts}</p>
-      <dl className="mt-1.5 grid grid-cols-2 gap-x-3" style={{ fontVariantNumeric: "tabular-nums" }}>
-        {(["long", "short"] as const).map((side) => {
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-[var(--text-secondary)]" data-testid="growth-adjusts">{V21_COPY.ticket.adjusts}</p>
+        {tier !== null && (
+          <span className="shrink-0 whitespace-nowrap text-[10px] text-[var(--text-dim)]" data-testid="growth-tier">
+            {V22_COPY.growth.tier(tier)}
+            <InfoIcon tooltip={V22_COPY.growth.tierTip} />
+          </span>
+        )}
+      </div>
+      <p className="mt-1.5 text-[var(--text)]" style={{ fontVariantNumeric: "tabular-nums" }} data-testid="growth-max-now">
+        {V22_COPY.growth.maxNow}:{" "}
+        {(["long", "short"] as const).map((side, i) => {
           const q = side === "long" ? view.long : view.short;
           return (
-            <div key={side} className={side === direction ? "text-[var(--text)]" : "text-[var(--text-dim)]"} data-testid={`growth-max-${side}`}>
-              <dt className="text-[10px] uppercase tracking-[0.12em]">{side}</dt>
-              <dd className="font-mono">{levLabel(q.maxLeverageX100, q.closed)}</dd>
-            </div>
+            <span key={side}>
+              {i > 0 && " · "}
+              <span className={side === direction ? "text-[var(--text)]" : "text-[var(--text-dim)]"} data-testid={`growth-max-${side}`}>
+                <span className="font-mono">{levLabel(q.maxLeverageX100, q.closed)}</span> {side}
+              </span>
+            </span>
           );
         })}
-      </dl>
+      </p>
+      {nextLine && (
+        <p className="mt-1 text-[var(--text-secondary)]" data-testid="growth-unlock">{nextLine}</p>
+      )}
       {pct !== null && (
         <div className="mt-2" data-testid="growth-capacity">
           <div className="mb-0.5 flex justify-between text-[10px] text-[var(--text-dim)]">

@@ -113,6 +113,19 @@ export const V22_COPY = {
     floor: (min: string) => `You'll receive at least ${min} shares`,
     wound: "This market can no longer be recapitalised; it will be wound down.",
   },
+  // ── Dynamic leverage on a band market: tier, what unlocks next (lib/v22/growth-unlock.ts) ─────────────
+  // Never a raw bps / x100 number; only on a market whose ceiling can graduate.
+  growth: {
+    maxNow: "Max leverage now",
+    tier: (n: number) => `Liquidity tier ${n}`,
+    tierTip: "Liquidity tier is how much trading depth sits close to the price; deeper markets can offer more leverage.",
+    unlockDepth: (x: string, usd: string) => `${x} unlocks when pool depth reaches ${usd}`,
+    unlockDepthAndCapital: (x: string, depth: string, more: string) => `${x} unlocks at ${depth} pool depth and ${more} more market backing`,
+    unlockCapital: (x: string, usd: string) => `${x} unlocks when pool capital reaches ${usd}`,
+    nextStepAfter: (x: string, when: string) => `Next step: ${x} after ${when}`,
+    nextStepNow: (x: string) => `Next step: ${x} at the next update`,
+    creatorSeed: "If this market closes, what is left of your insurance seed after any losses comes back to you. All of it comes back if nobody staked.",
+  },
   // ── First-loss staking (stake v5) ────────────────────────────────────────
   stake: {
     title: "First-loss staking",

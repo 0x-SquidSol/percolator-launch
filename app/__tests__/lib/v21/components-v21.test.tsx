@@ -27,11 +27,11 @@ describe("GrowthTicketPanel", () => {
     expect(screen.getByTestId("growth-capacity-fill")).toHaveStyle({ width: "80%" });
     expect(screen.getByText(/never limited by this/)).toBeInTheDocument();
   });
-  it("a full side says so, calmly, and shows 'full'", () => {
+  it("a full side says so, calmly, and shows 0x", () => {
     const v = view(100_000_000n, -50_000_000n);
     render(<GrowthTicketPanel view={v} decision={growthTicketDecision(v, "long", 0n, 1_000_000n)} direction="long" />);
     expect(screen.getByTestId("growth-closed")).toHaveTextContent(/full for now/);
-    expect(screen.getByTestId("growth-max-long")).toHaveTextContent("full");
+    expect(screen.getByTestId("growth-max-long")).toHaveTextContent("0x");
   });
   it("the busy-side fee appears only when this order owes one", () => {
     const v = view(60_000_000n, -50_000_000n);

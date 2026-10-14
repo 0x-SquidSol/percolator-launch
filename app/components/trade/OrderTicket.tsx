@@ -103,6 +103,8 @@ import { takeFillResult } from "@/lib/limits/fill-check";
 import { defaultFeeCapMarginBps } from "@/lib/limits/fee-channel";
 import { OrderTicketLimits, reasonCopy } from "@/components/limits/OrderTicketLimits";
 import { GrowthTicketPanel } from "@/components/trade/GrowthTicketPanel";
+import { growthRecordBytes, growthUnlockView } from "@/lib/v22/growth-unlock";
+import { useClusterSlot } from "@/hooks/useClusterSlot";
 import { CloseOnlyBanner } from "@/components/trade/CloseOnlyBanner";
 import { isDevnetV21Enabled } from "@/lib/v21/flag";
 import { isMoveFlowEnabled } from "@/lib/v21/move/flag";
@@ -497,6 +499,15 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     const q = direction === "long" ? g.long : g.short;
     return q.closed ? Number.POSITIVE_INFINITY : Math.max(1, q.maxLeverageX100 / 100);
   })();
+  // Devnet v2.2: tier badge + the next-unlock line, on a market whose ceiling can graduate (a band market) only.
+  const clusterSlot = useClusterSlot();
+  const growthUnlock = useMemo(
+    () =>
+      marketLimits.growth && bandView
+        ? growthUnlockView({ view: marketLimits.growth, bandBps: bandView.band.bandBps, record: growthRecordBytes(slabRaw, 0), nowSlot: clusterSlot })
+        : null,
+    [marketLimits.growth, bandView, slabRaw, clusterSlot],
+  );
   const maxLeverage = Math.min(
     MAX_DISPLAY_LEVERAGE,
     rawMaxLeverage,
@@ -2009,7 +2020,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       </div>
 
       {marketLimits.growth && ticketLimits.growth && (
-        <GrowthTicketPanel view={marketLimits.growth} decision={ticketLimits.growth} direction={direction} />
+        <GrowthTicketPanel view={marketLimits.growth} decision={ticketLimits.growth} direction={direction} unlock={growthUnlock} />
       )}
 
       {stepDownNote && (
