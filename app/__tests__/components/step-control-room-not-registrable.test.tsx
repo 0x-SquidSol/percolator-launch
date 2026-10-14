@@ -32,7 +32,7 @@ function renderStep(over: Record<string, unknown> = {}) {
   return render(<StepControlRoom {...(props as never)} />);
 }
 
-const costRows = () => ["Market rent", "You seed", "Incl. counterparty backing"].map((k) => screen.getByText(k).parentElement as HTMLElement);
+const costRows = () => ["Market rent", "You seed", "Incl. trader payout reserve"].map((k) => screen.getByText(k).parentElement as HTMLElement);
 const feedValue = () => screen.getByText("Price feed").nextSibling as HTMLElement;
 
 describe("Control Room: unregistrable token (#2954)", () => {

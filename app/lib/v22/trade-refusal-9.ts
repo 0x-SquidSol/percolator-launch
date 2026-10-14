@@ -16,14 +16,17 @@ import { decodeMarketEngineView, decodeMatcherCtx, decodePortfolioLegs } from "@
 import { preTradeQuote } from "@/lib/limits/matcher-quote";
 import { resolveTradeFeeBps } from "@/lib/limits/trade-fee-resolve";
 
-import { V22_CUSTOM9_COPY, positionCapBlocksOpen, type V22Custom9Cause } from "./trade-refusal-9-copy";
+import { V22_CUSTOM9_COPY, positionCapBlocksOpen, positionCapCopy, type V22Custom9Cause } from "./trade-refusal-9-copy";
+import { readMaxPortfolioAssets } from "./market-cap";
 
-export { V22_CUSTOM9_COPY, V22_CUSTOM9_GENERIC, V22_MAX_POSITIONS, V22_POSITION_CAP_COPY, positionCapBlocksOpen, type V22Custom9Cause } from "./trade-refusal-9-copy";
+export { V22_CUSTOM9_COPY, V22_CUSTOM9_GENERIC, V22_MAX_POSITIONS, V22_POSITION_CAP_COPY, positionCapBlocksOpen, positionCapCopy, type V22Custom9Cause } from "./trade-refusal-9-copy";
 
 export interface V22Custom9Facts {
   /** Assets with an active leg on the taker's account (null = unread). */
   heldAssets: number[] | null;
   assetIndex: number;
+  /** The market's `max_portfolio_assets` (null / undefined = unread: the program cap applies). */
+  maxPositions?: number | null;
   /** Matcher quote price for this order (null = unknown). */
   quotePriceE6: bigint | null;
   /** The limit the order signed (0 / undefined = none). */
@@ -36,7 +39,7 @@ export interface V22Custom9Facts {
 
 /** Pure: the cause the facts prove, in the order the program checks them that the app can see. */
 export function classifyV22Custom9(f: V22Custom9Facts): V22Custom9Cause {
-  if (f.heldAssets && positionCapBlocksOpen(f.heldAssets, f.assetIndex)) return "position-cap";
+  if (f.heldAssets && positionCapBlocksOpen(f.heldAssets, f.assetIndex, f.maxPositions ?? undefined)) return "position-cap";
   if (f.signedFeeBps != null && f.neededFeeBps != null && f.signedFeeBps < f.neededFeeBps) return "fee-cap";
   if (f.quotePriceE6 !== null && f.limitPriceE6 && f.limitPriceE6 > 0n) {
     if (f.takerBuys ? f.quotePriceE6 > f.limitPriceE6 : f.quotePriceE6 < f.limitPriceE6) return "price-limit";
@@ -61,6 +64,7 @@ export async function diagnoseV22TradeCustom9(
   i: V22Custom9Input,
   deadlineMs = 4000,
 ): Promise<string> {
+  let maxPositions: number | null = null;
   const read = async (): Promise<V22Custom9Cause> => {
     const keys = [i.market, i.matcherCtx ?? null, i.takerPortfolio ?? null].filter((k): k is PublicKey => k instanceof PublicKey);
     const infos = await connection.getMultipleAccountsInfo(keys, "confirmed");
@@ -71,6 +75,7 @@ export async function diagnoseV22TradeCustom9(
       return a ? new Uint8Array(a.data) : null;
     };
     const m = by(i.market);
+    maxPositions = readMaxPortfolioAssets(m);
     const ctxData = by(i.matcherCtx);
     const pf = by(i.takerPortfolio);
     const takerBuys = i.sizeQ > 0n;
@@ -82,6 +87,7 @@ export async function diagnoseV22TradeCustom9(
     return classifyV22Custom9({
       heldAssets: i.takerPortfolio ? (pf ? decodePortfolioLegs(pf).map((l) => l.assetIndex) : null) : [],
       assetIndex: i.assetIndex ?? 0,
+      maxPositions,
       quotePriceE6: q?.quotePriceE6 ?? null,
       limitPriceE6: i.limitPriceE6,
       takerBuys,
@@ -99,7 +105,7 @@ export async function diagnoseV22TradeCustom9(
         timer = setTimeout(() => resolve("undetermined"), deadlineMs);
       }),
     ]);
-    return V22_CUSTOM9_COPY[cause];
+    return cause === "position-cap" ? positionCapCopy(maxPositions) : V22_CUSTOM9_COPY[cause];
   } catch {
     return V22_CUSTOM9_COPY.undetermined;
   } finally {

@@ -1046,9 +1046,9 @@ export function PortfolioPositionsView() {
                           {tokenMetaMap.get(pos.collateralMint.toBase58())?.symbol ?? "USDC"}
                         </span>
                         {pendingProfit(pos) > 0n && (
-                          <span data-testid="pending-profit" className="ml-2 text-[11px] text-[var(--long)]" title={SETTLING_PROFIT_TITLE}>
+                          <>{" "}<span data-testid="pending-profit" className="ml-2 text-[11px] text-[var(--long)]" title={SETTLING_PROFIT_TITLE}>
                             up to +{formatTokenAmount(pendingProfit(pos), getDecimals(pos), 3)} profit
-                          </span>
+                          </span></>
                         )}
                       </span>
                       <span className="text-[10px] uppercase tracking-[0.1em] text-[var(--accent)]">

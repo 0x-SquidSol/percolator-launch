@@ -2,7 +2,7 @@
  * Calm one-line messages for the Devnet v2.2 wrapper codes 104..=119, 123, 124 and the stake v5 codes 33..=45.
  * Used by `lib/limits/user-message.ts` ONLY when `NEXT_PUBLIC_DEVNET_V22` is on (flag off the resolver never
  * calls this). Special handling:
- *  - 104 (band pinned) is NOT an error: variant "wait", "Price is catching up. Closing reopens when it has."
+ *  - 104 (band pinned) is NOT an error: variant "wait", "Close on hold while the price catches up. Try again once it has."
  *  - 117 (below min payout) and 124 (bond slippage): `requote` = re-quote and show the new minimum.
  *  - 118 (exit requires loss-current): `autoRetry`; the Earn exit adds inline refresh accounts and retries in
  *    the same user action (lib/v22/earn-exit-run.ts), never asking the user to do anything.
@@ -12,22 +12,30 @@ import type { MessageContext, StatusVariant, UserMessage } from "@/lib/limits/us
 import { STAKE_ERRORS_V5 } from "./sdk";
 import { STAKE_ERR_DEPOSIT_BELOW_MIN_LIQUIDITY, STAKE_ERR_V5, WRAPPER_ERR_V22 } from "./wrapper-errors";
 import { V22_COPY } from "./copy";
-import { V22_COUNTERPARTY_CAP_COPY, V22_POSITION_CAP_REACHED_COPY } from "./trade-refusal-9-copy";
+import { V22_COUNTERPARTY_CAP_COPY, V22_CUSTOM9_OFF_TICKET, V22_SIDE_FULL_COPY, positionCapCopy } from "./trade-refusal-9-copy";
+import { WRAPPER_ERR } from "@/lib/wrapper-errors";
+import { WRAPPER_ERR_V21 } from "@/lib/v21/wrapper-errors";
 
 /** percolator-stake error.rs: TrancheNotEnabled = 19, WrongTranche = 21. */
 export const STAKE_ERR_TRANCHE_NOT_ENABLED = 19;
 export const STAKE_ERR_WRONG_TRANCHE = 21;
+/** percolator-stake error.rs: 29 = AccrueFees refused because only the dead-share floor is staked (no real holders yet). */
+export const STAKE_ERR_NO_REAL_HOLDERS = 29;
 
 type Build = (kind: string, variant: StatusVariant, title: string, body: string, extra?: Partial<UserMessage>) => UserMessage;
 
 export function v22WrapperMessage(code: number, ctx: MessageContext & { minPositionLabel?: string }, m: Build): UserMessage | null {
   const V = WRAPPER_ERR_V22;
+  // A bare 9 off the trade ticket. ON the ticket it stays unmapped on purpose: the ticket then reads chain state to name the cause.
+  if (code === WRAPPER_ERR.InvalidInstruction && ctx.surface !== "trade") {
+    return m("request-refused", "error", "Not done", V22_CUSTOM9_OFF_TICKET);
+  }
   switch (code) {
     case V.PriceBandPinned:
       // No autoRetry: nothing consumes it for a close, and a pin can last about an hour (band_max_pin_slots), so the line stays
       // calm and short and the honest part sits in Details.
       // QA P-4: 104 refuses only the close the stale pinned price would favour (the other direction is allowed).
-      return m("band-catching-up", "wait", "Close on hold", V22_COPY.band.pinnedClose, { why: V22_COPY.band.catchingUpWhy });
+      return m("band-catching-up", "wait", "Close on hold", V22_COPY.band.catchingUp, { why: V22_COPY.band.catchingUpWhy });
     case V.PriceBandConfigInvalid:
       return m("band-config", "error", "Price protection not valid", "These price-protection settings aren't valid for this market. Adjust them and try again. Nothing was sent.");
     case V.HoldingRentConfigInvalid:
@@ -72,10 +80,18 @@ export function v22WrapperMessage(code: number, ctx: MessageContext & { minPosit
     case V.G9AllowlistTimelock:
       return m("g9-timelock", "info", "Still waiting", "This feed-allowlist change is still in its waiting period. Nothing was changed.");
     case V.PositionCapReached:
-      // Same line the ticket's own pre-check and the classified Custom(9) show (lib/v22/trade-refusal-9-copy.ts).
-      return m("position-cap", "error", "Position limit reached", V22_POSITION_CAP_REACHED_COPY);
+      // Same line the ticket's own pre-check and the classified Custom(9) show (positionCapCopy); the number is the market's own cap.
+      return m("position-cap", "error", "Position limit reached", positionCapCopy(ctx.maxPositions));
     case V.CounterpartyPositionCapReached:
       return m("counterparty-cap", "paused", "Market is at its limit", V22_COUNTERPARTY_CAP_COPY);
+    // Plain lines for three wrapper codes that used to fall to "Something went wrong" (28, 29) or the engine-speak of the
+    // pre-v2.2 table (93).
+    case WRAPPER_ERR.OracleConfTooWide:
+      return m("price-unsteady", "wait", "Price unsteady", "The price feed is too uncertain right now, so the market is not accepting this action. Nothing was changed. Wait a moment and try again.");
+    case WRAPPER_ERR.InvalidOracleKey:
+      return m("feed-mismatch", "error", "Page out of date", "The price account sent with this transaction is not the one this market uses. Nothing was changed. Refresh the page and try again; if it keeps happening, the app is out of date.", { action: { id: "refresh", label: "Refresh" } });
+    case WRAPPER_ERR_V21.GrowthCapacityFull:
+      return m("growth-capacity-full", "paused", "This side is full", V22_SIDE_FULL_COPY);
     default:
       return null;
   }
@@ -93,6 +109,8 @@ export function v22StakeMessage(code: number, m: Build): UserMessage | null {
   const info = STAKE_ERRORS_V5[code];
   if (!info) return null;
   switch (code) {
+    case STAKE_ERR_NO_REAL_HOLDERS:
+      return m("stake-no-holders", "info", "Nothing to book yet", info.hint);
     case STAKE_ERR_DEPOSIT_BELOW_MIN_LIQUIDITY:
       return m("stake-min-first-deposit", "info", "Deposit a little more", info.hint);
     case STAKE_ERR_V5.ConsentRequired:

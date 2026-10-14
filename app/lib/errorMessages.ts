@@ -30,7 +30,7 @@ import { V22_ERROR_CODE_MAP, V22_STAKE_ERROR_CODE_MAP } from "@/lib/v22/error-co
 import { V22_ENGINE_LOCK_CODES } from "@/lib/v22/wrapper-errors";
 import { stakeProgramIdOrNull } from "@/lib/v22/program-ids";
 import { V21_ENGINE_LOCK_CODES } from "@/lib/v21/wrapper-errors";
-import { V22_CUSTOM9_GENERIC } from "@/lib/v22/trade-refusal-9-copy";
+import { V22_CUSTOM9_GENERIC, V22_CUSTOM9_OFF_TICKET } from "@/lib/v22/trade-refusal-9-copy";
 import { WALLET_REQUEST_CLOSED_COPY } from "./wallet-request-copy";
 const LIGHTHOUSE_PROGRAM_ID_STR = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95";
 
@@ -515,14 +515,17 @@ export function humanizeError(rawMsg: string, context?: "trade"): string {
     }
     // error-codes-4b1a5d30.md: a Custom(n) is the WRAPPER's code only when the wrapper raised
     // it. An unattributed code (no "Program X failed" line) or another program's is not guessed.
-    if (origin === WRAPPER_PROGRAM_ID && ERROR_CODE_MAP[code]) {
-      return ERROR_CODE_MAP[code];
-    }
-    // Devnet v2.2 (flag-gated): wrapper 104..119 / 123 / 124, stake v5 33..45. Checked before v2.1 / the legacy
-    // table because the stake program reuses low numbers (33..45) that the wrapper table also owns.
+    // Devnet v2.2 (flag-gated): wrapper 104..119 / 123..127 (+ plain 28 / 29 / 93), stake v5 33..45. Checked before v2.1 / the
+    // legacy table because the stake program reuses low numbers (33..45) that the wrapper table also owns, and so v2.2's plain
+    // 28 / 29 win over the legacy lines for the same codes.
     if (isDevnetV22Enabled()) {
       if (origin !== null && origin === stakeProgramIdOrNull() && V22_STAKE_ERROR_CODE_MAP[code]) return V22_STAKE_ERROR_CODE_MAP[code];
       if (origin === WRAPPER_PROGRAM_ID && V22_ERROR_CODE_MAP[code]) return V22_ERROR_CODE_MAP[code];
+      // A bare 9 off the trade ticket (deposit, withdraw, close...): the legacy line talks about matcher config. Same calm line as the ticket's.
+      if (origin === WRAPPER_PROGRAM_ID && code === WRAPPER_ERR.InvalidInstruction) return V22_CUSTOM9_OFF_TICKET;
+    }
+    if (origin === WRAPPER_PROGRAM_ID && ERROR_CODE_MAP[code]) {
+      return ERROR_CODE_MAP[code];
     }
     // Devnet v2.1 (flag-gated): growth-v19 92..99, P2b Earn 100..103, P2b lock exits 120..122.
     if (origin === WRAPPER_PROGRAM_ID && isDevnetV21Enabled() && V21_ERROR_CODE_MAP[code]) {

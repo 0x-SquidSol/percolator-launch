@@ -452,4 +452,22 @@ describe("useReclaimSlabRent", () => {
     // 0x4 = account already cleaned up / reclaimed
     expect(result.current.error).toMatch(/already been reclaimed|no longer on-chain/i);
   });
+
+  it("an unrecognised program code is plain words, never a raw hex code (copy QA item 5)", async () => {
+    for (const hex of ["0x9", "0xf", "0x1b"]) {
+      mockConnection = makeMockConnection();
+      mockConnection.sendRawTransaction = vi.fn().mockRejectedValue(
+        new Error(`Transaction simulation failed: Error processing Instruction 0: custom program error: ${hex}`),
+      );
+      vi.mocked(useConnectionCompat).mockReturnValue({ connection: mockConnection } as ReturnType<typeof useConnectionCompat>);
+      const { result, unmount } = renderHook(() => useReclaimSlabRent());
+      await act(async () => {
+        await result.current.reclaim(slabKeypair);
+      });
+      expect(result.current.status).toBe("error");
+      expect(result.current.error).not.toMatch(/0x[0-9a-f]+|error code/i);
+      expect(result.current.error).toMatch(/refused this request/i);
+      unmount();
+    }
+  });
 });

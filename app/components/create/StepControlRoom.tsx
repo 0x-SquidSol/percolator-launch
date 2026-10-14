@@ -10,6 +10,7 @@ import { LP_EXPOSURE_DEFAULT_BPS } from "@/lib/matcher-params";
 import { FeeBreakdown } from "@/components/FeeBreakdown";
 import { WizardTranchePanel } from "@/components/limits/CreatorLimits";
 import { PositionLimit } from "./PositionLimit";
+import { PAYOUT_RESERVE_COPY } from "@/lib/wizard-copy";
 
 /**
  * GH#2621: this dial used to floor initial margin at the OLD
@@ -105,12 +106,18 @@ export interface StepControlRoomProps {
   onBack: () => void;
 }
 
-const Readout: FC<{ k: string; v: string; tone?: "good" | "warn" | "plain"; dimmed?: boolean }> = ({ k, v, tone = "plain", dimmed = false }) => (
+const Readout: FC<{ k: string; v: string; tone?: "good" | "warn" | "plain"; dimmed?: boolean; tip?: string }> = ({ k, v, tone = "plain", dimmed = false, tip }) => (
   <div
     data-dimmed={String(dimmed)}
     className={`flex items-baseline justify-between border-b border-[var(--border-subtle)] py-[7px] last:border-b-0 ${dimmed ? "opacity-50" : ""}`}
   >
-    <span className="text-[10px] uppercase tracking-[0.12em] text-[var(--text-secondary)]">{k}</span>
+    {/* The label stays the row's direct child (the tests and the layout read it that way); the precise term rides in its tooltip. */}
+    <span
+      className={`text-[10px] uppercase tracking-[0.12em] text-[var(--text-secondary)] ${tip ? "cursor-help underline decoration-dotted underline-offset-2" : ""}`}
+      title={tip}
+    >
+      {k}
+    </span>
     <span
       className={`text-[11px] ${tone === "good" ? "text-[var(--long)]" : tone === "warn" ? "text-[var(--warning)]" : "text-[var(--text)]"}`}
       style={{ fontVariantNumeric: "tabular-nums" }}
@@ -305,7 +312,7 @@ export const StepControlRoom: FC<StepControlRoomProps> = ({
           </div>
           {/* LP + insurance alone understated it ~3x: both backing domains are seeded at 100% of LP. */}
           <Readout k="You seed" v={`${seedTotal.toLocaleString()} ${collateralSymbol}`} dimmed={!registrable} />
-          <Readout k="Incl. counterparty backing" v={`${seedBacking.toLocaleString()} ${collateralSymbol}`} dimmed={!registrable} />
+          <Readout k={PAYOUT_RESERVE_COPY.readout} tip={PAYOUT_RESERVE_COPY.tip} v={`${seedBacking.toLocaleString()} ${collateralSymbol}`} dimmed={!registrable} />
           {/* A fresh launch signs its batch in one approval; a resume runs the remaining steps one by one (#67). */}
           <Readout k="Approvals" v={resuming ? "One per transaction" : "1"} />
         </div>
