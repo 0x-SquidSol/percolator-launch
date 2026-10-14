@@ -106,6 +106,8 @@ export interface UserMessage {
   details: UserMessageDetails;
 }
 
+/** The v2.1 growth / lock codes (92–103, 120–122) are also v2.2 codes: v2.2 builds on v2.1, so a v2.2-only build reads them too. */
+const growthCodesEnabled = (): boolean => isDevnetV21Enabled() || isDevnetV22Enabled();
 const V21_NAME_BY_CODE: Record<number, string> = Object.fromEntries(Object.entries(WRAPPER_ERR_V21).map(([n, c]) => [c, n]));
 const NAME_BY_CODE: Record<number, string> = Object.fromEntries(Object.entries(WRAPPER_ERR).map(([n, c]) => [c, n]));
 
@@ -252,7 +254,7 @@ function resolveUserMessageInner(err: unknown, ctx: MessageContext): UserMessage
   // A Custom(n) is decoded by the program that RAISED it (error-codes-4b1a5d30.md: CPI callees —
   // SPL Token, the matcher, stake, NFT — reuse the same numbers). No attribution => no guess.
   const wrapperish = origin === "wrapper";
-  const name = p.code !== null && wrapperish ? NAME_BY_CODE[p.code] ?? (isDevnetV21Enabled() ? V21_NAME_BY_CODE[p.code] : undefined) ?? (isDevnetV22Enabled() ? V22_NAME_BY_CODE[p.code] : undefined) ?? null : null;
+  const name = p.code !== null && wrapperish ? NAME_BY_CODE[p.code] ?? (growthCodesEnabled() ? V21_NAME_BY_CODE[p.code] : undefined) ?? (isDevnetV22Enabled() ? V22_NAME_BY_CODE[p.code] : undefined) ?? null : null;
   const details: UserMessageDetails = { code: p.code, name, programId: p.programId, logs: p.logs, raw: p.raw };
   const m = (kind: string, variant: StatusVariant, title: string, body: string, extra: Partial<UserMessage> = {}): UserMessage => ({
     kind,
@@ -426,7 +428,7 @@ function resolveUserMessageInner(err: unknown, ctx: MessageContext): UserMessage
   }
 
   // ── Wrapper codes ───────────────────────────────────────────────────────────
-  if (p.code !== null && wrapperish && isDevnetV21Enabled()) {
+  if (p.code !== null && wrapperish && growthCodesEnabled()) {
     const v = v21WrapperMessage(p.code, ctx, m);
     if (v) return v;
   }
