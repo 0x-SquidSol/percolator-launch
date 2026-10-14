@@ -134,6 +134,9 @@ export const V22_COPY = {
     capacityPaused: "paused",
     /** Remaining room on the selected side (tokens, with the lot size when the market has lots, and USD). */
     room: (size: string, usd: string) => `Room on this side: ${size}, about ${usd}`,
+    /** The account's collateral is below what the program requires after the fill (Custom 92): say how much fits and what it would take. */
+    backingTrim: (fits: string, add: string, wanted: string) => `Your collateral covers ${fits} on this side right now. Order up to ${fits}, or add about ${add} to fill ${wanted}.`,
+    backingAdd: (add: string) => `Your collateral is too low for any new size on this side right now. Add about ${add} and try again.`,
     /** The order is bigger than the room: the program fills the room and lands it. */
     trimNotice: (room: string, fill: string) => `Only ${room} of room left on this side; your order will fill ${fill}.`,
   },

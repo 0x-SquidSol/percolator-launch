@@ -101,6 +101,7 @@ import { publishTicketRow } from "@/lib/limits/ticket-status-store";
 import { fmtQ as fmtQLots } from "@/lib/limits/format";
 import { takeFillResult } from "@/lib/limits/fill-check";
 import { feeRaiseCopy, takeFeeRaise } from "@/lib/v22/fee-raise-note";
+import { sizeWithLots } from "@/lib/v22/growth-room";
 import { clippedFillBody, readClippedFill } from "@/lib/v22/clipped-fill";
 import { isPortfolioClosable } from "@/lib/close-trading-account";
 import { defaultFeeCapMarginBps } from "@/lib/limits/fee-channel";
@@ -961,6 +962,19 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     markE6: livePriceE6 ?? undefined,
     feeMarginBps,
     growth: marketLimits.growth ?? null,
+    // The deployed wrapper's growth gate compares the account's conservative equity with the post-fill requirement (Custom 92). Known only
+    // for an existing account that bundles no deposit sized to this order (then the slider check stays).
+    takerEquity:
+      marketLimits.growth && userAccount && !fundingMode
+        ? capital +
+          (safeExistingPnl < 0n ? safeExistingPnl : 0n) +
+          (!isSentinelValue(userAccount.account.feeCredits) && userAccount.account.feeCredits < 0n ? userAccount.account.feeCredits : 0n)
+        : null,
+    minLegQ: bandMinLeg(bandView)?.minQ ?? null,
+    format: {
+      size: (q: bigint) => sizeWithLots(q, { lotExp, ticker: baseTicker }),
+      collateral: (atoms: bigint) => `${formatTokenAmount(atoms, decimals, 2)} ${collateralSymbol}`,
+    },
   };
   const ticketLimits = deriveTicketLimits(limitsInput);
   // P1 99165722 (F-7): a close that GROWS a halted / capped LP is refused or clipped too.
@@ -979,7 +993,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     // real position (useMarketFillCap.sideRoomQ / lib/limits/lp-inventory-room.ts).
     !mockMode && fillCaps != null && typeof fillCaps.sideRoomQ === "function" ? fillCaps.sideRoomQ(side) : null;
   const marketMaxQFor = (side: "long" | "short") =>
-    oneMaxQ([ticketLimits.sideLimits?.[side]?.maxQ, fillCapQ, legacySideCapQ(side)]);
+    oneMaxQ([ticketLimits.sideLimits?.[side]?.maxQ, fillCapQ, legacySideCapQ(side), side === direction ? ticketLimits.growthCapQ : null]);
   const marketMaxQ = marketMaxQFor(direction);
   // A sub-cent room is full too: it can't be expressed as an order ("Max $0.00"), and clamping
   // to it rewrote the size to "0.00" on every keystroke instead of saying the side is paused.

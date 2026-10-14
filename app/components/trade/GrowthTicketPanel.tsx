@@ -81,7 +81,7 @@ export const GrowthTicketPanel: FC<GrowthTicketPanelProps> = ({ view, decision, 
               <span key={side}>
                 {i > 0 && " · "}
                 <span className={side === direction ? "text-[var(--text)]" : "text-[var(--text-dim)]"} data-testid={`growth-max-${side}`}>
-                  <span className="font-mono">{levLabel(q.maxLeverageX100)}</span> {side}
+                  <span className="font-mono">{levLabel(side === direction && decision.fillMaxLeverage !== null ? Math.round(decision.fillMaxLeverage * 100) : q.maxLeverageX100)}</span> {side}
                 </span>
               </span>
             );

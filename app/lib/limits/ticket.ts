@@ -12,10 +12,12 @@ import { maxTradeSizePerSide, sameOwnerBlocked, sameOwnerRoomQ, type Side, type 
 import { preTradeQuote, quoteFailsLimit, type PreTradeQuote } from "./matcher-quote";
 import { stepDownMaxLeverage } from "./vault-tranche";
 import { V21_COPY } from "@/lib/v21/copy";
+import { growthFillCapQ, growthGate, type GrowthGateResult } from "@/lib/v22/growth-gate";
+import { V22_COPY } from "@/lib/v22/copy";
 import { growthLeverageRefusal, growthTicketDecision, type GrowthMarketView, type GrowthTicketDecision } from "@/lib/v21/growth-market";
 
 export interface TicketIssue {
-  kind: "halted" | "same-owner" | "step-down" | "quote-slippage" | "limits-unavailable" | "fee-over-max" | "growth-closed" | "growth-leverage";
+  kind: "halted" | "same-owner" | "step-down" | "quote-slippage" | "limits-unavailable" | "fee-over-max" | "growth-closed" | "growth-leverage" | "growth-backing";
   severity: "error" | "warning";
   title: string;
   message: string;
@@ -43,6 +45,16 @@ export interface TicketLimitsInput {
    * growth is OFF (every market of today's programs). Absent => nothing here changes.
    */
   growth?: GrowthMarketView | null;
+  /**
+   * The taker's conservative equity on this market (capital + min(pnl,0) + min(fee_credits,0)) before this order, or null/absent when
+   * unknown or when the order bundles a deposit sized to itself (first trade). Present, the growth gate of the DEPLOYED wrapper is
+   * evaluated on the size that will actually fill (lib/v22/growth-gate.ts) and replaces the slider-based leverage check.
+   */
+  takerEquity?: bigint | null;
+  /** Band market: the minimum position leg in Q (`bandMinLeg().minQ`); a fill that would leave a smaller leg is refused (113). */
+  minLegQ?: bigint | null;
+  /** Wording helpers for the gate's messages (sizes in the ticket's units, collateral atoms as a dollar string). */
+  format?: { size: (q: bigint) => string; collateral: (atoms: bigint) => string };
 }
 
 export interface TicketLimits {
@@ -68,6 +80,10 @@ export interface TicketLimits {
   } | null;
   /** Devnet v2.1 growth decision for this side/size; null when growth is OFF. */
   growth: GrowthTicketDecision | null;
+  /** The deployed wrapper's clip + gate for this order (null: growth off, no equity known, or a reduce). */
+  growthGate: GrowthGateResult | null;
+  /** The most that can be ordered on this side now (clip AND gate); null when growth does not constrain. */
+  growthCapQ: bigint | null;
   stepDown: {
     maxLeverage: number;
     stepped: boolean;
@@ -90,6 +106,8 @@ const NONE: TicketLimits = {
   quote: null,
   fee: null,
   growth: null,
+  growthGate: null,
+  growthCapQ: null,
   stepDown: null,
   issues: [],
 };
@@ -124,7 +142,10 @@ export function deriveTicketLimits(i: TicketLimitsInput): TicketLimits {
         initialMarginBps: e.initialMarginBps,
         oiEffLongQ: e.oiEffLongQ,
         oiEffShortQ: e.oiEffShortQ,
-        limits: L.riskLimits,
+        // On a growth asset the program's LP exposure multiplier defaults to the growth lambda, not 1e8/IMR (lp_floor_and_cap_q_for_target_view:
+        // `(0, Some(g)) => g.lambda_bps`); an explicit stored value stays an override. Without this the ticket's "most available" and
+        // the program's clip were two different numbers (QA LEV-8: 7.65 vs 5.94 lots).
+        limits: i.growth && L.riskLimits.lpExposureKBps === 0 ? { ...L.riskLimits, lpExposureKBps: i.growth.record.lambdaBps } : L.riskLimits,
         lp: L.lp,
         takerPosQ: i.takerPosQ,
         matcher: L.matcher
@@ -164,7 +185,7 @@ export function deriveTicketLimits(i: TicketLimitsInput): TicketLimits {
   if (growth && growthBlocks) {
     out.halted[i.direction] = true;
     out.issues.push({ kind: "growth-closed", severity: "error", title: "This side is full", message: V21_COPY.growthClosed(i.direction, growth.quote.closedReason) });
-  } else if (growth && i.growth) {
+  } else if (growth && i.growth && i.takerEquity == null) {
     // LEV-8: judged on the size that will FILL (the program trims an over-capacity open to the side's room and lands it), never on the ask.
     const over = growthLeverageRefusal(i.growth, i.direction, i.takerPosQ, i.sizeQ, i.leverage);
     if (over !== null) {
@@ -209,6 +230,46 @@ export function deriveTicketLimits(i: TicketLimitsInput): TicketLimits {
           title: "Quote fee over the limit",
           message: f.verdict === "over-protocol-max" ? COPY.feeOverProtocolMax(`${(Number(channel.protocolMaxBps) / 100).toFixed(2)}%`) : COPY.feeOverMarketMax,
         });
+      }
+    }
+  }
+
+  // ── Devnet v2.2: the deployed wrapper's clip + growth gate on the size that FILLS (QA LEV-8) ──────────────
+  if (i.growth && !growth?.reducing) {
+    const params = {
+      view: i.growth,
+      direction: i.direction,
+      takerEffQ: i.takerPosQ,
+      takerEquity: i.takerEquity ?? 0n,
+      quoteFeeBps: out.fee?.requestedBps ?? 0n,
+    };
+    if (i.takerEquity != null) {
+      out.growthCapQ = growthFillCapQ(params);
+      if (i.sizeQ > 0n && !growth?.closed) {
+        const gate = growthGate({ ...params, askQ: i.sizeQ });
+        out.growthGate = gate;
+        const fmt = i.format;
+        if (!gate.passes && !gate.closed && fmt) {
+          out.issues.push({
+            kind: "growth-backing",
+            severity: "error",
+            title: "More collateral needed",
+            message: gate.maxPassingQ > 0n
+              ? V22_COPY.growth.backingTrim(fmt.size(gate.maxPassingQ), fmt.collateral(gate.extraEquityNeeded), fmt.size(gate.clipQ))
+              : V22_COPY.growth.backingAdd(fmt.collateral(gate.extraEquityNeeded)),
+          });
+        }
+      }
+    }
+    // Band market: the room left on a side can be smaller than the minimum position. The program clips the order to the room and then refuses
+    // the leg that is left under the minimum (113), so a NEW position cannot be opened on that side: it is full, said as "paused".
+    if (i.minLegQ != null && i.minLegQ > 0n && growth && !growth.closed && !growth.reducing) {
+      const room = growth.roomQ ?? 0n;
+      const closing = i.takerPosQ !== 0n && (i.takerPosQ > 0n) !== (i.direction === "long") ? (i.takerPosQ < 0n ? -i.takerPosQ : i.takerPosQ) : 0n;
+      const leg = (i.takerPosQ < 0n ? -i.takerPosQ : i.takerPosQ) + (closing === 0n ? room : 0n);
+      if (closing === 0n && leg < i.minLegQ) {
+        out.halted[i.direction] = true;
+        out.issues.push({ kind: "growth-closed", severity: "error", title: "This side is full", message: V21_COPY.growthClosed(i.direction, "capacity-full") });
       }
     }
   }

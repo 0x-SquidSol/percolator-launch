@@ -39,6 +39,13 @@ function hlockOffset(raw: Uint8Array): number | null {
   }
 }
 
+/**
+ * Whether the DEPLOYED wrapper (devnet 6kpg2wi7, percolator-prog 81ed7fdf) applies the v2.2 growth depth rules (lambda_eff, kappa cap,
+ * stored ratchet ceiling). It does not: `growth_ceiling_x100` is `min(L_launch, L_tier)` ("absent depth is tier 0") and every N_cap is the
+ * plain `n_cap_q(C_m, lambda_bps, effective_price)`. Flip this when the growth-depth upgrade is deployed; the quote logic stays.
+ */
+export const GROWTH_DEPTH_RULES_DEPLOYED = false;
+
 /** The record, or null when growth is OFF / the bytes are not a market account. Never throws. */
 export function decodeGrowthRecord(raw: Uint8Array | null | undefined, assetIndex = 0): AssetGrowthV19 | null {
   if (!raw) return null;
@@ -190,6 +197,8 @@ export interface GrowthTicketDecision {
   fillQ: bigint;
   /** The program trims this order to the room (it lands as a partial fill; it is not refused). */
   trimmed: boolean;
+  /** The leverage (x, 2 dp) the program allows at the post-fill users' OI of the size that FILLS; null when it does not apply (no size, reduce, closed). */
+  fillMaxLeverage: number | null;
 }
 
 export function growthTicketDecision(
@@ -198,6 +207,16 @@ export function growthTicketDecision(
   takerEffQ: bigint,
   sizeQ: bigint,
 ): GrowthTicketDecision {
+  const d = growthTicketDecisionCore(view, direction, takerEffQ, sizeQ);
+  return { ...d, fillMaxLeverage: maxLeverageAtFill(view, d, sizeQ) };
+}
+
+function growthTicketDecisionCore(
+  view: GrowthMarketView,
+  direction: "long" | "short",
+  takerEffQ: bigint,
+  sizeQ: bigint,
+): Omit<GrowthTicketDecision, "fillMaxLeverage"> {
   const quote = direction === "long" ? view.long : view.short;
   const reducing = isReducingOrder(takerEffQ, direction, sizeQ);
   const utilisation = quote.utilizationBps === null ? null : Math.min(1, Number(quote.utilizationBps) / 10_000);
@@ -231,7 +250,10 @@ export function growthMaxLeverageForOrder(
   takerEffQ: bigint,
   sizeQ: bigint,
 ): number | null {
-  const d = growthTicketDecision(view, direction, takerEffQ, sizeQ);
+  return maxLeverageAtFill(view, growthTicketDecisionCore(view, direction, takerEffQ, sizeQ), sizeQ);
+}
+
+function maxLeverageAtFill(view: GrowthMarketView, d: Omit<GrowthTicketDecision, "fillMaxLeverage">, sizeQ: bigint): number | null {
   if (d.reducing || d.closed || sizeQ <= 0n) return null;
   const q = d.quote;
   if (!q.growthOn) return null;
