@@ -51,7 +51,7 @@ export interface TicketLimitsInput {
    * evaluated on the size that will actually fill (lib/v22/growth-gate.ts) and replaces the slider-based leverage check.
    */
   takerEquity?: bigint | null;
-  /** Band market: the minimum position leg in Q (`bandMinLeg().minQ`); a fill that would leave a smaller leg is refused (113). */
+  /** Band market: the program's exact minimum leg in Q (`bandMinLegExactQ`, fractional lots); a fill that would leave a smaller leg is refused (113). */
   minLegQ?: bigint | null;
   /** Wording helpers for the gate's messages (sizes in the ticket's units, collateral atoms as a dollar string). */
   format?: { size: (q: bigint) => string; collateral: (atoms: bigint) => string };
@@ -111,6 +111,33 @@ const NONE: TicketLimits = {
   stepDown: null,
   issues: [],
 };
+
+/**
+ * Is opening on `side` impossible for this taker right now because of the growth state? A property of the MARKET for a flat taker, so it is
+ * evaluated for BOTH sides whatever the ticket's selected direction and whether or not a wallet is connected (otherwise a paused Long is
+ * only discovered by selecting it, and the auto-select that moves off it hides it again).
+ *  - "closed": the side's growth quote is closed (full / h-lock / not bound ...), unless the holder is on the other side and the tab is a close.
+ *  - "min-leg": a band market's room on the side is below the minimum position leg. The program clips an open to the room and then refuses
+ *    the leg that is left under `band_min_leg_notional` (Custom 113), so no fill can land. A holder whose leg is already at or above the
+ *    minimum may still add; a reduce is never paused.
+ */
+export function growthSideHalt(
+  view: GrowthMarketView | null | undefined,
+  side: Side,
+  takerPosQ: bigint,
+  minLegQ: bigint | null | undefined,
+): "closed" | "min-leg" | null {
+  if (!view) return null;
+  const q = side === "long" ? view.long : view.short;
+  if (!q.growthOn) return null;
+  const closing = takerPosQ !== 0n && takerPosQ > 0n !== (side === "long") ? (takerPosQ < 0n ? -takerPosQ : takerPosQ) : 0n;
+  if (q.closed) return closing > 0n ? null : "closed";
+  if (minLegQ != null && minLegQ > 0n && closing === 0n) {
+    const held = takerPosQ < 0n ? -takerPosQ : takerPosQ;
+    if (held + (q.headroomQ ?? 0n) < minLegQ) return "min-leg";
+  }
+  return null;
+}
 
 export function deriveTicketLimits(i: TicketLimitsInput): TicketLimits {
   const L = i.limits;
@@ -261,18 +288,15 @@ export function deriveTicketLimits(i: TicketLimitsInput): TicketLimits {
         }
       }
     }
-    // Band market: the room left on a side can be smaller than the minimum position. The program clips the order to the room and then refuses
-    // the leg that is left under the minimum (113), so a NEW position cannot be opened on that side: it is full, said as "paused".
-    if (i.minLegQ != null && i.minLegQ > 0n && growth && !growth.closed && !growth.reducing) {
-      const room = growth.roomQ ?? 0n;
-      const closing = i.takerPosQ !== 0n && (i.takerPosQ > 0n) !== (i.direction === "long") ? (i.takerPosQ < 0n ? -i.takerPosQ : i.takerPosQ) : 0n;
-      const leg = (i.takerPosQ < 0n ? -i.takerPosQ : i.takerPosQ) + (closing === 0n ? room : 0n);
-      if (closing === 0n && leg < i.minLegQ) {
-        out.halted[i.direction] = true;
-        out.issues.push({ kind: "growth-closed", severity: "error", title: "This side is full", message: V21_COPY.growthClosed(i.direction, "capacity-full") });
-      }
+    // Band market: the room left on a side can be smaller than the minimum position (see growthSideHalt).
+    if (growth && !growth.reducing && growthSideHalt(i.growth, i.direction, i.takerPosQ, i.minLegQ) === "min-leg") {
+      out.halted[i.direction] = true;
+      out.issues.push({ kind: "growth-closed", severity: "error", title: "This side is full", message: V21_COPY.growthClosed(i.direction, "capacity-full") });
     }
   }
+  // The OTHER side's tab: paused for the same market reasons, independent of the wallet and of the selected direction.
+  const other: Side = i.direction === "long" ? "short" : "long";
+  if (growthSideHalt(i.growth, other, i.takerPosQ, i.minLegQ) !== null) out.halted[other] = true;
 
   // ── P3 leverage step-down ──────────────────────────────────────────────────
   if (L.flags.p3 && L.vaultLp?.bound && L.vaultLp.levCapQ > 0n) {

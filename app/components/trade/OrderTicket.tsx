@@ -119,7 +119,7 @@ import { V22_COPY } from "@/lib/v22/copy";
 import { parseHumanAmount } from "@/lib/parseAmount";
 import { recordCloseTx } from "@/lib/last-close-tx";
 import { LastCloseTxLink } from "@/components/trade/LastCloseTxLink";
-import { bandMinLeg, legBelowBandMin } from "@/lib/v22/band-rent-state";
+import { bandMinLeg, bandMinLegExactQ, legBelowBandMin } from "@/lib/v22/band-rent-state";
 import { POS_SCALE_V22, formatLotPriceE6, lotExpOf, lotOrderQ, tokenUsdOfLotUsd } from "@/lib/v22/lot";
 import { BandMarketNotice } from "@/components/v22/BandMarketNotice";
 import { OpenModeMarketNotes } from "@/components/v22/OpenModeMarketNotes";
@@ -970,7 +970,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
           (safeExistingPnl < 0n ? safeExistingPnl : 0n) +
           (!isSentinelValue(userAccount.account.feeCredits) && userAccount.account.feeCredits < 0n ? userAccount.account.feeCredits : 0n)
         : null,
-    minLegQ: bandMinLeg(bandView)?.minQ ?? null,
+    minLegQ: bandMinLegExactQ(bandView),
     format: {
       size: (q: bigint) => sizeWithLots(q, { lotExp, ticker: baseTicker }),
       collateral: (atoms: bigint) => `${formatTokenAmount(atoms, decimals, 2)} ${collateralSymbol}`,

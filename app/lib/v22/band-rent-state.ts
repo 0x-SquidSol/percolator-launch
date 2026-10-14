@@ -112,6 +112,17 @@ export function bandMinLeg(view: BandRentView | null): { lots: bigint; minQ: big
   return { lots, minQ: lots * 1_000_000n, notionalAtoms: lots * view.price.markE6 };
 }
 
+/**
+ * The program's exact minimum leg in Q: the smallest q with `floor(q * mark / POS_SCALE) >= band_min_leg_notional`, i.e.
+ * `ceil(min * POS_SCALE / mark)` (fractional lots). This is what a CLIPPED fill is held to: the clip lands on any size, so a room of 2.82 lots
+ * at 35.39 per lot (99.8 USDC) is refused 113 while 2.83 lots (100.2 USDC) lands; `bandMinLeg` above (whole lots) is the smallest ORDER the
+ * user can type. Null when there is no band minimum or no price.
+ */
+export function bandMinLegExactQ(view: BandRentView | null): bigint | null {
+  if (!view || !view.band.enabled || view.band.minLegNotionalAtoms <= 0n || view.price.markE6 <= 0n) return null;
+  return (view.band.minLegNotionalAtoms * 1_000_000n + view.price.markE6 - 1n) / view.price.markE6;
+}
+
 /** Would an order of signed size `orderQ` on top of `existingQ` leave a non-zero leg under the minimum? (A full close to zero is fine.) */
 export function legBelowBandMin(view: BandRentView | null, existingQ: bigint, orderQ: bigint): boolean {
   const min = bandMinLeg(view);
