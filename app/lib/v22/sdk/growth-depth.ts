@@ -45,17 +45,19 @@ export interface GrowthCeilingRecord {
 }
 
 export function effectiveDepthE6(depthE6: bigint, depthPrevE6: bigint, depthSlot: bigint, nowSlot: bigint): bigint {
+  // Display tolerance (differs from the chain on purpose): the polled cluster slot can lag the push's slot by a few
+  // slots, so a push "in the future" reads as age 0 here instead of absent. On chain it is absent (fail closed).
   const age = nowSlot > depthSlot ? nowSlot - depthSlot : 0n;
   if (age > DEPTH_MAX_AGE_SLOTS) return 0n;
   return depthE6 < depthPrevE6 ? depthE6 : depthPrevE6;
 }
 
 export function depthTier(effectiveDepth: bigint, depthSource: number): number {
-  if (depthSource === DEPTH_SOURCE.None) return 0;
+  // Mirrors growth_v19::depth_tier: only keeper-attested depth earns a tier, capped at 1; any other source is 0.
+  if (depthSource !== DEPTH_SOURCE.Attested) return 0;
   let t = 0;
   for (const th of DEPTH_TIER_THRESHOLDS_E6) if (effectiveDepth >= th) t++;
-  if (depthSource !== DEPTH_SOURCE.OnChainPool && t > DEPTH_ATTESTED_MAX_TIER) t = DEPTH_ATTESTED_MAX_TIER;
-  return t;
+  return t > DEPTH_ATTESTED_MAX_TIER ? DEPTH_ATTESTED_MAX_TIER : t;
 }
 
 export function lDepthX100(tier: number, lLaunchX100: number): number {
@@ -147,7 +149,7 @@ export function growthCeilingView(g: GrowthCeilingRecord, bandBps: number, nowSl
   const graduationOn = enforced && tier >= 1;
   let nextUnlock: SdkNextUnlock = { kind: "none" };
   if (enforced && !forceDown) {
-    const maxTier = g.depthSource === DEPTH_SOURCE.OnChainPool ? 3 : DEPTH_ATTESTED_MAX_TIER;
+    const maxTier = DEPTH_ATTESTED_MAX_TIER; // only attested depth exists on chain
     if (tier < maxTier) {
       const t2 = growthTargetCeilingX100({ ...base, tier: tier + 1 });
       if (t2 > target) nextUnlock = { kind: "depth", thresholdUsd: Number((DEPTH_TIER_THRESHOLDS_E6[tier] as bigint) / 1_000_000n), leverageX100: t2 };

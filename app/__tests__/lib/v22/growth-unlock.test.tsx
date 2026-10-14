@@ -99,19 +99,18 @@ describe("band clamp predicate (graduation on / off)", () => {
 
 describe("depth tiers 0-3", () => {
   const eff = (usd: number) => BigInt(usd) * USD;
-  it("thresholds are $25k / $100k / $500k", () => {
-    expect([0, 24_999, 25_000, 99_999, 100_000, 499_999, 500_000].map((u) => depthTier(eff(u), 2))).toEqual([0, 0, 1, 1, 2, 2, 3]);
+  it("keeper-attested depth reaches tier 1 at $25k and stops there (the program caps it)", () => {
+    expect([0, 24_999, 25_000, 99_999, 100_000, 499_999, 500_000].map((u) => depthTier(eff(u), 1))).toEqual([0, 0, 1, 1, 1, 1, 1]);
   });
-  it("keeper-attested depth is capped at tier 1 (tiers 2 and 3 need an on-chain pool source)", () => {
-    expect(depthTier(eff(900_000), 1)).toBe(1);
-    expect(depthTier(eff(900_000), 2)).toBe(3);
+  it("any other source reads tier 0, as on chain (the on-chain pool source is not built)", () => {
+    expect(depthTier(eff(900_000), 2)).toBe(0);
+    expect(depthTier(eff(900_000), 0)).toBe(0);
   });
   it("shows the tier on a band market from fresh depth", () => {
     expect(run({}).tier).toBe(0);
     expect(run({ depth: { usd: 30_000 } }).tier).toBe(1);
     expect(run({ depth: { usd: 900_000 } }).tier).toBe(1);
-    expect(run({ depth: { source: 2, usd: 150_000 } }).tier).toBe(2);
-    expect(run({ depth: { source: 2, usd: 600_000 } }).tier).toBe(3);
+    expect(run({ depth: { source: 2, usd: 600_000 } }).tier).toBe(0);
   });
   it("stale depth is tier 0, and so is a one-push spike (min with the previous reading)", () => {
     expect(run({ depth: { usd: 30_000, ageSlots: 151n } }).tier).toBe(0);
@@ -182,9 +181,9 @@ describe("the one next-unlock line", () => {
     const rich = { depth: { usd: 900_000 }, lpCapital: 800n * USD, ceil: 500 };
     expect(line(rich)).toBeNull();
   });
-  it("an on-chain depth source at tier 1 can name tier 2", () => {
-    const rich = { depth: { source: 2, usd: 30_000 }, lpCapital: 3_200n * USD, ceil: 500 };
-    expect(line(rich)).toBe("8x unlocks when pool depth reaches $100k");
+  it("at tier 1 never promises a depth unlock beyond tier 1 (attested depth is capped)", () => {
+    const rich = { depth: { usd: 600_000 }, lpCapital: 3_200n * USD, ceil: 500 };
+    expect(line(rich) ?? "").not.toMatch(/pool depth reaches \$100k|\$500k/);
   });
   it("nothing when the ceiling is at the market's own maximum, or while the market recovers from a loss", () => {
     expect(line({ tier: 300, depth: { usd: 30_000 } })).toBeNull();
