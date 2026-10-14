@@ -20,6 +20,9 @@ import { isBlockedSlab } from "@/lib/blocklist";
 import { getMultipleAccountsInfoChunked } from "@/lib/rpc-chunk";
 import * as Sentry from "@sentry/nextjs";
 import { isListableStakePool, stakePoolScanSize } from "@/lib/v22/stake-pool-scan";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
+import { deriveInsuranceUnitsV22 } from "@/lib/v22/sdk";
+import { atomsToUsd, stakePoolValueView, type StakePoolValueView } from "@/lib/v22/stake-pool-value";
 import { isMissingColumnError } from "@/lib/supabase-missing-column";
 
 export const dynamic = "force-dynamic";
@@ -180,11 +183,11 @@ export async function GET() {
     }
 
     // 2. Parse binary data
-    const allParsed: Array<{ pubkey: string; pool: ParsedStakePool }> = [];
+    const allParsed: Array<{ pubkey: string; pool: ParsedStakePool; data: Uint8Array }> = [];
     for (const { pubkey, account } of rawAccounts) {
       if (!isListableStakePool(new Uint8Array(account.data))) continue;
       const pool = parseStakePool(Buffer.from(account.data));
-      if (pool) allParsed.push({ pubkey: pubkey.toBase58(), pool });
+      if (pool) allParsed.push({ pubkey: pubkey.toBase58(), pool, data: new Uint8Array(account.data) });
     }
 
     // 2a. Playground devnet: restrict to the 5 curated markets' stake pools PLUS
@@ -266,6 +269,40 @@ export async function GET() {
       }
     }
 
+    // 3b. v2.2: pool value INCLUDES the insurance a first-loss pool has deployed (release checklist 5.4). The units
+    // ledger is read only for first-loss pools; flag off, none of this runs and the legacy value below is unchanged.
+    const valueViews = new Map<string, StakePoolValueView>();
+    if (isDevnetV22Enabled()) {
+      const unitsKeys: Array<{ pubkey: string; key: PublicKey }> = [];
+      const kinds = new Map<string, Uint8Array>();
+      for (const { pubkey, pool, data } of parsed) {
+        kinds.set(pubkey, data);
+        const probe = stakePoolValueView(data, null);
+        if (probe?.kind === "first-loss") {
+          try {
+            unitsKeys.push({ pubkey, key: deriveInsuranceUnitsV22(new PublicKey(pool.percolatorProgram), new PublicKey(pool.slab))[0] });
+          } catch {
+            // unreadable program / slab key: this pool gets no value (dash), never a guess
+          }
+        }
+      }
+      let unitsInfos: Awaited<ReturnType<typeof getMultipleAccountsInfoChunked>> = [];
+      try {
+        unitsInfos = await getMultipleAccountsInfoChunked(connection, unitsKeys.map((u) => u.key));
+      } catch (unitsErr) {
+        console.warn("[/api/stake/pools] insurance units read failed (non-fatal):", unitsErr instanceof Error ? unitsErr.message : String(unitsErr));
+      }
+      const unitsByPool = new Map<string, Uint8Array>();
+      unitsKeys.forEach((u, i) => {
+        const info = unitsInfos[i];
+        if (info) unitsByPool.set(u.pubkey, new Uint8Array(info.data));
+      });
+      for (const [pubkey, data] of kinds) {
+        const v = stakePoolValueView(data, unitsByPool.get(pubkey));
+        if (v) valueViews.set(pubkey, v);
+      }
+    }
+
     // 4. Cross-reference slab addresses with Supabase market data (guarded)
     const slabAddresses = parsed.map((p) => p.pool.slab);
     // REDUCED SCHEMA (2026-07): insurance_balance/vault_balance no longer exist on
@@ -328,6 +365,7 @@ export async function GET() {
       const market = marketBySlab[pool.slab];
       const vaultBalRaw = vaultBalances[pool.vault] ?? 0n;
       const poolValueRaw = calcPoolValue(pool);
+      const valueView = valueViews.get(pubkey) ?? null;
 
       // APR: was a trailing annualised rate from insurance_snapshots (7d/30d window). That table
       // is gone (REDUCED SCHEMA 2026-07), so there is no history to annualise: the APR is UNKNOWN,
@@ -362,11 +400,21 @@ export async function GET() {
           pool.slab.slice(0, 8),
         logoUrl: market?.logo_url ?? null,
         /** TVL = vault balance in USDC */
-        tvl: toUsdcFloat(vaultBalRaw),
+        tvl: valueView?.kind === "first-loss" && valueView.totalAtoms !== null ? atomsToUsd(valueView.totalAtoms) : toUsdcFloat(vaultBalRaw),
         /** TVL in raw token units (6 dec for USDC) */
         tvlRaw: vaultBalRaw.toString(),
         /** Pool value (deposited - withdrawn - flushed + returned) */
-        poolValue: toUsdcFloat(poolValueRaw),
+        poolValue: valueView ? atomsToUsd(valueView.totalAtoms) : toUsdcFloat(poolValueRaw),
+        /** v2.2 only (absent flag off): "first-loss" | "fee-only" | "legacy". Only first-loss is called insurance staking. */
+        ...(valueView
+          ? {
+              stakeKind: valueView.kind,
+              /** Insurance deployed for this pool's stakers, USD; null = could not be read (show a dash). */
+              deployedValue: atomsToUsd(valueView.deployedAtoms),
+              /** Vault-resident booked value, USD. */
+              liquidValue: atomsToUsd(valueView.liquidAtoms),
+            }
+          : {}),
         /** Trailing APR %; null = not tracked (insurance_snapshots history was dropped) */
         apr,
         /** Deposit cap in USDC (0 = uncapped) */

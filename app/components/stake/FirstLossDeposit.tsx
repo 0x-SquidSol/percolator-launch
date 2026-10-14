@@ -10,7 +10,7 @@ import { ConsentChangedError, consentKey, consentTextMatches, consentViewOf, pct
 import { STAKE_CONSENT_TEXT_V2, V22_COPY, consentDisplay } from '@/lib/v22/copy';
 import { parseHumanAmount } from '@/lib/parseAmount';
 
-export function FirstLossDeposit({ slabAddress, collateralMint, decimals = 6, onDone }: { slabAddress: string; collateralMint: string; decimals?: number; onDone?: () => void }) {
+export function FirstLossDeposit({ slabAddress, collateralMint, decimals = 6, deployedUsd, onDone }: { slabAddress: string; collateralMint: string; decimals?: number; /** Insurance deployed for this pool, USD; null = unreadable; undefined = not shown. */ deployedUsd?: number | null; onDone?: () => void }) {
   const { pool, deposit, loading } = useStakeFirstLoss(slabAddress, collateralMint);
   const [amount, setAmount] = useState('');
   const [accepted, setAccepted] = useState<string | null>(null);
@@ -46,12 +46,18 @@ export function FirstLossDeposit({ slabAddress, collateralMint, decimals = 6, on
   return (
     <div data-testid="first-loss-deposit" className="space-y-3">
       <h4 className="text-[12px] font-medium text-[var(--text)]" style={{ fontFamily: 'var(--font-display)' }}>{V22_COPY.stake.title}</h4>
+      {deployedUsd !== undefined && (
+        <p data-testid="fl-deployed" className="text-[11px] tabular-nums text-[var(--text-secondary)]">
+          {deployedUsd === null ? V22_COPY.stake.deployedUnknown : V22_COPY.stake.deployed(deployedUsd.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }))}
+        </p>
+      )}
       <dl className="grid grid-cols-3 gap-2 text-[11px]" data-testid="first-loss-params">
         <div><dt className="text-[var(--text-secondary)]">Target</dt><dd className="tabular-nums text-[var(--text)]" data-testid="fl-target">{pctOfBps(view.targetBps)}</dd></div>
         <div><dt className="text-[var(--text-secondary)]">Liquid buffer</dt><dd className="tabular-nums text-[var(--text)]" data-testid="fl-buffer">{pctOfBps(view.bufferBps)}</dd></div>
         <div><dt className="text-[var(--text-secondary)]">Rebalance band</dt><dd className="tabular-nums text-[var(--text)]" data-testid="fl-hysteresis">{pctOfBps(view.hysteresisBps)}</dd></div>
       </dl>
       <div data-testid="consent-text" className="max-h-48 space-y-2 overflow-y-auto border border-[var(--border)] bg-[var(--bg-surface)] p-3 text-[11px] leading-relaxed text-[var(--text-secondary)]">
+        <p data-testid="consent-summary" className="font-medium text-[var(--text)]">{V22_COPY.stake.consentSummary}</p>
         {STAKE_CONSENT_TEXT_V2.map((para, i) => <p key={i} data-testid="consent-para">{consentDisplay(para)}</p>)}
         <p className="text-[var(--text-muted)]">{V22_COPY.stake.consentVersion(view.version)}</p>
       </div>

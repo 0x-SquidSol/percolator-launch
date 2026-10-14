@@ -323,6 +323,10 @@ export interface StakePoolV5 extends StakePoolV5Fields {
   totalReturned: bigint;
   totalWithdrawn: bigint;
   poolMode: number;
+  /** `total_fees_earned` (offset 256): counted in the pool value. TODO(repin): feat/v22-sdk-growth 9902b20. */
+  totalFeesEarned: bigint;
+  /** `_reserved[51..59]` (absolute 371): realized (forfeited) junior loss, subtracted from the pool value. TODO(repin): same. */
+  realizedJuniorLoss: bigint;
 }
 
 const STAKE_POOL_DISCRIMINATOR_V5 = Uint8Array.from([0x53, 0x50, 0x4f, 0x4f, 0x4c, 0x5f, 0x56, 0x31]); // "SPOOL_V1"
@@ -372,6 +376,8 @@ export function decodeStakePoolV5(data: Uint8Array): StakePoolV5 {
     totalReturned: u64(208),
     totalWithdrawn: u64(216),
     poolMode: data[F.poolMode],
+    totalFeesEarned: u64(256),
+    realizedJuniorLoss: u64(F.reserved + 51),
     riskMode,
     consentVersion: data[F.consentVersion],
     deployTargetBps,
@@ -443,4 +449,42 @@ export const STAKE_ERRORS_V5: Readonly<Record<number, ErrorInfo>> = Object.freez
  */
 export function decodeStakeErrorV5(code: number): ErrorInfo | undefined {
   return STAKE_ERRORS_V5[code];
+}
+
+// TODO(repin): percolator-sdk feat/v22-sdk-growth 9902b20 `stakePoolValue` (release checklist section 5 item 4: pool value INCLUDES deployed insurance).
+/** A decoded v5 pool's booked fields plus the wrapper's stake-class units: the SDK's `stakePoolValue`. */
+export interface StakePoolValueFields {
+  totalDeposited: bigint;
+  totalWithdrawn: bigint;
+  totalFlushed: bigint;
+  totalReturned: bigint;
+  totalFeesEarned: bigint;
+  realizedJuniorLoss: bigint;
+}
+export interface StakePoolValue {
+  liquid: bigint;
+  deployed: bigint;
+  total: bigint;
+}
+const U64_MAX_V5 = (1n << 64n) - 1n;
+const U128_MAX_V5 = (1n << 128n) - 1n;
+
+export function stakePoolValue(
+  pool: StakePoolValueFields,
+  insUnits: { unitsStake: bigint; unitsTotal: bigint },
+  insurance: bigint,
+): StakePoolValue | null {
+  const liquidWide = pool.totalDeposited - pool.totalWithdrawn - pool.totalFlushed + pool.totalReturned + pool.totalFeesEarned - pool.realizedJuniorLoss;
+  if (liquidWide < 0n || liquidWide > U64_MAX_V5) return null;
+  let deployed = 0n;
+  if (insUnits.unitsTotal !== 0n) {
+    if (insUnits.unitsStake > insUnits.unitsTotal) return null;
+    const prod = insUnits.unitsStake * insurance;
+    if (prod > U128_MAX_V5) return null;
+    deployed = prod / insUnits.unitsTotal;
+    if (deployed > U64_MAX_V5) return null;
+  }
+  const total = liquidWide + deployed;
+  if (total > U64_MAX_V5) return null;
+  return { liquid: liquidWide, deployed, total };
 }

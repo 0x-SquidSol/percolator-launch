@@ -19,6 +19,9 @@ import { useStakeDepositByPool } from "@/hooks/useStakeDepositByPool";
 import { useStakeFirstLoss } from "@/hooks/useStakeFirstLoss";
 import { FirstLossDeposit } from "@/components/stake/FirstLossDeposit";
 import { V22_COPY } from "@/lib/v22/copy";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
+import { decodeStakePoolV5, deriveInsuranceUnitsV22 } from "@/lib/v22/sdk";
+import { isInsuranceOnly, stakePoolValueView } from "@/lib/v22/stake-pool-value";
 import { useStakeWithdrawByPool } from "@/hooks/useStakeWithdrawByPool";
 import { parseHumanAmount, formatHumanAmount } from "@/lib/parseAmount";
 import { formatTokenAmount } from "@/lib/format";
@@ -56,6 +59,10 @@ interface StakePool {
   cooldownSlots: number;
   totalLpSupply: number;
   vaultBalance: number;
+  /** v2.2 only. "first-loss" pools are insurance staking; absent / other kinds keep the "Fee staking" naming. */
+  stakeKind?: "first-loss" | "fee-only" | "legacy";
+  /** Insurance deployed for this pool's stakers, USD; null = unreadable (dash). */
+  deployedValue?: number | null;
 }
 
 interface UserPosition {
@@ -97,6 +104,8 @@ interface ApiPool {
   vaultBalance: number;
   poolMode: number;
   adminTransferred: boolean;
+  stakeKind?: "first-loss" | "fee-only" | "legacy";
+  deployedValue?: number | null;
 }
 
 /** Convert API pool shape to the page-local StakePool type. */
@@ -116,6 +125,8 @@ function apiPoolToStakePool(p: ApiPool): StakePool {
     cooldownSlots: p.cooldownSlots,
     totalLpSupply: p.totalLpSupply,
     vaultBalance: p.vaultBalance,
+    stakeKind: p.stakeKind,
+    deployedValue: p.deployedValue,
   };
 }
 
@@ -237,6 +248,18 @@ async function fetchPoolPosition(
   } catch {
     // fall back to the API snapshot below
   }
+  // v2.2 first-loss pool: the stake is worth its share of vault + deployed insurance, read fresh. Unreadable units
+  // leave the base null so the valuation falls back to the API snapshot (whose TVL already includes deployed).
+  if (isDevnetV22Enabled() && pool.stakeKind === "first-loss") {
+    chainVaultAtoms = null;
+    try {
+      const [unitsKey] = deriveInsuranceUnitsV22(decodeStakePoolV5(poolInfo.data).percolatorProgram, slabPk);
+      const unitsInfo = await connection.getAccountInfo(unitsKey);
+      chainVaultAtoms = stakePoolValueView(poolInfo.data, unitsInfo ? new Uint8Array(unitsInfo.data) : null)?.totalAtoms ?? null;
+    } catch {
+      chainVaultAtoms = null;
+    }
+  }
   const estimatedValue = valueStakePosition({
     lpRaw: lpAccount.amount,
     chainTotalLpSupplyRaw: readPoolTotalLpSupply(poolInfo.data),
@@ -305,6 +328,8 @@ function StakeHeader({
   const { connected } = useWalletCompat();
   const totalStaked = pools.reduce((s, p) => s + p.tvl, 0);
   const activePools = pools.length;
+  // Only first-loss pools are insurance staking; any fee-only / legacy pool keeps the "Fee staking" name.
+  const insuranceOnly = isInsuranceOnly(pools);
   // Over the pools that report one; null when none does (not tracked), shown as "—", not "0%".
   const aprs = pools.map((p) => p.apr).filter((a): a is number => a !== null);
   const avgApr = aprs.length > 0 ? aprs.reduce((s, a) => s + a, 0) / aprs.length : null;
@@ -339,23 +364,33 @@ function StakeHeader({
           className="text-2xl font-medium tracking-[-0.01em] text-[var(--text)]"
           style={{ fontFamily: "var(--font-display)" }}
         >
-          <span className="font-normal text-[var(--text-secondary)]">Fee </span>staking
+          {insuranceOnly ? (
+            <span data-testid="stake-title-insurance"><span className="font-normal text-[var(--text-secondary)]">Insurance </span>staking</span>
+          ) : (
+            <><span className="font-normal text-[var(--text-secondary)]">Fee </span>staking</>
+          )}
         </h1>
+        {insuranceOnly ? (
+          <p className="mt-2 max-w-lg text-[13px] text-[var(--text-secondary)]" data-testid="stake-intro-insurance">{V22_COPY.stake.insuranceIntro}</p>
+        ) : (
         <p className="mt-2 max-w-lg text-[13px] text-[var(--text-secondary)]">
           Stake into a market&apos;s pool to receive a share of that market&apos;s trading fees —
           fully on-chain and transparent.
         </p>
+        )}
         {/* E2E B4 (2026-09-30): stakers ARE paid. The insurance fee leg accrues to the wrapper's
             insurance reserve and the keeper (b004a0c) pushes it into the bound stake pool:
             wrapper tag 87 WithdrawInsuranceReserveToStake -> stake tag 12 AccrueFees, which takes
             insurance pools (pool_mode 0; see lib/pre-resolve.ts decideStakeLeg). Measured: stakers
             C3 +5.86 USDC, U3 +7.01 USDC. The old zero-yield caption was false. */}
+        {!insuranceOnly && (
         <p className="mt-1.5 max-w-lg text-[11px] text-[var(--text-muted)]">
           Stakers are paid the insurance share of every trading fee, moved into the stake pool
           automatically. The pool admin can move staked funds into the market&apos;s insurance
           fund, where trading losses can use them, so your stake can lose value. This has not
           happened so far.
         </p>
+        )}
         {/* The 0% above reads as an oversight without the other shares beside
             it — "16% to insurance" is the number it gets mistaken for. #2565. */}
         <div className="mt-3 max-w-lg border border-[var(--border)] bg-[var(--panel-bg)] p-3">
@@ -881,6 +916,7 @@ function DepositWidget({
             slabAddress={pool?.slabAddress ?? ""}
             collateralMint={pool?.collateralMint ?? ""}
             decimals={balanceDecimals}
+            deployedUsd={pool?.deployedValue}
             onDone={() => { setWithdrawRefreshKey((k) => k + 1); onTxSuccess?.(); }}
           />
         ) : mode === "deposit" ? (
@@ -1217,6 +1253,11 @@ function PoolRow({
         >
           {pool.symbol}
         </Link>
+        {pool.stakeKind === "first-loss" && (
+          <span className="shrink-0 text-[10px] text-[var(--text-dim)]" data-testid="pool-deployed" title={V22_COPY.stake.insuranceStaking}>
+            {pool.deployedValue === null || pool.deployedValue === undefined ? V22_COPY.stake.deployedUnknown : V22_COPY.stake.deployed(formatUsd(pool.deployedValue))}
+          </span>
+        )}
       </div>
 
       {/* Clicks bubble to the row's onClick. */}

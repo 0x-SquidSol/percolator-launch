@@ -132,6 +132,13 @@ export const V22_COPY = {
     target: (pct: string) => `Deployment target ${pct}`,
     buffer: (pct: string) => `Liquid buffer ${pct}`,
     hysteresis: (pct: string) => `Rebalance band ${pct}`,
+    /** Page naming: only first-loss pools are insurance staking; fee-only and legacy pools stay "Fee staking". */
+    insuranceStaking: "Insurance staking",
+    insuranceIntro: "Stake into a market's pool to share its trading fees. Part of the pool backs the market's insurance, so your stake can lose value.",
+    deployed: (usd: string) => `Deployed to insurance: ${usd}`,
+    deployedUnknown: "Deployed to insurance: —",
+    /** One plain paragraph above the program's own consent text (phase4 §6.1 item 5 wording). */
+    consentSummary: "Staking insures this market's backstop: you can lose part of your stake if losses exceed the creator's tranche, bonds and Earn.",
     consentUnavailable: "First-loss deposits aren't available for this pool right now.",
     consentLabel: "I have read and accept this risk text.",
     consentVersion: (v: number) => `Risk text version ${v}`,

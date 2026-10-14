@@ -70,6 +70,7 @@ export const V22LaunchOptions: FC<V22LaunchOptionsProps> = ({ value, onChange, p
           <li>{V22_COPY.wizard.bondAtomic}</li>
         </ul>
       )}
+      <p className="text-[11px] text-[var(--text-secondary)]" data-testid="v22-creator-seed">{V22_COPY.growth.creatorSeed}</p>
       {plan.notes.length > 0 && (
         <ul className="space-y-1 text-[11px] text-[var(--text-secondary)]" data-testid="v22-notes">
           {plan.notes.map((n) => (
