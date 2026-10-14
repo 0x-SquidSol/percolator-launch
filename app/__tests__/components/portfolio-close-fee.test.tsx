@@ -92,7 +92,7 @@ describe("#24: /portfolio close preview", () => {
     fresh.engineStale = true;
     try {
       const modal = openClose(row);
-      expect(within(modal).getByTestId("close-catching-up")).toHaveTextContent("Prices are catching up");
+      expect(within(modal).getByTestId("close-catching-up")).toHaveTextContent("The price is still catching up after a big move");
       expect(within(modal).queryByText(/Oracle Stale/)).toBeNull();
       const confirm = within(modal).getByTestId("close-confirm");
       expect(confirm).toBeDisabled();
