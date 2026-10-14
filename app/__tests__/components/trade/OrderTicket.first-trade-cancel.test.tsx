@@ -407,3 +407,38 @@ describe("v2.2 QA: a clipped (partial) fill says 'Partially filled' with filled 
     expect(document.body.textContent).not.toContain("Partially filled");
   });
 });
+
+// ── T-15 (QA 2026-10-14): the expired-popup copy must survive the round-i catch-up wait + silent-retry wrapper ──────────────
+describe("T-15: an expired Solflare popup after the price catch-up wait still shows the timeout copy", () => {
+  const BH = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
+  const guardConn = { getGenesisHash: async () => DEVNET_GENESIS_HASH, isBlockhashValid: async () => ({ context: { slot: 1 }, value: true }) };
+  beforeEach(() => {
+    __setDevnetV22ForTest(true); __resetSignGuardForTest();
+    vi.spyOn(console, "error").mockImplementation(() => {}); vi.spyOn(console, "info").mockImplementation(() => {});
+    mocks.bandView = { assetIndex: 0, lotExp: 0, band: { enabled: true, bandBps: 130, epochSlots: 600n, pinSlots: 9000n, maxPositionsPerSide: 256n, minLegNotionalAtoms: 1_000_000n, recoveryMinutes: 64 }, price: { capBpsPerSlot: 1n, markE6: 100_000_000n, targetE6: 100_200_000n, lagging: true, floorStuck: false, favourableCloseSide: "long" }, rent: { enabled: false, maxE9PerSlot: 0n, kinkBps: 0, rateLongE9: 0n, rateShortE9: 0n } };
+  });
+  afterEach(() => { __setDevnetV22ForTest(null); vi.restoreAllMocks(); });
+  for (const innerError of [{ code: 4001, message: "Transaction cancelled" }, { message: "Transaction cancelled" }]) {
+    it(`wait (onWaiting true/false) -> wallet opens -> 70 s -> ${JSON.stringify(innerError)} -> timeout copy, no retry popup`, async () => {
+      let clock = 5_000_000;
+      mocks.fund.mockImplementation(async (p: { onWaiting?: (w: boolean) => void }) => {
+        p.onWaiting?.(true);
+        p.onWaiting?.(false);
+        const tx = new Transaction(); tx.recentBlockhash = BH; tx.feePayer = Keypair.generate().publicKey;
+        noteBlockhash(BH, "sendTx attempt 1", guardConn, clock - 2_000, { commitment: "confirmed", lastValidBlockHeight: 1 });
+        return guardSign({ txs: [tx], via: "adapter signTransaction", connection: guardConn, chain: "solana:devnet", now: () => clock, sign: async () => { clock += 70_000; throw new WalletSignTransactionError(String(innerError.message), innerError); } });
+      });
+      mocks.useWalletCompat.mockReturnValue({ publicKey: new PublicKey("11111111111111111111111111111111"), connected: true, wallet: { adapter: { name: "Solflare" } } });
+      vi.stubEnv("NEXT_PUBLIC_DEFAULT_NETWORK", "devnet");
+      render(<OrderTicket slabAddress={SLAB} />);
+      await waitFor(() => expect(screen.queryByTestId("trade-submit")).not.toBeNull());
+      size("5");
+      await place();
+      await waitFor(() => expect(screen.queryByTestId("status-line")).not.toBeNull());
+      const text = document.body.textContent ?? "";
+      expect(text).toContain("The wallet request timed out");
+      expect(text).not.toContain("cancelled in your wallet");
+      expect(mocks.fund).toHaveBeenCalledTimes(1);
+    });
+  }
+});
