@@ -31,6 +31,9 @@ import { isPlaceholderSymbol, SLUG_ALIASES } from "@/lib/symbol-utils";
 import { getNetwork } from "@/lib/config";
 import { RenderProfiler } from "@/components/dev/RenderProfiler";
 import TradingPageLoading from "./loading";
+import { ADMIN_BURN_COPY } from "@/lib/admin-burn-copy";
+import { MultiAssetNotice } from "@/components/trade/MultiAssetNotice";
+import { isMultiAssetMarket } from "@/lib/v22/market-cap";
 
 // Lazy-load the chart so it streams AFTER the order ticket + positions are
 // interactive, instead of blocking the trade page's initial load. ssr:false —
@@ -311,7 +314,7 @@ const MARKET_META_SWR_OPTS = { dedupingInterval: 10_000, refreshInterval: 0, rev
 function TradePageInner({ slab }: { slab: string }) {
   const isLargeScreen = useIsLargeScreen();
 
-  const { engine, config, header, loading: slabLoading, error: slabError, layoutUnsupported } = useSlabState();
+  const { engine, config, header, raw: slabRaw, loading: slabLoading, error: slabError, layoutUnsupported } = useSlabState();
   useAdvanceOraclePhase(slab);
   // Boolean presence subscription, NOT the full live-price state: this keeps the
   // trade-page shell OFF the ~4-5/sec price-tick re-render path (it only needs to
@@ -520,6 +523,7 @@ function TradePageInner({ slab }: { slab: string }) {
       <MarketInfoBar slabAddress={slab} symbol={symbol} logoUrl={logoUrl} mintAddress={mintAddress} mainnetCa={chartMintAddress} />
       {/* UX WP-10 (§4.3): ONE status line under the header, only when the market is not live. */}
       <MarketHeaderStatus slab={slab} />
+      <MultiAssetNotice show={isMultiAssetMarket(slabRaw)} />
       {/* UX WP-10 (GL-1, §4.3): the market address and admin status left the page chrome; they sit
           in a collapsed "Market details" disclosure (the "ADMIN ACTIVE" chip is no longer shown by
           default above every market). */}
@@ -535,8 +539,8 @@ function TradePageInner({ slab }: { slab: string }) {
           <Tooltip
             text={
               header.admin.toBase58() === "11111111111111111111111111111111"
-                ? "Admin key burned (set to the system program's default null address). No one can change this market's config, pause it, or touch its funds — it runs purely on its own code from here on."
-                : "This market still has a live admin key that can change config, pause the market, or adjust parameters. Not yet renounced."
+                ? ADMIN_BURN_COPY.burned
+                : ADMIN_BURN_COPY.active
             }
           >
             <span className={`text-[9px] font-medium uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-sm border ${

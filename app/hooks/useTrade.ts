@@ -45,6 +45,7 @@ import { applyConfirmedFill, getPortfolioRawSnapshot, makePortfolioScanKey } fro
 import { limitsFlags } from "@/lib/limits/flags";
 import { decodeMarketEngineView, signedPositionForAsset } from "@/lib/limits/decode";
 import { measureFill, recordFillResult } from "@/lib/limits/fill-check";
+import { recordFeeRaise, type FeeRaise } from "@/lib/v22/fee-raise-note";
 import { measurePositionChange, readBeforeTrade, recordPositionChange } from "@/lib/position-change";
 import { tradeFeeBpsToSign } from "@/lib/limits/fee-channel";
 import { fetchTradeFeeBps, sendWithUtilFeeRetry } from "@/lib/limits/trade-fee-resolve";
@@ -658,6 +659,8 @@ export function useTrade(slabAddress: string) {
           }));
         }
         let sig: string;
+        // U-2: set when the silent 98 retry raised the signed fee cap; recorded against the signature once it lands.
+        let feeRaise: FeeRaise | null = null;
         if (isV17Market && legs.length > SINGLE_TX_MAX_LEGS) {
           // M-2: more legs than one transaction's 1.4M CU can carry. Pack them into as many
           // transactions as the budget needs, simulate every one before signing (re-planning
@@ -742,6 +745,7 @@ export function useTrade(slabAddress: string) {
           let instructions0 = instructions;
           const withRaisedFee = async (): Promise<void> => {
             const raised = await fetchTradeFeeBps(connection, slabPk, matcherCtx, { fallback: signedFeeBps, withUtilMax: true });
+            if (raised !== undefined && signedFeeBps !== undefined) feeRaise = { fromBps: signedFeeBps, toBps: raised };
             const rebuilt = buildTradeIxs({ ...tradeIxParams, feeBps: raised });
             instructions0 = instructions.map((ix) => { const k = tradeIxs.indexOf(ix); return k >= 0 ? rebuilt[k] : ix; });
             if (v22Refresh) v22Refresh.body = instructions0;
@@ -794,6 +798,8 @@ export function useTrade(slabAddress: string) {
                 })
               : await sendOrder();
         }
+
+        recordFeeRaise(sig, feeRaise);
 
         // #3314: measure the position change for the saved entry. Not awaited: the caller that
         // saves the entry (OrderTicket) waits for it via takePositionChange(sig); closes don't.

@@ -292,7 +292,7 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
       {backingSeedFailed && (
         <div className="border border-[var(--warning)]/20 bg-[var(--warning)]/[0.04] px-4 py-2 mb-4 text-left w-full max-w-sm mx-auto">
           <p className="text-[11px] text-[var(--text-secondary)]">
-            Market is <strong className="text-[var(--text)]">live and tradeable</strong>, but counterparty backing was <strong className="text-[var(--text)]">not seeded</strong> — the deposit for both domains did not land. Retry it from market settings before the market takes size.
+            Market is <strong className="text-[var(--text)]">live and tradeable</strong>, but its trader payout reserve was <strong className="text-[var(--text)]">not seeded</strong> — the deposit for both sides did not land. Retry it from market settings before the market takes size.
           </p>
         </div>
       )}

@@ -45,6 +45,8 @@ export interface MessageContext {
   symbol?: string;
   /** The most the user can open / withdraw now, already formatted ("41.88"), for "Use {max}". */
   maxNow?: string;
+  /** The market's `max_portfolio_assets` (positions one account can hold here), for the 126 line. */
+  maxPositions?: number;
   /** Leverage cap for new positions on the busy side (78 step-down). */
   maxLeverage?: number;
   /** Earn cooldown remaining, seconds (36). */

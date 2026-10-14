@@ -6,6 +6,7 @@ import { GlassCard } from "@/components/ui/GlassCard";
 import { ScrollReveal } from "@/components/ui/ScrollReveal";
 import { LiveMarketRail } from "@/components/landing/LiveMarketRail";
 import { MAX_LEVERAGE_X } from "@/lib/market-params";
+import { ADMIN_BURN_COPY } from "@/lib/admin-burn-copy";
 import { TrendingTokensRail } from "@/components/landing/TrendingTokensRail";
 
 const ARROW = (
@@ -22,8 +23,8 @@ const PROOF_POINTS = [
   },
   {
     index: "02",
-    title: "Admin key can be burned",
-    body: "Creators can permanently renounce admin control after launch. Once burned, no one can change config, pause the market, or touch its funds — it runs on its own code.",
+    title: "Creator admin key can be burned",
+    body: ADMIN_BURN_COPY.landing,
   },
   {
     index: "03",

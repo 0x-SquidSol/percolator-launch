@@ -100,6 +100,7 @@ import { balanceMaxQ, deriveTicketState, maxInUnit, oneMaxQ, sideRoomIsFull, typ
 import { publishTicketRow } from "@/lib/limits/ticket-status-store";
 import { fmtQ as fmtQLots } from "@/lib/limits/format";
 import { takeFillResult } from "@/lib/limits/fill-check";
+import { feeRaiseCopy, takeFeeRaise } from "@/lib/v22/fee-raise-note";
 import { defaultFeeCapMarginBps } from "@/lib/limits/fee-channel";
 import { OrderTicketLimits, reasonCopy } from "@/components/limits/OrderTicketLimits";
 import { GrowthTicketPanel } from "@/components/trade/GrowthTicketPanel";
@@ -130,7 +131,9 @@ import { decodeMarketEngineView } from "@/lib/limits/decode";
 import { isAdlReduceOnly } from "@/lib/limits/adl-reduce-only";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { FirstDepositCard } from "@/components/trade/FirstDepositCard";
-import { diagnoseV22TradeCustom9, positionCapBlocksOpen, V22_POSITION_CAP_COPY } from "@/lib/v22/trade-refusal-9";
+import { diagnoseV22TradeCustom9, positionCapBlocksOpen, positionCapCopy } from "@/lib/v22/trade-refusal-9";
+import { readMaxPortfolioAssets } from "@/lib/v22/market-cap";
+import { growthMaxLeverageForOrder } from "@/lib/v21/growth-market";
 import { getPortfolioRawSnapshot, makePortfolioScanKey } from "@/lib/userAccountScan";
 
 const SIZE_PRESETS = [25, 50, 75, 100];
@@ -451,6 +454,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   /** WP-3 row 9: the size was just reduced to the max; the helper turns --warning for 4 s. */
   const [clampedToQ, setClampedToQ] = useState<bigint | null>(null);
   /** WP-3 result line (§3.3): full / partial / zero fill of the last order, in the status slot. */
+  const [feeRaiseNote, setFeeRaiseNote] = useState<{ sig: string | null; text: string } | null>(null);
   const [result, setResult] = useState<{ kind: "full" | "partial" | "zero" | "sent"; body: string; sig: string | null; tryQ: bigint | null } | null>(null);
   /** WP-3: the wait loop passed ~30 s; "We'll keep trying" + Stop. */
   const [waitingLong, setWaitingLong] = useState(false);
@@ -469,6 +473,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // back to a neutral "TOKEN" (never the collateral symbol — sizing is in
   // base units, and the collateral is sim-USDC on every playground market).
   const baseTicker = (marketInfo?.symbol ?? "").replace(/-PERP$/i, "").trim() || "TOKEN";
+  // The market's own cap on positions per account (config max_portfolio_assets); null = unread, then the copy drops the number.
+  const maxPositions = slabRaw ? readMaxPortfolioAssets(slabRaw) : null;
   const initialMarginBps = params?.initialMarginBps ?? 1000n;
   const maintenanceMarginBps = params?.maintenanceMarginBps ?? 500n;
   const tradingFeeBps = params?.tradingFeeBps ?? 30n;
@@ -1189,6 +1195,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       setWaitingLong(false);
       // P1: a confirmed TradeCpi can be a partial or ZERO fill (lib/limits/fill-check.ts).
       const limitsFillResult = takeFillResult(sig);
+      // U-2: the silent retry at a raised fee cap (no second confirmation) gets a small note once the order has landed.
+      const raisedFee = takeFeeRaise(sig);
+      setFeeRaiseNote(raisedFee ? { sig: sig ?? null, text: feeRaiseCopy(raisedFee) } : null);
       setClampedToQ(null);
       if (limitsFillResult?.kind === "zero") {
         // Never "Confirmed!" for a no-op: nothing filled, nothing to save. Offer a smaller size.
@@ -1331,6 +1340,10 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
         symbol: marketInfo?.symbol ?? undefined,
         maxNow: sideMaxQ !== null && sideMaxQ > 0n && sideMaxQ < UNLIMITED_CAPACITY ? fmtQ(sideMaxQ) : undefined,
         health: { lpDepleted, lpIsVault, adlReduceOnly, resolved: marketResolved },
+        // LEV-4: Custom 92 names the leverage the program allows at THIS size (post-fill requirement), not a generic line.
+        ...(marketLimits.growth ? (() => { const n = growthMaxLeverageForOrder(marketLimits.growth, direction, existingPositionSize, positionSize); return n === null ? {} : { maxLeverage: n }; })() : {}),
+        // 126: the market's own cap on positions per account.
+        ...(maxPositions !== null ? { maxPositions } : {}),
         priceAgeSecs: oracleReady && !oracleUnavailable ? oracleAgeSecs(oracleLastMs, oracleElapsed) : null,
         // GH#2953: fund-and-trade does not wait and resend; never promise "goes through automatically".
         oneShot: fundingMode,
@@ -1447,7 +1460,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       ? getPortfolioRawSnapshot(makePortfolioScanKey(slabProgramId, slabAddress, publicKey))
       : null;
   const positionCapReached = ownPortfolioRaw
-    ? positionCapBlocksOpen(ownPortfolioRaw.portfolio.legs.filter((l) => l.active).map((l) => l.assetIndex), 0)
+    ? positionCapBlocksOpen(ownPortfolioRaw.portfolio.legs.filter((l) => l.active).map((l) => l.assetIndex), 0, maxPositions ?? undefined)
     : false;
 
   const submitDisabled =
@@ -1509,7 +1522,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     if (positionCapReached) {
       return (
         <div data-testid="trade-position-cap">
-          <StatusLine message={{ kind: "position-cap", variant: "error", title: "Position limit reached", body: V22_POSITION_CAP_COPY }} />
+          <StatusLine message={{ kind: "position-cap", variant: "error", title: "Position limit reached", body: positionCapCopy(maxPositions) }} />
         </div>
       );
     }
@@ -1581,7 +1594,13 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
           txUrl={result.sig ? explorerTxUrl(result.sig) : undefined}
         />
       );
-      return result.kind === "full" ? line : <div data-testid="limits-fill-result" data-kind={result.kind}>{line}</div>;
+      const shown = result.kind === "full" ? line : <div data-testid="limits-fill-result" data-kind={result.kind}>{line}</div>;
+      return feeRaiseNote && feeRaiseNote.sig === result.sig && result.kind !== "zero" ? (
+        <>
+          {shown}
+          <p data-testid="fee-raise-note" className="mt-1 text-[10px] leading-snug text-[var(--text-muted)]">{feeRaiseNote.text}</p>
+        </>
+      ) : shown;
     }
     if (networkWarning) {
       return <StatusLine message={{ kind: "wallet-network", variant: "info", title: "Check your wallet's network", body: networkWarning }} />;

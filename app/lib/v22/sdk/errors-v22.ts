@@ -12,7 +12,7 @@ export const PERCOLATOR_ERRORS_V22: Readonly<Record<number, ErrorInfo>> = Object
   // Wave B `v22-band-defaults-and-product-copy.md`, the Rust doc comments) where they give copy.
   104: {
     name: "PriceBandPinned",
-    hint: "Price catching up; closing resumes in a few seconds.",
+    hint: "Close on hold while the price catches up. Try again once it has.", // app copy: the ONE 104 line (V22_COPY.band.catchingUp)
   },
   105: {
     name: "PriceBandConfigInvalid",
@@ -89,10 +89,10 @@ export const PERCOLATOR_ERRORS_V22: Readonly<Record<number, ErrorInfo>> = Object
   },
   126: {
     name: "PositionCapReached",
-    hint: "This account already holds the maximum number of positions on this market. Close one first.",
+    hint: "This account already holds the most positions this market allows. Close one, or try again later.", // app copy: the app ticket trades asset 0 only
   },
   127: {
     name: "CounterpartyPositionCapReached",
-    hint: "The other side of this trade is at its position limit, which is not caused by your account. Try another asset or try again later.",
+    hint: "The other side of this trade is at its limit, which is not caused by your account. Try again later.", // app copy: no "try another asset"
   },
   });
