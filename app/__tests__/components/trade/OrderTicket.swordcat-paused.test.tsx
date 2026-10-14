@@ -121,6 +121,40 @@ describe("swordcat Long, room 2.78 lots < minimum leg 3 lots", () => {
   });
 });
 
+describe("QA 12:38: a connected HOLDER with almost no room (~$0.79 = 0.022 lots) reads Paused (full)", () => {
+  // program (simulated, slot 510975605): a holder adding 1 / 5 / 0.5 lots into 0.07-0.09 lots of room LANDS a CLIPPED fill of exactly the room
+  // (flags 9); there is no zero fill and no refusal, so the program imposes no floor on a holder's add. The floor is the ticket's own step:
+  // the smallest add it can place is one whole lot (lot_exp 4).
+  it("holder (3.5 lots held), room 0.022 lots: Long tab 'Paused (full)'", () => {
+    setup({ room: 22_000n, connected: true, position: 3_500_000n });
+    render(<OrderTicket slabAddress={SLAB} />);
+    const long = screen.getByTestId("trade-side-long");
+    expect(long.dataset.limitsHalted).toBe("true");
+    expect(long.textContent).toMatch(/Paused \(full\)/);
+  });
+  it("holder, room just under one lot is paused; room of one lot or more is open", () => {
+    for (const [room, paused] of [[999_999n, true], [1_000_000n, false], [2_780_000n, false]] as const) {
+      setup({ room, connected: true, position: 3_500_000n });
+      const { unmount } = render(<OrderTicket slabAddress={SLAB} />);
+      expect(screen.getByTestId("trade-side-long").dataset.limitsHalted).toBe(paused ? "true" : undefined);
+      unmount();
+    }
+  });
+  it("flat cases are unchanged: the exact 100-USDC rule (2.82 paused, 2.826 open)", () => {
+    for (const [room, paused] of [[2_820_000n, true], [2_826_000n, false]] as const) {
+      setup({ room, connected: true });
+      const { unmount } = render(<OrderTicket slabAddress={SLAB} />);
+      expect(screen.getByTestId("trade-side-long").dataset.limitsHalted).toBe(paused ? "true" : undefined);
+      unmount();
+    }
+  });
+  it("a holder of the OTHER side (short) is never paused: the Long tab is a close", () => {
+    setup({ room: 22_000n, connected: true, position: -3_500_000n });
+    render(<OrderTicket slabAddress={SLAB} />);
+    expect(screen.getByTestId("trade-side-long").dataset.limitsHalted).toBeUndefined();
+  });
+});
+
 describe("swordcat Long, room >= minimum leg: no pause", () => {
   it("live room 6.48 lots: both tabs open, connected and disconnected", () => {
     for (const connected of [true, false]) {

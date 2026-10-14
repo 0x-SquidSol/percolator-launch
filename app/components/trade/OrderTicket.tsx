@@ -971,6 +971,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
           (!isSentinelValue(userAccount.account.feeCredits) && userAccount.account.feeCredits < 0n ? userAccount.account.feeCredits : 0n)
         : null,
     minLegQ: bandMinLegExactQ(bandView),
+    sizeStepQ: lotExp > 0 ? POS_SCALE_V22 : 100n,
     format: {
       size: (q: bigint) => sizeWithLots(q, { lotExp, ticker: baseTicker }),
       collateral: (atoms: bigint) => `${formatTokenAmount(atoms, decimals, 2)} ${collateralSymbol}`,
@@ -1831,7 +1832,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
           Long
           {sidePaused.long && (
             <span data-testid="trade-side-paused" className="text-[10px] font-medium normal-case tracking-normal">
-              {TICKET_COPY.sidePausedSublabel}
+              {ticketLimits.fullSides.long ? TICKET_COPY.sidePausedFullSublabel : TICKET_COPY.sidePausedSublabel}
             </span>
           )}
         </button>
@@ -1852,7 +1853,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
           Short
           {sidePaused.short && (
             <span data-testid="trade-side-paused" className="text-[10px] font-medium normal-case tracking-normal">
-              {TICKET_COPY.sidePausedSublabel}
+              {ticketLimits.fullSides.short ? TICKET_COPY.sidePausedFullSublabel : TICKET_COPY.sidePausedSublabel}
             </span>
           )}
         </button>
@@ -2068,7 +2069,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       </div>
 
       {marketLimits.growth && ticketLimits.growth && (
-        <GrowthTicketPanelLive view={marketLimits.growth} decision={ticketLimits.growth} direction={direction} sizeFormat={{ lotExp, ticker: baseTicker }} sidePaused={sidePaused[direction]} raw={slabRaw} bandBps={bandView ? bandView.band.bandBps : null} />
+        <GrowthTicketPanelLive view={marketLimits.growth} decision={ticketLimits.growth} direction={direction} sizeFormat={{ lotExp, ticker: baseTicker }} sidePaused={sidePaused[direction]} sideFull={ticketLimits.fullSides[direction]} raw={slabRaw} bandBps={bandView ? bandView.band.bandBps : null} />
       )}
 
       {stepDownNote && (

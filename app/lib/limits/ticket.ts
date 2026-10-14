@@ -53,6 +53,8 @@ export interface TicketLimitsInput {
   takerEquity?: bigint | null;
   /** Band market: the program's exact minimum leg in Q (`bandMinLegExactQ`, fractional lots); a fill that would leave a smaller leg is refused (113). */
   minLegQ?: bigint | null;
+  /** The smallest add the ticket can place (Q): one whole lot on a lot market, the 4 dp display step otherwise. Below it a side reads full. */
+  sizeStepQ?: bigint | null;
   /** Wording helpers for the gate's messages (sizes in the ticket's units, collateral atoms as a dollar string). */
   format?: { size: (q: bigint) => string; collateral: (atoms: bigint) => string };
 }
@@ -60,6 +62,8 @@ export interface TicketLimitsInput {
 export interface TicketLimits {
   sideLimits: Record<Side, SideLimit> | null;
   halted: Record<Side, boolean>;
+  /** Sides paused because they are FULL (growth capacity / room below the minimum or the step): the tab reads "Paused (full)". */
+  fullSides: Record<Side, boolean>;
   sameOwner: boolean;
   /** The wallet owns the LP or created the market: it may only reduce/close (P1 item 2). */
   sameOwnerCloseOnly: boolean;
@@ -100,6 +104,7 @@ export interface TicketLimits {
 const NONE: TicketLimits = {
   sideLimits: null,
   halted: { long: false, short: false },
+  fullSides: { long: false, short: false },
   sameOwner: false,
   sameOwnerCloseOnly: false,
   clampToQ: null,
@@ -126,16 +131,21 @@ export function growthSideHalt(
   side: Side,
   takerPosQ: bigint,
   minLegQ: bigint | null | undefined,
-): "closed" | "min-leg" | null {
+  stepQ?: bigint | null,
+): "closed" | "min-leg" | "step" | null {
   if (!view) return null;
   const q = side === "long" ? view.long : view.short;
   if (!q.growthOn) return null;
   const closing = takerPosQ !== 0n && takerPosQ > 0n !== (side === "long") ? (takerPosQ < 0n ? -takerPosQ : takerPosQ) : 0n;
   if (q.closed) return closing > 0n ? null : "closed";
-  if (minLegQ != null && minLegQ > 0n && closing === 0n) {
-    const held = takerPosQ < 0n ? -takerPosQ : takerPosQ;
-    if (held + (q.headroomQ ?? 0n) < minLegQ) return "min-leg";
-  }
+  if (closing > 0n) return null;
+  const held = takerPosQ < 0n ? -takerPosQ : takerPosQ;
+  const room = q.headroomQ ?? 0n;
+  // A FLAT taker's fill is the whole leg: it must reach the program's minimum (band_min_leg_notional, exact notional rule).
+  if (held === 0n && minLegQ != null && minLegQ > 0n && room < minLegQ) return "min-leg";
+  // Below one size step the ticket cannot place an add at all (an order is whole lots on a lot market; the clip would land a fraction of a
+  // lot, which program-wise is allowed but is not a size anyone can ask for). Holders and flat takers alike: the side reads full.
+  if (stepQ != null && stepQ > 0n && room < stepQ) return "step";
   return null;
 }
 
@@ -155,7 +165,7 @@ export function deriveTicketLimits(i: TicketLimitsInput): TicketLimits {
       issues: sameOwner ? [{ kind: "same-owner", severity: "error", title: "Can't open from this wallet", message: COPY.sameOwner }] : [],
     };
   }
-  const out: TicketLimits = { ...NONE, halted: { long: false, short: false }, issues: [] };
+  const out: TicketLimits = { ...NONE, halted: { long: false, short: false }, fullSides: { long: false, short: false }, issues: [] };
   const e = L.engine;
 
   // ── P1 ────────────────────────────────────────────────────────────────
@@ -289,14 +299,21 @@ export function deriveTicketLimits(i: TicketLimitsInput): TicketLimits {
       }
     }
     // Band market: the room left on a side can be smaller than the minimum position (see growthSideHalt).
-    if (growth && !growth.reducing && growthSideHalt(i.growth, i.direction, i.takerPosQ, i.minLegQ) === "min-leg") {
+    const own = growth && !growth.reducing ? growthSideHalt(i.growth, i.direction, i.takerPosQ, i.minLegQ, i.sizeStepQ) : null;
+    if (own === "min-leg" || own === "step") {
       out.halted[i.direction] = true;
+      out.fullSides[i.direction] = true;
       out.issues.push({ kind: "growth-closed", severity: "error", title: "This side is full", message: V21_COPY.growthClosed(i.direction, "capacity-full") });
     }
   }
   // The OTHER side's tab: paused for the same market reasons, independent of the wallet and of the selected direction.
   const other: Side = i.direction === "long" ? "short" : "long";
-  if (growthSideHalt(i.growth, other, i.takerPosQ, i.minLegQ) !== null) out.halted[other] = true;
+  const otherHalt = growthSideHalt(i.growth, other, i.takerPosQ, i.minLegQ, i.sizeStepQ);
+  if (otherHalt !== null) {
+    out.halted[other] = true;
+    out.fullSides[other] = true;
+  }
+  if (growth?.closed && !growth.reducing) out.fullSides[i.direction] = true;
 
   // ── P3 leverage step-down ──────────────────────────────────────────────────
   if (L.flags.p3 && L.vaultLp?.bound && L.vaultLp.levCapQ > 0n) {

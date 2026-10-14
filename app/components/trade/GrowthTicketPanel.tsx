@@ -30,6 +30,8 @@ export interface GrowthTicketPanelProps {
   sizeFormat?: RoomFormat;
   /** The ticket already pauses opening on this side for another reason (P1: the LP is at its floor): the capacity row says "paused". */
   sidePaused?: boolean;
+  /** That pause is because the side is FULL: the row reads "paused (full)". */
+  sideFull?: boolean;
 }
 
 const levLabel = (x100: number): string => `${(x100 / 100).toFixed(x100 % 100 === 0 ? 0 : 1)}x`;
@@ -37,7 +39,7 @@ const levLabel = (x100: number): string => `${(x100 / 100).toFixed(x100 % 100 ==
 /** "Full" reasons get the plan's wording; a paused market (loss recovery, not set up, unreadable) keeps its own line. */
 const isFullReason = (r: GrowthMarketView["long"]["closedReason"]): boolean => r === "capacity-full" || r === "capacity-zero" || r === null;
 
-export const GrowthTicketPanel: FC<GrowthTicketPanelProps> = ({ view, decision, direction, unlock = null, sizeFormat = { lotExp: 0, ticker: "" }, sidePaused = false }) => {
+export const GrowthTicketPanel: FC<GrowthTicketPanelProps> = ({ view, decision, direction, unlock = null, sizeFormat = { lotExp: 0, ticker: "" }, sidePaused = false, sideFull = false }) => {
   const openSides = (["long", "short"] as const).filter((side) => !(side === "long" ? view.long : view.short).closed);
   const closedSides = (["long", "short"] as const).filter((side) => (side === "long" ? view.long : view.short).closed);
   const reasonOf = (side: "long" | "short") => (side === "long" ? view.long : view.short).closedReason;
@@ -96,7 +98,7 @@ export const GrowthTicketPanel: FC<GrowthTicketPanelProps> = ({ view, decision, 
         <div className="mt-2" data-testid="growth-capacity">
           <div className="mb-0.5 flex justify-between text-[10px] text-[var(--text-dim)]">
             <span>{V21_COPY.ticket.capacity}</span>
-            <span data-testid="growth-capacity-label">{paused ? V22_COPY.growth.capacityPaused : V21_COPY.ticket.capacityUsed(`${pct}%`)}</span>
+            <span data-testid="growth-capacity-label">{paused ? (sideFull || (decision.quote.closed && (decision.quote.closedReason === "capacity-full" || decision.quote.closedReason === "capacity-zero")) ? V22_COPY.growth.capacityPausedFull : V22_COPY.growth.capacityPaused) : V21_COPY.ticket.capacityUsed(`${pct}%`)}</span>
           </div>
           <div
             role="progressbar"

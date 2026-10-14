@@ -132,6 +132,7 @@ export const V22_COPY = {
     bothPaused: "New positions paused: this market is full. Closes are open.",
     /** The capacity row of a closed side: a word, never "0% full". */
     capacityPaused: "paused",
+    capacityPausedFull: "paused (full)",
     /** Remaining room on the selected side (tokens, with the lot size when the market has lots, and USD). */
     room: (size: string, usd: string) => `Room on this side: ${size}, about ${usd}`,
     /** The account's collateral is below what the program requires after the fill (Custom 92): say how much fits and what it would take. */

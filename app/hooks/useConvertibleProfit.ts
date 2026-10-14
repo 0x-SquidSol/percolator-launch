@@ -8,6 +8,9 @@ import { useSlabState } from "@/components/providers/SlabProvider";
 import { connectionQuoteDeps, quoteConvertible, type ConvertQuote } from "@/lib/convert-released-pnl";
 import { parsePortfolio } from "@/lib/v22/layout";
 
+/** Delays before asking again after an unreadable quote (4 retries, ~30 s in total). */
+export const QUOTE_RETRY_DELAYS_MS: readonly number[] = [2_000, 4_000, 8_000, 16_000];
+
 /**
  * Released profit the program would move into capital right now (ConvertReleasedPnl, tag 28),
  * read from a simulation of the instruction itself (lib/convert-released-pnl.ts). Re-quotes
@@ -24,9 +27,16 @@ export function useConvertibleProfit(
   const { publicKey } = useWalletCompat();
   const { programId } = useSlabState();
   const [quote, setQuote] = useState<ConvertQuote | null>(null);
+  // A quote that could not be read (RPC hiccup: "unknown" or a thrown read) is asked again a few times, so the profit does not stay stuck
+  // as "unclaimable" until the page is reloaded (QA 12:38: dust of 0.196 USDC that the program does let through).
+  const [attempt, setAttempt] = useState(0);
   const portfolioKey = portfolioPk?.toBase58() ?? null;
   const ownerKey = publicKey?.toBase58() ?? null;
   const programKey = programId?.toBase58() ?? null;
+
+  useEffect(() => {
+    setAttempt(0);
+  }, [portfolioKey, ownerKey, programKey, capital, pnl, hasOpenPosition]);
 
   useEffect(() => {
     setQuote(null);
@@ -45,17 +55,27 @@ export function useConvertibleProfit(
           { programId, owner: publicKey, market: new PublicKey(slabAddress), portfolio: portfolioPk, portfolioData: data },
           connectionQuoteDeps(connection, publicKey),
         );
-        if (!cancelled) setQuote(q);
+        if (cancelled) return;
+        setQuote(q);
+        if (q.status === "settling" && q.reason === "unknown") scheduleRetry();
       } catch {
-        if (!cancelled) setQuote(null);
+        if (cancelled) return;
+        setQuote(null);
+        scheduleRetry();
       }
     })();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    function scheduleRetry() {
+      if (attempt >= QUOTE_RETRY_DELAYS_MS.length) return;
+      timer = setTimeout(() => { if (!cancelled) setAttempt((n) => n + 1); }, QUOTE_RETRY_DELAYS_MS[attempt]);
+    }
     return () => {
       cancelled = true;
+      if (timer) clearTimeout(timer);
     };
     // Keys, not objects: re-quote on identity or balance changes only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connection, slabAddress, portfolioKey, ownerKey, programKey, capital, pnl, hasOpenPosition]);
+  }, [connection, slabAddress, portfolioKey, ownerKey, programKey, capital, pnl, hasOpenPosition, attempt]);
 
   return quote;
 }

@@ -315,6 +315,8 @@ export const TICKET_COPY = {
     undetermined: { title: "Couldn't confirm yet", body: "Check your position or the explorer before trying again." },
   },
   sidePausedSublabel: "Paused",
+  /** A side paused because it is FULL (no room left for any add the ticket can place). */
+  sidePausedFullSublabel: "Paused (full)",
   result: {
     full: (size: string, sym: string, side: string, price: string) => `Opened ${size} ${sym} ${side} at ${price}`,
     /** Every line below is worded from the MEASURED position change (lib/order-result.ts), never the request. `price` null = omit it (partial fills). */

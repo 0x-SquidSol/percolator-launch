@@ -24,6 +24,11 @@ import { heldProfitMessage, settlingProfitMessage } from "@/lib/convert-released
 import { useProfitHold } from "@/hooks/useProfitHold";
 import { useWalletBalanceRefreshKey } from "@/lib/wallet-balance-invalidation";
 import { getPortfolioRawSnapshot, makePortfolioScanKey } from "@/lib/userAccountScan";
+const CLAIM_COPY = {
+  checking: "Checking how much of your profit can be withdrawn…",
+  nothing: "There is no profit that can be moved to your balance right now.",
+  couldNotCheck: "We couldn't check your profit just now. Try again in a moment.",
+} as const;
 import { CloseTradingAccountRow } from "./CloseTradingAccountRow";
 import { CLOSE_ACCOUNT_COPY, lamportsToSolText } from "@/lib/close-trading-account";
 
@@ -323,6 +328,21 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
       ? heldProfitMessage(`${formatTokenAmount(profitHold.amount, decimals, 3)} ${symbol}`)
       : settlingProfitMessage(convertQuote.code)
     : null;
+  // QA 12:38 (Low): a flat account holding only released profit (capital 0, pnl 196,157 = 0.196 USDC) clicked "Claim profit" and saw a disabled
+  // Withdraw with no reason. On chain [recertify crank, tag 28, withdraw 196157] lands (simulated), so the dust is claimable; the card now
+  //  1. fills the claimable amount once the quote is ready (one click on Withdraw, or "Withdraw all"),
+  //  2. says WHY when it cannot (checking / could not check / held / nothing to claim) instead of staying silent.
+  const pnlNow = userAccount && !isSentinelValue(userAccount.account.pnl) ? userAccount.account.pnl : 0n;
+  const claimFlow = mode === "withdraw" && !hasOpenPosition && capital === 0n && pnlNow > 0n;
+  const claimReason: string | null = !claimFlow || withdrawable > 0n || settlingProfitLine
+    ? null
+    : convertQuote === null
+      ? CLAIM_COPY.checking
+      : convertQuote.status === "none"
+        ? CLAIM_COPY.nothing
+        : convertQuote.status === "settling"
+          ? CLAIM_COPY.couldNotCheck
+          : null;
   const loading = mode === "deposit" ? depositLoading : withdrawLoading;
   const error = mode === "deposit" ? depositError : withdrawError;
   const isDepositBalanceUnverified =
@@ -348,6 +368,19 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
     : isOverDeposit
     ? "Insufficient wallet balance"
     : null;
+
+  /** One click: convert the released profit and withdraw everything that is withdrawable (the same tx the Withdraw button builds). */
+  async function handleWithdrawAll() {
+    if (!userAccount || mockMode || withdrawable <= 0n || withdrawLoading) return;
+    try {
+      const sig = await withdraw({ userIdx: userAccount.idx, amount: withdrawable, portfolioPk: userAccount.pubkey });
+      setLastSig(sig ?? null);
+      maxRawRef.current = null;
+      setAmount("");
+    } catch {
+      // Error state is already handled by the withdraw hook
+    }
+  }
 
   async function handleSubmit() {
     if (!amount || !userAccount || validationError || isDepositBalanceUnverified) return;
@@ -477,6 +510,21 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
           <p data-testid="settling-profit" data-held={profitHold.held ? "true" : undefined} className="mt-1 text-[10px] text-[var(--text-secondary)]">{settlingProfitLine}</p>
         )}
       </div>
+
+      {mode === "withdraw" && claimReason && (
+        <p data-testid="claim-status" className="mb-2 text-[10px] text-[var(--text-secondary)]">{claimReason}</p>
+      )}
+      {mode === "withdraw" && !hasOpenPosition && withdrawable > 0n && (
+        <button
+          type="button"
+          onClick={handleWithdrawAll}
+          disabled={withdrawLoading}
+          data-testid="withdraw-all"
+          className="mb-2 w-full rounded-none border border-[var(--warning)]/60 py-2 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--warning)] hover:bg-[var(--warning)]/10 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {withdrawLoading ? "Sending..." : `Withdraw all (${formatTokenAmount(withdrawable, decimals, 3)} ${symbol})`}
+        </button>
+      )}
 
       {mode === "withdraw" && hasOpenPosition && (
         <div className="mb-2 border border-[var(--warning)]/20 bg-[var(--warning)]/[0.04] p-2 space-y-1">
