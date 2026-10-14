@@ -305,7 +305,80 @@ export interface StakePoolV5Fields {
   creatorForwardedAtoms: bigint;
   /** `_v5_reserved[0]`: the pending target was proposed by the protocol authority (S-6). */
   pendingTargetByProtocol: boolean;
+  /** S1: cumulative terminal surplus forwarded to the creator (`_v5_reserved[8..16]`, bytes 464..472). */
+  creatorSurplusForwardedAtoms: bigint;
+  /**
+   * S2 backlog (`_v5_reserved[16..24]`, bytes 472..480): wrapper fee payouts received while the pool had no real staker. INFORMATIONAL since the
+   * close-out rule: the atoms stay unbooked in the vault until the close, where they are part of the surplus that goes to the stakers (or is
+   * recorded unclaimed) and are NEVER paid to the creator beyond the seed.
+   */
+  s2BacklogOwedAtoms: bigint;
+  /**
+   * Close-out rule: the insurance seed recorded at the tag 19 bind (u56 LE at 457..464), valid only when byte 333 bit 0 is set; `null` when no
+   * close-out-rule bind recorded one (a pool bound before the build: the creator is owed nothing at close).
+   */
+  creatorSeedAtoms: bigint | null;
+  /**
+   * Close-out rule: terminal surplus that no real staker can own and that is not the creator's (zero real stakers): left unbooked in `pool.vault`
+   * and recorded here, a full u64 (low 7 bytes at 281..288, high byte at 334). Never paid to the creator.
+   */
+  unclaimedAtoms: bigint;
+  /** Close-out rule: everything the pool has sent to the creator, `creatorForwardedAtoms` (448) + `creatorSurplusForwardedAtoms` (464), saturating at u64::MAX. */
+  creatorTotalForwardedAtoms: bigint;
 }
+
+// TODO(repin): close-out helpers verbatim from percolator-sdk feat/v22-sdk-growth @ 6adad8f (stake close-out rule, R3.3).
+/** The u64 maximum. */
+const U64_MAX_STAKE = (1n << 64n) - 1n;
+
+/**
+ * Close-out rule, the creator's share of one terminal `surplus`: `min(surplus, min(seed, creatorClassReleased) - forwarded)`, with the subtraction
+ * saturating at 0. `creatorClassReleased` is the wrapper's creator-class value released on a unitised FIRST_LOSS market and `undefined` otherwise.
+ * Port of stake `math::closeout_creator_share`.
+ *
+ * @param surplus                Vault balance above the booked pool value (atoms).
+ * @param seed                   The recorded seed ({@link StakePoolV5.creatorSeedAtoms}, 0 when none).
+ * @param forwarded              {@link StakePoolV5.creatorTotalForwardedAtoms}.
+ * @param creatorClassReleased   Creator-class value released so far (first-loss units), or `undefined`.
+ * @returns The creator's share (never above the seed or the surplus).
+ * @example
+ * ```ts
+ * closeoutCreatorShare(7_000_000n, 5_000_000n, 0n); // 5_000_000n
+ * ```
+ */
+export function closeoutCreatorShare(surplus: bigint, seed: bigint, forwarded: bigint, creatorClassReleased?: bigint): bigint {
+  const entitled = creatorClassReleased === undefined ? seed : seed < creatorClassReleased ? seed : creatorClassReleased;
+  const room = entitled > forwarded ? entitled - forwarded : 0n;
+  return surplus < room ? surplus : room;
+}
+
+/** Result of {@link closeoutSplit}. */
+export interface CloseoutSplit {
+  /** Back to the creator: at most the seed recorded at bind. */
+  creator: bigint;
+  /** Booked to the pool, split pro rata among the real stakers. */
+  stakers: bigint;
+  /** Left unbooked in `pool.vault` (no real staker), recorded as unclaimed; never the creator's. */
+  unclaimed: bigint;
+}
+
+/**
+ * Close-out rule, one settlement's split: `creator = closeoutCreatorShare(..)`; the rest goes to the stakers when real stakers exist, else it is
+ * `unclaimed`. Always `creator + stakers + unclaimed == surplus` and `stakers == 0n || unclaimed == 0n`. Port of stake `math::closeout_split`.
+ *
+ * @param i  `surplus`, `seed`, `forwarded`, optional `creatorClassReleased`, and whether the pool has real stakers (LP supply above the dead shares).
+ * @returns `{ creator, stakers, unclaimed }`.
+ * @example
+ * ```ts
+ * closeoutSplit({ surplus: 7_600n, seed: 5_000n, forwarded: 0n, hasRealStakers: false }); // { creator: 5_000n, stakers: 0n, unclaimed: 2_600n }
+ * ```
+ */
+export function closeoutSplit(i: { surplus: bigint; seed: bigint; forwarded: bigint; creatorClassReleased?: bigint; hasRealStakers: boolean }): CloseoutSplit {
+  const creator = closeoutCreatorShare(i.surplus, i.seed, i.forwarded, i.creatorClassReleased);
+  const rest = i.surplus - creator;
+  return i.hasRealStakers ? { creator, stakers: rest, unclaimed: 0n } : { creator, stakers: 0n, unclaimed: rest };
+}
+
 
 /** Decoded v5 pool: the v5 fields plus the identity fields every consumer needs. */
 export interface StakePoolV5 extends StakePoolV5Fields {
@@ -330,6 +403,20 @@ export interface StakePoolV5 extends StakePoolV5Fields {
 }
 
 const STAKE_POOL_DISCRIMINATOR_V5 = Uint8Array.from([0x53, 0x50, 0x4f, 0x4f, 0x4c, 0x5f, 0x56, 0x31]); // "SPOOL_V1"
+
+function seed56(d: Uint8Array): bigint {
+  let x = 0n;
+  for (let i = 6; i >= 0; i--) x = (x << 8n) | BigInt(d[457 + i] as number);
+  return x;
+}
+function unclaimed64(d: Uint8Array): bigint {
+  let x = BigInt(d[334] as number);
+  for (let i = 6; i >= 0; i--) x = (x << 8n) | BigInt(d[281 + i] as number);
+  return x;
+}
+function sat64(x: bigint): bigint {
+  return x > U64_MAX_STAKE ? U64_MAX_STAKE : x;
+}
 
 /**
  * Decode a `StakePool` v5 account. Checks the length (`>= 480`), the discriminator and the version byte (`== 5`)
@@ -389,6 +476,11 @@ export function decodeStakePoolV5(data: Uint8Array): StakePoolV5 {
     syncCooldownSlots: u64(F.syncCooldownSlots),
     creatorForwardedAtoms: u64(F.creatorForwardedAtoms),
     pendingTargetByProtocol: data[F.v5Reserved] === 1,
+    creatorSurplusForwardedAtoms: u64(F.v5Reserved + 8),
+    s2BacklogOwedAtoms: u64(F.v5Reserved + 16),
+    creatorSeedAtoms: ((data[333] as number) & 1) !== 0 ? seed56(data) : null,
+    unclaimedAtoms: unclaimed64(data),
+    creatorTotalForwardedAtoms: sat64(u64(F.creatorForwardedAtoms) + u64(F.v5Reserved + 8)),
   };
 }
 

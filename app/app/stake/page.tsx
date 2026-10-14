@@ -64,6 +64,8 @@ interface StakePool {
   stakeKind?: "first-loss" | "fee-only" | "legacy";
   /** Insurance deployed for this pool's stakers, USD; null = unreadable (dash). */
   deployedValue?: number | null;
+  /** Close-out: surplus recorded as unclaimed (0 / absent = none). */
+  unclaimedValue?: number;
 }
 
 interface UserPosition {
@@ -107,6 +109,8 @@ interface ApiPool {
   adminTransferred: boolean;
   stakeKind?: "first-loss" | "fee-only" | "legacy";
   deployedValue?: number | null;
+  /** Close-out: surplus recorded as unclaimed (0 / absent = none). */
+  unclaimedValue?: number;
 }
 
 /** Convert API pool shape to the page-local StakePool type. */
@@ -128,6 +132,7 @@ function apiPoolToStakePool(p: ApiPool): StakePool {
     vaultBalance: p.vaultBalance,
     stakeKind: p.stakeKind,
     deployedValue: p.deployedValue,
+    unclaimedValue: p.unclaimedValue,
   };
 }
 
@@ -331,6 +336,8 @@ function StakeHeader({
   const activePools = pools.length;
   // Only first-loss pools are insurance staking; any fee-only / legacy pool keeps the "Fee staking" name.
   const insuranceOnly = isInsuranceOnly(pools);
+  // v2.2 pools carry a kind: the close-out rule (not "fees while the market runs") is what a fee-only staker is told.
+  const v22Pools = pools.some((p) => p.stakeKind !== undefined);
   // Over the pools that report one; null when none does (not tracked), shown as "—", not "0%".
   const aprs = pools.map((p) => p.apr).filter((a): a is number => a !== null);
   const avgApr = aprs.length > 0 ? aprs.reduce((s, a) => s + a, 0) / aprs.length : null;
@@ -373,6 +380,8 @@ function StakeHeader({
         </h1>
         {insuranceOnly ? (
           <p className="mt-2 max-w-lg text-[13px] text-[var(--text-secondary)]" data-testid="stake-intro-insurance">{V22_COPY.stake.insuranceIntro}</p>
+        ) : v22Pools ? (
+          <p className="mt-2 max-w-lg text-[13px] text-[var(--text-secondary)]" data-testid="stake-intro-feeonly">{V22_COPY.stake.closeOut.feeOnly}</p>
         ) : (
         <p className="mt-2 max-w-lg text-[13px] text-[var(--text-secondary)]">
           Stake into a market&apos;s pool to receive a share of that market&apos;s trading fees —
@@ -384,7 +393,7 @@ function StakeHeader({
             wrapper tag 87 WithdrawInsuranceReserveToStake -> stake tag 12 AccrueFees, which takes
             insurance pools (pool_mode 0; see lib/pre-resolve.ts decideStakeLeg). Measured: stakers
             C3 +5.86 USDC, U3 +7.01 USDC. The old zero-yield caption was false. */}
-        {!insuranceOnly && (
+        {!insuranceOnly && !v22Pools && (
         <p className="mt-1.5 max-w-lg text-[11px] text-[var(--text-muted)]">
           Stakers are paid the insurance share of every trading fee, moved into the stake pool
           automatically. The pool admin can move staked funds into the market&apos;s insurance
@@ -910,6 +919,9 @@ function DepositWidget({
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>
+          {pool?.stakeKind === "fee-only" && (
+            <p className="mt-1.5 text-[11px] text-[var(--text-secondary)]" data-testid="pool-feeonly-closeout">{V22_COPY.stake.closeOut.feeOnly}</p>
+          )}
         </div>
 
         {mode === "deposit" && firstLoss.pool ? (
@@ -1258,6 +1270,9 @@ function PoolRow({
           <span className="shrink-0 text-[10px] text-[var(--text-dim)]" data-testid="pool-deployed" title={V22_COPY.stake.insuranceStaking}>
             {pool.deployedValue === null || pool.deployedValue === undefined ? V22_COPY.stake.deployedUnknown : V22_COPY.stake.deployed(formatUsd(pool.deployedValue))}
           </span>
+        )}
+        {(pool.unclaimedValue ?? 0) > 0 && (
+          <span className="shrink-0 text-[10px] text-[var(--text-dim)]" data-testid="pool-unclaimed">{V22_COPY.stake.unclaimed(formatUsd(pool.unclaimedValue as number))}</span>
         )}
       </div>
 

@@ -58,6 +58,7 @@ export function FirstLossDeposit({ slabAddress, collateralMint, decimals = 6, de
       </dl>
       <div data-testid="consent-text" className="max-h-48 space-y-2 overflow-y-auto border border-[var(--border)] bg-[var(--bg-surface)] p-3 text-[11px] leading-relaxed text-[var(--text-secondary)]">
         <p data-testid="consent-summary" className="font-medium text-[var(--text)]">{V22_COPY.stake.consentSummary}</p>
+        <p data-testid="consent-closeout" className="text-[var(--text)]">{V22_COPY.stake.closeOut.firstLoss}</p>
         {STAKE_CONSENT_TEXT_V2.map((para, i) => <p key={i} data-testid="consent-para">{consentDisplay(para)}</p>)}
         <p className="text-[var(--text-muted)]">{V22_COPY.stake.consentVersion(view.version)}</p>
       </div>

@@ -260,6 +260,15 @@ export interface LaunchBundleContext {
  * Every structural rule of a single-transaction launch. Returns the violations (empty = valid).
  * Pure; never throws for a malformed bundle (it reports it).
  */
+/**
+ * Stake close-out rule: the new stake program refuses a BindInsuranceAuthority (tag 19) whose pool account (index 1) is read-only
+ * (error 16). Writable is accepted by the older program too (it only reads the pool), so the app always marks it writable.
+ */
+export function bindPoolWritableViolations(ix: NeutralIx, i: number): string[] {
+  const pool = ix.accounts[1];
+  return pool && pool.writable ? [] : [`ix ${i}: stake.BindInsuranceAuthority must mark the pool (account 1) writable`];
+}
+
 export function launchBundleViolations(ixs: readonly NeutralIx[], ctx: LaunchBundleContext): string[] {
   const v: string[] = [];
   const kinds = ixs.map((ix) => classifyLaunchIx(ix, ctx.programs));
@@ -288,6 +297,7 @@ export function launchBundleViolations(ixs: readonly NeutralIx[], ctx: LaunchBun
     });
   }
   if (initPool < 0 || bind < 0 || bind < initPool) v.push("stake.BindInsuranceAuthority must follow stake.InitPool");
+  if (bind >= 0) v.push(...bindPoolWritableViolations(ixs[bind]!, bind));
   if (topup < 0 || bind < 0 || topup > bind) v.push("TopUpInsurance must precede BindInsuranceAuthority (insurance_authority is the creator until 19)");
   const createLp = first("wrapper.CreateLpVault");
   const bindLp = first("wrapper.InitVaultLp");

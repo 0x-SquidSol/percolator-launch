@@ -134,7 +134,7 @@ export const V22_COPY = {
     nextStepNow: (x: string) => `Next step: ${x} at the next update`,
     /** The depth reading was seen before and has stopped: the program keeps limiting new positions. Closes stay open. */
     stickyCap: "Liquidity reading is out of date — new positions are limited until it updates. Closes are open.",
-    creatorSeed: "If you add an insurance seed and this market later closes, what is left of it after any losses comes back to you — all of it if nobody staked.",
+    creatorSeed: "If this market closes, you get back your insurance seed (or what's left of it after losses). Anything above it goes to stakers.",
     /** A full side: new risk on it is paused, the other side and every close stay open. */
     sidePaused: (side: "long" | "short") =>
       side === "long"
@@ -172,6 +172,13 @@ export const V22_COPY = {
     target: (pct: string) => `Deployment target ${pct}`,
     buffer: (pct: string) => `Liquid buffer ${pct}`,
     hysteresis: (pct: string) => `Rebalance band ${pct}`,
+    /** The close-out rule, one plain line per audience. */
+    closeOut: {
+      feeOnly: "Fee-only stakers earn nothing while the market runs. When it closes, you share everything above the creator's seed, in proportion to your stake.",
+      firstLoss: "At close, you share everything above the creator's seed in proportion to your stake.",
+    },
+    /** A closed pool that holds surplus no staker owns (nobody staked): shown, never paid to the creator. */
+    unclaimed: (usd: string) => `Unclaimed: ${usd}`,
     /** Page naming: only first-loss pools are insurance staking; fee-only and legacy pools stay "Fee staking". */
     insuranceStaking: "Insurance staking",
     insuranceIntro: "Stake into a market's pool to share its trading fees. Part of the pool backs the market's insurance, so your stake can lose value.",

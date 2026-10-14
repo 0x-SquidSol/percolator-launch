@@ -19,6 +19,8 @@ export interface StakePoolValueView {
   deployedAtoms: bigint | null;
   /** liquid + deployed; null when unknown. */
   totalAtoms: bigint | null;
+  /** Close-out: terminal surplus recorded as unclaimed (no real staker); 0n when none. */
+  unclaimedAtoms: bigint;
 }
 
 /** Null when the account is not a v5 pool (then the caller keeps its legacy math untouched). */
@@ -32,7 +34,7 @@ export function stakePoolValueView(poolData: Uint8Array, unitsData: Uint8Array |
   const kind: StakePoolKind = pool.riskMode === STAKE_RISK_MODE.FirstLoss ? "first-loss" : pool.riskMode === STAKE_RISK_MODE.FeeOnly ? "fee-only" : "legacy";
   if (kind !== "first-loss") {
     const v = stakePoolValue(pool, { unitsStake: 0n, unitsTotal: 0n }, 0n);
-    return { kind, liquidAtoms: v?.liquid ?? null, deployedAtoms: v ? 0n : null, totalAtoms: v?.total ?? null };
+    return { kind, liquidAtoms: v?.liquid ?? null, deployedAtoms: v ? 0n : null, totalAtoms: v?.total ?? null, unclaimedAtoms: pool.unclaimedAtoms };
   }
   let v = null;
   if (unitsData) {
@@ -43,7 +45,7 @@ export function stakePoolValueView(poolData: Uint8Array, unitsData: Uint8Array |
       v = null;
     }
   }
-  return { kind, liquidAtoms: v?.liquid ?? null, deployedAtoms: v?.deployed ?? null, totalAtoms: v?.total ?? null };
+  return { kind, liquidAtoms: v?.liquid ?? null, deployedAtoms: v?.deployed ?? null, totalAtoms: v?.total ?? null, unclaimedAtoms: pool.unclaimedAtoms };
 }
 
 /** The page is called "Insurance staking" only when EVERY listed pool is first-loss; any fee-only / legacy pool keeps "Fee staking". */

@@ -413,6 +413,8 @@ export async function GET() {
               deployedValue: atomsToUsd(valueView.deployedAtoms),
               /** Vault-resident booked value, USD. */
               liquidValue: atomsToUsd(valueView.liquidAtoms),
+              /** Close-out: surplus no real staker owns (a closed pool nobody staked in); 0 when none. */
+              unclaimedValue: atomsToUsd(valueView.unclaimedAtoms),
             }
           : {}),
         /** Trailing APR %; null = not tracked (insurance_snapshots history was dropped) */
