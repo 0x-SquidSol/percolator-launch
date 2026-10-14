@@ -39,7 +39,9 @@ describe("records adapter: flag OFF is today's behaviour", () => {
     const d = market(LAYOUT_V21);
     expect(readAssetPricesP3(d, 0)).toEqual(installedReadPrices(d, 0));
     expect(readAssetPricesP3(d, 0).effectivePriceE6).toBe(EFF);
-    expect(decodeAssetGrowthV19(d, 0)).toEqual(v21DecodeGrowth(d, 0));
+    // Every v2.1 field is identical; the v2.2 fields (depth, tiers) are present and all at their defaults (R2.1 record shape).
+    expect(decodeAssetGrowthV19(d, 0)).toMatchObject(v21DecodeGrowth(d, 0)!);
+    expect(decodeAssetGrowthV19(d, 0)).toMatchObject({ depthSource: 0, depthEver: false, depthE6: 0n, tierThresholdUsd: [0, 0, 0], tierLeverageX100: [0, 0, 0] });
     expect(decodeAssetGrowthV19(d, 0)?.lambdaBps).toBe(LAMBDA);
     expect(readBankruptcyHlockActive(d)).toBe(true);
   });

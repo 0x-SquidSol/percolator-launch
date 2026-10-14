@@ -8,21 +8,17 @@
  * so a legacy market gets no growth view and the ticket is exactly what it is today. Nothing here
  * reads the network and nothing here throws on short or foreign bytes.
  */
+import { ceilingImrBps, dynImrBps, isBankruptcyHlockActive, leverageX100ForImrBps, openingPartQ } from "./sdk";
+// R2.1: the quote, the fee preview and their types are the v2.2 growth port (a superset: without `v22` input the quote is the growth-1 one).
 import {
-  ceilingImrBps,
-  dynImrBps,
-  isBankruptcyHlockActive,
-  leverageX100ForImrBps,
-  openingPartQ,
   previewGrowthOpenFee,
   quoteMaxLeverage,
   type AssetGrowthV19,
   type GrowthOpenFeePreview,
   type MaxLeverageQuote,
   type QuoteMaxLeverageInput,
-} from "./sdk";
+} from "../v22/sdk/records/growth-v19";
 import { decodeAssetGrowthV19 } from "../v22/records";
-import { growthRecordBytes, readGrowthDepth } from "../v22/growth-unlock";
 import { layoutOf } from "../v22/layout";
 
 /**
@@ -45,6 +41,9 @@ function hlockOffset(raw: Uint8Array): number | null {
  * plain `n_cap_q(C_m, lambda_bps, effective_price)`. Flip this when the growth-depth upgrade is deployed; the quote logic stays.
  */
 export const GROWTH_DEPTH_RULES_DEPLOYED = false;
+
+/** A tier threshold nothing can reach (whole USD, u32 range): used only to pin the tier to 0 while the clock is unknown. */
+const NO_TIER_USD = 4_000_000_000;
 
 /** The record, or null when growth is OFF / the bytes are not a market account. Never throws. */
 export function decodeGrowthRecord(raw: Uint8Array | null | undefined, assetIndex = 0): AssetGrowthV19 | null {
@@ -103,14 +102,12 @@ export interface GrowthMarketView {
 export function growthMarketView(i: GrowthMarketInput): GrowthMarketView | null {
   const decoded = decodeGrowthRecord(i.raw, i.assetIndex ?? 0);
   if (!decoded || !i.lp || i.lpEffectiveQ === null) return null;
-  // v2.2 depth fields ride the reserved bytes of the record (not in the decoder's output).
-  const depth = i.v22 ? readGrowthDepth(growthRecordBytes(i.raw, i.assetIndex ?? 0)) : null;
-  // Clock unknown = the MOST conservative reading, never looser than any slot-known reading: source forced to "none" (tier 0:
-  // lambda 1x, ceiling capped at launch) AND the stored depth read as fresh (the "now" is its own slot), so the tier-0 kappa
-  // cap (0.5 x min(depth, prev)) still applies whenever a depth is stored. Slot-known readings only ever loosen from here.
+  // Clock unknown = the MOST conservative reading, never looser than a slot-known one: no tier can be earned (thresholds no pool
+  // can reach: tier 0, so lambda 1x and the ceiling stays at launch), and the stored depth is read as fresh (the "now" is its own
+  // slot), so the tier-0 kappa cap (0.5 x depth) still applies whenever a reading was ever stored. Slot-known readings only loosen.
   const unknownClock = !!i.v22 && i.v22.nowSlot === null;
-  const record: AssetGrowthV19 = depth
-    ? { ...decoded, depthSource: unknownClock ? 0 : depth.source, depthE6: depth.depthE6, depthSlot: depth.depthSlot, depthPrevE6: depth.prevE6 }
+  const record: AssetGrowthV19 = unknownClock
+    ? { ...decoded, tierThresholdUsd: [NO_TIER_USD, NO_TIER_USD, NO_TIER_USD] }
     : decoded;
   const hlockActive = readBankruptcyHlockActive(i.raw);
   const quoteInput: QuoteMaxLeverageInput = {
@@ -125,8 +122,7 @@ export function growthMarketView(i: GrowthMarketInput): GrowthMarketView | null 
     oiEffShortQ: i.engine.oiEffShortQ,
     priceE6: i.engine.effectivePriceE6,
     bankruptcyHlockActive: hlockActive,
-    // Slot unknown: read the depth as stale (a slot past its max age) so the quote is tier 0 / lambda 1x / no kappa cap.
-    ...(i.v22 ? { v22: { bandBps: i.v22.bandBps, nowSlot: i.v22.nowSlot ?? depth?.depthSlot ?? 0n } } : {}),
+    ...(i.v22 ? { v22: { bandBps: i.v22.bandBps, nowSlot: i.v22.nowSlot ?? decoded.depthSlot } } : {}),
   };
   return {
     record,
@@ -260,7 +256,8 @@ function maxLeverageAtFill(view: GrowthMarketView, d: Omit<GrowthTicketDecision,
   if (!q.crowd) return q.maxLeverageX100 > 0 ? q.maxLeverageX100 / 100 : null;
   const nCap = q.nCapQ;
   const g = view.record;
-  const base = ceilingImrBps(view.quoteInput.engineImrBps, Math.min(g.lLaunchX100, g.lTierX100));
+  // The ceiling in force (graduation / tiers when the v2.2 rules apply), the same number the gate and the quote use.
+  const base = ceilingImrBps(view.quoteInput.engineImrBps, q.ceilingX100 > 0 ? q.ceilingX100 : Math.min(g.lLaunchX100, g.lTierX100));
   const usersAfter = d.fee?.usersOiAfterQ;
   if (nCap === null || base === null || usersAfter === undefined) return null;
   const dyn = dynImrBps(usersAfter, nCap, base, g.kinkBps);

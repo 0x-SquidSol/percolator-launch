@@ -39,7 +39,8 @@ import { LaunchSuccess } from "./LaunchSuccess";
 import { GrowthLaunchControls, type GrowthLaunchState } from "./GrowthLaunchControls";
 import { isDevnetV21Enabled } from "@/lib/v21/flag";
 import { V21_COPY } from "@/lib/v21/copy";
-import { defaultGrowthLaunch, validateGrowthLaunch, type GrowthLaunch } from "@/lib/v21/growth-launch";
+import { defaultGrowthLaunch, growthTierX100, validateGrowthLaunch, type GrowthLaunch } from "@/lib/v21/growth-launch";
+import { EMPTY_TIER_EDIT, validateTierEdit } from "@/lib/v22/tier-config";
 import { V22LaunchOptions, type V22OptionsState } from "./V22LaunchOptions";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { planLaunchV22, toLaunchParams } from "@/lib/v22/launch-plan";
@@ -747,6 +748,13 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
         })
       : null;
   const v22Params = v22Plan ? toLaunchParams(v22Plan) : undefined;
+  // Devnet v2.2: "Advanced: leverage tiers" (band markets only). Blank = the protocol defaults and the plain bind; an edited,
+  // valid table rides the bind (tag 94). An invalid one blocks the launch with its first one-line issue.
+  const tierBounds = growthLaunch ? { lLaunchX100: growthLaunch.lLaunchX100, lTierX100: growthTierX100(growthDerived.initialMarginBps) } : undefined;
+  const tierResult = v22Plan?.protection && tierBounds ? validateTierEdit(wizard.v22?.tiers ?? EMPTY_TIER_EDIT, tierBounds.lLaunchX100, tierBounds.lTierX100) : null;
+  const tierIssue = tierResult && !tierResult.ok ? (tierResult.issues[0]?.message ?? "These leverage tiers are not valid.") : null;
+  const growthWithTiers: GrowthLaunch | undefined =
+    growthLaunch && tierResult?.config && tierBounds ? { ...growthLaunch, tiers: tierResult.config, lTierX100: tierBounds.lTierX100 } : growthLaunch;
   const v22Issue = v22Plan?.issues[0] ?? null;
   /** The launch price: per LOT when a v2.2 lot applies, else the per-token price as before. */
   const launchPriceE6 = (tokenE6: bigint): bigint => (v22Params ? tokenE6 * 10n ** BigInt(v22Params.lotExp) : tokenE6);
@@ -758,7 +766,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
   const resumingLaunch = resumeFromStep !== null || chainResume !== null;
   const livePriceLimit = useLivePriceLimit(walletB58, isDevnet && resolvedOracleType === "keeper" && !resumingLaunch);
   const atLivePriceLimit = blocksNewLaunch(livePriceLimit, { keeperPriced: resolvedOracleType === "keeper", resuming: resumingLaunch });
-  const launchDisabled = !allValid || !oracleSettled || !publicKey || p3Issue !== null || growthIssue !== null || v22Issue !== null || atLivePriceLimit;
+  const launchDisabled = !allValid || !oracleSettled || !publicKey || p3Issue !== null || growthIssue !== null || v22Issue !== null || tierIssue !== null || atLivePriceLimit;
   const launchDisabledReason: string | undefined = !publicKey
     ? "Connect wallet"
     : p3Issue
@@ -767,6 +775,8 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
       ? V21_COPY.wizard.issue[growthIssue]
     : v22Issue
       ? v22Issue.message
+    : tierIssue
+      ? tierIssue
     : !oracleSettled
       ? "Resolving price feed"
     : !registrable
@@ -1018,7 +1028,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
       // wizard passes neither: they cannot disagree, which is what makes InitMarket revert with
       // InvalidSlabLen. v17 has no slab tiers; maxAccounts is deliberately omitted too.
       // P3: vault-owned LP + the creator's junior tranche (= the Liquidity amount).
-      ...(growthLaunch ? { growth: growthLaunch } : {}),
+      ...(growthWithTiers ? { growth: growthWithTiers } : {}),
       ...(v22Params ? { v22: v22Params } : {}),
       p3: wizardP3Params(
         p3WizardEnabled(),
@@ -1093,7 +1103,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
       lpExposureBps: clampLpExposureBps(wizard.lpExposureBps),
       // Slab size and slot count derive from marketAssetSlotsFor, as in handleLaunch above.
       // P3: vault-owned LP + the creator's junior tranche (= the Liquidity amount).
-      ...(growthLaunch ? { growth: growthLaunch } : {}),
+      ...(growthWithTiers ? { growth: growthWithTiers } : {}),
       ...(v22Params ? { v22: v22Params } : {}),
       p3: wizardP3Params(
         p3WizardEnabled(),
@@ -1487,6 +1497,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
             onChange={(v22) => setWizard((prev) => ({ ...prev, v22 }))}
             plan={v22Plan}
             symbol={wizard.tokenMeta?.symbol ?? "token"}
+            tierBounds={tierBounds}
           />
         )}
       </div>

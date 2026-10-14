@@ -11,7 +11,7 @@
 import type { MessageContext, StatusVariant, UserMessage } from "@/lib/limits/user-message";
 import { STAKE_ERRORS_V5 } from "./sdk";
 import { STAKE_ERR_DEPOSIT_BELOW_MIN_LIQUIDITY, STAKE_ERR_V5, WRAPPER_ERR_V22 } from "./wrapper-errors";
-import { V22_COPY, V22_DEPTH_INPUT_COPY } from "./copy";
+import { V22_COPY, V22_DEPTH_INPUT_COPY, V22_DEPTH_SOURCE_COPY, V22_TIER_CONFIG_COPY } from "./copy";
 import { V22_COUNTERPARTY_CAP_COPY, V22_CUSTOM9_OFF_TICKET, V22_SIDE_FULL_COPY, positionCapCopy } from "./trade-refusal-9-copy";
 import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 import { WRAPPER_ERR_V21 } from "@/lib/v21/wrapper-errors";
@@ -86,6 +86,10 @@ export function v22WrapperMessage(code: number, ctx: MessageContext & { minPosit
       return m("counterparty-cap", "paused", "Market is at its limit", V22_COUNTERPARTY_CAP_COPY);
     case V.DepthInputInvalid:
       return m("depth-input", "info", "Try again", V22_DEPTH_INPUT_COPY);
+    case V.DepthSourceInvalid:
+      return m("depth-source", "info", "Try again", V22_DEPTH_SOURCE_COPY);
+    case V.GrowthTierConfigInvalid:
+      return m("tier-config", "error", "Check the leverage tiers", V22_TIER_CONFIG_COPY);
     // Plain lines for three wrapper codes that used to fall to "Something went wrong" (28, 29) or the engine-speak of the
     // pre-v2.2 table (93).
     case WRAPPER_ERR.OracleConfTooWide:

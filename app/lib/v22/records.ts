@@ -44,7 +44,17 @@ export const v22Records = Object.freeze({
 
 const on = isDevnetV22Enabled;
 
-export const decodeAssetGrowthV19: typeof Growth.decodeAssetGrowthV19 = (d, i) => (on() ? Growth.decodeAssetGrowthV19(d, i) : oldDecodeAssetGrowthV19(d, i));
+/** A pre-v2.2 growth record in the v2.2 shape: no depth ever seen, no per-market tiers (all defaults). */
+const asV22Record = (g: ReturnType<typeof oldDecodeAssetGrowthV19>): ReturnType<typeof Growth.decodeAssetGrowthV19> =>
+  g === null
+    ? null
+    : {
+        ...g,
+        depthSource: 0, depthEver: false, depthPrevReal: false, attestedMaxTier: 0,
+        depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthLastGoodE6: 0n, depthLastGoodSlot: 0n,
+        tierThresholdUsd: [0, 0, 0], tierLeverageX100: [0, 0, 0],
+      };
+export const decodeAssetGrowthV19: typeof Growth.decodeAssetGrowthV19 = (d, i) => (on() ? Growth.decodeAssetGrowthV19(d, i) : asV22Record(oldDecodeAssetGrowthV19(d, i)));
 export const assetGrowthAccountOffsetV19 = (i: number, layout?: Parameters<typeof Growth.assetGrowthAccountOffsetV19>[1]): number =>
   on() ? Growth.assetGrowthAccountOffsetV19(i, layout) : oldAssetGrowthAccountOffsetV19(i);
 export const decodeAdlEpisode: typeof Lock.decodeAdlEpisode = (d, i) => (on() ? Lock.decodeAdlEpisode(d, i) : oldDecodeAdlEpisode(d, i));

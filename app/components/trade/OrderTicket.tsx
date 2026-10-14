@@ -2069,7 +2069,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       </div>
 
       {marketLimits.growth && ticketLimits.growth && (
-        <GrowthTicketPanelLive view={marketLimits.growth} decision={ticketLimits.growth} direction={direction} sizeFormat={{ lotExp, ticker: baseTicker }} sidePaused={sidePaused[direction]} sideFull={ticketLimits.fullSides[direction]} raw={slabRaw} bandBps={bandView ? bandView.band.bandBps : null} />
+        <GrowthTicketPanelLive view={marketLimits.growth} decision={ticketLimits.growth} direction={direction} sizeFormat={{ lotExp, ticker: baseTicker }} sidePaused={sidePaused[direction]} sideFull={ticketLimits.fullSides[direction]} bandBps={bandView ? bandView.band.bandBps : null} />
       )}
 
       {stepDownNote && (

@@ -8,6 +8,9 @@
  */
 import { type FC } from "react";
 import { V22_COPY } from "@/lib/v22/copy";
+import { TierControls } from "@/components/create/TierControls";
+import type { TierEdit } from "@/lib/v22/tier-config";
+import { EMPTY_TIER_EDIT } from "@/lib/v22/tier-config";
 import { holdingFeePctPerDay, lotTooltip, type LaunchPlanV22 } from "@/lib/v22/launch-plan";
 
 export interface V22OptionsState {
@@ -15,6 +18,8 @@ export interface V22OptionsState {
   protection?: boolean;
   holdingFee?: boolean;
   bond?: boolean;
+  /** "Advanced: leverage tiers" form state (blank = the protocol defaults). */
+  tiers?: TierEdit;
 }
 
 export interface V22LaunchOptionsProps {
@@ -23,6 +28,8 @@ export interface V22LaunchOptionsProps {
   plan: LaunchPlanV22;
   /** Base token symbol, for the quiet size tooltip. */
   symbol: string;
+  /** Launch leverage and the market's built-in maximum (x100): given, a band market shows "Advanced: leverage tiers". */
+  tierBounds?: { lLaunchX100: number; lTierX100: number };
 }
 
 const Toggle: FC<{ id: string; title: string; hint: string; checked: boolean; onChange: (v: boolean) => void }> = ({ id, title, hint, checked, onChange }) => (
@@ -35,7 +42,7 @@ const Toggle: FC<{ id: string; title: string; hint: string; checked: boolean; on
   </label>
 );
 
-export const V22LaunchOptions: FC<V22LaunchOptionsProps> = ({ value, onChange, plan, symbol }) => {
+export const V22LaunchOptions: FC<V22LaunchOptionsProps> = ({ value, onChange, plan, symbol, tierBounds }) => {
   if (!plan.available) return null;
   const tip = lotTooltip(plan.lotExp, symbol);
   const issue = plan.issues[0];
@@ -71,6 +78,14 @@ export const V22LaunchOptions: FC<V22LaunchOptionsProps> = ({ value, onChange, p
         </ul>
       )}
       <p className="text-[11px] text-[var(--text-secondary)]" data-testid="v22-creator-seed">{V22_COPY.growth.creatorSeed}</p>
+      {plan.protection && tierBounds && (
+        <TierControls
+          value={value.tiers ?? EMPTY_TIER_EDIT}
+          onChange={(tiers) => onChange({ ...value, tiers })}
+          lLaunchX100={tierBounds.lLaunchX100}
+          lTierX100={tierBounds.lTierX100}
+        />
+      )}
       {plan.notes.length > 0 && (
         <ul className="space-y-1 text-[11px] text-[var(--text-secondary)]" data-testid="v22-notes">
           {plan.notes.map((n) => (

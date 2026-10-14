@@ -18,6 +18,7 @@
  *   ->  InitVaultLp (94 + l_launch)  ->  DepositJunior (96, >= $1)  ->  StakeInitPool (rotates marketauth).
  * `c_launch` is recorded at the FIRST junior deposit, so that deposit is never dust.
  */
+import type { TierConfig } from "../v22/sdk/records/growth-v19";
 import { encodeInitMarketV19, encodeInitVaultLpV19, rGapFloorBps, GROWTH_LEVERAGE_X100_ONE } from "./sdk";
 import { encodeInitMarket, type InitMarketV17Args } from "@percolatorct/sdk";
 
@@ -84,6 +85,10 @@ export interface GrowthLaunch {
   maxAbsFundingE9PerSlot: bigint;
   /** What InitMarket sends as `maxTradingFeeBps` (base + 600). */
   maxTradingFeeBps: bigint;
+  /** Devnet v2.2: the creator's edited leverage-tier block (tag 94). Absent = the protocol defaults and the plain bind. */
+  tiers?: TierConfig;
+  /** The market's built-in maximum leverage x100, so the tier block is checked again where it is encoded. */
+  lTierX100?: number;
 }
 
 export type GrowthLaunchIssue =

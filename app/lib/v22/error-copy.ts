@@ -3,7 +3,7 @@
  * v2.2 flag is on. The structured twin (title, variant, retry flags) lives in `./error-message`. Calm, one line.
  */
 import { WRAPPER_ERR_V22 } from "./wrapper-errors";
-import { V22_COPY, V22_DEPTH_INPUT_COPY } from "./copy";
+import { V22_COPY, V22_DEPTH_INPUT_COPY, V22_DEPTH_SOURCE_COPY, V22_TIER_CONFIG_COPY } from "./copy";
 import { V22_COUNTERPARTY_CAP_COPY, V22_POSITION_CAP_REACHED_COPY, V22_SIDE_FULL_COPY } from "./trade-refusal-9-copy";
 import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 import { WRAPPER_ERR_V21 } from "@/lib/v21/wrapper-errors";
@@ -32,6 +32,8 @@ export const V22_ERROR_CODE_MAP: Record<number, string> = {
   [WRAPPER_ERR_V22.PositionCapReached]: V22_POSITION_CAP_REACHED_COPY,
   [WRAPPER_ERR_V22.CounterpartyPositionCapReached]: V22_COUNTERPARTY_CAP_COPY,
   [WRAPPER_ERR_V22.DepthInputInvalid]: V22_DEPTH_INPUT_COPY,
+  [WRAPPER_ERR_V22.DepthSourceInvalid]: V22_DEPTH_SOURCE_COPY,
+  [WRAPPER_ERR_V22.GrowthTierConfigInvalid]: V22_TIER_CONFIG_COPY,
   // Plain lines for 28 / 29 (pre-v2.2 table speaks of confidence intervals and oracle accounts) and 93 (capacity full).
   [WRAPPER_ERR.OracleConfTooWide]: "The price feed is too uncertain right now, so the market is not accepting this action. Nothing was changed. Wait a moment and try again.",
   [WRAPPER_ERR.InvalidOracleKey]: "The price account sent with this transaction is not the one this market uses. Nothing was changed. Refresh the page and try again; if it keeps happening, the app is out of date.",

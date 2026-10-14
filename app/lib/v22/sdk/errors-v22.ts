@@ -95,6 +95,15 @@ export const PERCOLATOR_ERRORS_V22: Readonly<Record<number, ErrorInfo>> = Object
     name: "CounterpartyPositionCapReached",
     hint: "The other side of this trade is at its limit, which is not caused by your account. Try again later.", // app copy: no "try another asset"
   },
+  // TODO(repin): percolator-sdk feat/v22-sdk-growth @ 6871426 (errors 129, 130; hints verbatim)
+  129: {
+    name: "DepthSourceInvalid",
+    hint: "The pool reading for this market was not accepted. Check that the pinned pool and its vaults are the ones supplied.",
+  },
+  130: {
+    name: "GrowthTierConfigInvalid",
+    hint: "These liquidity tiers are outside the safe limits. Thresholds must rise from at least $5k / $20k / $100k, and leverage must rise from the launch level up to the market's maximum.",
+  },
   // TODO(repin): percolator-sdk feat/v22-sdk-growth (error 128, tag 63 44-byte depth wire). Align name and hint to the SDK table when it lands.
   128: {
     name: "DepthInputInvalid",

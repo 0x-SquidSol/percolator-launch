@@ -1355,7 +1355,7 @@ export async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise
               juniorAtoms: params.p3.juniorAtoms,
               creatorAta: userAta,
               vaultToken: vaultAta,
-              ...(params.growth ? { growth: { lLaunchX100: params.growth.lLaunchX100 } } : {}),
+              ...(params.growth ? { growth: { lLaunchX100: params.growth.lLaunchX100, ...(params.growth.tiers ? { tiers: params.growth.tiers, lTierX100: params.growth.lTierX100 } : {}) } } : {}),
             }),
             computeUnits: P3_BIND_COMPUTE_UNITS,
             signers: [vaultLpPortfolioKp, vaultLpCtxKp!],
@@ -4091,7 +4091,7 @@ export function useCreateMarket() {
                     juniorAtoms: params.p3.juniorAtoms,
                     creatorAta,
                     vaultToken: vaultTokenAta,
-                    ...(params.growth ? { growth: { lLaunchX100: params.growth.lLaunchX100 } } : {}),
+                    ...(params.growth ? { growth: { lLaunchX100: params.growth.lLaunchX100, ...(params.growth.tiers ? { tiers: params.growth.tiers, lTierX100: params.growth.lTierX100 } : {}) } } : {}),
                   })
                 : [buildDepositJuniorTrancheIx(p3Market, wallet.publicKey, creatorAta, vaultTokenAta, params.p3.juniorAtoms)];
               setState((s) => ({ ...s, stepLabel: "Binding the vault-owned LP..." }));

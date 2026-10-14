@@ -33,6 +33,11 @@ export const consentDisplay = (para: string): string => para.replace("`deploy_ta
 /** Wrapper 128 `DepthInputInvalid`: only a keeper's price push can hit it, so a trader should essentially never see this. */
 export const V22_DEPTH_INPUT_COPY = "The market's depth reading was not accepted, so nothing changed. Try again in a moment.";
 
+/** Wrapper 129 `DepthSourceInvalid`: a keeper's pool reading, not a trader action. */
+export const V22_DEPTH_SOURCE_COPY = "The market's pool reading was not accepted, so nothing changed. Try again in a moment.";
+/** Wrapper 130 `GrowthTierConfigInvalid`: the launch's tier table; the wizard's own check normally catches it first. */
+export const V22_TIER_CONFIG_COPY = "These leverage tiers are outside the safe limits, so nothing was created. Open Advanced: leverage tiers and adjust the amounts or leverage.";
+
 export const V22_COPY = {
   // ── Band markets ("price protection") ────────────────────────────────────
   band: {
@@ -117,12 +122,14 @@ export const V22_COPY = {
   growth: {
     maxNow: "Max leverage now",
     tier: (n: number) => `Liquidity tier ${n}`,
-    tierTip: "Liquidity tier is how much trading depth sits close to the price; deeper markets can offer more leverage.",
-    unlockDepth: (x: string, usd: string) => `${x} unlocks when pool depth reaches ${usd}`,
-    unlockDepthAndCapital: (x: string, depth: string, more: string) => `${x} unlocks at ${depth} pool depth and ${more} more market backing`,
-    unlockCapital: (x: string, usd: string) => `${x} unlocks when market backing reaches ${usd}`,
-    nextStepAfter: (x: string, when: string) => `Next step: ${x} after ${when}`,
+    tierTip: "Liquidity tier is the lower of two things, how much trading depth the token's pool has near the price and how much money backs this market; higher tiers allow more leverage.",
+    unlockBoth: (x: string, depth: string, backing: string) => `${x} unlocks at ${depth} pool depth and ${backing} market backing`,
+    unlockDepth: (x: string, depth: string) => `${x} unlocks when pool depth reaches ${depth}`,
+    unlockBacking: (x: string, backing: string) => `${x} unlocks when market backing reaches ${backing}`,
+    nextStepAfter: (x: string, when: string) => `Next step: ${x} in ${when}`,
     nextStepNow: (x: string) => `Next step: ${x} at the next update`,
+    /** The depth reading was seen before and has stopped: the program keeps limiting new positions. Closes stay open. */
+    stickyCap: "Liquidity reading is out of date — new positions are limited until it updates. Closes are open.",
     creatorSeed: "If you add an insurance seed and this market later closes, what is left of it after any losses comes back to you — all of it if nobody staked.",
     /** A full side: new risk on it is paused, the other side and every close stay open. */
     sidePaused: (side: "long" | "short") =>
@@ -140,6 +147,17 @@ export const V22_COPY = {
     backingAdd: (add: string) => `Your collateral is too low for any new size on this side right now. Add about ${add} and try again.`,
     /** The order is bigger than the room: the program fills the room and lands it. */
     trimNotice: (room: string, fill: string) => `Only ${room} of room left on this side; your order will fill ${fill}.`,
+  },
+  // ── Launch wizard: Advanced leverage tiers ───────────────────────────────
+  tiers: {
+    title: "Advanced: leverage tiers",
+    /** `table` = "5x at $25k · 10x at $100k · 20x at $500k". */
+    defaults: (table: string) => `${table} pool depth and market backing`,
+    explain: "A tier unlocks only when both the pool's depth and the market's backing reach its amount. Each depth amount has a floor ($5k, $20k, $100k) so a market can't call itself deep with a tiny number.",
+    thresholdLabel: (tier: number) => `Tier ${tier} amount ($)`,
+    leverageLabel: (tier: number) => `Tier ${tier} max leverage`,
+    defaultOption: (x: string) => `Default (${x})`,
+    thresholdPlaceholder: (usd: string) => `Default ${usd}`,
   },
   // ── First-loss staking (stake v5) ────────────────────────────────────────
   stake: {

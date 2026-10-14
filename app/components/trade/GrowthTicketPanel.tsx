@@ -91,6 +91,9 @@ export const GrowthTicketPanel: FC<GrowthTicketPanelProps> = ({ view, decision, 
         </p>
       )}
       {closedLine && <p className="mt-1.5 text-[var(--short)]" data-testid="growth-closed">{closedLine}</p>}
+      {graduating && unlock.sticky && !(openSides.length === 0) && (
+        <p className="mt-1 text-[var(--text-secondary)]" data-testid="growth-sticky">{V22_COPY.growth.stickyCap}</p>
+      )}
       {nextLine && (
         <p className="mt-1 text-[var(--text-secondary)]" data-testid="growth-unlock">{nextLine}</p>
       )}
