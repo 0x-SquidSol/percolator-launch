@@ -34,15 +34,24 @@ interface Scenario {
   depth?: { source?: number; usd?: bigint; prevUsd?: bigint; ageSlots?: bigint; ever?: boolean } | null;
   attestedMaxTier?: number;
   now?: bigint | null;
+  /** Rate limiter: the last good (usable) depth and the epoch of its last rise. */
+  lastGoodUsd?: bigint;
+  riseEpoch?: number;
+  /** Per-market leverage table L1..L3 x100. */
+  table?: [number, number, number];
+  /** Collateral decimals (default 6). */
+  decimals?: number;
 }
 
 function scenario(s: Scenario = {}) {
+  const dec = s.decimals ?? 6;
+  const UNIT = 10n ** BigInt(dec);
   const launch = s.launch ?? 300;
   const raw = marketRaw({ launch, tier: s.tier ?? 1_000, ceil: s.ceil ?? launch, gap: s.gap ?? GAP }, s.hlock ?? 0);
   const base = growthMarketView({
     raw,
     engine: ENGINE,
-    lp: { capital: (s.backingUsd ?? 100n) * USD, pnl: 0n, feeCredits: 0n },
+    lp: { capital: (s.backingUsd ?? 100n) * UNIT, pnl: 0n, feeCredits: 0n },
     lpEffectiveQ: -10_000_000n,
     bound: true,
   })!;
@@ -51,15 +60,19 @@ function scenario(s: Scenario = {}) {
     ...base.record,
     ceilSlot: s.ceilSlot ?? NOW - 20_000n,
     attestedMaxTier: s.attestedMaxTier ?? 0,
+    collateralDecimalsP1: dec + 1,
+    collateralDecimals: dec,
+    depthRiseEpoch: s.riseEpoch ?? 0,
+    ...(s.table ? { tierLeverageX100: s.table } : {}),
     ...(d
       ? {
           depthSource: d.source ?? 1,
           depthEver: d.ever ?? true,
           depthPrevReal: true,
-          depthE6: (d.usd ?? 0n) * USD,
-          depthPrevE6: (d.prevUsd ?? d.usd ?? 0n) * USD,
+          depthE6: (d.usd ?? 0n) * UNIT,
+          depthPrevE6: (d.prevUsd ?? d.usd ?? 0n) * UNIT,
           depthSlot: NOW - (d.ageSlots ?? 10n),
-          depthLastGoodE6: (d.usd ?? 0n) * USD,
+          depthLastGoodE6: (s.lastGoodUsd ?? d.usd ?? 0n) * UNIT,
           depthLastGoodSlot: NOW - (d.ageSlots ?? 10n),
         }
       : {}),
@@ -68,7 +81,7 @@ function scenario(s: Scenario = {}) {
   return { view, input: { view, bandBps: s.band ?? BAND, nowSlot: s.now === undefined ? NOW : s.now } };
 }
 const run = (s: Scenario = {}) => growthUnlockView(scenario(s).input);
-const line = (s: Scenario = {}) => unlockLine(run(s).unlock);
+const line = (s: Scenario = {}, collateral?: Parameters<typeof unlockLine>[1]) => unlockLine(run(s).unlock, collateral);
 
 describe("graduation on / off", () => {
   it("off-band market: no tier, no unlock line, no sticky line, nothing said", () => {
@@ -121,6 +134,55 @@ describe("the next-unlock line: both / depth / backing / ratchet", () => {
     expect([999, 25_000, 25_500, 100_000, 1_500_000, 2_000_000].map(compactUsd)).toEqual(["$999", "$25k", "$25.5k", "$100k", "$1.5M", "$2M"]);
     expect([1, 7, 27, 55, 60].map(waitLabel)).toEqual(["about a minute", "about 7 minutes", "about 27 minutes", "about an hour", "about an hour"]);
     expect(unlockLine(null)).toBeNull();
+  });
+});
+
+describe("rate-limited depth: the pool is deep enough, the hourly doubling limit is the only wait", () => {
+  // The pool reads $30k (tier 1 needs $25k) but the usable reading was $10k and rose in the current epoch: it can double once per hour.
+  const caughtUp = { depth: { usd: 30_000n }, lastGoodUsd: 10_000n, riseEpoch: 111, backingUsd: 30_000n };
+  it("usable depth is the slower of the two: tier stays 0 until it catches up", () => {
+    expect(run(caughtUp).tier).toBe(0);
+  });
+  it("one calm line with the wait", () => {
+    expect(line(caughtUp)).toBe("5x unlocks in about 2 hours as the pool reading catches up");
+  });
+  it("less than an hour away reads in minutes", () => {
+    expect(line({ ...caughtUp, lastGoodUsd: 15_000n })).toBe("5x unlocks in about 54 minutes as the pool reading catches up");
+  });
+  it("already allowed to rise: it happens at the next update", () => {
+    expect(line({ ...caughtUp, lastGoodUsd: 15_000n, riseEpoch: 110 })).toBe("5x unlocks at the next update");
+  });
+  it("with the backing also short, the backing is what is named", () => {
+    expect(line({ ...caughtUp, backingUsd: 100n })).toBe("5x unlocks when market backing reaches $25k");
+  });
+  it("climb and catch-up both pending: the LATER wait is shown, one line", () => {
+    // tier 1 earned (on-chain depth $30k), +1x climb pending, tier 2 needs $100k of depth: pool reads $150k but usable is $30k.
+    const both = { depth: { source: 2, usd: 150_000n }, lastGoodUsd: 30_000n, riseEpoch: 111, backingUsd: 150_000n, ceil: 300, ceilSlot: NOW - 9_000n };
+    expect(line(both)).toBe("10x unlocks in about 6 hours as the pool reading catches up"); // 1x per hour from 4x to 10x outlasts the ~2 h catch-up
+  });
+  it("climb and catch-up both pending, catch-up later: the catch-up wait is shown", () => {
+    const both = { depth: { source: 2, usd: 150_000n }, lastGoodUsd: 30_000n, riseEpoch: 111, backingUsd: 150_000n, ceil: 500, ceilSlot: NOW - 9_000n, table: [600, 700, 0] as [number, number, number] };
+    // stored 5x, tier-1 target 6x: one step; tier 2 is 7x: climb about 1-2 h total, catch-up about 2 h
+    expect(line(both)).toBe("7x unlocks in about 2 hours as the pool reading catches up");
+  });
+  it("a keeper-only market that can never reach the tier says nothing, rate limit or not", () => {
+    expect(line({ depth: { usd: 150_000n }, lastGoodUsd: 30_000n, riseEpoch: 111, backingUsd: 150_000n, ceil: 500 })).toBeNull();
+  });
+});
+
+describe("collateral wording: $ only on 6-decimal USD-like collateral", () => {
+  it("test USDC: dollars", () => {
+    expect(line({ backingUsd: 30_000n }, { decimals: 6, symbol: "USDC", usdLike: true })).toBe("5x unlocks when pool depth reaches $25k");
+  });
+  it("another token: named by its symbol, never a dollar sign", () => {
+    expect(line({ backingUsd: 30_000n, decimals: 9 }, { decimals: 9, symbol: "TOK", usdLike: false })).toBe("5x unlocks when pool depth reaches 25k TOK");
+    expect(line({ depth: { usd: 30_000n }, decimals: 9 }, { decimals: 9, symbol: "TOK", usdLike: false })).toBe("5x unlocks when market backing reaches 25k TOK");
+  });
+  it("a USD-like token with other decimals is not dollars either", () => {
+    expect(line({ backingUsd: 30_000n, decimals: 9 }, { decimals: 9, symbol: "USDX", usdLike: true })).toBe("5x unlocks when pool depth reaches 25k USDX");
+  });
+  it("the tiers read the market's own decimals: 9-decimal collateral reaches tier 1 at 25k tokens", () => {
+    expect(run({ depth: { usd: 30_000n }, backingUsd: 30_000n, decimals: 9 }).tier).toBe(1);
   });
 });
 

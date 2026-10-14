@@ -13,6 +13,7 @@
 import { conservativeEquity } from "../v21/sdk";
 import type { GrowthMarketView } from "../v21/growth-market";
 import { V22_COPY } from "./copy";
+import { TEST_USDC, amountLabel, type TierCollateral } from "./tier-config";
 import {
   DEPTH_EVER,
   DEPTH_PREV_REAL,
@@ -62,6 +63,18 @@ export function growthUnlockView(i: GrowthUnlockInput): GrowthUnlockView {
   const sticky = g.depthEver && fresh === null;
   const base = { graduation: true, tier: cv.tier as DepthTier, sticky };
   if (i.view.hlockActive) return { ...base, unlock: null };
+  // The pool is deep enough for the next tier but the usable reading may rise only 2x per hour: one line, and when the +1x climb is
+  // also pending, the LATER of the two waits (the next tier's leverage needs both to be done).
+  const tierNext = cv.nextTierUnlock;
+  if (tierNext.depthRateLimited && tierNext.depthEtaMinutes !== undefined && tierNext.leverageX100 !== undefined && !tierNext.needsOnChainDepth) {
+    let minutes = tierNext.depthEtaMinutes;
+    const climb = cv.nextUnlock;
+    if (climb.kind === "ratchet" && climb.leverageX100 !== undefined && climb.etaMinutes !== undefined) {
+      const stepsAfterFirst = Math.max(0, Math.ceil((tierNext.leverageX100 - climb.leverageX100) / 100));
+      minutes = Math.max(minutes, climb.etaMinutes + stepsAfterFirst * 60);
+    }
+    return { ...base, unlock: { ...tierNext, depthEtaMinutes: minutes } };
+  }
   return { ...base, unlock: cv.nextUnlock.kind === "none" ? null : cv.nextUnlock };
 }
 
@@ -76,8 +89,9 @@ export function compactUsd(usd: number): string {
   return `$${Math.round(usd)}`;
 }
 
-/** "about an hour", "about 7 minutes". */
+/** "about 7 minutes", "about an hour", "about 2 hours". */
 export function waitLabel(minutes: number): string {
+  if (minutes >= 90) return `about ${Math.round(minutes / 60)} hours`;
   if (minutes >= 55) return "about an hour";
   return minutes <= 1 ? "about a minute" : `about ${Math.ceil(minutes)} minutes`;
 }
@@ -86,7 +100,7 @@ export function waitLabel(minutes: number): string {
  * The single calm line for the next unlock, or null. A tier that keeper-reported depth can never reach (needs an on-chain pool
  * reading) is not promised: no line.
  */
-export function unlockLine(u: NextUnlock | null): string | null {
+export function unlockLine(u: NextUnlock | null, collateral: TierCollateral = TEST_USDC): string | null {
   if (!u || u.kind === "none" || u.leverageX100 === undefined) return null;
   const x = xLabel(u.leverageX100);
   if (u.kind === "ratchet") {
@@ -95,10 +109,17 @@ export function unlockLine(u: NextUnlock | null): string | null {
       : V22_COPY.growth.nextStepAfter(x, waitLabel(u.etaMinutes));
   }
   if (u.needsOnChainDepth) return null;
-  if (u.kind === "both" && u.depthUsd !== undefined && u.backingUsd !== undefined) {
-    return V22_COPY.growth.unlockBoth(x, compactUsd(u.depthUsd), compactUsd(u.backingUsd));
+  const money = (n: number): string => amountLabel(n, collateral);
+  // Pool depth already there, only the hourly limit on the usable reading is left: one line with the wait. (With the backing also
+  // short, the backing is the thing to name.)
+  if (u.kind === "depth" && u.depthRateLimited && u.depthEtaMinutes !== undefined) {
+    return u.depthEtaMinutes === 0 ? V22_COPY.growth.unlockCatchUpNow(x) : V22_COPY.growth.unlockCatchUp(x, waitLabel(u.depthEtaMinutes));
   }
-  if (u.kind === "depth" && u.depthUsd !== undefined) return V22_COPY.growth.unlockDepth(x, compactUsd(u.depthUsd));
-  if (u.kind === "backing" && u.backingUsd !== undefined) return V22_COPY.growth.unlockBacking(x, compactUsd(u.backingUsd));
+  if (u.kind === "both" && u.depthRateLimited && u.backingUsd !== undefined) return V22_COPY.growth.unlockBacking(x, money(u.backingUsd));
+  if (u.kind === "both" && u.depthUsd !== undefined && u.backingUsd !== undefined) {
+    return V22_COPY.growth.unlockBoth(x, money(u.depthUsd), money(u.backingUsd));
+  }
+  if (u.kind === "depth" && u.depthUsd !== undefined) return V22_COPY.growth.unlockDepth(x, money(u.depthUsd));
+  if (u.kind === "backing" && u.backingUsd !== undefined) return V22_COPY.growth.unlockBacking(x, money(u.backingUsd));
   return null;
 }

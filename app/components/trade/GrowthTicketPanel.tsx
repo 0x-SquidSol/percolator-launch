@@ -13,6 +13,7 @@ import { type FC } from "react";
 import type { GrowthMarketView, GrowthTicketDecision } from "@/lib/v21/growth-market";
 import { V21_COPY } from "@/lib/v21/copy";
 import { V22_COPY } from "@/lib/v22/copy";
+import type { TierCollateral } from "@/lib/v22/tier-config";
 import { unlockLine, type GrowthUnlockView } from "@/lib/v22/growth-unlock";
 import { InfoIcon } from "@/components/ui/Tooltip";
 import { roomLine, trimLine, type RoomFormat } from "@/lib/v22/growth-room";
@@ -26,6 +27,8 @@ export interface GrowthTicketPanelProps {
    * is fixed at the creator's launch leverage: nothing is said there.
    */
   unlock?: GrowthUnlockView | null;
+  /** The market's collateral, so amounts read "$25k" only on USD-like collateral (default: the test USDC). */
+  collateral?: TierCollateral;
   /** How sizes read on this ticket (lot exponent + ticker) for the room line; default: tokens without a ticker. */
   sizeFormat?: RoomFormat;
   /** The ticket already pauses opening on this side for another reason (P1: the LP is at its floor): the capacity row says "paused". */
@@ -39,7 +42,7 @@ const levLabel = (x100: number): string => `${(x100 / 100).toFixed(x100 % 100 ==
 /** "Full" reasons get the plan's wording; a paused market (loss recovery, not set up, unreadable) keeps its own line. */
 const isFullReason = (r: GrowthMarketView["long"]["closedReason"]): boolean => r === "capacity-full" || r === "capacity-zero" || r === null;
 
-export const GrowthTicketPanel: FC<GrowthTicketPanelProps> = ({ view, decision, direction, unlock = null, sizeFormat = { lotExp: 0, ticker: "" }, sidePaused = false, sideFull = false }) => {
+export const GrowthTicketPanel: FC<GrowthTicketPanelProps> = ({ view, decision, direction, unlock = null, collateral, sizeFormat = { lotExp: 0, ticker: "" }, sidePaused = false, sideFull = false }) => {
   const openSides = (["long", "short"] as const).filter((side) => !(side === "long" ? view.long : view.short).closed);
   const closedSides = (["long", "short"] as const).filter((side) => (side === "long" ? view.long : view.short).closed);
   const reasonOf = (side: "long" | "short") => (side === "long" ? view.long : view.short).closedReason;
@@ -55,7 +58,7 @@ export const GrowthTicketPanel: FC<GrowthTicketPanelProps> = ({ view, decision, 
           : V21_COPY.growthClosed(closedSides[0] as string, reasonOf(closedSides[0] as "long" | "short"));
   const graduating = !!unlock && unlock.graduation;
   const tier = graduating ? unlock.tier : null;
-  const nextLine = graduating ? unlockLine(unlock.unlock) : null;
+  const nextLine = graduating ? unlockLine(unlock.unlock, collateral) : null;
   const pct = decision.utilisation === null ? null : Math.round(decision.utilisation * 100);
   const feePct = decision.fee && decision.fee.utilFeeBps > 0 ? `${(decision.fee.utilFeeBps / 100).toFixed(2)}%` : null;
   // A closed side is "paused", never a percentage: 0% full reads as lots of room when there is none.

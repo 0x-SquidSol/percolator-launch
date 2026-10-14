@@ -9,10 +9,13 @@
 import { useState, type FC } from "react";
 import { V22_COPY } from "@/lib/v22/copy";
 import {
+  TEST_USDC,
   TIER_FLOORS_USD,
+  amountLabel,
   tierDefaultsLine,
   tierLeverageOptions,
   validateTierEdit,
+  type TierCollateral,
   type TierEdit,
 } from "@/lib/v22/tier-config";
 import { TIER_THRESHOLD_DEFAULT_USD, tierLeverage } from "@/lib/v22/sdk/records/growth-v19";
@@ -23,16 +26,18 @@ export interface TierControlsProps {
   /** The creator's launch leverage and the market's built-in maximum, x100. */
   lLaunchX100: number;
   lTierX100: number;
+  /** The market's collateral (amounts are whole collateral tokens; "$" only on a 6-decimal USD-like token). Default: the test USDC. */
+  collateral?: TierCollateral;
   /** Start open (tests / resuming a launch that failed on the tiers). */
   defaultOpen?: boolean;
 }
 
 const x = (x100: number): string => `${x100 % 100 === 0 ? x100 / 100 : (x100 / 100).toFixed(1)}x`;
-const money = (n: number): string => (n >= 1_000_000 ? `$${n / 1_000_000}M` : n >= 1_000 ? `$${n / 1_000}k` : `$${n}`);
 
-export const TierControls: FC<TierControlsProps> = ({ value, onChange, lLaunchX100, lTierX100, defaultOpen = false }) => {
+export const TierControls: FC<TierControlsProps> = ({ value, onChange, lLaunchX100, lTierX100, collateral = TEST_USDC, defaultOpen = false }) => {
   const [open, setOpen] = useState(defaultOpen);
-  const result = validateTierEdit(value, lLaunchX100, lTierX100);
+  const result = validateTierEdit(value, lLaunchX100, lTierX100, collateral);
+  const unit = amountLabel(1, collateral).startsWith("$") ? "$" : (collateral.symbol ?? "tokens");
   const options = tierLeverageOptions(lLaunchX100, lTierX100);
   const table = tierLeverage([0, 0, 0], lLaunchX100, lTierX100);
   const issuesFor = (field: "thresholds" | "leverage", tier: 1 | 2 | 3) => result.issues.filter((i) => i.field === field && i.tier === tier);
@@ -50,10 +55,10 @@ export const TierControls: FC<TierControlsProps> = ({ value, onChange, lLaunchX1
       >
         {open ? "▾" : "▸"} {V22_COPY.tiers.title}
       </button>
-      <p className="mt-1 text-[11px] text-[var(--text-secondary)]" data-testid="tier-defaults">{tierDefaultsLine(lLaunchX100, lTierX100)}</p>
+      <p className="mt-1 text-[11px] text-[var(--text-secondary)]" data-testid="tier-defaults">{tierDefaultsLine(lLaunchX100, lTierX100, collateral)}</p>
       {open && (
         <div className="mt-3 space-y-3" data-testid="tier-editor">
-          <p className="text-[11px] text-[var(--text-secondary)]" data-testid="tier-explain">{V22_COPY.tiers.explain}</p>
+          <p className="text-[11px] text-[var(--text-secondary)]" data-testid="tier-explain">{V22_COPY.tiers.explain(TIER_FLOORS_USD.map((f) => amountLabel(f, collateral)).join(", "))}</p>
           {([1, 2, 3] as const).map((t) => {
             const k = t - 1;
             const th = issuesFor("thresholds", t);
@@ -61,18 +66,18 @@ export const TierControls: FC<TierControlsProps> = ({ value, onChange, lLaunchX1
             return (
               <div key={t} className="grid grid-cols-2 gap-3" data-testid={`tier-row-${t}`}>
                 <div>
-                  <label htmlFor={`tier-th-${t}`} className="block text-[10px] uppercase tracking-[0.15em] text-[var(--text)]">{V22_COPY.tiers.thresholdLabel(t)}</label>
+                  <label htmlFor={`tier-th-${t}`} className="block text-[10px] uppercase tracking-[0.15em] text-[var(--text)]">{V22_COPY.tiers.thresholdLabel(t, unit)}</label>
                   <input
                     id={`tier-th-${t}`}
                     data-testid={`tier-threshold-${t}`}
                     inputMode="numeric"
                     value={value.thresholds[k]}
-                    placeholder={V22_COPY.tiers.thresholdPlaceholder(money(TIER_THRESHOLD_DEFAULT_USD[k] as number))}
+                    placeholder={V22_COPY.tiers.thresholdPlaceholder(amountLabel(TIER_THRESHOLD_DEFAULT_USD[k] as number, collateral))}
                     aria-invalid={th.length > 0}
                     onChange={(e) => set("thresholds", k, e.target.value)}
                     className="mt-1 w-full border border-[var(--border)] bg-[var(--bg)] px-2 py-1 font-mono text-[12px]"
                   />
-                  <p className="mt-0.5 text-[10px] text-[var(--text-dim)]">{`At least ${money(TIER_FLOORS_USD[k] as number)}`}</p>
+                  <p className="mt-0.5 text-[10px] text-[var(--text-dim)]">{V22_COPY.tiers.atLeast(amountLabel(TIER_FLOORS_USD[k] as number, collateral))}</p>
                   {th.map((i) => <p key={i.message} role="alert" data-testid={`tier-threshold-issue-${t}`} className="text-[11px] text-[var(--short)]">{i.message}</p>)}
                 </div>
                 <div>

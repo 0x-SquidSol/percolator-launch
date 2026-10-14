@@ -18,6 +18,30 @@ import { V22_COPY } from "./copy";
 
 export type Triple3<T> = readonly [T, T, T];
 
+/**
+ * The market's collateral, for wording. Tier amounts are whole COLLATERAL TOKENS (scaled on chain by the mint's decimals): "$" is said
+ * only for a 6-decimal USD-like token (the test USDC); any other collateral is named by its symbol (or "tokens").
+ */
+export interface TierCollateral {
+  decimals?: number;
+  symbol?: string;
+  usdLike?: boolean;
+}
+
+/** Default for the app's own collateral (the universal test USDC). */
+export const TEST_USDC: TierCollateral = { decimals: 6, symbol: "USDC", usdLike: true };
+
+/** USD-like = a 6-decimal token whose symbol says USD (USDC, USDT, sim-USDC). */
+export const isUsdLikeCollateral = (symbol: string | undefined, decimals: number): boolean => decimals === 6 && /usd/i.test(symbol ?? "");
+
+const dollarsOnly = (c: TierCollateral): boolean => (c.decimals ?? 6) === 6 && c.usdLike === true;
+
+/** "$25k" on USD-like collateral, else "25k TOK" ("25k tokens" with no symbol). */
+export function amountLabel(n: number, c: TierCollateral = TEST_USDC): string {
+  const short = n >= 1_000_000 ? `${n / 1_000_000}M` : n >= 1_000 ? `${n / 1_000}k` : `${n}`;
+  return dollarsOnly(c) ? `$${short}` : `${short} ${c.symbol ?? "tokens"}`;
+}
+
 /** The form state: text boxes for the thresholds (whole dollars), leverage picks as x100 text ("" = default). */
 export interface TierEdit {
   thresholds: Triple3<string>;
@@ -59,13 +83,13 @@ const levToX100 = (s: string): number | null => {
 };
 
 /** Parse and validate the form against the market's launch leverage and built-in maximum (both x100). */
-export function validateTierEdit(edit: TierEdit, lLaunchX100: number, lTierX100: number): TierEditResult {
+export function validateTierEdit(edit: TierEdit, lLaunchX100: number, lTierX100: number, collateral: TierCollateral = TEST_USDC): TierEditResult {
   const issues: TierEditIssue[] = [];
   const th: number[] = [];
   const lv: number[] = [];
   edit.thresholds.forEach((s, k) => {
     const v = toInt(s);
-    if (v === null) issues.push({ field: "thresholds", tier: (k + 1) as 1 | 2 | 3, message: `Tier ${k + 1} pool depth must be a whole dollar amount.` });
+    if (v === null) issues.push({ field: "thresholds", tier: (k + 1) as 1 | 2 | 3, message: `Tier ${k + 1} pool depth must be a whole number of ${dollarsOnly(collateral) ? "dollars" : (collateral.symbol ?? "tokens")}.` });
     th.push(v ?? 0);
   });
   edit.leverage.forEach((s, k) => {
@@ -77,7 +101,7 @@ export function validateTierEdit(edit: TierEdit, lLaunchX100: number, lTierX100:
   const thresholdsUsd = th as unknown as [number, number, number];
   const leverageX100 = lv as unknown as [number, number, number];
   if (thresholdsUsd.every((v) => v === 0) && leverageX100.every((v) => v === 0)) return { ok: true, issues: [] };
-  const r = validateTierConfig({ thresholdsUsd, leverageX100, lLaunchX100, lTierX100 });
+  const r = validateTierConfig({ thresholdsUsd, leverageX100, lLaunchX100, lTierX100, collateral });
   const mapped: TierEditIssue[] = r.issues.map((i: TierConfigIssue) => ({
     field: i.field === "thresholds" ? "thresholds" : "leverage",
     ...(i.tier ? { tier: i.tier } : {}),
@@ -87,13 +111,12 @@ export function validateTierEdit(edit: TierEdit, lLaunchX100: number, lTierX100:
 }
 
 const lev = (x100: number): string => `${x100 % 100 === 0 ? x100 / 100 : (x100 / 100).toFixed(1)}x`;
-const usd = (n: number): string => (n >= 1_000_000 ? `$${n / 1_000_000}M` : n >= 1_000 ? `$${n / 1_000}k` : `$${n}`);
 
 /** The protocol defaults for THIS market, as one line: "5x at $25k · 10x at $100k · 20x at $500k pool depth and market backing". */
-export function tierDefaultsLine(lLaunchX100: number, lTierX100: number): string {
+export function tierDefaultsLine(lLaunchX100: number, lTierX100: number, collateral: TierCollateral = TEST_USDC): string {
   const table = tierLeverage([0, 0, 0], lLaunchX100, lTierX100);
   return V22_COPY.tiers.defaults(
-    [1, 2, 3].map((t) => `${lev(table[t] as number)} at ${usd(TIER_THRESHOLD_DEFAULT_USD[t - 1] as number)}`).join(" · "),
+    [1, 2, 3].map((t) => `${lev(table[t] as number)} at ${amountLabel(TIER_THRESHOLD_DEFAULT_USD[t - 1] as number, collateral)}`).join(" · "),
   );
 }
 

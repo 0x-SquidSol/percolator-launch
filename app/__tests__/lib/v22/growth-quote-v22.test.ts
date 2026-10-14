@@ -94,6 +94,12 @@ describe("ticket quote follows the program's depth rules (band market)", () => {
     expect(dollars(stoppedFor(17_000n).long.nCapQ)).toBeCloseTo(50, 0);
   });
 
+  it("a pool that just got deeper does not count in full at once: usable depth is the slower of the reading and the rate-limited one", () => {
+    // reads $400, but the last good (usable) level was $100: capacity is 0.5 x $100 = $50 until it has doubled up
+    const v = view({ source: 1, usd: 400n, prevUsd: 400n, slot: NOW - 10n, lastGoodUsd: 100n, lastGoodSlot: NOW - 100n });
+    expect(dollars(v.long.nCapQ)).toBeCloseTo(50, 0);
+  });
+
   it("a real zero reading caps capacity at 0 at once: the side reads full (capacity-zero)", () => {
     const v = view({ source: 1, usd: 0n, prevUsd: 400n, slot: NOW - 10n, lastGoodUsd: 400n, lastGoodSlot: NOW - 100n });
     expect(v.long.closed).toBe(true);

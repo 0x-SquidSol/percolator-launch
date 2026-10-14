@@ -40,7 +40,7 @@ import { GrowthLaunchControls, type GrowthLaunchState } from "./GrowthLaunchCont
 import { isDevnetV21Enabled } from "@/lib/v21/flag";
 import { V21_COPY } from "@/lib/v21/copy";
 import { defaultGrowthLaunch, growthTierX100, validateGrowthLaunch, type GrowthLaunch } from "@/lib/v21/growth-launch";
-import { EMPTY_TIER_EDIT, validateTierEdit } from "@/lib/v22/tier-config";
+import { EMPTY_TIER_EDIT, isUsdLikeCollateral, validateTierEdit } from "@/lib/v22/tier-config";
 import { V22LaunchOptions, type V22OptionsState } from "./V22LaunchOptions";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { planLaunchV22, toLaunchParams } from "@/lib/v22/launch-plan";
@@ -750,8 +750,9 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
   const v22Params = v22Plan ? toLaunchParams(v22Plan) : undefined;
   // Devnet v2.2: "Advanced: leverage tiers" (band markets only). Blank = the protocol defaults and the plain bind; an edited,
   // valid table rides the bind (tag 94). An invalid one blocks the launch with its first one-line issue.
+  const tierCollateral = { decimals, symbol: collateralSymbol, usdLike: isUsdLikeCollateral(collateralSymbol, decimals) };
   const tierBounds = growthLaunch ? { lLaunchX100: growthLaunch.lLaunchX100, lTierX100: growthTierX100(growthDerived.initialMarginBps) } : undefined;
-  const tierResult = v22Plan?.protection && tierBounds ? validateTierEdit(wizard.v22?.tiers ?? EMPTY_TIER_EDIT, tierBounds.lLaunchX100, tierBounds.lTierX100) : null;
+  const tierResult = v22Plan?.protection && tierBounds ? validateTierEdit(wizard.v22?.tiers ?? EMPTY_TIER_EDIT, tierBounds.lLaunchX100, tierBounds.lTierX100, tierCollateral) : null;
   const tierIssue = tierResult && !tierResult.ok ? (tierResult.issues[0]?.message ?? "These leverage tiers are not valid.") : null;
   const growthWithTiers: GrowthLaunch | undefined =
     growthLaunch && tierResult?.config && tierBounds ? { ...growthLaunch, tiers: tierResult.config, lTierX100: tierBounds.lTierX100 } : growthLaunch;
@@ -1498,6 +1499,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
             plan={v22Plan}
             symbol={wizard.tokenMeta?.symbol ?? "token"}
             tierBounds={tierBounds}
+            collateral={tierCollateral}
           />
         )}
       </div>

@@ -1,5 +1,5 @@
 /*
- * LOCAL ADAPTER PORT, not original code: verbatim from percolator-sdk feat/v22-sdk-growth @ 6871426 (growth round 2, R2.1),
+ * LOCAL ADAPTER PORT, not original code: verbatim from percolator-sdk feat/v22-sdk-growth @ 088ba6b (growth round 2 + review follow-up),
  * src/abi/growth-v19.ts. Only the imports are retargeted (the vendored v22 layout/slab ports, sibling records ports, and the installed @percolatorct/sdk 8.0.0 root).
  * TODO(repin): delete when @percolatorct/sdk >= 9.0.0 ships and point ../../records.ts at the package. Do not edit here; fix upstream in percolator-sdk.
  */
@@ -92,8 +92,8 @@ export const ASSET_GROWTH_FIELD_OFF = Object.freeze({
  * N_cap). Kept apart from {@link ASSET_GROWTH_FIELD_OFF}, which is pinned against the crate's `offset_of!` fixture.
  */
 export const ASSET_GROWTH_DEPTH_FIELD_OFF = Object.freeze({
-  depthSource: 44, attestedMaxTier: 45, depthE6: 56, depthSlot: 64, depthPrevE6: 72,
-  depthLastGoodE6: 80, depthLastGoodSlot: 88, tierThresholdUsd: 96, tierLeverageX100: 108,
+  depthSource: 44, attestedMaxTier: 45, collateralDecimalsP1: 46, depthE6: 56, depthSlot: 64, depthPrevE6: 72,
+  depthLastGoodE6: 80, depthLastGoodSlot: 88, tierThresholdUsd: 96, tierLeverageX100: 108, depthRiseEpoch: 114,
 } as const);
 
 /** N-2: utilisation fee at `u = 1` when the per-asset dial is 0 (bps of the opening notional). */
@@ -180,11 +180,20 @@ export interface AssetGrowthV19 {
   depthSlot: bigint;
   /** v2.2 G8: the depth before the last push (effective depth is the min of the two). */
   depthPrevE6: bigint;
-  /** R2.1 (80): the last fresh effective (min-of-two) depth, the sticky cap's input. */
+  /**
+   * R2.1 (80) + R2-M1: the RATE-LIMITED last good depth (collateral atoms): rises at most 2x per 9,000-slot epoch, falls at once; the sticky
+   * cap's input and, with the fresh reading, the usable depth every tier and cap reads ({@link usableDepthE6}).
+   */
   depthLastGoodE6: bigint;
   /** R2.1 (88): slot of that sample. */
   depthLastGoodSlot: bigint;
-  /** R2.1 (96): per-market tier thresholds, whole USD (T1, T2, T3); 0 = protocol default $25k / $100k / $500k. */
+  /** R2-L2 (46): the collateral mint's decimals + 1 as stored (0 = a pre-R2-L2 record, read as 6 decimals). */
+  collateralDecimalsP1: number;
+  /** R2-L2: the collateral mint's decimals (byte 46; 6 when unset). Tier thresholds are whole collateral tokens scaled by this. */
+  collateralDecimals: number;
+  /** R2-M1 (114, u32 LE): the ratchet epoch (`slot / 9,000`) of the last rise of {@link AssetGrowthV19.depthLastGoodE6}. */
+  depthRiseEpoch: number;
+  /** R2.1 (96): per-market tier thresholds in WHOLE COLLATERAL TOKENS (T1, T2, T3; $ on 6-decimal USD collateral); 0 = default 25,000 / 100,000 / 500,000. */
   tierThresholdUsd: Triple<number>;
   /** R2.1 (108): per-tier max leverage x100 (L1, L2, L3); 0 = default `min(5x / 10x / 20x, L_tier)`. */
   tierLeverageX100: Triple<number>;
@@ -229,6 +238,9 @@ export function decodeAssetGrowthRecordV19(rec: Uint8Array): AssetGrowthV19 | nu
     depthEver: ((rec[D.depthSource] as number) & DEPTH_EVER) !== 0,
     depthPrevReal: ((rec[D.depthSource] as number) & DEPTH_PREV_REAL) !== 0,
     attestedMaxTier: rec[D.attestedMaxTier] as number,
+    collateralDecimalsP1: rec[D.collateralDecimalsP1] as number,
+    collateralDecimals: collateralDecimalsOf(rec[D.collateralDecimalsP1] as number),
+    depthRiseEpoch: v.getUint32(D.depthRiseEpoch, true),
     depthE6: v.getBigUint64(D.depthE6, true),
     depthSlot: v.getBigUint64(D.depthSlot, true),
     depthPrevE6: v.getBigUint64(D.depthPrevE6, true),
@@ -617,27 +629,32 @@ export interface DepthState {
   depthPrevE6: bigint;
   /** Byte 44: bits 0-1 source of the stored depth (none = an absent sample), bit 2 {@link DEPTH_PREV_REAL}, bit 7 {@link DEPTH_EVER}. */
   depthSource: number;
+  /** The RATE-LIMITED last good depth (R2-M1). */
   lastGoodE6: bigint;
   lastGoodSlot: bigint;
+  /** R2-M1: ratchet epoch of the last rise of `lastGoodE6` (bytes 114..118). */
+  riseEpoch: number;
 }
 
 /**
  * The wrapper's depth writer (every PushAuthMark form). Port of `depth_push_update`. `source` none / unknown is an ABSENT sample; a REAL reading
  * (source 1 or 2) of 0 is a real zero depth. A later-slot push stores the new sample and the old one becomes `prev` (with {@link DEPTH_PREV_REAL}
  * = it was real); a same-slot (or earlier) push can only lower the stored depth, keeps `prev` (W-L2), and at a tie of zeros the real zero
- * beats an absent one. A fresh reading ({@link freshDepthE6}, a real 0 included) becomes the last good depth and sets {@link DEPTH_EVER}.
+ * beats an absent one. A fresh reading ({@link freshDepthE6}, a real 0 included) sets {@link DEPTH_EVER} and updates the last good depth to its
+ * RATE-LIMITED value ({@link depthRateLimited}: down at once, up at most 2x per epoch, the first reading below T1), stamped with the sample's slot.
  *
  * @param st          Stored state.
  * @param source      The new reading's source (0 none, 1 attested, 2 DEX; others are absent).
  * @param newDepthE6  The new depth (ignored for an absent sample).
  * @param nowSlot     Authenticated slot of the push.
+ * @param seedE6      The market's T1 in atoms minus 1 (`tierThresholdsE6(..)[0] - 1n`).
  * @returns The new state.
  * @example
  * ```ts
- * depthPushUpdate({ depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthSource: 0, lastGoodE6: 0n, lastGoodSlot: 0n }, 1, 0n, 100n).lastGoodE6; // 0n, DEPTH_EVER set
+ * depthPushUpdate({ depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthSource: 0, lastGoodE6: 0n, lastGoodSlot: 0n, riseEpoch: 0 }, 1, 0n, 100n, 24_999_999_999n).lastGoodE6; // 0n, DEPTH_EVER set
  * ```
  */
-export function depthPushUpdate(st: DepthState, source: number, newDepthE6: bigint, nowSlot: bigint): DepthState {
+export function depthPushUpdate(st: DepthState, source: number, newDepthE6: bigint, nowSlot: bigint, seedE6: bigint): DepthState {
   let src = source;
   let nd = newDepthE6;
   if (src === DEPTH_SOURCE.None || src > DEPTH_SOURCE.OnChainPool) { src = DEPTH_SOURCE.None; nd = 0n; }
@@ -651,9 +668,12 @@ export function depthPushUpdate(st: DepthState, source: number, newDepthE6: bigi
   } else {
     d = nd; prev = st.depthE6; slot = nowSlot; s = src; prevReal = oldSource !== DEPTH_SOURCE.None ? DEPTH_PREV_REAL : 0;
   }
-  const out: DepthState = { depthE6: d, depthSlot: slot, depthPrevE6: prev, depthSource: s | prevReal | (st.depthSource & DEPTH_EVER), lastGoodE6: st.lastGoodE6, lastGoodSlot: st.lastGoodSlot };
+  const out: DepthState = { depthE6: d, depthSlot: slot, depthPrevE6: prev, depthSource: s | prevReal | (st.depthSource & DEPTH_EVER), lastGoodE6: st.lastGoodE6, lastGoodSlot: st.lastGoodSlot, riseEpoch: st.riseEpoch };
   const f = freshDepthE6(d, prev, slot, out.depthSource, nowSlot);
-  if (f !== null) { out.depthSource |= DEPTH_EVER; out.lastGoodE6 = f; out.lastGoodSlot = slot; }
+  if (f !== null) {
+    const lg = depthRateLimited(depthEver(st.depthSource), st.lastGoodE6, st.riseEpoch, f, slot, seedE6);
+    out.depthSource |= DEPTH_EVER; out.lastGoodE6 = lg.lastGoodE6; out.lastGoodSlot = slot; out.riseEpoch = lg.riseEpoch;
+  }
   return out;
 }
 
@@ -697,20 +717,110 @@ export function capDepthE6(depthSourceByte: number, fresh: bigint | null, lastGo
   return null;
 }
 
+/** Largest collateral decimals the record accepts (`MAX_COLLATERAL_DECIMALS`; byte 46 holds decimals + 1). */
+export const GROWTH_MAX_COLLATERAL_DECIMALS = 18;
+/** `DEPTH_BOOTSTRAP_DIV`: the depth rate limiter's bootstrap floor is `T1 / 16` (the level a market climbs back to out of a real 0). */
+export const DEPTH_BOOTSTRAP_DIV = 16n;
+
+/** `collateral_decimals_of`: byte 46 is decimals + 1; 0 = a record written before R2-L2, read as 6. */
+export function collateralDecimalsOf(storedP1: number): number {
+  return storedP1 === 0 ? 6 : storedP1 - 1;
+}
+
+/** `whole_token_atoms`: `10^decimals` (decimals clamped to 18). */
+export function wholeTokenAtoms(decimals: number): bigint {
+  return 10n ** BigInt(Math.min(Math.max(decimals, 0), GROWTH_MAX_COLLATERAL_DECIMALS));
+}
+
+/** `depth_epoch`: the ratchet epoch of a slot, `slot / 9,000`, saturating at u32::MAX. */
+export function depthEpoch(slot: bigint): number {
+  const e = slot / DEPTH_STICKY_EPOCH_SLOTS;
+  return e > 0xffff_ffffn ? 0xffff_ffff : Number(e);
+}
+
 /**
- * Per-market thresholds in collateral atoms (stored whole USD; 0 = default). Port of `tier_thresholds`.
+ * R2-M1 ("up slowly, down at once" for the depth itself): the rate-limited last good depth after a FRESH reading `r` at `slot`. The market's FIRST
+ * fresh reading (`ever` false) is `min(r, seed)` (tier 0 whatever the pool shows); `r <= lastGood` -> `r` at once (a real 0 included, the rise clock is
+ * kept); `r > lastGood` in a LATER epoch than the last rise -> `min(r, max(2 * lastGood, seed / 16))` (one doubling per epoch); otherwise unchanged.
+ * `seed` = the market's T1 in atoms minus 1. Port of `depth_rate_limited`.
  *
- * @param storedUsd  `tier_threshold_usd` (T1, T2, T3).
- * @returns Thresholds, USD e6.
+ * @param ever        `DEPTH_EVER` already set.
+ * @param lastGoodE6  Stored rate-limited depth.
+ * @param riseEpoch   Epoch of the last rise.
+ * @param r           The fresh reading (collateral atoms).
+ * @param slot        Slot of the reading's sample.
+ * @param seedE6      T1 in atoms minus 1.
+ * @returns `{ lastGoodE6, riseEpoch }`.
+ * @example
+ * ```ts
+ * depthRateLimited(true, 2_000_000_000n, 0, 500_000_000_000_000n, 9_000n, 24_999_999_999n); // { lastGoodE6: 4_000_000_000n, riseEpoch: 1 }
+ * ```
+ */
+export function depthRateLimited(ever: boolean, lastGoodE6: bigint, riseEpoch: number, r: bigint, slot: bigint, seedE6: bigint): { lastGoodE6: bigint; riseEpoch: number } {
+  const e = depthEpoch(slot);
+  if (!ever) return { lastGoodE6: r < seedE6 ? r : seedE6, riseEpoch: e };
+  if (r <= lastGoodE6) return { lastGoodE6: r, riseEpoch };
+  if (e > riseEpoch) {
+    const doubled = (lastGoodE6 * 2n) > U64_MAX ? U64_MAX : lastGoodE6 * 2n;
+    const floor = seedE6 / DEPTH_BOOTSTRAP_DIV;
+    const up = doubled > floor ? doubled : floor;
+    return { lastGoodE6: r < up ? r : up, riseEpoch: e };
+  }
+  return { lastGoodE6, riseEpoch };
+}
+
+/**
+ * The depth every reader uses (tiers and the capacity cap): `min(fresh reading, rate-limited last good)`; `null` while there is no fresh reading
+ * (the sticky path then applies). Port of `usable_depth_e6`.
+ *
+ * @param fresh       {@link freshDepthE6}.
+ * @param lastGoodE6  {@link AssetGrowthV19.depthLastGoodE6}.
+ * @returns Usable depth or `null`.
+ * @example
+ * ```ts
+ * usableDepthE6(500_000_000_000n, 25_000_000_000n); // 25_000_000_000n
+ * ```
+ */
+export function usableDepthE6(fresh: bigint | null, lastGoodE6: bigint): bigint | null {
+  return fresh === null ? null : fresh < lastGoodE6 ? fresh : lastGoodE6;
+}
+
+/**
+ * R2-L1: the rent `N_cap` snapshot (0 means "not measured", rent 0). When the DEPTH cap is what makes N_cap 0 (a real 0 reading or a fully decayed
+ * sticky cap) the snapshot is 1, so open interest pays the maximum rent, never 0. Otherwise `min(nCap, u64::MAX)`. Port of `rent_snapshot_n_cap_q`.
+ *
+ * @param nCapQ          N_cap in Q.
+ * @param depthCapZero   The depth cap is 0.
+ * @returns The snapshot.
+ * @example
+ * ```ts
+ * rentSnapshotNCapQ(0n, true); // 1n (maximum rent)
+ * ```
+ */
+export function rentSnapshotNCapQ(nCapQ: bigint, depthCapZero: boolean): bigint {
+  if (nCapQ === 0n && depthCapZero) return 1n;
+  return nCapQ > U64_MAX ? U64_MAX : nCapQ;
+}
+
+/**
+ * Per-market thresholds in collateral ATOMS. The stored values are WHOLE COLLATERAL TOKENS (0 = default 25,000 / 100,000 / 500,000; $ on 6-decimal
+ * USD collateral), scaled by `10^collateralDecimals` and saturating at u64::MAX. Port of `tier_thresholds` (R2-L2).
+ *
+ * @param storedTokens        `tier_threshold_usd` (T1, T2, T3), whole collateral tokens.
+ * @param collateralDecimals  The collateral mint's decimals ({@link AssetGrowthV19.collateralDecimals}; default 6).
+ * @returns Thresholds in collateral atoms.
  * @example
  * ```ts
  * tierThresholdsE6([0, 0, 0]); // [25_000_000_000n, 100_000_000_000n, 500_000_000_000n]
+ * tierThresholdsE6([0, 0, 0], 9)[0]; // 25_000_000_000_000n
  * ```
  */
-export function tierThresholdsE6(storedUsd: Triple<number | bigint>): Triple<bigint> {
+export function tierThresholdsE6(storedTokens: Triple<number | bigint>, collateralDecimals = 6): Triple<bigint> {
+  const unit = wholeTokenAtoms(collateralDecimals);
   const t = (i: 0 | 1 | 2): bigint => {
-    const s = BigInt(storedUsd[i]);
-    return (s === 0n ? BigInt(TIER_THRESHOLD_DEFAULT_USD[i]) : s) * GROWTH_USD_ATOMS;
+    const s = BigInt(storedTokens[i]);
+    const v = (s === 0n ? BigInt(TIER_THRESHOLD_DEFAULT_USD[i]) : s) * unit;
+    return v > U64_MAX ? U64_MAX : v;
   };
   return [t(0), t(1), t(2)];
 }
@@ -956,6 +1066,12 @@ export interface ValidateTierConfigInput {
   lTierX100: number;
   /** Optional `attested_max_tier` (upgrade authority only). */
   attestedMaxTier?: number;
+  /**
+   * R2-L2: the tier thresholds and floors are whole COLLATERAL TOKENS, scaled on chain by the collateral mint's decimals. Messages say "$" only when
+   * the collateral is a 6-decimal USD-like token (`decimals === 6 && usdLike === true`); otherwise they say "tokens" (or `symbol`). The bounds
+   * themselves do not depend on the decimals.
+   */
+  collateral?: { decimals?: number; usdLike?: boolean; symbol?: string };
 }
 
 /** Result of {@link validateTierConfig}. */
@@ -965,7 +1081,8 @@ export interface TierConfigValidation {
   issues: TierConfigIssue[];
 }
 
-const usd = (n: number): string => `$${n.toLocaleString("en-US")}`;
+const fmtAmount = (n: number, c: ValidateTierConfigInput["collateral"]): string =>
+  c !== undefined && (c.decimals ?? 6) === 6 && c.usdLike === true ? `$${n.toLocaleString("en-US")}` : `${n.toLocaleString("en-US")} ${c?.symbol ?? "tokens"}`;
 const lev = (x100: number): string => `${Number.isInteger(x100 / 100) ? x100 / 100 : (x100 / 100).toFixed(2).replace(/0+$/, "")}x`;
 
 /**
@@ -988,7 +1105,7 @@ export function validateTierConfig(i: ValidateTierConfigInput): TierConfigValida
   const isU = (v: number, max: number): boolean => Number.isInteger(v) && v >= 0 && v <= max;
   const tiers = [1, 2, 3] as const;
   let thOk = true;
-  th.forEach((v, k) => { if (!isU(v, 0xffff_ffff)) { thOk = false; issues.push({ field: "thresholds", code: "not-an-integer", tier: tiers[k] as 1 | 2 | 3, message: `Tier ${k + 1} pool depth must be a whole dollar amount.` }); } });
+  th.forEach((v, k) => { if (!isU(v, 0xffff_ffff)) { thOk = false; issues.push({ field: "thresholds", code: "not-an-integer", tier: tiers[k] as 1 | 2 | 3, message: `Tier ${k + 1} pool depth must be a whole number of ${i.collateral?.usdLike === true && (i.collateral.decimals ?? 6) === 6 ? "dollars" : (i.collateral?.symbol ?? "tokens")}.` }); } });
   let lvOk = true;
   lv.forEach((v, k) => { if (!isU(v, 0xffff)) { lvOk = false; issues.push({ field: "leverage", code: "not-an-integer", tier: tiers[k] as 1 | 2 | 3, message: `Tier ${k + 1} leverage must be a whole number of hundredths.` }); } });
   if (!isU(i.lLaunchX100, 0xffff) || !isU(i.lTierX100, 0xffff)) {
@@ -998,7 +1115,7 @@ export function validateTierConfig(i: ValidateTierConfigInput): TierConfigValida
   if (thOk && th.some((v) => v !== 0)) {
     const w = th.map((v, k) => (v === 0 ? (TIER_THRESHOLD_DEFAULT_USD[k] as number) : v));
     w.forEach((v, k) => {
-      if (v < (TIER_THRESHOLD_FLOOR_USD[k] as number)) issues.push({ field: "thresholds", code: "below-floor", tier: tiers[k] as 1 | 2 | 3, message: `Tier ${k + 1} pool depth must be at least ${usd(TIER_THRESHOLD_FLOOR_USD[k] as number)}.` });
+      if (v < (TIER_THRESHOLD_FLOOR_USD[k] as number)) issues.push({ field: "thresholds", code: "below-floor", tier: tiers[k] as 1 | 2 | 3, message: `Tier ${k + 1} pool depth must be at least ${fmtAmount(TIER_THRESHOLD_FLOOR_USD[k] as number, i.collateral)}.` });
     });
     for (let k = 1; k < 3; k++) {
       if (!((w[k - 1] as number) < (w[k] as number))) issues.push({ field: "thresholds", code: "not-rising", tier: tiers[k] as 1 | 2 | 3, message: `Tier ${k + 1} pool depth must be higher than tier ${k}.` });
@@ -1289,6 +1406,39 @@ export function graduationFallOnly(i: {
   return upper < i.prevCeilX100 ? { ceilX100: upper, ceilSlot: i.nowSlot } : { ceilX100: i.prevCeilX100, ceilSlot: i.prevSlot };
 }
 
+/** Whole minutes (rounded up) for a slot count at the nominal 400 ms slot. */
+function slotsToMinutes(slots: bigint): number {
+  return Number(divCeil(slots * BigInt(GROWTH_SLOT_MS), 60_000n));
+}
+
+/**
+ * R2-M1: slots until the rate-limited usable depth reaches `threshold` if the fresh readings stay at `fresh`: one doubling (floored at `seed / 16`) per
+ * epoch after the last rise, capped at `fresh`; a market's first reading starts at `min(fresh, seed)`. `0n` = already there; `null` = never (fresh below
+ * the threshold).
+ */
+function depthRateEtaSlots(ever: boolean, lastGood: bigint, riseEpoch: number, fresh: bigint, threshold: bigint, nowSlot: bigint, seed: bigint): bigint | null {
+  if (fresh < threshold) return null;
+  let cur = lastGood;
+  let re = riseEpoch;
+  let e = depthEpoch(nowSlot);
+  if (!ever) { cur = fresh < seed ? fresh : seed; re = e; }
+  if (cur >= threshold) return 0n;
+  // The next rise is allowed in an epoch later than `re`.
+  let k = Math.max(e, re + 1);
+  for (let n = 0; n < 80; n++) {
+    const floor = seed / DEPTH_BOOTSTRAP_DIV;
+    const doubled = cur * 2n;
+    const up = doubled > floor ? doubled : floor;
+    cur = fresh < up ? fresh : up;
+    if (cur >= threshold) {
+      const at = BigInt(k) * DEPTH_STICKY_EPOCH_SLOTS;
+      return at > nowSlot ? at - nowSlot : 0n;
+    }
+    k += 1;
+  }
+  return null;
+}
+
 /** What raises the ceiling next. */
 export interface NextUnlock {
   /**
@@ -1299,12 +1449,19 @@ export interface NextUnlock {
   kind: "depth" | "backing" | "both" | "ratchet" | "none";
   /** The liquidity tier whose requirements are named (`depth` / `backing` / `both`). */
   tier?: number;
-  /** Pool depth the tier needs, whole USD (the market's own threshold). */
+  /** Pool depth the tier needs, in whole COLLATERAL TOKENS (the market's own threshold; $ on 6-decimal USD collateral). */
   depthUsd?: number;
-  /** Market backing (LP equity) the tier needs, whole USD, rounded up; accounts for the market's lambda below 1x. */
+  /** Market backing (LP equity) the tier needs, whole collateral tokens, rounded up; accounts for the market's lambda below 1x. */
   backingUsd?: number;
-  /** Alias of the tier's pool-depth threshold (round-1 field). */
+  /** Alias of the tier's pool-depth threshold (round-1 field), whole collateral tokens. */
   thresholdUsd?: number;
+  /**
+   * R2-M1: the pool depth is already there (the fresh reading reaches the threshold) but the rate limit still holds the usable depth below it (it
+   * rises at most 2x per hour). `depthEtaSlots` / `depthEtaMinutes` then say when the usable depth reaches the threshold if the readings stay up.
+   */
+  depthRateLimited?: boolean;
+  depthEtaSlots?: bigint;
+  depthEtaMinutes?: number;
   /** The ceiling (x100) reached: at the tier unlock, or the next ratchet step. */
   leverageX100?: number;
   /**
@@ -1326,11 +1483,15 @@ export interface GrowthCeilingView {
   bookTier: number;
   /** Book depth of the bound LP ({@link bookDepthE6}); 0 when `cM` is unknown. */
   bookDepthE6: bigint;
-  /** The fresh reading ({@link freshDepthE6}; 0n when absent or a real zero). */
+  /** The USABLE depth ({@link usableDepthE6} = min(fresh reading, rate-limited last good); 0n when absent or a real zero). */
   effectiveDepthE6: bigint;
+  /** The fresh min-of-two reading before the rate limit ({@link freshDepthE6}); `null` when absent. */
+  freshDepthE6: bigint | null;
+  /** The collateral mint's decimals the thresholds are scaled by. */
+  collateralDecimals: number;
   /** The depth the capacity cap uses (fresh, sticky, or `null` for none). */
   capDepthE6: bigint | null;
-  /** This market's thresholds, USD e6. */
+  /** This market's thresholds in collateral atoms. */
   thresholdsE6: Triple<bigint>;
   /** This market's leverage table x100 `[L0, L1, L2, L3]`. */
   table: readonly [number, number, number, number];
@@ -1365,10 +1526,12 @@ export interface GrowthCeilingView {
  */
 export function growthCeilingView(g: AssetGrowthV19, bandBps: number, nowSlot: bigint, cM: bigint | null, forceDown: boolean): GrowthCeilingView {
   const clamp = clampEnforced(bandBps, g.rGapBps);
-  const thresholds = tierThresholdsE6(g.tierThresholdUsd);
+  const unit = wholeTokenAtoms(g.collateralDecimals);
+  const thresholds = tierThresholdsE6(g.tierThresholdUsd, g.collateralDecimals);
   const table = tierLeverage(g.tierLeverageX100, g.lLaunchX100, g.lTierX100);
   const dsByte = g.depthSource | (g.depthEver ? DEPTH_EVER : 0) | (g.depthPrevReal ? DEPTH_PREV_REAL : 0);
-  const fresh = freshDepthE6(g.depthE6, g.depthPrevE6, g.depthSlot, dsByte, nowSlot);
+  const freshRaw = freshDepthE6(g.depthE6, g.depthPrevE6, g.depthSlot, dsByte, nowSlot);
+  const fresh = usableDepthE6(freshRaw, g.depthLastGoodE6);
   const eff = fresh ?? 0n;
   const capDepth = clamp ? capDepthE6(dsByte, fresh, g.depthLastGoodE6, g.depthLastGoodSlot, nowSlot) : null;
   const venue = clamp ? venueTier(eff, dsByte, thresholds, g.attestedMaxTier) : 0;
@@ -1390,10 +1553,16 @@ export function growthCeilingView(g: AssetGrowthV19, bandBps: number, nowSlot: b
       const needBacking = book < t;
       const depthAtoms = thresholds[t - 1] as bigint;
       const lam = BigInt(Math.min(g.lambdaBps, 10_000));
-      const out: NextUnlock = { kind: needDepth && needBacking ? "both" : needDepth ? "depth" : "backing", tier: t, thresholdUsd: Number(depthAtoms / GROWTH_USD_ATOMS), leverageX100: lev2 };
-      if (needDepth) out.depthUsd = Number(depthAtoms / GROWTH_USD_ATOMS);
-      if (needBacking && lam > 0n) out.backingUsd = Number(divCeil(divCeil(depthAtoms * GROWTH_BPS, lam), GROWTH_USD_ATOMS));
+      const out: NextUnlock = { kind: needDepth && needBacking ? "both" : needDepth ? "depth" : "backing", tier: t, thresholdUsd: Number(depthAtoms / unit), leverageX100: lev2 };
+      if (needDepth) out.depthUsd = Number(depthAtoms / unit);
+      if (needBacking && lam > 0n) out.backingUsd = Number(divCeil(divCeil(depthAtoms * GROWTH_BPS, lam), unit));
       if (needDepth && t > attestedMaxTierEff(g.attestedMaxTier) && g.depthSource !== DEPTH_SOURCE.OnChainPool) out.needsOnChainDepth = true;
+      // R2-M1: the pool depth is there but the rate limit holds the usable depth back: say when it gets there.
+      const venueCanReach = depthSourceOf(dsByte) === DEPTH_SOURCE.OnChainPool || (depthSourceOf(dsByte) === DEPTH_SOURCE.Attested && t <= attestedMaxTierEff(g.attestedMaxTier));
+      if (needDepth && venueCanReach && freshRaw !== null && freshRaw >= depthAtoms) {
+        const eta = depthRateEtaSlots(g.depthEver, g.depthLastGoodE6, g.depthRiseEpoch, freshRaw, depthAtoms, nowSlot, thresholds[0] - 1n);
+        if (eta !== null) { out.depthRateLimited = true; out.depthEtaSlots = eta; out.depthEtaMinutes = slotsToMinutes(eta); }
+      }
       nextTierUnlock = out;
       break;
     }
@@ -1403,9 +1572,9 @@ export function growthCeilingView(g: AssetGrowthV19, bandBps: number, nowSlot: b
     const step = Math.min(stored + GROWTH_RATCHET_STEP_X100, target);
     const due = g.ceilSlot + GROWTH_RATCHET_EPOCH_SLOTS;
     const eta = due > nowSlot ? due - nowSlot : 0n;
-    nextUnlock = { kind: "ratchet", leverageX100: step, etaSlots: eta, etaMinutes: Number(divCeil(eta * BigInt(GROWTH_SLOT_MS), 60_000n)) };
+    nextUnlock = { kind: "ratchet", leverageX100: step, etaSlots: eta, etaMinutes: slotsToMinutes(eta) };
   }
-  return { tier, venueTier: venue, bookTier: book, bookDepthE6: bookD, effectiveDepthE6: eff, capDepthE6: capDepth, thresholdsE6: thresholds, table, clampEnforced: clamp, graduationOn: grad, targetX100: target, ceilingX100: ceiling, nextUnlock, nextTierUnlock };
+  return { tier, freshDepthE6: freshRaw, collateralDecimals: g.collateralDecimals, venueTier: venue, bookTier: book, bookDepthE6: bookD, effectiveDepthE6: eff, capDepthE6: capDepth, thresholdsE6: thresholds, table, clampEnforced: clamp, graduationOn: grad, targetX100: target, ceilingX100: ceiling, nextUnlock, nextTierUnlock };
 }
 
 // ============================================================================

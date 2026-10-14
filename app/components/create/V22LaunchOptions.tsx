@@ -9,7 +9,7 @@
 import { type FC } from "react";
 import { V22_COPY } from "@/lib/v22/copy";
 import { TierControls } from "@/components/create/TierControls";
-import type { TierEdit } from "@/lib/v22/tier-config";
+import type { TierCollateral, TierEdit } from "@/lib/v22/tier-config";
 import { EMPTY_TIER_EDIT } from "@/lib/v22/tier-config";
 import { holdingFeePctPerDay, lotTooltip, type LaunchPlanV22 } from "@/lib/v22/launch-plan";
 
@@ -30,6 +30,8 @@ export interface V22LaunchOptionsProps {
   symbol: string;
   /** Launch leverage and the market's built-in maximum (x100): given, a band market shows "Advanced: leverage tiers". */
   tierBounds?: { lLaunchX100: number; lTierX100: number };
+  /** The market's collateral, for the tier amounts (default: the test USDC). */
+  collateral?: TierCollateral;
 }
 
 const Toggle: FC<{ id: string; title: string; hint: string; checked: boolean; onChange: (v: boolean) => void }> = ({ id, title, hint, checked, onChange }) => (
@@ -42,7 +44,7 @@ const Toggle: FC<{ id: string; title: string; hint: string; checked: boolean; on
   </label>
 );
 
-export const V22LaunchOptions: FC<V22LaunchOptionsProps> = ({ value, onChange, plan, symbol, tierBounds }) => {
+export const V22LaunchOptions: FC<V22LaunchOptionsProps> = ({ value, onChange, plan, symbol, tierBounds, collateral }) => {
   if (!plan.available) return null;
   const tip = lotTooltip(plan.lotExp, symbol);
   const issue = plan.issues[0];
@@ -84,6 +86,7 @@ export const V22LaunchOptions: FC<V22LaunchOptionsProps> = ({ value, onChange, p
           onChange={(tiers) => onChange({ ...value, tiers })}
           lLaunchX100={tierBounds.lLaunchX100}
           lTierX100={tierBounds.lTierX100}
+          collateral={collateral}
         />
       )}
       {plan.notes.length > 0 && (

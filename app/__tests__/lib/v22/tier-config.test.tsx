@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { TierControls } from "@/components/create/TierControls";
 import { V22LaunchOptions, type V22OptionsState } from "@/components/create/V22LaunchOptions";
 import { planLaunchV22, type LaunchPlanInput } from "@/lib/v22/launch-plan";
-import { EMPTY_TIER_EDIT, tierDefaultsLine, tierLeverageOptions, validateTierEdit, type TierEdit } from "@/lib/v22/tier-config";
+import { EMPTY_TIER_EDIT, amountLabel, isUsdLikeCollateral, tierDefaultsLine, tierLeverageOptions, validateTierEdit, type TierEdit } from "@/lib/v22/tier-config";
 import { V22_COPY } from "@/lib/v22/copy";
 import { __setLotMarketsEnabledForTest } from "@/lib/v22/lot";
 
@@ -25,6 +25,41 @@ describe("defaults line", () => {
   });
   it("a market built for 10x never shows a higher default than its own maximum", () => {
     expect(tierDefaultsLine(LAUNCH, 1_000)).toBe("5x at $25k · 10x at $100k · 10x at $500k pool depth and market backing");
+  });
+});
+
+describe("collateral wording: $ only on a 6-decimal USD-like token", () => {
+  const TOK = { decimals: 9, symbol: "TOK", usdLike: false };
+  it("amountLabel", () => {
+    expect(amountLabel(25_000)).toBe("$25k");
+    expect(amountLabel(25_000, TOK)).toBe("25k TOK");
+    expect(amountLabel(1_500_000, { decimals: 6, usdLike: true })).toBe("$1.5M");
+    expect(amountLabel(5_000, { decimals: 9, usdLike: true, symbol: "USDX" })).toBe("5k USDX");
+    expect(amountLabel(5_000, {})).toBe("5k tokens");
+    expect(isUsdLikeCollateral("USDC", 6)).toBe(true);
+    expect(isUsdLikeCollateral("sim-USDC", 6)).toBe(true);
+    expect(isUsdLikeCollateral("USDX", 9)).toBe(false);
+    expect(isUsdLikeCollateral("TOK", 6)).toBe(false);
+  });
+  it("the defaults line names the token", () => {
+    expect(tierDefaultsLine(LAUNCH, MAX, TOK)).toBe("5x at 25k TOK · 10x at 100k TOK · 20x at 500k TOK pool depth and market backing");
+  });
+  it("issues say tokens, not dollars", () => {
+    const r = validateTierEdit(edit({ t: ["4999", "", ""] }), LAUNCH, MAX, TOK);
+    expect(r.issues[0]?.message).toBe("Tier 1 pool depth must be at least 5,000 TOK.");
+    expect(validateTierEdit(edit({ t: ["4999", "", ""] }), LAUNCH, MAX).issues[0]?.message).toBe("Tier 1 pool depth must be at least $5,000.");
+    expect(validateTierEdit(edit({ t: ["1.5", "", ""] }), LAUNCH, MAX, TOK).issues[0]?.message).toBe("Tier 1 pool depth must be a whole number of TOK.");
+    expect(validateTierEdit(edit({ t: ["1.5", "", ""] }), LAUNCH, MAX).issues[0]?.message).toBe("Tier 1 pool depth must be a whole number of dollars.");
+  });
+  it("the wizard labels follow the collateral", () => {
+    render(<TierControls value={EMPTY_TIER_EDIT} onChange={vi.fn()} lLaunchX100={LAUNCH} lTierX100={MAX} collateral={TOK} defaultOpen />);
+    expect(screen.getByText("Tier 1 amount (TOK)")).toBeInTheDocument();
+    expect(screen.getByTestId("tier-threshold-1")).toHaveAttribute("placeholder", "Default 25k TOK");
+    expect(screen.getByTestId("tier-explain")).toHaveTextContent("floor (5k TOK, 20k TOK, 100k TOK)");
+    cleanup();
+    render(<TierControls value={EMPTY_TIER_EDIT} onChange={vi.fn()} lLaunchX100={LAUNCH} lTierX100={MAX} defaultOpen />);
+    expect(screen.getByText("Tier 1 amount ($)")).toBeInTheDocument();
+    expect(screen.getByTestId("tier-explain")).toHaveTextContent("floor ($5k, $20k, $100k)");
   });
 });
 

@@ -106,6 +106,7 @@ import { clippedFillBody, readClippedFill } from "@/lib/v22/clipped-fill";
 import { isPortfolioClosable } from "@/lib/close-trading-account";
 import { defaultFeeCapMarginBps } from "@/lib/limits/fee-channel";
 import { OrderTicketLimits, reasonCopy } from "@/components/limits/OrderTicketLimits";
+import { isUsdLikeCollateral } from "@/lib/v22/tier-config";
 import { GrowthTicketPanelLive } from "@/components/trade/GrowthTicketPanelLive";
 import { CloseOnlyBanner } from "@/components/trade/CloseOnlyBanner";
 import { isDevnetV21Enabled } from "@/lib/v21/flag";
@@ -2069,7 +2070,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       </div>
 
       {marketLimits.growth && ticketLimits.growth && (
-        <GrowthTicketPanelLive view={marketLimits.growth} decision={ticketLimits.growth} direction={direction} sizeFormat={{ lotExp, ticker: baseTicker }} sidePaused={sidePaused[direction]} sideFull={ticketLimits.fullSides[direction]} bandBps={bandView ? bandView.band.bandBps : null} />
+        <GrowthTicketPanelLive collateral={{ decimals, symbol: collateralSymbol, usdLike: isUsdLikeCollateral(collateralSymbol, decimals) }} view={marketLimits.growth} decision={ticketLimits.growth} direction={direction} sizeFormat={{ lotExp, ticker: baseTicker }} sidePaused={sidePaused[direction]} sideFull={ticketLimits.fullSides[direction]} bandBps={bandView ? bandView.band.bandBps : null} />
       )}
 
       {stepDownNote && (

@@ -125,6 +125,9 @@ export const V22_COPY = {
     tierTip: "Liquidity tier is the lower of two things, how much trading depth the token's pool has near the price and how much money backs this market; higher tiers allow more leverage.",
     unlockBoth: (x: string, depth: string, backing: string) => `${x} unlocks at ${depth} pool depth and ${backing} market backing`,
     unlockDepth: (x: string, depth: string) => `${x} unlocks when pool depth reaches ${depth}`,
+    /** The pool is already deep enough; the hourly limit on how fast the usable reading may rise is the only wait. */
+    unlockCatchUp: (x: string, when: string) => `${x} unlocks in ${when} as the pool reading catches up`,
+    unlockCatchUpNow: (x: string) => `${x} unlocks at the next update`,
     unlockBacking: (x: string, backing: string) => `${x} unlocks when market backing reaches ${backing}`,
     nextStepAfter: (x: string, when: string) => `Next step: ${x} in ${when}`,
     nextStepNow: (x: string) => `Next step: ${x} at the next update`,
@@ -153,11 +156,13 @@ export const V22_COPY = {
     title: "Advanced: leverage tiers",
     /** `table` = "5x at $25k · 10x at $100k · 20x at $500k". */
     defaults: (table: string) => `${table} pool depth and market backing`,
-    explain: "A tier unlocks only when both the pool's depth and the market's backing reach its amount. Each depth amount has a floor ($5k, $20k, $100k) so a market can't call itself deep with a tiny number.",
-    thresholdLabel: (tier: number) => `Tier ${tier} amount ($)`,
+    /** `floors` = "$5k, $20k, $100k" (or "5k USDC, 20k USDC, 100k USDC" on other collateral). */
+    explain: (floors: string) => `A tier unlocks only when both the pool's depth and the market's backing reach its amount. Each depth amount has a floor (${floors}) so a market can't call itself deep with a tiny number.`,
+    thresholdLabel: (tier: number, unit: string) => `Tier ${tier} amount (${unit})`,
     leverageLabel: (tier: number) => `Tier ${tier} max leverage`,
     defaultOption: (x: string) => `Default (${x})`,
-    thresholdPlaceholder: (usd: string) => `Default ${usd}`,
+    thresholdPlaceholder: (amount: string) => `Default ${amount}`,
+    atLeast: (amount: string) => `At least ${amount}`,
   },
   // ── First-loss staking (stake v5) ────────────────────────────────────────
   stake: {
