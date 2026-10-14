@@ -7,7 +7,7 @@
  * are neither, so they would be hidden and nameless. `NEXT_PUBLIC_V22_MARKETS_JSON` supplies them as curated entries:
  *
  *   [{"slab":"<base58>","symbol":"SOL","name":"Solana","mainnet_ca":"<base58>","dex_pool_address":"<base58>",
- *     "lp_portfolio_address":"<base58>"}, ...]
+ *     "lp_portfolio_address":"<base58>","withdraw_only":true}, ...]      (withdraw_only is optional)
  *
  * Read only when the v2.2 flag is on and the build is not mainnet; otherwise (and for any malformed input) it is `{}`,
  * so a v2.1 / playground build is unchanged. A bad entry is skipped with a warning; the rest still load.
@@ -24,6 +24,8 @@ export interface V22MarketMeta {
   mainnet_ca: string;
   dex_pool_address: string;
   lp_portfolio_address: string;
+  /** Optional `"withdraw_only": true` in the JSON: a market kept only so holders can close and withdraw (/markets shows a chip). */
+  withdraw_only?: boolean;
 }
 
 /** More than this many entries is a misconfiguration, not a market list. */
@@ -92,6 +94,10 @@ export function parseV22MarketMeta(raw: string | undefined): Record<string, V22M
       console.warn(`[v22-markets] entry ${i}: symbol (1-16 chars) and name (1-64 chars) are required; skipped`);
       return;
     }
+    if (r.withdraw_only !== undefined && typeof r.withdraw_only !== "boolean") {
+      console.warn(`[v22-markets] entry ${i}: "withdraw_only" must be true or false; skipped`);
+      return;
+    }
     const slab = keys.slab as string;
     if (out[slab]) {
       console.warn(`[v22-markets] entry ${i}: duplicate slab ${slab}; skipped`);
@@ -103,6 +109,7 @@ export function parseV22MarketMeta(raw: string | undefined): Record<string, V22M
       mainnet_ca: keys.mainnet_ca as string,
       dex_pool_address: keys.dex_pool_address as string,
       lp_portfolio_address: keys.lp_portfolio_address as string,
+      ...(r.withdraw_only === true ? { withdraw_only: true } : {}),
     };
   });
   return out;

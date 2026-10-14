@@ -182,3 +182,15 @@ export function readV17MaxAbsFunding(data: Uint8Array): bigint | null {
   const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
   return dv.getBigUint64(off, true);
 }
+
+/**
+ * `max_portfolio_assets` (u16 at the start of the embedded config): how many assets a portfolio on this market may
+ * hold. 1 for every single-asset market; > 1 only on the multi-asset test markets (the app ticket trades asset 0
+ * only, Q-7d). Read from the account itself so no per-slab list is needed. `null` when the layout is unknown or the
+ * account is too short to hold it.
+ */
+export function readMaxPortfolioAssets(data: Uint8Array): number | null {
+  const base = engineConfigOff(data);
+  if (base === null || data.length < base + 2) return null;
+  return new DataView(data.buffer, data.byteOffset, data.byteLength).getUint16(base + F.maxPortfolioAssets, true);
+}

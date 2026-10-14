@@ -57,6 +57,25 @@ export interface ListedMarketStatsRow {
   /** On-chain launch-completeness (marketauth rotated to the stake-pool PDA). Explicit false = the
    *  launch provably never finished; absent/undefined = unread (shown). */
   is_complete?: unknown;
+  /** v2.2: on-chain max_portfolio_assets (/api/markets). > 1 = multi-asset test market; absent = unread (shown). */
+  max_portfolio_assets?: unknown;
+  /** v2.2 preview: kept only so holders can close and withdraw. */
+  withdraw_only?: unknown;
+}
+
+/**
+ * A multi-asset market (on-chain `max_portfolio_assets` > 1). The app ticket trades asset 0 only (Q-7d), so these
+ * test markets are not offered in browse lists; the trade page stays reachable by direct link and the row stays in
+ * /api/markets. Decided from the chain, no per-slab list. An unread value degrades to "shown", like is_complete.
+ */
+export function isMultiAssetMarket(row: ListedMarketStatsRow): boolean {
+  const n = numericOrNull(row.max_portfolio_assets);
+  return n !== null && n > 1;
+}
+
+/** Withdraw-only market (v2.2 preview env flag): listed, labelled, never offered for new positions. */
+export function isWithdrawOnlyMarket(row: ListedMarketStatsRow): boolean {
+  return row.withdraw_only === true;
 }
 
 /**
@@ -81,6 +100,7 @@ export function isBrowsableMarketRow(slab: string, row: ListedMarketStatsRow): b
   if (BLOCKED_SLAB_ADDRESSES.has(slab)) return false;
   if (isHiddenFromListing(slab)) return false;
   if (isHalfMadeLaunch(slab, row)) return false;
+  if (isMultiAssetMarket(row)) return false;
   if (hasNoPriceSource(row) && !PLAYGROUND_SLAB_META[slab]) return false;
   return true;
 }
@@ -96,6 +116,7 @@ export function isListedMarketRow(slab: string, row: ListedMarketStatsRow): bool
   if (isHiddenFromListing(slab)) return false;
   if (hasNoPriceSource(row)) return false;
   if (isHalfMadeLaunch(slab, row)) return false;
+  if (isMultiAssetMarket(row)) return false;
   return !isZombieMarket({
     vault_balance: numericOrNull(row.vault_balance),
     c_tot: numericOrNull(row.c_tot),

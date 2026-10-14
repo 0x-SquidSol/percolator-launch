@@ -4,10 +4,11 @@ import { resolveDiscoveredPriceE6 } from "@/lib/discovered-price";
 import { useMarketLotExps } from "@/hooks/useMarketLotExp";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { lotPriceToTokenE6 } from "@/lib/v22/lot";
-import { baseSymbol } from "@/lib/symbol-utils";
+import { baseSymbol, isPlaceholderMarketName, isPlaceholderMarketSymbol } from "@/lib/symbol-utils";
 import { getConfig } from "@/lib/config";
 import { isMoveFlowEnabled } from "@/lib/v21/move/flag";
 import { isV1CloseOnly } from "@/lib/v21/move/ids";
+import { WithdrawOnlyBadge } from "@/components/market/WithdrawOnlyBadge";
 import { V1CloseOnlyBadge } from "@/components/move/V1CloseOnlyNotice";
 import { useEffect, useState, useMemo, useRef, Suspense } from "react";
 import type { Metadata } from "next";
@@ -43,7 +44,7 @@ import { LiveRowPrice } from "@/components/market/LiveRowPrice";
 import { formatStatValue } from "@/lib/format";
 import { qToUsd, Q_DECIMALS, rowVolumeUsd } from "@/lib/q-usd";
 import { MIN_VAULT_FOR_OI } from "@/lib/phantom-oi";
-import { isListedMarketRow, isOwnAwaitingPriceRow, MAX_SANE_PRICE_USD } from "@/lib/listed-markets";
+import { isListedMarketRow, isOwnAwaitingPriceRow, isWithdrawOnlyMarket, MAX_SANE_PRICE_USD } from "@/lib/listed-markets";
 
 
 /** GH#1483: Upper bound for UI leverage display. The Solana program enforces margin
@@ -79,15 +80,6 @@ interface MergedMarket {
   supabase: MarketWithStats | null;
 }
 
-function isPlaceholderMarketSymbol(sym: string | null | undefined, addresses: Array<string | null | undefined>): boolean {
-  if (!sym) return true;
-  const clean = sym.trim();
-  if (!clean) return true;
-  if (/^[0-9a-fA-F]{8}$/.test(clean)) return true;
-  if (/^[A-Za-z0-9]{3,6}\.\.\.[A-Za-z0-9]{3,6}$/.test(clean)) return true;
-  return addresses.some((addr) => !!addr && addr.startsWith(clean));
-}
-
 function resolveMarketLogoMintAddress(m: MergedMarket): string | null {
   return m.supabase?.mainnet_ca || m.mintAddress || null;
 }
@@ -109,15 +101,6 @@ function resolveMarketDisplaySymbol(m: MergedMarket): string | null {
     if (!isPlaceholderMarketSymbol(clean, addresses)) return clean;
   }
   return null;
-}
-
-function isPlaceholderMarketName(name: string | null | undefined, addresses: Array<string | null | undefined>): boolean {
-  if (!name) return true;
-  const clean = name.trim();
-  if (!clean) return true;
-  if (/^Market [A-Za-z0-9]{6,}$/.test(clean)) return true;
-  if (/^[A-Za-z0-9]{3,6}\.\.\.[A-Za-z0-9]{3,6}$/.test(clean)) return true;
-  return addresses.some((addr) => !!addr && clean.length <= 8 && addr.startsWith(clean));
 }
 
 function resolveMarketDisplayName(m: MergedMarket): string | null {
@@ -1062,6 +1045,7 @@ function MarketsPageInner() {
                           <div className="flex items-baseline justify-between gap-2">
                             <span className="truncate text-sm font-semibold text-[var(--text)]">{displaySymbol ? `${baseSymbol(displaySymbol)}/USD` : shortenAddress(m.slabAddress)}{awaitingOwnPrice.has(m.slabAddress) && <span className="ml-1.5 text-[9px] font-medium uppercase tracking-wider text-[var(--warning)]">awaiting live price</span>}</span>
                             {v1Label && <V1CloseOnlyBadge />}
+                            {m.supabase && isWithdrawOnlyMarket(m.supabase) && <WithdrawOnlyBadge />}
                             <span className="shrink-0 text-sm tabular-nums text-[var(--text)]" style={{ fontFamily: "var(--font-jetbrains-mono)" }}>
                               <LiveRowPrice slab={m.slabAddress} fallback={lastPrice} />
                             </span>
@@ -1092,6 +1076,7 @@ function MarketsPageInner() {
                             {displaySymbol ? `${baseSymbol(displaySymbol)}/USD` : shortenAddress(m.slabAddress)}
                           </span>
                           {v1Label && <V1CloseOnlyBadge />}
+                            {m.supabase && isWithdrawOnlyMarket(m.supabase) && <WithdrawOnlyBadge />}
                           {awaitingOwnPrice.has(m.slabAddress) && (
                             <span data-testid="awaiting-live-price" className="shrink-0 border border-[var(--warning)]/30 bg-[var(--warning)]/[0.08] px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-wider text-[var(--warning)]">awaiting live price</span>
                           )}
