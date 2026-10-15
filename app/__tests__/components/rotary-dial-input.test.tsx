@@ -168,8 +168,7 @@ describe("RotaryDial tick timer", () => {
         <RotaryDial label="Leverage" value={5} min={2} max={10} step={0.5} format={(v) => `${v}x`} onChange={onChange} />,
       );
       const slider = screen.getByRole("slider", { name: "Leverage" });
-      slider.focus();
-      fireEvent.wheel(slider, { deltaY: -100 });
+      fireEvent.keyDown(slider, { key: "ArrowUp" });
       expect(onChange).toHaveBeenLastCalledWith(5.5);
       const glow = setSpy.mock.calls.findIndex(([, ms]) => ms === 90);
       expect(glow).toBeGreaterThanOrEqual(0);
