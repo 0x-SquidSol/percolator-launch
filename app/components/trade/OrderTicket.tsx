@@ -790,6 +790,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     liqPriceE6: afterLiqPrice,
     positionSize: hasOrder ? combinedSignedSize : 0n,
     capital: capitalAfterFund,
+    entryPriceE6: combinedEntryPriceE6,
+    effectiveSize: hasOrder ? combinedSignedSize : 0n,
     markPriceE6: livePriceE6 ?? 0n,
     maintenanceMarginBps,
     // The combined entry inherits the existing one unless there is none, or
@@ -804,6 +806,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     liqPriceE6: beforeLiqPrice,
     positionSize: existingPositionSize,
     capital,
+    entryPriceE6: existingEntryPriceE6,
+    effectiveSize: existingPositionSize,
     markPriceE6: livePriceE6 ?? 0n,
     maintenanceMarginBps,
     hasResolvedEntry: existingEntryKnown,
