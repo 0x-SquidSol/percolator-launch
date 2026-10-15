@@ -1616,7 +1616,12 @@ export default function StakePage() {
     // No min-h-screen: this page renders both standalone at /stake AND as a tab
     // inside the Earn hub (app/earn), which supplies the outer layout. Content
     // flows naturally at both mount points.
-    <div className="relative animate-fade-in overflow-x-hidden">
+    //
+    // overflow-x-CLIP, not -hidden: `overflow-x: hidden` makes overflow-y compute to `auto`,
+    // so this div was its own vertical scroll container, and any overflow inside it drew a
+    // second full-height scrollbar next to the page's (reported on Earn → Fee Staking).
+    // `clip` hides horizontal overflow the same way without creating a scroll container.
+    <div className="relative animate-fade-in overflow-x-clip">
       {/* Compact header + stats strip (mirrors EarnHeader) */}
       <ErrorBoundary label="Stake Header">
         {/* A failed pools fetch must not read as "0 pools / $0 staked" (#2706). */}
@@ -1645,8 +1650,11 @@ export default function StakePage() {
             </ErrorBoundary>
           </div>
 
-          {/* RIGHT RAIL — deposit/withdraw bound to the selected pool, then positions */}
-          <div className="space-y-3 lg:sticky lg:top-4">
+          {/* RIGHT RAIL — deposit/withdraw bound to the selected pool, then positions. Scrolls
+              with the page: its `lg:sticky` never took effect inside the old overflow-x-hidden
+              root (a scroll container), and making it stick now would put its top under the
+              sticky site header, so the rail keeps the behaviour it has always had. */}
+          <div className="space-y-3">
             <ErrorBoundary label="Deposit Widget">
               <DepositWidget
                 pools={pools}
