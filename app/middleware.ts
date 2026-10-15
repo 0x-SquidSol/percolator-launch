@@ -284,7 +284,6 @@ const OLD_HOST_PASSTHROUGH_API: ReadonlyArray<{ method: string; re: RegExp }> = 
   { method: "GET", re: /^\/api\/playground\/registered-markets\/?$/ },
   { method: "PATCH", re: /^\/api\/markets\/[1-9A-HJ-NP-Za-km-z]{32,44}\/?$/ },
   { method: "POST", re: /^\/api\/oracle-keeper\/register\/?$/ },
-  { method: "POST", re: /^\/api\/oracle\/set-price-cap\/?$/ },
 ];
 function isOldHostPassthrough(pathname: string, method: string): boolean {
   if (OLD_HOST_PASSTHROUGH_PREFIXES.some((p) => pathname.startsWith(p))) return true;

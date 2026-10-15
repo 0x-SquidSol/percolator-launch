@@ -27,8 +27,6 @@
  *   PATCH /api/markets/:slab    external keeper/ops signer; HMAC-SHA256 over KEEPER_REGISTER_SECRET
  *   POST /api/oracle-keeper/register
  *                               HMAC-SHA256 over KEEPER_REGISTER_SECRET, timestamp-bounded
- *   POST /api/oracle/set-price-cap
- *                               operator tool; x-admin-secret vs ADMIN_API_SECRET, fails closed
  *
  * Everything else under /api is called same-origin by the browser app, so it
  * is gated and the cookie rides along automatically.
@@ -77,7 +75,6 @@ const EXEMPT_API: ReadonlyArray<{ method: string; re: RegExp }> = [
   // base58 slab only, so PATCH /api/markets/challenge|health (no PATCH handler) stays gated
   { method: "PATCH", re: /^\/api\/markets\/[1-9A-HJ-NP-Za-km-z]{32,44}\/?$/ },
   { method: "POST", re: /^\/api\/oracle-keeper\/register\/?$/ },
-  { method: "POST", re: /^\/api\/oracle\/set-price-cap\/?$/ },
 ];
 
 export function isExempt(pathname: string, method: string): boolean {
