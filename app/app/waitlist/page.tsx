@@ -212,14 +212,14 @@ function Hero() {
         <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--cyan)]" />
         <span className="text-[var(--cyan)]">devnet v2 live</span>
         <span className="text-[var(--text-dim)]">/</span>
-        <span>mainnet in testing</span>
+        <span>mainnet: no date yet</span>
       </div>
 
       <h1
         className="text-[40px] font-bold leading-[1.04] tracking-[-0.025em] text-[var(--text)] sm:text-[54px] md:text-[64px]"
         style={{ fontFamily: "var(--font-heading)" }}
       >
-        Perps on Solana tokens;{" "}
+        Perps for Solana tokens,{" "}
         <span
           className="bg-clip-text text-transparent"
           style={{
@@ -227,19 +227,19 @@ function Hero() {
               "linear-gradient(110deg, #B97AFF 0%, #9945FF 35%, #14F195 100%)",
           }}
         >
-          before anyone else
+          listed by anyone
         </span>
         .
       </h1>
 
       <p className="mt-6 max-w-[540px] text-[16px] leading-[1.6] text-[var(--text-secondary)] sm:text-[17px]">
-        Any Solana token with an active DEX pool can have a leveraged market in about a minute, long before the big
-        exchanges get to it. Trade it long or short, or provide liquidity and earn its fees.
+        Any Solana token with an active pool on a supported DEX can have a leveraged market, with no listing
+        approval. Trade it long or short, or provide liquidity and earn its fees.
       </p>
 
       <p className="mt-6 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--text-secondary)]">
         Open source · Built on{" "}
-        <span className="text-[var(--text)]">Anatoly Yakovenko&apos;s</span> Percolator · External audit early Q1 2027
+        <span className="text-[var(--text)]">Anatoly Yakovenko&apos;s</span> Percolator · External audit before mainnet
       </p>
 
       <p className="mt-8 font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--text-secondary)]">
@@ -999,7 +999,7 @@ function SignupFlow({
           >
             @percolatortrade
           </a>{" "}
-          when mainnet opens.
+          when there&apos;s major news.
         </>
       );
     return (
@@ -1454,7 +1454,8 @@ const swrFetcher = (url: string) =>
 /**
  * Every claim here is checked against the code or the team's stated timeline
  * (2026-10-13). Things that change, re-check before editing:
- *  - Roadmap dates (team-stated).
+ *  - Roadmap: no dates on the page until the team commits to them.
+ *  - Oracle: no Pyth. Live markets price from the token's DEX pool (oracle keeper).
  *  - Supported DEXes: lib/dex-constants.ts SUPPORTED_DEX_IDS.
  *  - Program features: percolator-prog v18 (LP vault, Token-2022 position NFTs,
  *    insurance fund). v12-era features (dispute resolution, audit crank) are
@@ -1498,18 +1499,18 @@ function HowItWorks() {
     <div>
       <InfoRow title="Launch a market">
         Anyone can open a perpetual futures market for an SPL token that trades on PumpSwap, Raydium or Meteora. It
-        takes about a minute and needs no listing approval.
+        needs no listing approval.
       </InfoRow>
       <InfoRow title="Trade">
-        Go long or short with leverage. Each market prices off an oracle: Pyth where a feed exists, otherwise a
-        smoothed price from the token&apos;s own DEX pool.
+        Go long or short with leverage. Each market&apos;s price comes from the token&apos;s own DEX pool, read on chain
+        and smoothed before it is used.
       </InfoRow>
       <InfoRow title="Earn">
         Deposit into a market&apos;s LP vault to take the other side of its trades and earn a share of its fees. Each
         vault belongs to one market, so its risk stays with that market.
       </InfoRow>
       <InfoRow title="Insurance fund">
-        Every market has an insurance fund that sits between traders&apos; losses and the LP vault.
+        Every market has its own insurance fund to cover losses a liquidated position can&apos;t pay.
       </InfoRow>
       <InfoRow title="Transferable positions">
         An open position can be wrapped as a Token-2022 NFT and moved to another wallet.
@@ -1521,9 +1522,9 @@ function HowItWorks() {
 function Roadmap() {
   const steps: [string, string, boolean][] = [
     ["Devnet v2", "Live for early waitlist members", true],
-    ["Mainnet beta", "Q4 2026", false],
-    ["External audit", "Early Q1 2027", false],
-    ["Mainnet v1", "End of Q1 2027", false],
+    ["External audit", "Before mainnet", false],
+    ["Mainnet beta", "No date yet", false],
+    ["Mainnet v1", "After the beta", false],
   ];
   return (
     <ol className="grid gap-3 sm:grid-cols-4">
@@ -1556,7 +1557,7 @@ function Security() {
         The risk engine and program are checked with Kani, a model checker that proves a property holds for every
         possible input rather than only the cases a test happens to try.
       </InfoRow>
-      <InfoRow title="External audit">Scheduled for early Q1 2027.</InfoRow>
+      <InfoRow title="External audit">Planned before mainnet; no date yet.</InfoRow>
       <InfoRow title="Signing up is safe">
         The wallet path asks you to sign a short message, never a transaction. No gas, no token approvals, and we
         never see your private key.
@@ -1574,8 +1575,8 @@ function Origin() {
         <ExtLink href="https://github.com/aeyakovenko/percolator-prog">aeyakovenko/percolator-prog</ExtLink>).
       </p>
       <p>
-        We forked it and built it into a product: per-market LP vaults, insurance funds, transferable NFT positions
-        and a matcher for pricing, plus the SDK, indexer, keepers and this app around it.
+        We forked it and built it into a product: per-market LP vaults and transferable NFT positions, plus the
+        SDK, indexer, keepers and this app around it.
       </p>
       <p className="text-[var(--text)]">
         Our co-founders won 6 of the 7 public bounties he posted for Percolator.
@@ -1592,11 +1593,11 @@ function Updates() {
         signups get a Solana wallet created under their email, so this works for them too.
       </InfoRow>
       <InfoRow title="Wallet signups">
-        A memo-only transaction from our project wallet when mainnet opens. It carries a short message and a link,
-        no value and no approval request.
+        We may send a memo-only transaction from our project wallet for major news. It carries a short message and
+        a link, no value and no approval request.
       </InfoRow>
       <InfoRow title="Email signups">
-        A confirmation now, then one email per major milestone. No marketing campaigns.
+        A confirmation now, then an email when there is major news. No marketing campaigns.
       </InfoRow>
       <InfoRow title="X (optional)">If you add your @handle, we can also DM you on X.</InfoRow>
     </div>
@@ -1607,11 +1608,11 @@ function FAQ() {
   const items: [string, React.ReactNode][] = [
     [
       "When does mainnet open?",
-      <>Mainnet beta is planned for Q4 2026, the external audit for early Q1 2027, and mainnet v1 for the end of Q1 2027.</>,
+      <>There is no date yet. An external audit comes first, and we&apos;ll announce mainnet on X and to the waitlist.</>,
     ],
     [
       "What do waitlist members get?",
-      <>Early members can use devnet v2 now. Everyone on the list gets priority access when mainnet opens.</>,
+      <>Early members can use devnet v2 now, and everyone on the list hears about new releases.</>,
     ],
     [
       "Why do I need a referral code?",
@@ -1683,7 +1684,7 @@ function Footer() {
       <div className="flex items-center gap-3 font-mono">
         <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--cyan)]" />
         <span className="text-[10.5px] uppercase tracking-[0.18em] text-[var(--text-secondary)]">
-          devnet v2 live · mainnet beta Q4 2026
+          devnet v2 live · mainnet: no date yet
         </span>
       </div>
       <div className="font-mono text-[11.5px]">
