@@ -41,6 +41,24 @@ export const DEVNET_PROGRAM_IDS: Readonly<ProgramIdSet> = Object.freeze({
   stake: "VmpVUArRnVkrjaPXQ2qaqCQa3ZrZFgsz7rjeALitF5w",
 });
 
+/**
+ * Devnet v2.2 fresh-ID set (deployed 2026-10-10; ledger v22-devnet-fresh-2026-10-10.md). Kept as one set: wrapper
+ * 6kpg2wi7 pins nft 27LWmR72 in SetNftProgramId, so pairing it with the v2 nft EMYT15LZ answers Custom 9 and the create
+ * wizard silently fell back to step-by-step signing (QA E2E-1).
+ */
+export const DEVNET_V22_PROGRAM_IDS: Readonly<ProgramIdSet> = Object.freeze({
+  wrapper: "6kpg2wi7vwkn7E9rvodXSktYRhna8TWjiZrC1dBek6NM",
+  matcher: "AsHvEJ8zNctKmdeS57H5E4w6nkTLi3bPVpd6ZCLc2ayN",
+  nft: "27LWmR72Ru1NCkbN2xgxB7BgYcTUrU7qeEJoV3D8sZh1",
+  stake: "7JrgAUHi4PxaRv5JKHoGAxodDFbozYexpERei66Xgq4V",
+});
+
+/** The program set each known devnet wrapper was deployed with (and pins). An unknown wrapper (a local fork) keeps DEVNET_PROGRAM_IDS. */
+const PAIRED_SETS: Readonly<Record<string, Readonly<ProgramIdSet>>> = Object.freeze({
+  [DEVNET_PROGRAM_IDS.wrapper]: DEVNET_PROGRAM_IDS,
+  [DEVNET_V22_PROGRAM_IDS.wrapper]: DEVNET_V22_PROGRAM_IDS,
+});
+
 export const MAINNET_PROGRAM_IDS: Readonly<Omit<ProgramIdSet, "nft">> = Object.freeze({
   wrapper: "ESa89R5Es3rJ5mnwGybVRG1GrNt9etP11Z5V2QWD4edv",
   matcher: "GDK8wx38kpiSVSfGTVNiSdptX3Z5R4kQyqh6Q3QX6wmi",
@@ -75,21 +93,27 @@ function overridesAllowed(): boolean {
   return v === "1" || v === "true";
 }
 
-/** Devnet program ids after env overrides. Pure function of build-time env. */
+/**
+ * Devnet program ids after env overrides. Pure function of build-time env. A program without an override defaults to the
+ * one the resolved WRAPPER pins (QA E2E-1: a build pointing the wrapper at 6kpg2wi7 without NEXT_PUBLIC_NFT_PROGRAM_ID
+ * signed SetNftProgramId with the v2 nft and was refused).
+ */
 export function resolveDevnetProgramIds(): ProgramIdSet {
   if (isMainnetBuild() || !overridesAllowed()) return { ...DEVNET_PROGRAM_IDS };
+  const wrapper =
+    parseProgramIdOverride("NEXT_PUBLIC_WRAPPER_PROGRAM_ID", process.env.NEXT_PUBLIC_WRAPPER_PROGRAM_ID) ??
+    DEVNET_PROGRAM_IDS.wrapper;
+  const paired = PAIRED_SETS[wrapper] ?? DEVNET_PROGRAM_IDS;
   return {
-    wrapper:
-      parseProgramIdOverride("NEXT_PUBLIC_WRAPPER_PROGRAM_ID", process.env.NEXT_PUBLIC_WRAPPER_PROGRAM_ID) ??
-      DEVNET_PROGRAM_IDS.wrapper,
+    wrapper,
     matcher:
       parseProgramIdOverride("NEXT_PUBLIC_MATCHER_PROGRAM_ID", process.env.NEXT_PUBLIC_MATCHER_PROGRAM_ID) ??
-      DEVNET_PROGRAM_IDS.matcher,
+      paired.matcher,
     nft:
       parseProgramIdOverride("NEXT_PUBLIC_NFT_PROGRAM_ID", process.env.NEXT_PUBLIC_NFT_PROGRAM_ID) ??
-      DEVNET_PROGRAM_IDS.nft,
+      paired.nft,
     stake:
       parseProgramIdOverride("NEXT_PUBLIC_STAKE_PROGRAM_ID", process.env.NEXT_PUBLIC_STAKE_PROGRAM_ID) ??
-      DEVNET_PROGRAM_IDS.stake,
+      paired.stake,
   };
 }
