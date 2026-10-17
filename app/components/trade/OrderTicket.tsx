@@ -45,7 +45,7 @@ import { computeNotionalNative } from "@/lib/notional";
 import { availableLeverage as availableLeverageFor, nextLeverageInputState, clampSliderLeverage, LEVERAGE_STEP } from "@/lib/leverage-control";
 import { useTrade, prewarmTradeSubmission, resolveLpTradeAccounts } from "@/hooks/useTrade";
 import { useFirstTrade } from "@/hooks/useFirstTrade";
-import { FIRST_TRADE_COPY, FirstTradeDepositError, firstTradeCancelledExtras, fundDepositAtoms, tradableMarginAtoms } from "@/lib/first-trade";
+import { FIRST_TRADE_COPY, FirstTradeDepositError, engineGateBps, engineOpenNeedAtoms, firstTradeCancelledExtras, fundDepositAtoms, tradableMarginAtoms } from "@/lib/first-trade";
 import { useMarketFillCap } from "@/hooks/useMarketFillCap";
 import { UNLIMITED_CAPACITY } from "@/lib/marketCapacity";
 import { isBlockedSlab } from "@/lib/blocklist";
@@ -598,6 +598,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const displayAvailable = mockMode
     ? effectiveBalance
     : (userAccount ? availableBalance : 0n) + (walletAtaBalance ?? 0n);
+  // The engine charges IM and the fee at ITS price (plus a lag penalty that depends on the side);
+  // the ticket sizes from the display feed (lib/first-trade.ts engineGateBps).
+  const engineGate = engineGateBps(livePriceE6, engineView, direction);
   const tradableBalance = mockMode
     ? effectiveBalance
     : tradableMarginAtoms({
@@ -605,6 +608,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
         walletAtoms: walletAtaBalance ?? 0n,
         leverage100: leverage * 100,
         feeBps: tradingFeeBps,
+        initialMarginBps,
+        gate: engineGate,
         decimals,
       });
   // Buying power: how large a position (in collateral notional) the user could
@@ -810,13 +815,25 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // The floor only applies with no open position, where vsPosition is always null.
   const imFloor = params?.minNonzeroImReq ?? 0n;
   const belowImFloor = existingPositionSize === 0n && marginNative > 0n && marginNative < imFloor;
-  const marginNeed = belowImFloor ? imFloor : marginNative;
+  // The engine's own IM for this size, at its price (the order is sized off the display feed).
+  const openNeed = engineOpenNeedAtoms(notionalNative, initialMarginBps, tradingFeeBps, engineGate);
+  const typedNeed = belowImFloor ? imFloor : marginNative;
+  // The engine floors the base IM, then adds the lag penalty: max(IM, floor) + lag.
+  const engineIm = existingPositionSize === 0n && imFloor > openNeed.im ? imFloor : openNeed.im;
+  // Mock mode has no engine (and no funding): it keeps the plain margin check.
+  const engineMargin = mockMode ? 0n : engineIm + openNeed.lag;
+  const marginNeed = engineMargin > typedNeed ? engineMargin : typedNeed;
   // An order on the other side of the open position cuts it instead of adding exposure:
   // it releases margin, and only a flip that ends larger can need any.
   const vsPosition = userAccount
     ? orderAgainstPosition(marginNative, positionSize, direction, existingPositionSize, lockedMargin, capital)
     : null;
-  const exceedsBalance = marginNative > 0n && (vsPosition ? vsPosition.shortBy > 0n : marginNeed > effectiveBalance);
+  // The engine charges the taker fee BEFORE its IM gate, so an order whose margin fits can still be
+  // refused 49 near max leverage: max(IM, floor) + fee must fit too. Not marginNeed + fee: below max
+  // leverage the engine needs far less than the typed margin, and that would force a pointless top-up.
+  const engineNeed = mockMode ? 0n : engineMargin + openNeed.fee;
+  const exceedsBalance =
+    marginNative > 0n && (vsPosition ? vsPosition.shortBy > 0n : marginNeed > effectiveBalance || engineNeed > effectiveBalance);
 
   const needsWallet = !connected;
   const needsAccount = connected && !userAccount && !accountPending;
@@ -853,8 +870,10 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       : marginNeed > availableBalance
         ? marginNeed - availableBalance
         : 0n;
-  const fundNeededAtoms = fundingMode && hasOrder ? fundDepositAtoms(marginShort, fee, walletAtaBalance ?? 0n, decimals) : 0n;
-  const fundMinAtoms = fundingMode && hasOrder ? marginShort + fee : 0n;
+  // The engine charges the fee at its price, which can sit above the receipt's feed-priced fee.
+  const fundFee = openNeed.fee > fee ? openNeed.fee : fee;
+  const fundNeededAtoms = fundingMode && hasOrder ? fundDepositAtoms(marginShort, fundFee, walletAtaBalance ?? 0n, decimals) : 0n;
+  const fundMinAtoms = fundingMode && hasOrder ? marginShort + fundFee : 0n;
   const fundEnteredAtoms = fundInput ? parsePercToNative(fundInput, decimals) : 0n;
   const fundAtoms = fundEnteredAtoms > 0n ? fundEnteredAtoms : fundNeededAtoms;
   const fundOverWallet = fundingMode && fundAtoms > (walletAtaBalance ?? 0n);
@@ -1085,7 +1104,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
 
   const feeOverMax = ticketLimits.issues.some((x) => x.kind === "fee-over-max");
   const feeFitQ = feeOverMax ? feeFitSizeQ(limitsInput) : null;
-  const shortfall = vsPosition ? vsPosition.shortBy : marginNeed > effectiveBalance ? marginNeed - effectiveBalance : 0n;
+  // The larger of the two needs: depositing just the margin gap would still leave the fee short.
+  const topNeed = engineNeed > marginNeed ? engineNeed : marginNeed;
+  const shortfall = vsPosition ? vsPosition.shortBy : topNeed > effectiveBalance ? topNeed - effectiveBalance : 0n;
 
   // Empty or zero size: the button says "Enter a size" rather than naming an order of nothing
   // ("Long SOL 1×", "Deposit 0.00 USDC & Long"). Submit is already disabled for it below.
