@@ -11,12 +11,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { render, screen } from "@testing-library/react";
+import { formatStatValue } from "@/lib/format";
 import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import { formatLotPriceE6, tokenQToQ, lotPriceToTokenE6, tokenPriceToLotE6, tokenUsdOfLotUsd, POS_SCALE_V22 } from "@/lib/v22/lot";
 import { formatPrice, formatSize } from "@/components/trade/TradeHistoryTable";
 import { gateVolumeForV22, volumeDisplay, VOLUME_UNVERIFIED_NOTE } from "@/lib/trade-stats-display";
 import { TradeStatsPanel } from "@/components/trade/TradeStatsPanel";
-import { formatTokenAmount } from "@/lib/format";
 import type { TraderStatsResponse } from "@/hooks/useTraderStats";
 
 afterEach(() => __setDevnetV22ForTest(null));
@@ -78,11 +78,12 @@ describe("trade-stats-panel: TradeStatsPanel withholds volume on v2.2", () => {
     __setDevnetV22ForTest(true);
     const a = render(<TradeStatsPanel stats={stats()} loading={false} error={null} />);
     expect(screen.getByText(VOLUME_UNVERIFIED_NOTE)).toBeTruthy();
-    expect(document.body.textContent).not.toContain(formatTokenAmount(5_000_000_000n, 6));
+    // #3399: Volume Traded is micro-USD shown as dollars (formatStatValue "currency"); withheld here.
+    expect(document.body.textContent).not.toContain(formatStatValue(5_000_000_000n, "currency"));
     a.unmount();
     __setDevnetV22ForTest(false);
     render(<TradeStatsPanel stats={stats()} loading={false} error={null} />);
     expect(screen.queryByText(VOLUME_UNVERIFIED_NOTE)).toBeNull();
-    expect(document.body.textContent).toContain(formatTokenAmount(5_000_000_000n, 6));
+    expect(document.body.textContent).toContain(formatStatValue(5_000_000_000n, "currency"));
   });
 });

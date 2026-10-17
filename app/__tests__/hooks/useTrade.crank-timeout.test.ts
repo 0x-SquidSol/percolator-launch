@@ -5,7 +5,7 @@
  * Harness copied from useTrade.v17-portfolio-selection.test.ts.
  */
 import { act, renderHook } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicKey } from "@solana/web3.js";
 
 const mocks = vi.hoisted(() => ({
@@ -100,9 +100,30 @@ vi.mock("@percolatorct/sdk", async () => {
   };
 });
 
-import { useTrade } from "@/hooks/useTrade";
+// The hook decodes through lib/v22/layout (VERSION-keyed when NEXT_PUBLIC_DEVNET_V22 is on). Route it to the same
+// mocks so the fixture means the same thing in both modes and the v2.2 path is exercised too (GH#2623 / #3429).
+vi.mock("@/lib/v22/layout", async (orig) => ({
+  ...(await orig<typeof import("@/lib/v22/layout")>()),
+  parsePortfolio: mocks.parsePortfolioV17,
+  isWrapperAccount: mocks.isV17Account,
+}));
 
-describe("useTrade v17 portfolio selection", () => {
+// v2.2 (N2) refuses a market whose lot exponent is not known yet; the fixture market has no lots (exponent 0).
+vi.mock("@/lib/v22/lot-registry", async (orig) => ({
+  ...(await orig<typeof import("@/lib/v22/lot-registry")>()),
+  getLotExp: () => 0,
+  ensureLotExp: () => undefined,
+}));
+
+import { useTrade } from "@/hooks/useTrade";
+import { __setDevnetV22ForTest } from "@/lib/v22/flag";
+
+describe.each([
+  ["flag off", false],
+  ["flag on (v2.2 trade path)", true],
+] as const)("useTrade v17 portfolio selection (%s)", (_mode, v22) => {
+  beforeEach(() => __setDevnetV22ForTest(v22));
+  afterEach(() => __setDevnetV22ForTest(null));
   const slabAddress = "11111111111111111111111111111111";
 
   const walletPk = new PublicKey(
