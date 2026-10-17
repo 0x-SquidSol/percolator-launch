@@ -40,6 +40,8 @@ import { AddMarginModal } from "@/components/trade/AddMarginModal";
 import { PnlShareButton } from "@/components/share/PnlShareButton";
 import { isPnlPoolCapped, poolPayableCapacity, type PnlCardData } from "@/lib/pnl-card";
 import { useSlabState } from "@/components/providers/SlabProvider";
+import { StaleSettleNotice } from "@/components/trade/StaleSettleNotice";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { useBandRentView } from "@/hooks/useBandRentView";
 import { useLotTradingGuard } from "@/hooks/useLotTradingGuard";
 import { HoldingFeeChip } from "@/components/v22/HoldingFeeChip";
@@ -642,6 +644,7 @@ const PositionRow: FC<{ slabAddress: string; wrappedRow?: boolean }> = memo(func
           </tbody>
         </table>
       </div>
+      {!wrappedRow && isDevnetV22Enabled() && <StaleSettleNotice slabAddress={slabAddress} hasFunds canAct compact />}
       {!wrappedRow && (
         <div className="px-4 py-2">
           <WarmupProgress slabAddress={slabAddress} accountIdx={activeInfo.idx} />

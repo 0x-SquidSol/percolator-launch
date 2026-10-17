@@ -110,6 +110,7 @@ import { OrderTicketLimits, reasonCopy } from "@/components/limits/OrderTicketLi
 import { isUsdLikeCollateral } from "@/lib/v22/tier-config";
 import { GrowthTicketPanelLive } from "@/components/trade/GrowthTicketPanelLive";
 import { CloseOnlyBanner } from "@/components/trade/CloseOnlyBanner";
+import { StaleSettleNotice } from "@/components/trade/StaleSettleNotice";
 import { isDevnetV21Enabled } from "@/lib/v21/flag";
 import { isMoveFlowEnabled } from "@/lib/v21/move/flag";
 import { isV1CloseOnly } from "@/lib/v21/move/ids";
@@ -1761,6 +1762,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
           <p data-testid="lot-trading-guard" role="status" className="mb-2 text-[11px] text-[var(--text-secondary)]">{lotGuard}</p>
         )}
         <BandMarketNotice view={bandView} collateralDecimals={decimals} collateralSymbol={collateralSymbol} />
+        {/* Devnet v2.2: a market with no price for the stale window can be settled by anyone; one line + one button (renders nothing otherwise). */}
+        {isDevnetV22Enabled() && <StaleSettleNotice slabAddress={slabAddress} hasFunds={userAccount != null} canAct={walletConnected} />}
         {/* Devnet v2.1: the close-only countdown + permissionless wind-down (flag-gated). */}
         {adlReduceOnly && isDevnetV21Enabled() && (
           <CloseOnlyBanner slabAddress={slabAddress} hasPosition={existingPositionSize !== 0n} collateralDecimals={decimals} />
