@@ -7,7 +7,7 @@
  * (`snapInsuranceFreeAtoms`) is used, because this is what a leaving staker is paid. A first-loss pool whose insurance units
  * cannot be read gets NO number (the page shows a dash), never a guess.
  */
-import { decodeInsuranceUnitsV20, decodeStakePoolV5, stakePoolValue, STAKE_RISK_MODE } from "./sdk";
+import { decodeInsuranceUnitsV20, decodeStakePoolV5, quoteStakeWithdrawNowV5, stakePoolValue, STAKE_RISK_MODE } from "./sdk";
 
 export type StakePoolKind = "first-loss" | "fee-only" | "legacy";
 
@@ -55,3 +55,44 @@ export const isInsuranceOnly = (pools: ReadonlyArray<{ stakeKind?: StakePoolKind
 const USD_DECIMALS = 6;
 /** Atoms to a display number (6-decimal collateral, as the rest of /stake); null stays null. */
 export const atomsToUsd = (a: bigint | null): number | null => (a === null ? null : Number(a) / 10 ** USD_DECIMALS);
+
+/** What a first-loss staker can take out now (stake processor.rs:1626-1631: a payout must fit the pool's liquid value). */
+export interface StakeWithdrawCapView {
+  /** True when part of the pool is deployed as insurance and the cap, not the balance, limits the withdrawal. */
+  capBinds: boolean;
+  /** Largest LP burn (raw) that pays within the cap, never above the balance. */
+  maxLpRaw: bigint;
+  /** Collateral atoms that burn pays. */
+  maxAtoms: bigint;
+  /** The rest of the redeem value, returned when the deployed insurance is recovered. */
+  deferredAtoms: bigint;
+}
+
+/**
+ * The withdraw cap for a FIRST_LOSS pool: `min(redeemable, liquid)`. Null (no cap known, keep the balance) for fee-only / legacy pools,
+ * and when the pool, the units or the vault balance cannot be read: never a guess.
+ *
+ * @param poolData     Raw stake pool account.
+ * @param unitsData    Raw wrapper `InsuranceUnitsV20` account, or null.
+ * @param vaultAtoms   SPL balance of `pool.vault`.
+ * @param userLpRaw    The staker's raw LP balance.
+ * @returns The cap view, or null.
+ * @example
+ * ```ts
+ * const cap = stakeWithdrawCapView(pool.data, units?.data ?? null, vaultBalance, lpRaw);
+ * if (cap?.capBinds) setMax(cap.maxLpRaw);
+ * ```
+ */
+export function stakeWithdrawCapView(poolData: Uint8Array, unitsData: Uint8Array | null | undefined, vaultAtoms: bigint | null, userLpRaw: bigint): StakeWithdrawCapView | null {
+  if (vaultAtoms === null || !unitsData) return null;
+  try {
+    const pool = decodeStakePoolV5(poolData);
+    if (pool.riskMode !== STAKE_RISK_MODE.FirstLoss) return null;
+    const u = decodeInsuranceUnitsV20(unitsData);
+    const q = quoteStakeWithdrawNowV5(pool, { unitsStake: u.unitsStake, unitsTotal: u.unitsTotal }, u.snapInsuranceFreeAtoms, vaultAtoms, userLpRaw);
+    if (!q) return null;
+    return { capBinds: q.capBinds, maxLpRaw: q.maxLpNow, maxAtoms: q.maxCollateralNow, deferredAtoms: q.deferred };
+  } catch {
+    return null;
+  }
+}

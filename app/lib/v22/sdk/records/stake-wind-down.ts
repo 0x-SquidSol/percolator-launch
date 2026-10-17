@@ -25,7 +25,7 @@
  * @module stake-wind-down
  */
 import { PublicKey, TransactionInstruction } from "@solana/web3.js";
-import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { ACCOUNTS_WITHDRAW_PROTOCOL_FEE, buildAccountMetas } from "@percolatorct/sdk";
 import { encodeWithdrawProtocolFee } from "@percolatorct/sdk";
 import {
@@ -37,6 +37,7 @@ import {
 import type { AdminCloseSlabAccounts, RecoverTerminalInsuranceAccounts } from "@percolatorct/sdk";
 import { deriveVaultAuthority } from "@percolatorct/sdk";
 import { resolveMarketGeometry } from "../layout";
+import { deriveInsuranceUnitsV22 } from "../v22-wire";
 
 // ============================================================================
 // Offsets
@@ -208,12 +209,28 @@ export function decodeTerminalInsuranceCapacity(marketData: Uint8Array, assetInd
  * ```
  */
 export function buildRecoverTerminalInsuranceIx(
-  a: RecoverTerminalInsuranceAccounts & { stakeProgram: PublicKey },
+  a: RecoverTerminalInsuranceAccounts & {
+    stakeProgram: PublicKey;
+    /** Pool risk mode (0 legacy, 1 FIRST_LOSS, 2 FEE_ONLY); selects the tag-29 account tail. */
+    riskMode?: 0 | 1 | 2;
+    /** FIRST_LOSS: the wrapper `["ins_units", market]` PDA at [9]. */
+    insuranceUnits?: PublicKey;
+    /** v5: the creator's collateral ATA (FIRST_LOSS [10]; FEE_ONLY trailing). */
+    creatorToken?: PublicKey;
+  },
   amount: bigint,
 ): TransactionInstruction {
+  // The installed @percolatorct/sdk 8.0.0 builder only knows [0..8] + stray; the v5 tail (stake 53f5480 processor.rs:4148-4150, 4224-4260) is added here.
+  const head = recoverTerminalInsuranceAccounts({ ...a, stray: undefined }).slice(0, 9);
+  const w = (pubkey: PublicKey) => ({ pubkey, isSigner: false, isWritable: true });
+  if (a.riskMode === 1 && (!a.insuranceUnits || !a.creatorToken)) throw new Error("buildRecoverTerminalInsuranceIx: a FIRST_LOSS pool requires insuranceUnits [9] and creatorToken [10]");
+  if (a.riskMode === 2 && (!a.creatorToken || a.insuranceUnits)) throw new Error("buildRecoverTerminalInsuranceIx: a FEE_ONLY pool requires creatorToken and takes no insuranceUnits");
+  const tail = a.insuranceUnits
+    ? [w(a.insuranceUnits), ...(a.creatorToken ? [w(a.creatorToken)] : []), ...(a.stray ? [w(a.stray)] : [])]
+    : [...(a.stray ? [w(a.stray)] : []), ...(a.creatorToken ? [w(a.creatorToken)] : [])];
   return new TransactionInstruction({
     programId: a.stakeProgram,
-    keys: recoverTerminalInsuranceAccounts(a),
+    keys: [...head, ...tail],
     data: Buffer.from(encodeStakeRecoverTerminalInsurance(amount)),
   });
 }
@@ -277,6 +294,12 @@ export interface StakeWindDownArgs {
   closePortfolioIxs: TransactionInstruction[];
   /** Optional stray vault_auth-owned token account to sweep in the book-only step. */
   stray?: PublicKey;
+  /** Pool risk mode (`decodeStakePoolV5(..).riskMode`: 0 legacy, 1 FIRST_LOSS, 2 FEE_ONLY). REQUIRED: tag 29 takes a different account list per mode. */
+  riskMode: 0 | 1 | 2;
+  /** Override for the derived wrapper `["ins_units", market]` PDA (FIRST_LOSS only). */
+  insuranceUnits?: PublicKey;
+  /** Override for the derived creator collateral ATA (ATA of `admin` for `collateralMint`). */
+  creatorToken?: PublicKey;
   /** If set, a tag-84 WithdrawProtocolFee(amount 0 = all) claim is planned between tag-30 repeats. */
   protocolFee?: { authority: PublicKey; destToken: PublicKey; authorityEpoch: bigint };
   tokenProgram?: PublicKey;
@@ -303,7 +326,15 @@ export function planStakeWindDown(a: StakeWindDownArgs): StakeWindDownStep[] {
   if (!cap.resolved) throw new Error(`planStakeWindDown: market mode ${cap.mode} is not Resolved (1)`);
   const tokenProgram = a.tokenProgram ?? TOKEN_PROGRAM_ID;
   const [wrapperVaultAuthority] = deriveVaultAuthority(a.wrapperProgram, a.market);
+  const riskMode = a.riskMode as number | undefined;
+  if (riskMode !== 0 && riskMode !== 1 && riskMode !== 2) {
+    throw new Error("planStakeWindDown: riskMode (0 legacy, 1 FIRST_LOSS, 2 FEE_ONLY) is required: tag 29 takes a different account list per pool mode");
+  }
+  const insuranceUnits = riskMode === 1 ? (a.insuranceUnits ?? deriveInsuranceUnitsV22(a.wrapperProgram, a.market)[0]) : undefined;
+  const creatorToken = riskMode === 0 ? undefined : (a.creatorToken ?? getAssociatedTokenAddressSync(a.collateralMint, a.admin, true, tokenProgram));
   const base = {
+    riskMode: riskMode as 0 | 1 | 2,
+    ...(insuranceUnits ? { insuranceUnits } : {}), ...(creatorToken ? { creatorToken } : {}),
     stakeProgram: a.stakeProgram, caller: a.caller, pool: a.pool, poolVault: a.poolVault, vaultAuth: a.vaultAuth,
     market: a.market, wrapperVault: a.wrapperVault, wrapperVaultAuthority, wrapperProgram: a.wrapperProgram, tokenProgram,
   };

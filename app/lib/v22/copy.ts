@@ -191,6 +191,9 @@ export const V22_COPY = {
     consentVersion: (v: number) => `Risk text version ${v}`,
     withdraw: "Withdrawals are paid only from the liquid part of the pool. The rest returns over time while the market is healthy.",
     deposit: "Deposit",
+    /** Shown only when the liquid cap binds (after an insurance loss): one calm line, no error. */
+    withdrawCap: (usd: string) => `Part of this pool is deployed as insurance; up to ${usd} can be withdrawn now, the rest returns when it's recovered.`,
+    withdrawOverCap: "That is more than can be withdrawn now.",
   },
   // ── Unsupported layout ───────────────────────────────────────────────────
   layout: {
