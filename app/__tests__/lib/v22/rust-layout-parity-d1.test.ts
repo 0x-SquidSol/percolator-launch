@@ -180,10 +180,10 @@ describe("D-1 parity: SDK record field tables vs rustc", () => {
     expectTable(ASSET_GROWTH_DEPTH_FIELD_OFF, "AssetGrowthV19", { rename: { depthE6: "depth_e6", depthPrevE6: "depth_prev_e6", depthLastGoodE6: "depth_last_good_e6", collateralDecimalsP1: "collateral_decimals_p1", tierLeverageX100: "tier_leverage_x100", depthRiseSlot64: "depth_rise_slot64_le" } });
   });
   it("vault-LP state (absolute, +16 header) and per-asset vault LP / draw (p3-vault-lp.ts)", () => {
-    // `padding` (232) is NOT a Rust padding field on the deployed wrapper: it is `backstop_outstanding_atoms` (G9 lent
-    // insurance, u64). Pinned here as a fact; the decoder's "must be zero" check on it is finding S3-D1a.
-    expect(VAULT_LP_STATE_OFF_P3.padding).toBe(H + rs("VaultLpStateV18", "backstop_outstanding_atoms"));
-    expectTable(VAULT_LP_STATE_OFF_P3, "VaultLpStateV18", { base: H, skip: ["padding"] });
+    // Byte 232 is `backstop_outstanding_atoms` (G9 lent insurance, u64), not padding (finding S3-D1a, fixed).
+    expect(VAULT_LP_STATE_OFF_P3.backstopOutstandingAtoms).toBe(H + rs("VaultLpStateV18", "backstop_outstanding_atoms"));
+    expect("padding" in VAULT_LP_STATE_OFF_P3).toBe(false);
+    expectTable(VAULT_LP_STATE_OFF_P3, "VaultLpStateV18", { base: H });
     expectTable(ASSET_VAULT_LP_FIELD_OFF_P3, "AssetVaultLpV18", { rename: { reserved0: "p2b_flags" } });
     expect(ASSET_VAULT_LP_P2B_FLAGS_OFF_P3).toBe(rs("AssetVaultLpV18", "p2b_flags"));
     expect(ASSET_VAULT_LP_DRAW_SLOT_OFF_P3).toBe(K.ASSET_VAULT_LP_DRAW_OFF);
