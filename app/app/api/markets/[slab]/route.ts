@@ -173,15 +173,16 @@ async function onChainSlabFallback(slab: string): Promise<NextResponse> {
           .find((rm) => rm.slabAddress === slab) ?? null;
 
     // Live engine stats from the same raw bytes (mirrors the list route's
-    // v17 enrichment). Degrades to zeros if the parse throws.
-    let oiLong = 0, oiShort = 0, insurance = 0;
+    // v17 enrichment). If the parse throws, OI degrades to zeros and insurance to null (unknown).
+    let oiLong = 0, oiShort = 0;
+    let insurance: number | null = null; // unknown if the parse throws, not an empty fund
     try {
       const oi = parseMarketOI(data);
       const lotNums = lotMarketNumbers({ markE6: markPriceRaw, oiLongQ: oi.totalLongOiQ, oiShortQ: oi.totalShortOiQ }, lotExp);
       oiLong = lotNums.oiLong;
       oiShort = lotNums.oiShort;
       insurance = Number(oi.insuranceBalance);
-    } catch { /* stats stay zeroed */ }
+    } catch { /* OI stays zeroed, insurance unknown */ }
 
     const market = {
       slab_address: slab,
