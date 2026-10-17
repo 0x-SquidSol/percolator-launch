@@ -84,7 +84,7 @@ describe("stakeWithdrawCapView (stake processor.rs:1626-1631, LiquidityBufferExh
     expect(cap.maxLpRaw >= 10_000_000n).toBe(true); // the recorded 10M LP partial (paid 8.22M) fits
     expect(withdrawAmountError("20", 20_000_000n, 6, cap.maxLpRaw, V22_COPY.stake.withdrawOverCap)).toBe(V22_COPY.stake.withdrawOverCap);
     expect(withdrawAmountError("10", 20_000_000n, 6, cap.maxLpRaw)).toBeNull();
-    expect(V22_COPY.stake.withdrawCap("$10.96")).toBe("Part of this pool is deployed as insurance; up to $10.96 can be withdrawn now, the rest returns when it's recovered.");
+    expect(V22_COPY.stake.withdrawCap("$10.96")).toBe("Part of this pool is deployed as insurance; up to $10.96 can be withdrawn now, the rest returns if and when it's recovered.");
   });
   it("no cap known (units unreadable, vault unread, fee-only) -> null, balance rules apply", () => {
     expect(stakeWithdrawCapView(poolBytes(), null, 10_960_000n, 1n)).toBeNull();
@@ -92,5 +92,22 @@ describe("stakeWithdrawCapView (stake processor.rs:1626-1631, LiquidityBufferExh
     const fee = poolBytes(); fee[STAKE_POOL_FIELD_OFF_V5.riskMode] = STAKE_RISK_MODE.FeeOnly;
     expect(stakeWithdrawCapView(fee, units, 1n, 1n)).toBeNull();
     expect(withdrawAmountError("30", 20_000_000n, 6)).toBe("Exceeds your staked balance.");
+  });
+});
+
+import fs from "node:fs";
+import path from "node:path";
+describe("stake page: withdraw-available button and copy", () => {
+  const src = fs.readFileSync(path.resolve(__dirname, "../../../app/stake/page.tsx"), "utf8");
+  it("copy does not promise the recovery", () => {
+    expect(V22_COPY.stake.withdrawCap("$1.00")).toContain("if and when it's recovered");
+    expect(V22_COPY.stake.withdrawCap("$1.00")).not.toMatch(/returns when/);
+  });
+  it("a zero cap (nothing liquid) gives maxLpRaw 0 and the card button is disabled and guarded", () => {
+    const cap = stakeWithdrawCapView(poolBytes(), unitsBytes(10_960_000n, 65_280_000n, 32_640_000n), 0n, 20_000_000n)!;
+    expect(cap.capBinds).toBe(true);
+    expect(cap.maxLpRaw).toBe(0n);
+    expect(src).toMatch(/disabled=\{!position\.cooldownElapsed \|\| withdrawLoading \|\| withdrawMaxLpRaw\(position\) <= 0n\}/);
+    expect(src).toContain("if (withdrawMaxLpRaw(position) <= 0n) return;");
   });
 });

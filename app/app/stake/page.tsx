@@ -478,6 +478,7 @@ function PositionCard({
 
   const handleWithdraw = useCallback(async () => {
     if (!position.cooldownElapsed) return;
+    if (withdrawMaxLpRaw(position) <= 0n) return; // nothing is withdrawable now (liquid cap 0): the button is disabled, never send a zero amount
     setTxStatus(null);
     try {
       const sig = await withdraw(withdrawMaxLpRaw(position));
@@ -543,10 +544,11 @@ function PositionCard({
         <div className="space-y-2">
           {/* Withdraw button — all-or-nothing, full LP balance */}
           <button
-            disabled={!position.cooldownElapsed || withdrawLoading}
+            disabled={!position.cooldownElapsed || withdrawLoading || withdrawMaxLpRaw(position) <= 0n}
+            data-testid="stake-withdraw-available"
             onClick={handleWithdraw}
             className={`w-full rounded-sm py-2 text-[11px] font-semibold uppercase tracking-[0.1em] transition-all duration-200 ${
-              position.cooldownElapsed && !withdrawLoading
+              position.cooldownElapsed && !withdrawLoading && withdrawMaxLpRaw(position) > 0n
                 ? "border border-[var(--cyan)]/50 bg-[var(--cyan)]/[0.10] text-[var(--cyan)] hover:border-[var(--cyan)] hover:bg-[var(--cyan)]/[0.18]"
                 : "border border-[var(--border)] bg-[var(--bg)] text-[var(--text-secondary)] cursor-not-allowed"
             }`}

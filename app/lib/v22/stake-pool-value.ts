@@ -91,7 +91,8 @@ export function stakeWithdrawCapView(poolData: Uint8Array, unitsData: Uint8Array
     const u = decodeInsuranceUnitsV20(unitsData);
     const q = quoteStakeWithdrawNowV5(pool, { unitsStake: u.unitsStake, unitsTotal: u.unitsTotal }, u.snapInsuranceFreeAtoms, vaultAtoms, userLpRaw);
     if (!q) return null;
-    return { capBinds: q.capBinds, maxLpRaw: q.maxLpNow, maxAtoms: q.maxCollateralNow, deferredAtoms: q.deferred };
+    // A burn that pays 0 atoms is not a withdrawal: with nothing liquid the largest "fitting" burn can be a dust LP amount worth 0.
+    return { capBinds: q.capBinds, maxLpRaw: q.maxCollateralNow === 0n ? 0n : q.maxLpNow, maxAtoms: q.maxCollateralNow, deferredAtoms: q.deferred };
   } catch {
     return null;
   }
