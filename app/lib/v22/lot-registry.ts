@@ -23,6 +23,12 @@ let clock: () => number = () => Date.now();
 /** Do not retry a failed load of the same slab more often than this. */
 export const LOT_LOAD_RETRY_MS = 10_000;
 
+let unknownDefaultForTest: number | null = null;
+/** Test seam: the exponent `getLotExp` reports for a slab that has not been observed (null = unknown, the production behaviour). */
+export function __setUnknownLotExpForTest(k: number | null): void {
+  unknownDefaultForTest = k;
+}
+
 /** Test seam. */
 export function __resetLotRegistryForTest(c?: () => number): void {
   known.clear();
@@ -45,7 +51,7 @@ export function lotExpOfStrict(raw: Uint8Array | null | undefined, assetIndex = 
 export function getLotExp(slab: string | null | undefined): number | null {
   if (!isDevnetV22Enabled()) return 0;
   if (!slab) return null;
-  return known.get(slab) ?? null;
+  return known.get(slab) ?? unknownDefaultForTest;
 }
 
 /** Record `slab`'s exponent from market bytes the app just read. Unreadable bytes change nothing. */

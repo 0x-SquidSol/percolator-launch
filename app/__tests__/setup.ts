@@ -3,15 +3,17 @@ import { afterAll, afterEach, beforeEach, expect, vi } from 'vitest';
 import '@testing-library/jest-dom';
 import { __setDevnetV22ForTest } from '@/lib/v22/flag';
 import { __setDevnetV21ForTest } from '@/lib/v21/flag';
-import { V21_PINNED_FILES, V21_PINNED_TESTS } from './v21-contract-pins';
+import { __setUnknownLotExpForTest } from '@/lib/v22/lot-registry';
+import { QUARANTINED_FILES, QUARANTINED_TESTS, LOT0_TESTS } from './v21-contract-pins';
 
-// Flag-on runs (NEXT_PUBLIC_DEVNET_V22=1, scripts/flag-on-delta.mjs): v2.1 contract tests that cannot hold under v2.2 run with the flag
-// pinned OFF (see v21-contract-pins.ts). Everything else runs flag-on. Flag off this block does nothing.
+// Flag-on runs (NEXT_PUBLIC_DEVNET_V22=1, scripts/flag-on-delta.mjs). See v21-contract-pins.ts: QUARANTINED entries rerun with the
+// v2.2 and v2.1 flags pinned OFF, LOT0 entries run flag ON with lot exponent 0 seeded. Anything else runs flag ON unchanged and fails
+// if it fails. Flag off this block does nothing. The quarantine size is printed at the start of every flag-on run (global-setup.ts).
 {
   const envOn = process.env.NEXT_PUBLIC_DEVNET_V22 === '1' || process.env.NEXT_PUBLIC_DEVNET_V22 === 'true';
   const testPath = (expect.getState().testPath ?? '').replace(/^.*\/app\//, '');
-  if (envOn && V21_PINNED_FILES.some(([f]) => f === testPath)) {
-    // Whole-file pin: drop the env var too (files that vi.resetModules() re-evaluate the flag module and would read it again).
+  if (envOn && QUARANTINED_FILES.some(([f]) => f === testPath)) {
+    // Whole-file quarantine: drop the env vars too (files that vi.resetModules() re-evaluate the flag module and would read them again).
     const prev = process.env.NEXT_PUBLIC_DEVNET_V22;
     const prev21 = process.env.NEXT_PUBLIC_DEVNET_V21;
     delete process.env.NEXT_PUBLIC_DEVNET_V22;
@@ -24,13 +26,15 @@ import { V21_PINNED_FILES, V21_PINNED_TESTS } from './v21-contract-pins';
     });
   }
   if (envOn) {
-    const mine = new Set(V21_PINNED_TESTS.filter(([f]) => f === testPath).map(([, n]) => n));
-    if (mine.size > 0) {
+    const quarantined = new Set(QUARANTINED_TESTS.filter(([f]) => f === testPath).map(([, n]) => n));
+    const lot0 = new Set(LOT0_TESTS.filter(([f]) => f === testPath).map(([, n]) => n));
+    if (quarantined.size > 0 || lot0.size > 0) {
       beforeEach(() => {
         const name = (expect.getState().currentTestName ?? '').replace(/ > /g, ' ');
-        if (mine.has(name)) { __setDevnetV22ForTest(false); __setDevnetV21ForTest(false); }
+        if (quarantined.has(name)) { __setDevnetV22ForTest(false); __setDevnetV21ForTest(false); }
+        if (lot0.has(name)) __setUnknownLotExpForTest(0);
       });
-      afterEach(() => { __setDevnetV22ForTest(null); __setDevnetV21ForTest(null); });
+      afterEach(() => { __setDevnetV22ForTest(null); __setDevnetV21ForTest(null); __setUnknownLotExpForTest(null); });
     }
   }
 }

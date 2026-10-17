@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { encodeInitMarket, v17MarketAccountLen } from "@percolatorct/sdk";
 import { deriveMarketParams } from "@/lib/market-params";
 import { wizardP3Params } from "@/lib/limits/p3-wizard";
+import { ONE_SLOT_LEN } from "../helpers/v22-account-lens";
 
 vi.mock("@/lib/limits/flags", async (orig) => {
   const real = await orig<typeof import("@/lib/limits/flags")>();
@@ -57,20 +58,20 @@ describe("every launch creates a single-asset market", () => {
   });
 
   it("P3 and legacy slabs are both v17MarketAccountLen(1), and a slab given by the caller cannot override it", () => {
-    expect(slabSizeFor(p3Params)).toBe(v17MarketAccountLen(1));
-    expect(slabSizeFor(legacyParams)).toBe(v17MarketAccountLen(1));
-    expect(slabSizeFor(legacyParams)).toBe(DEFAULT_SLAB_SIZE);
-    expect(DEFAULT_SLAB_SIZE).toBe(v17MarketAccountLen(1));
-    expect(wizardSlabBytes(true)).toBe(v17MarketAccountLen(1));
-    expect(wizardSlabBytes(false)).toBe(v17MarketAccountLen(1));
+    expect(slabSizeFor(p3Params)).toBe(ONE_SLOT_LEN());
+    expect(slabSizeFor(legacyParams)).toBe(ONE_SLOT_LEN());
+    expect(slabSizeFor(legacyParams)).toBe(ONE_SLOT_LEN());
+    expect(DEFAULT_SLAB_SIZE).toBe(v17MarketAccountLen(1)); // the flag-off constant by design
+    expect(wizardSlabBytes(true)).toBe(ONE_SLOT_LEN());
+    expect(wizardSlabBytes(false)).toBe(ONE_SLOT_LEN());
   });
 
   it("the rent estimate charges the one-slot slab for legacy and P3 alike", () => {
     const p3 = computeCreateMarketSolCost({ p3: true });
     const legacy = computeCreateMarketSolCost();
     const rent = (bytes: number) => ((bytes + 128) * 5080) / 1e9;
-    expect(p3.slabRentSol).toBeCloseTo(rent(v17MarketAccountLen(1)), 9);
-    expect(legacy.slabRentSol).toBeCloseTo(rent(v17MarketAccountLen(1)), 9);
+    expect(p3.slabRentSol).toBeCloseTo(rent(ONE_SLOT_LEN()), 9);
+    expect(legacy.slabRentSol).toBeCloseTo(rent(ONE_SLOT_LEN()), 9);
     // P3 differs by the vault-owned LP portfolio + matcher ctx it also creates, not by the slab.
     expect(legacy.totalSolCost - p3.totalSolCost).toBeCloseTo(
       -(p3.lpPortfolioMatcherRentSol - legacy.lpPortfolioMatcherRentSol),

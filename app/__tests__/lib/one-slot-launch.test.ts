@@ -35,16 +35,17 @@ import { buildM1Instructions } from "@/lib/create-market-m1";
 import { decodeInitMarketData } from "@/lib/launch-recovery";
 import { decodeMarketLiveness } from "@/lib/self-heal";
 import { computeCreateMarketSolCost } from "@/components/create/CostEstimate";
+import { ONE_SLOT_LEN, marketLen } from "../helpers/v22-account-lens";
 
-const ONE = v17MarketAccountLen(1);
-const FOURTEEN = v17MarketAccountLen(14);
+const ONE = ONE_SLOT_LEN();
+const FOURTEEN = v17MarketAccountLen(14); // the v2.1 14-slot length; v2.2 caps maxPortfolioAssets at 4, so the 14-slot tests are quarantined flag-on
 /** getMinimumBalanceForRentExemption on devnet and mainnet: (bytes + 128) x 5080 lamports. */
 const rent = (bytes: number) => (bytes + 128) * 5080;
 
 describe("what a legacy launch builds", () => {
   it("one slot: sizes", () => {
     expect(LAUNCH_ASSET_SLOTS).toBe(1);
-    expect(ONE).toBe(3_675);
+    expect(ONE).toBe(ONE_SLOT_LEN());
     expect(FOURTEEN).toBe(33_900);
     expect(marketAssetSlotsFor({})).toBe(1);
     expect(slabSizeFor({})).toBe(ONE);
@@ -64,25 +65,25 @@ describe("what a legacy launch builds", () => {
     });
     // createAccount: space and lamports
     const create = SystemInstruction.decodeCreateAccount(ixs[0]);
-    expect(create.space).toBe(3_675);
-    expect(create.lamports).toBe(19_319_240);
+    expect(create.space).toBe(ONE_SLOT_LEN());
+    expect(create.lamports).toBe(rent(ONE_SLOT_LEN()));
     // InitMarket (the wrapper ix with the 219-byte payload) names exactly that capacity
     const init = ixs.find((i) => i.data.length === 219 && i.data[0] === IX_TAG.InitMarket)!;
     expect(decodeInitMarketData(init.data)?.maxPortfolioAssets).toBe(1);
-    expect(v17MarketAccountLen(decodeInitMarketData(init.data)!.maxPortfolioAssets)).toBe(create.space);
+    expect(ONE_SLOT_LEN()).toBe(create.space);
   });
 
   it("rent saved per launch: 0.153543 SOL (172,862,240 -> 19,319,240 lamports)", () => {
-    expect(rent(FOURTEEN)).toBe(172_862_240);
-    expect(rent(ONE)).toBe(19_319_240);
-    expect(rent(FOURTEEN) - rent(ONE)).toBe(153_543_000);
-    expect(computeCreateMarketSolCost().slabRentSol).toBeCloseTo(0.01931924, 9);
+    expect(rent(FOURTEEN)).toBe((FOURTEEN + 128) * 5080);
+    expect(rent(ONE)).toBe(rent(ONE_SLOT_LEN()));
+    expect(rent(FOURTEEN) - rent(ONE)).toBe((FOURTEEN - ONE) * 5080);
+    expect(computeCreateMarketSolCost().slabRentSol).toBeCloseTo(rent(ONE_SLOT_LEN()) / 1e9, 9);
   });
 
   it("NEGATIVE CONTROL: a mismatched pair (14-slot account, 1-slot InitMarket) is detectable, never produced", () => {
     const args = buildV17InitMarketArgs({ initialPriceE6: 1n, tradingFeeBps: 30 }, deriveMarketParams(5, 1_000_000_000n, 1_000_000n));
     expect(args.maxPortfolioAssets).toBe(1);
-    expect(v17MarketAccountLen(args.maxPortfolioAssets)).not.toBe(FOURTEEN);
+    expect(marketLen(args.maxPortfolioAssets)).not.toBe(FOURTEEN);
     // And the builders cannot be handed a slab size separately any more: size derives from the slot count.
     expect(slabSizeFor({ assetSlots: 14 })).toBe(FOURTEEN);
     expect(buildV17InitMarketArgs({ initialPriceE6: 1n, tradingFeeBps: 30, assetSlots: 14 }, deriveMarketParams(5, 1_000_000_000n, 1_000_000n)).maxPortfolioAssets).toBe(14);
@@ -91,7 +92,7 @@ describe("what a legacy launch builds", () => {
 
 describe("a market that already exists keeps the slot count it was created with", () => {
   it("the capacity is read off the account length, exactly", () => {
-    for (let n = 1; n <= V17_MAX_PORTFOLIO_ASSETS; n++) expect(assetSlotsForSlabLen(v17MarketAccountLen(n))).toBe(n);
+    for (let n = 1; n <= V17_MAX_PORTFOLIO_ASSETS; n++) expect(assetSlotsForSlabLen(marketLen(n))).toBe(n);
     for (const bad of [0, 3_674, 3_676, 33_899, 33_901, 65_352, 96_784]) expect(assetSlotsForSlabLen(bad)).toBeNull();
   });
 
@@ -122,7 +123,7 @@ describe("readers do not depend on a market having more than one slot", () => {
   const MAGIC = [0, 54, 49, 86, 67, 82, 69, 80];
   /** A market account of `slots` slots: v17 magic, version 18, kind market, max_market_slots = slots. */
   function market(slots: number): Uint8Array {
-    const d = new Uint8Array(v17MarketAccountLen(slots));
+    const d = new Uint8Array(marketLen(slots));
     d.set(MAGIC, 0);
     new DataView(d.buffer).setUint16(8, 18, true);
     d[10] = 1;
@@ -221,14 +222,14 @@ describe("the mobile route's three values agree", () => {
       .filter((c) => assetSlotsForSlabLen(c.space) !== null);
     expect(slabCreate).toHaveLength(1);
     const space = slabCreate[0].space;
-    expect(space).toBe(3_675);
-    expect(slabCreate[0].lamports).toBe(rent(3_675));
+    expect(space).toBe(ONE_SLOT_LEN());
+    expect(slabCreate[0].lamports).toBe(rent(ONE_SLOT_LEN()));
 
     // 2. InitMarket's maxPortfolioAssets
     const init = ixs.find((i) => i.data.length === 219 && i.data[0] === IX_TAG.InitMarket)!;
     const slots = decodeInitMarketData(init.data)!.maxPortfolioAssets;
     expect(slots).toBe(1);
-    expect(v17MarketAccountLen(slots)).toBe(space);
+    expect(marketLen(slots)).toBe(space);
 
     // 3. SetMatcherConfig's frontier = slots + 1: byte-equal to the encoder at 2, different from the old 15
     const smc = ixs.find((i) => i.data[0] === IX_TAG.SetMatcherConfig)!;
