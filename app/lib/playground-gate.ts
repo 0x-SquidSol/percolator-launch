@@ -28,8 +28,6 @@
  *   PATCH /api/markets/:slab    external keeper/ops signer; HMAC-SHA256 over KEEPER_REGISTER_SECRET
  *   POST /api/oracle-keeper/register
  *                               HMAC-SHA256 over KEEPER_REGISTER_SECRET, timestamp-bounded
- *   POST /api/oracle/set-price-cap
- *                               operator tool; x-admin-secret vs ADMIN_API_SECRET, fails closed
  *   GET  /api/earn-share/:market and /api/earn-share/:market/image   (v2.2 flag ON only)
  *                               the metadata JSON and icon a wallet fetches for an Earn share token (the `uri` of its on-chain
  *                               Metaplex record); the caller is a wallet or explorer, never a browser holding our cookie. Public by
@@ -86,7 +84,6 @@ const EXEMPT_API: ReadonlyArray<{ method: string; re: RegExp; v22?: true }> = [
   // base58 slab only, so PATCH /api/markets/challenge|health (no PATCH handler) stays gated
   { method: "PATCH", re: /^\/api\/markets\/[1-9A-HJ-NP-Za-km-z]{32,44}\/?$/ },
   { method: "POST", re: /^\/api\/oracle-keeper\/register\/?$/ },
-  { method: "POST", re: /^\/api\/oracle\/set-price-cap\/?$/ },
   // v2.2 Earn share token metadata (wallets fetch it from the Metaplex record's uri); exempt only with the v2.2 flag on.
   { method: "GET", re: /^\/api\/earn-share\/[1-9A-HJ-NP-Za-km-z]{32,44}(?:\/image)?\/?$/, v22: true },
 ];
@@ -123,7 +120,7 @@ export async function gateDecision(
     warnedNoSecret = true;
     console.error(
       "[playground-gate] PLAYGROUND_GATE_ENABLED=true but PLAYGROUND_ACCESS_SECRET is unset or < 32 chars — " +
-        "the gate is refusing EVERYONE (team bypass included).",
+        "the gate is refusing EVERYONE (team bypass and judge door included).",
     );
   }
   return pathname.startsWith("/api/") || pathname === "/api" ? "unauthorized" : "redirect-locked";

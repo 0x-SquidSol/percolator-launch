@@ -67,6 +67,17 @@ export function EarnVaultView() {
     if (stats.markets.length > 0) setSelectedSlab(stats.markets[0].slabAddress);
   }, [stats.markets, selectedSlab]);
 
+  // Below lg the rail renders under the table, so a row tap changed nothing on screen. Bring the
+  // rail into view, its top below the sticky header (scroll-mt-24 on the rail). No `behavior`: the
+  // html scroll-behavior applies, smooth unless the user prefers reduced motion. Not on auto-select above.
+  const railRef = useRef<HTMLDivElement | null>(null);
+  const selectVault = useCallback((slab: string) => {
+    setSelectedSlab(slab);
+    if (!window.matchMedia('(min-width: 64rem)').matches) {
+      railRef.current?.scrollIntoView({ block: 'start' });
+    }
+  }, []);
+
   const selectedVault = useMemo(
     () => stats.markets.find((m) => m.slabAddress === selectedSlab) ?? null,
     [stats.markets, selectedSlab],
@@ -116,13 +127,13 @@ export function EarnVaultView() {
               loading={loading}
               error={error}
               selectedSlab={selectedSlab}
-              onSelect={setSelectedSlab}
+              onSelect={selectVault}
               userDeposits={tableDeposits}
             />
           </div>
 
           {/* RIGHT RAIL — deposit/withdraw bound to the selected row */}
-          <div className="lg:sticky lg:top-4">
+          <div ref={railRef} className="scroll-mt-24 lg:sticky lg:top-4">
             <VaultDepositRail
               slab={selectedSlab}
               vault={selectedVault}
@@ -133,7 +144,7 @@ export function EarnVaultView() {
         </div>
 
         {/* SECONDARY — explanatory content, kept below the functional table+rail */}
-        <EarnInfoStrip totalInsurance={stats.totalInsurance} />
+        <EarnInfoStrip totalInsurance={loading ? null : stats.totalInsurance} />
       </div>
 
       {/* Error toast. Below md it sits above the fixed mobile tab bar (MobileBottomNav: 3.5rem + safe
@@ -161,7 +172,8 @@ export function EarnVaultView() {
 
 /* ── Secondary info strip — slim row of small cards below the table+rail ── */
 
-function EarnInfoStrip({ totalInsurance }: { totalInsurance: number }) {
+/** `totalInsurance` null = not read yet (the header shows its loading state for the same figure). */
+function EarnInfoStrip({ totalInsurance }: { totalInsurance: number | null }) {
   return (
     <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-3">
       {/* How it works */}
@@ -185,7 +197,7 @@ function EarnInfoStrip({ totalInsurance }: { totalInsurance: number }) {
           </h3>
         </div>
         <div className="mb-2 text-lg font-bold tabular-nums text-[var(--text)]" style={{ fontFamily: 'var(--font-mono)' }}>
-          ${formatCompact(totalInsurance)}
+          {totalInsurance == null ? "—" : `$${formatCompact(totalInsurance)}`}
         </div>
         <ul className="space-y-1 text-[11px] text-[var(--text-secondary)]">
           <li>· Absorbs liquidation shortfalls</li>

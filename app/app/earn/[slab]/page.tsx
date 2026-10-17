@@ -260,7 +260,6 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
   // TVL = the LP Vault Registry's own backing (shares + distributed fees), NOT the
   // percolator-stake pool (poolState.vaultBalance, wrong account — see hook comment above).
   const vaultUsd = Number(lpVaultState.vaultTotalAtoms) / collateralScale;
-  const insuranceFund = marketInfo?.insuranceFund ?? 0;
 
   if (marketNotFound) {
     return (
@@ -388,7 +387,8 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
             </StatCell>
             <StatCell label="Insurance" loading={loading}>
               <span className="text-sm font-mono tabular-nums text-[var(--text)]">
-                ${formatCompact(insuranceFund / collDivisor)}
+                {/* Unknown until marketInfo resolves, like the cells beside it: not $0. */}
+                {marketInfo ? `$${formatCompact(marketInfo.insuranceFund / collDivisor)}` : "—"}
               </span>
             </StatCell>
             <StatCell label="Max Leverage" loading={loading}>
@@ -426,7 +426,6 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
               lpSupply={lpVaultState.splitPot?.totalShares ?? lpVaultState.lpSupply}
               vaultBalance={lpVaultState.vaultTotalAtoms}
               decimals={collateralDecimals}
-              lpDecimals={lpVaultState.lpDecimals}
               collateralSymbol={collateralSymbol}
               redemptionRateE6={lpVaultState.vaultSharePriceE6}
               loading={loading || firstLoad}

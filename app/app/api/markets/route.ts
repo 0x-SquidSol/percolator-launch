@@ -422,7 +422,9 @@ export async function GET(request: NextRequest) {
     // the answer. The memo in loadMergedMarketRows makes the full read once per instance per TTL.
     const mergedRows = await loadMergedMarketRows(fresh ? { maxAgeMs: FRESH_MAX_AGE_MS } : {});
     if (mergedRows === null) {
-      return fallbackMarketsResponse(request, "supabase-query-error");
+      // Supabase unreachable (e.g. 402 quota restriction): use on-chain discovery
+      // like the not-configured path, instead of a 503 when the static list is empty.
+      return await onChainOrStaticResponse(request, "supabase-query-error");
     }
 
     // Sanitize funding_rate: raw DB values from uninitialized slabs can be

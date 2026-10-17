@@ -115,7 +115,6 @@ describe("gate ON", () => {
     ["GET", "/api/playground/registered-markets"],
     ["PATCH", `/api/markets/${SLAB}`],
     ["POST", "/api/oracle-keeper/register"],
-    ["POST", "/api/oracle/set-price-cap"],
   ])("exempt %s %s passes without a cookie", async (method, p) => {
     const r = await middleware(req(p, { method }));
     expect(r.status).not.toBe(401);
@@ -126,7 +125,7 @@ describe("gate ON", () => {
     expect((await middleware(req(`/api/markets/${SLAB}`))).status).toBe(401); // GET is browser data
     expect((await middleware(req("/api/markets/challenge", { method: "PATCH" }))).status).toBe(401);
     expect((await middleware(req("/api/health", { method: "POST" }))).status).toBe(401);
-    expect((await middleware(req("/api/oracle/set-price-cap"))).status).toBe(401);
+    expect((await middleware(req("/api/oracle-keeper/register"))).status).toBe(401); // GET is not exempt
   });
 
   it("an unset access secret locks everyone out, even with a once-valid cookie", async () => {
@@ -183,7 +182,6 @@ describe("every API route is classified", () => {
     "GET /api/playground/registered-markets",
     "PATCH /api/markets/[slab]",
     "POST /api/oracle-keeper/register",
-    "POST /api/oracle/set-price-cap",
   ]);
 
   function routes(dir: string, base = "/api"): string[] {

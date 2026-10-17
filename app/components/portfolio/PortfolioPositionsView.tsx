@@ -290,8 +290,8 @@ function PositionCard({
     entryDisplay.known,
   );
   const severity = getLiquidationSeverityForState(liveLiquidationState, liveMarginCushion(pos, livePriceE6));
-  // The risk figure that survives a missing liquidation price: capital over
-  // notional, needing neither an entry nor a liq price. It crosses its
+  // The risk figure that survives a missing liquidation price: equity over
+  // notional, valued with the same entry as the liq price. It crosses its
   // threshold at exactly the collateral level where the liq price disappears,
   // so the row can say which side of that line the position is on rather than
   // rendering a dash. Nominal size — see lib/margin-health.ts and #2558.
@@ -299,6 +299,8 @@ function PositionCard({
     liqPriceE6: liquidationPriceE6,
     positionSize: pos.account?.positionSize ?? 0n,
     capital: pos.account?.capital ?? 0n,
+    entryPriceE6: pos.effectiveEntryPrice,
+    effectiveSize: pos.adlKnown ? pos.effectiveSize : null,
     markPriceE6: markE6,
     maintenanceMarginBps: pos.maintenanceMarginBps,
     // Same verdict as the Entry cell, so the two cannot contradict (#2671).
@@ -622,6 +624,7 @@ export function PortfolioPositionsView() {
 
   // Earn deposits and stake positions (neither adds to the insurance balance)
   const lpPositions = useLpPositions();
+  const lpUnread = lpPositions.error != null && lpPositions.positions.length === 0;
   const isRefreshing = portfolio.isRefreshing || lpPositions.isRefreshing;
 
   // PERC-481: Aggregate trade statistics
@@ -900,8 +903,9 @@ export function PortfolioPositionsView() {
               },
               {
                 label: "LP Value",
-                value: !walletConnected ? "\u2014" : lpPositions.loading ? "\u2026" : `$${lpPositions.totalRedeemable.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-                color: !walletConnected ? "text-[var(--text-dim)]" : lpPositions.totalRedeemable > 0 ? "text-[var(--cyan)]" : "text-[var(--text-secondary)]",
+                // A failed read with nothing read is unknown, not $0 (as loadError on the tiles beside it).
+                value: !walletConnected ? "\u2014" : lpPositions.loading ? "\u2026" : lpUnread ? "\u2014" : `$${lpPositions.totalRedeemable.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+                color: !walletConnected || lpUnread ? "text-[var(--text-dim)]" : lpPositions.totalRedeemable > 0 ? "text-[var(--cyan)]" : "text-[var(--text-secondary)]",
                 sub: walletConnected && lpPositions.positions.length > 0
                   ? `${lpPositions.positions.length} pool${lpPositions.positions.length > 1 ? "s" : ""}`
                   : undefined,

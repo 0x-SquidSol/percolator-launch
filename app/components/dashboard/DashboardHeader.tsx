@@ -48,14 +48,21 @@ export function DashboardHeader() {
   const totalPnl = liveMetrics.totalUnrealizedPnl;
   const positionCount = liveMetrics.openPositions.length;
 
-  // First scan failed with nothing loaded: "$0.00" / 0 would be a false claim.
+  // First scan failed with nothing loaded: "$0.00" / 0 would be a false claim. Before the first scan
+  // lands the totals are the empty seed, so say loading (as StatsBar beside it does), not $0.00.
   const loadError = portfolio.error;
+  const loading = portfolio.loading;
+  // One USD format for every value (it was a bare token amount above zero and "$0.00" at zero), with
+  // separators like StatsBar and the /portfolio hero; formatUsdAmount for $0.00 and sub-cent amounts.
+  const usd = Math.abs(Number(totalValue) / 1e6);
+  const sign = totalValue < 0n ? "-" : "";
   const displayValue = loadError
     ? "—"
-    : totalValue > 0n
-      // A dollar figure like the "$0.00" beside it (browser E2E 2026-10-16 read a bare "4.37919"). Collateral is USD-like.
-      ? formatUsdAmount(Number(totalValue) / 1_000_000)
-      : "$0.00";
+    : loading
+      ? "..."
+      : usd >= 0.01
+        ? `${sign}$${usd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+        : formatUsdAmount(usd, sign);
 
   const pnlPositive = totalPnl >= 0n;
 
@@ -102,7 +109,7 @@ export function DashboardHeader() {
             className="text-sm font-bold text-[var(--text)]"
             style={{ fontFamily: "var(--font-jetbrains-mono)" }}
           >
-            {loadError ? "—" : positionCount}
+            {loadError ? "—" : loading ? "..." : positionCount}
           </p>
         </div>
       </div>

@@ -31,6 +31,11 @@ export function noticeCopy(n: ClosedNotice, nowMs: number = Date.now()) {
     liqPriceE6: BigInt(n.liqPriceE6 || "0"),
     positionSize: BigInt(n.sizeAbs || "0") * (n.side === "short" ? -1n : 1n),
     capital: null,
+    // #3454 made entry and effective size required (margin health = equity over notional). The remembered row
+    // (SeenPosition) stores neither, and the notice renders only kind "price" + its text, which depend on
+    // liqPriceE6 and the size alone; health is never shown here. So null (unknown) is the true input, not a guess.
+    entryPriceE6: null,
+    effectiveSize: null,
     markPriceE6: BigInt(n.markE6 || "0"),
     maintenanceMarginBps: 0n,
     hasResolvedEntry: false,

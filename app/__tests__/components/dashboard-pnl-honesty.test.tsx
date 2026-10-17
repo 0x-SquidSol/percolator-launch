@@ -242,6 +242,7 @@ describe("DashboardHeader live aggregate freshness", () => {
     // unrealized PnL = +$20 (one floor division, as the engine credits it; the old
     //   native-then-collateral path truncated it to +$19.99992)
     // portfolio value = $70
+    // (in dollars since S23; exactly $70.00, not the truncated $69.99)
     expect(card!.textContent).toMatch(/Portfolio Value\$70\.00(?!\d)/);
 
     // DashboardHeader currently computes 20 / 70 = 28.6%.

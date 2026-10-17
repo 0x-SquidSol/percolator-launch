@@ -2,7 +2,7 @@
 
 import { FC } from "react";
 import { ShimmerSkeleton } from "@/components/ui/ShimmerSkeleton";
-import { formatStatValue, formatTokenAmount } from "@/lib/format";
+import { formatStatValue } from "@/lib/format";
 import type { TraderStatsResponse } from "@/hooks/useTraderStats";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import {
@@ -58,8 +58,8 @@ function StatCell({
 
 function formatVolume(rawStr: string): string {
   try {
-    const raw = BigInt(rawStr);
-    return formatTokenAmount(raw, 6);
+    // totalVolume is micro-USD too: the route sums |size| x USD price (#76; it was a bare 6-dp number).
+    return formatStatValue(BigInt(rawStr), "currency");
   } catch {
     return "—";
   }

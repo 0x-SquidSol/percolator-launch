@@ -16,12 +16,6 @@ import {
   deriveVaultAuthority,
   derivePythPushOraclePDA,
 } from "@percolatorct/sdk";
-// TODO(oracle-migration): encodePushOraclePrice/ACCOUNTS_PUSH_ORACLE_PRICE removed in beta.29.
-// The DEX oracle inline push path needs to migrate to /api/oracle/advance-phase.
-import {
-  encodePushOraclePrice,
-  ACCOUNTS_PUSH_ORACLE_PRICE,
-} from "@/lib/sdk-compat";
 import { sendTx } from "@/lib/tx";
 import { getPortfolioRawSnapshot, isLpPortfolio, makePortfolioScanKey } from "@/lib/userAccountScan";
 import { useSlabState } from "@/components/providers/SlabProvider";

@@ -31,6 +31,7 @@ import { LogoUpload } from "@/components/create/LogoUpload";
 import { usePrefersReducedMotion } from "@/hooks/usePrefersReducedMotion";
 import { getBatchRpc } from "@/lib/batchRpc";
 import { isValidBase58Pubkey } from "@/lib/createWizardUtils";
+import { shortRateLimitMessage } from "@/lib/faucet-429";
 import { noteBlockhash } from "@/lib/v22/sign-guard";
 
 /**
@@ -93,7 +94,11 @@ const DevnetMintContent: FC = () => {
         }),
       });
       const data = await resp.json();
-      if (resp.status === 429) {
+      // A 429 without `nextClaimAt` is the short per-IP / middleware limit, not a claim (lib/faucet-429).
+      const shortLimit = shortRateLimitMessage(resp, data);
+      if (shortLimit) {
+        setFaucetError(shortLimit);
+      } else if (resp.status === 429) {
         setFaucetRateLimited(data.nextClaimAt ?? null);
         setFaucetError(`Already claimed — next claim at ${data.nextClaimAt ? new Date(data.nextClaimAt).toLocaleString() : "later"}`);
       } else if (!resp.ok) {
