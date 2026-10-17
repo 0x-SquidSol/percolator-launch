@@ -182,7 +182,7 @@ const OFF = (flags: LimitsFlags): MarketLimits => ({
 });
 
 /** Devnet v2.1: the growth view from what is already read; null when growth is OFF for the asset. */
-function growthFor(
+export function growthFor(
   slabPart: { engine: MarketEngineView | null; vaultLp: AssetVaultLp | null } | null,
   accPart: { lp: LpView | null } | null,
   lpRealQ: bigint | null,
@@ -204,9 +204,9 @@ function growthFor(
     lp: { capital: lp.capital, pnl: lp.pnl, feeCredits: lp.feeCredits },
     lpEffectiveQ: lpRealQ,
     bound,
-    // v2.2 depth rules (lambda_eff, kappa cap, stored ratchet) only where the DEPLOYED wrapper applies them: on 6kpg2wi7 it does not
-    // (N_cap = floor(C_m * lambda * 1e6 / (1e4 * price)), ceiling = min(L_launch, L_tier)), and the ticket's room, fee and leverage
-    // must be the numbers the program computes for the clip and the gate (QA LEV-8). Unknown clock = conservative reading.
+    // v2.2 depth rules (lambda_eff, kappa cap, stored ratchet) where the DEPLOYED wrapper applies them (6kpg2wi7 since the 10-15
+    // growth-tier upgrade, GROWTH_DEPTH_RULES_DEPLOYED): the ticket's room, fee and leverage must be the numbers the program computes
+    // for the clip and the gate (QA LEV-8). Unknown clock = conservative reading.
     ...(isDevnetV22Enabled() && GROWTH_DEPTH_RULES_DEPLOYED ? { v22: { bandBps: readBandRentView(raw, assetIndex)?.band.bandBps ?? 0, nowSlot } } : {}),
   });
 }

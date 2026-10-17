@@ -64,11 +64,11 @@ describe("1a. one room: the program's plain N_cap, not the depth-aware quote", (
     expect(t.growthGate!.clipQ).toBe(9_284_648n); // the program clips the 40-lot ask to the room
     expect(t.growthCapQ!).toBeLessThanOrEqual(9_284_648n);
   });
-  it("the app builds its growth view WITHOUT the v2.2 depth rules while the deployed wrapper lacks them (wiring)", () => {
+  it("the app builds its growth view WITH the v2.2 depth rules now that the deployed wrapper applies them (wiring)", () => {
     const src = readFileSync(path.join(__dirname, "../../..", "hooks/useMarketLimits.ts"), "utf8");
     expect(src).toContain("isDevnetV22Enabled() && GROWTH_DEPTH_RULES_DEPLOYED");
     const gm = readFileSync(path.join(__dirname, "../../..", "lib/v21/growth-market.ts"), "utf8");
-    expect(gm).toContain("export const GROWTH_DEPTH_RULES_DEPLOYED = false;");
+    expect(gm).toContain("export const GROWTH_DEPTH_RULES_DEPLOYED = true;");
   });
 });
 

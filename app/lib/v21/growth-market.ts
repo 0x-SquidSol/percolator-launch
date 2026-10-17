@@ -36,11 +36,14 @@ function hlockOffset(raw: Uint8Array): number | null {
 }
 
 /**
- * Whether the DEPLOYED wrapper (devnet 6kpg2wi7, percolator-prog 81ed7fdf) applies the v2.2 growth depth rules (lambda_eff, kappa cap,
- * stored ratchet ceiling). It does not: `growth_ceiling_x100` is `min(L_launch, L_tier)` ("absent depth is tier 0") and every N_cap is the
- * plain `n_cap_q(C_m, lambda_bps, effective_price)`. Flip this when the growth-depth upgrade is deployed; the quote logic stays.
+ * Whether the DEPLOYED wrapper (devnet 6kpg2wi7) applies the v2.2 growth depth rules (lambda_eff, kappa cap on N_cap, stored ratchet
+ * ceiling). It does since 2026-10-15: the growth-tier commits (percolator-prog 557b2735, aa55dfde, 17536158) are ancestors of the
+ * deployed aca02ba6 (on chain as c659c91d, ledger deployments.md), and `n_cap_g8_q` is what the TradeCpi room clip and the post-fill
+ * gate read. With this false the ticket quoted `N_cap = C_m * lambda / P` (plain growth-1) on a tiered market where the program caps
+ * at `min(that, kappa * depth / P)`: ~9,000x too much room on CHILLHOUSE-T / swordcat-T (see __tests__/lib/v22/growth-depth-real-bytes.test.ts).
+ * Pinned to real account bytes there; flip back only if the deployed wrapper is rolled back to a build without growth tiers.
  */
-export const GROWTH_DEPTH_RULES_DEPLOYED = false;
+export const GROWTH_DEPTH_RULES_DEPLOYED = true;
 
 /** A tier threshold nothing can reach (whole USD, u32 range): used only to pin the tier to 0 while the clock is unknown. */
 const NO_TIER_USD = 4_000_000_000;
