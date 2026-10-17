@@ -120,13 +120,42 @@ describe("flag ON (v2.2)", () => {
   });
 });
 
-describe("the Earn shares stat uses the share mint's own decimals", () => {
+describe("the Earn shares stat: the share mint's decimals on v2.2, collateral decimals flag off (#3432)", () => {
   const base = { userLpBalance: 1_000_000_000n, lpSupply: 2_000_000_000n, vaultBalance: 2_200_000_000n, decimals: 6, collateralSymbol: "USDC", redemptionRateE6: 1_100_000n, loading: false };
-  it("0-decimal mint: the raw count; 6-decimal mint: the scaled count (both flags, the stat was already mint-scaled)", () => {
+  const sharesCell = () => screen.getByText("Shares").nextSibling?.textContent ?? "";
+  afterEach(() => __setDevnetV22ForTest(null));
+  it("flag on, 0-decimal mint: the raw count, the same scale the deposit/withdraw panel uses for this vault", () => {
+    __setDevnetV22ForTest(true);
     const { unmount } = render(<LpPositionDashboard {...base} lpDecimals={0} />);
-    expect(screen.getByText("Shares").nextSibling?.textContent ?? document.body.textContent).toMatch(/1,000,000,000\.00/);
+    expect(sharesCell()).toMatch(/^1,000,000,000\.00$/);
     unmount();
     render(<LpPositionDashboard {...base} lpDecimals={6} />);
-    expect(document.body.textContent).toMatch(/Shares1,000\.00/);
+    expect(sharesCell()).toMatch(/^1,000\.00$/);
+  });
+  it("flag on, lpDecimals unknown: falls back to the collateral's decimals (as the panel does)", () => {
+    __setDevnetV22ForTest(true);
+    render(<LpPositionDashboard {...base} />);
+    expect(sharesCell()).toMatch(/^1,000\.00$/);
+  });
+  it("flag off (#3432): shares are counted in collateral decimals whatever the mint's own decimals", () => {
+    __setDevnetV22ForTest(false);
+    const { unmount } = render(<LpPositionDashboard {...base} lpDecimals={0} />);
+    expect(sharesCell()).toMatch(/^1,000\.00$/);
+    unmount();
+    render(<LpPositionDashboard {...base} lpDecimals={6} />);
+    expect(sharesCell()).toMatch(/^1,000\.00$/);
+  });
+  it("flag on: the card and the withdraw panel print one 0-decimal vault's shares in the same scale", () => {
+    __setDevnetV22ForTest(true);
+    const { unmount } = render(<LpPositionDashboard {...base} lpDecimals={0} />);
+    const card = sharesCell();
+    unmount();
+    const onWithdraw = vi.fn(async () => ({ step: "executed" as const }));
+    render(<DepositWithdrawPanel {...props} onWithdraw={onWithdraw} lpDecimals={0} lpMetadataPresent userLpBalance={1_000_000_000n} />);
+    fireEvent.click(screen.getAllByTestId("earn-tab").find((t) => t.dataset.tab === "withdraw")!);
+    fireEvent.click(screen.getByTestId("earn-withdraw-unit"));
+    fireEvent.change(screen.getByTestId("earn-withdraw-input"), { target: { value: "1000000000" } });
+    expect(card).toBe("1,000,000,000.00");
+    expect(screen.getByTestId("earn-withdraw-receive").textContent).toMatch(/\(1,000,000,000\.00 shares\)/);
   });
 });

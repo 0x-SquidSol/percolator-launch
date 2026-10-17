@@ -426,6 +426,7 @@ function VaultDetailInner({ slabAddress }: { slabAddress: string }) {
               lpSupply={lpVaultState.splitPot?.totalShares ?? lpVaultState.lpSupply}
               vaultBalance={lpVaultState.vaultTotalAtoms}
               decimals={collateralDecimals}
+              lpDecimals={isDevnetV22Enabled() ? lpVaultState.lpDecimals : undefined}
               collateralSymbol={collateralSymbol}
               redemptionRateE6={lpVaultState.vaultSharePriceE6}
               loading={loading || firstLoad}
