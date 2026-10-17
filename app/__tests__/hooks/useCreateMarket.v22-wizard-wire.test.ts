@@ -88,6 +88,7 @@ import { POST as cosignPOST } from "@/app/api/playground/keeper-cosign/route";
 import { requestKeeperV1Signature, type KeeperCosignRequestBase } from "@/lib/launch-single-tx/deps";
 import type { LaunchSigStatus, SingleTxLaunchDeps } from "@/lib/launch-single-tx/run";
 import { decodeV1Message } from "@/lib/launch-single-tx/v1-decode";
+import { launchBundleViolations, neutralFromV1, type NeutralIx } from "@/lib/launch-single-tx/shape";
 import { splitV1Wire, type RawTxSigner } from "@/lib/tx-v1";
 import { simulateV1ViaProxy } from "@/lib/tx-v1/rpc";
 import { resetCosignV1RateLimits } from "@/lib/launch-single-tx/cosign-rate-limit";
@@ -98,6 +99,7 @@ import { buildV17InitMarketArgs, slabSizeFor } from "@/lib/create-market-args";
 import { deriveLaunchMarketParams } from "@/lib/market-params";
 import { defaultGrowthLaunch, type GrowthLaunch } from "@/lib/v21/growth-launch";
 import { planLaunchV22, toLaunchParams } from "@/lib/v22/launch-plan";
+import { encodeConfigurePermissionlessResolveV22 } from "@/lib/v22/launch-wire";
 import { canonicalVaultLpMatcher, wizardP3Params } from "@/lib/limits/p3-wizard";
 import { encodeInitMarket } from "@percolatorct/sdk";
 import { encodeInitMarketV22, encodeInitMarketTrailerV22, LAYOUT_V22 } from "@/lib/v22/sdk";
@@ -284,6 +286,11 @@ function decodeLaunch() {
   expect(simulated.length).toBeGreaterThan(0);
   return decodeV1Message(splitV1Wire(simulated[simulated.length - 1]!).message);
 }
+/** The market (slab) of the launch: InitMarket's account [1]. */
+function slabOf(d: ReturnType<typeof decodeV1Message>): string {
+  const at = d.instructions.findIndex((x, i) => progOf(d, i).equals(PROGRAM) && x.data[0] === IX_TAG.InitMarket);
+  return d.accountKeys[d.instructions[at]!.accountIndexes[1]!]!.toBase58();
+}
 function initMarketData(d: ReturnType<typeof decodeV1Message>): Uint8Array {
   const at = d.instructions.findIndex((x, i) => progOf(d, i).equals(PROGRAM) && x.data[0] === IX_TAG.InitMarket);
   expect(at).toBeGreaterThanOrEqual(0);
@@ -351,6 +358,22 @@ describe("wizard -> v2.2 wrapper: InitMarket bytes (P3 on, V22 on: the intended 
     expect(k.indexOf("w96")).toBeGreaterThan(k.indexOf("w94"));
     expect(k.indexOf(`s${STAKE_IX.InitPool}`)).toBeGreaterThan(k.indexOf("w94"));
     expect(IX_TAG_P3.InitVaultLp).toBe(94);
+    // S1-7: the stale window is part of the launch: tag 38 right after InitMarket, signed by the creator (marketauth), 18,000 slots, before the stake pool rotates marketauth
+    const i38 = k.indexOf("w38");
+    expect(i38).toBeGreaterThan(k.indexOf("w0"));
+    expect(i38).toBeLessThan(k.indexOf("w74"));
+    expect(i38).toBeLessThan(k.indexOf(`s${STAKE_IX.InitPool}`));
+    expect(k.filter((x) => x === "w38")).toHaveLength(1);
+    const d38 = d.instructions[i38]!.data;
+    expect(d38.length).toBe(33);
+    expect(Buffer.from(d38).readBigUInt64LE(1)).toBe(2n); // fresh one-asset market: frontier = slots + 1
+    expect(Buffer.from(d38).readBigUInt64LE(9)).toBe(18_000n);
+    expect(Buffer.from(d38).readBigUInt64LE(17)).toBe(216_000n);
+    expect(Buffer.from(d38).readBigUInt64LE(25)).toBe(1n);
+    expect(hex(d38)).toBe(hex(encodeConfigurePermissionlessResolveV22({ assetGenerationFrontier: 2n, staleSlots: 18_000n, forceCloseDelaySlots: 216_000n, policySequence: 1n })));
+    const keys38 = d.instructions[i38]!.accountIndexes.map((x) => d.accountKeys[x]!.toBase58());
+    expect(keys38[0]).toBe(WALLET.publicKey.toBase58());
+    expect(keys38[1]).toBe(slabOf(d));
     record("p3-on-v22-launch", { initMarketHex: hex(data), instructionKinds: k, bytes: simulated[simulated.length - 1]!.length, slabBytes: slabSizeFor(params) });
   });
 
@@ -369,6 +392,65 @@ describe("wizard -> v2.2 wrapper: InitMarket bytes (P3 on, V22 on: the intended 
       { rGapBps: g.rGapBps, lLaunchX100: g.lLaunchX100, lotExp: params.v22!.lotExp, rent: params.v22!.rent!, band: params.v22!.band! },
     );
     expect(hex(data)).toBe(hex(expected));
+  });
+});
+
+describe("tag 38 (stale window) in the launch shape: negative controls", () => {
+  const launchKinds = async () => {
+    __setLimitsFlagsForTest({ p1: true, p2: true, p2FeeCharged: true, p3: true });
+    await launch(wizardParams({ p3: true, tokenPriceE6: TOKEN_PRICE_E6 }));
+    return decodeLaunch();
+  };
+  const violations = (d: ReturnType<typeof decodeV1Message>, mutate?: (ix: NeutralIx[]) => NeutralIx[]) => {
+    let ixs = neutralFromV1(d);
+    if (mutate) ixs = mutate(ixs);
+    return launchBundleViolations(ixs, {
+      programs: { wrapper: PROGRAM.toBase58(), stake: DEVNET_V22_PROGRAM_IDS.stake },
+      payer: WALLET.publicKey.toBase58(),
+      slab: slabOf(d),
+      keeper: S.keeper.publicKey.toBase58(),
+    });
+  };
+  const at38 = (d: ReturnType<typeof decodeV1Message>) => d.instructions.findIndex((x, i) => progOf(d, i).equals(PROGRAM) && x.data[0] === 38);
+
+  it("baseline is clean", async () => {
+    expect(violations(await launchKinds())).toEqual([]);
+  });
+  it("a v2.2 bundle WITHOUT tag 38 is refused", async () => {
+    const d = await launchKinds();
+    const i = at38(d);
+    const v = violations(d, (ixs) => ixs.filter((_, n) => n !== i));
+    expect(v.join("\n")).toMatch(/must set the stale window|launch shape/);
+  });
+  it("a different stale window, sequence, signer or market is refused", async () => {
+    const d = await launchKinds();
+    const i = at38(d);
+    const patch = (f: (x: NeutralIx) => NeutralIx) => violations(d, (ixs) => ixs.map((x, n) => (n === i ? f(x) : x)));
+    const withData = (off: number, val: bigint) => (x: NeutralIx): NeutralIx => {
+      const data = Uint8Array.from(x.data);
+      new DataView(data.buffer).setBigUint64(off, val, true);
+      return { ...x, data };
+    };
+    expect(patch(withData(9, 0n)).join()).toMatch(/stale window is 0/);
+    expect(patch(withData(9, 17_999n)).join()).toMatch(/stale window/);
+    expect(patch(withData(25, 2n)).join()).toMatch(/policy sequence/);
+    expect(patch((x) => ({ ...x, accounts: [{ ...x.accounts[0]!, key: POOL.toBase58() }, x.accounts[1]!] })).join()).toMatch(/signed by the creator/);
+    expect(patch((x) => ({ ...x, accounts: [x.accounts[0]!, { ...x.accounts[1]!, key: POOL.toBase58() }] })).join()).toMatch(/not for this market/);
+  });
+  it("tag 38 after the stake pool rotated marketauth is refused", async () => {
+    const d = await launchKinds();
+    const i = at38(d);
+    const v = violations(d, (ixs) => [...ixs.filter((_, n) => n !== i), ixs[i]!]);
+    expect(v.join("\n")).toMatch(/after stake.InitPool|launch shape/);
+  });
+  it("flag OFF: no tag 38 is added to a launch (the v2.1 shape is unchanged)", async () => {
+    __setDevnetV22ForTest(false);
+    __setLimitsFlagsForTest({ p1: true, p2: true, p2FeeCharged: true, p3: true });
+    const params = wizardParams({ p3: true, tokenPriceE6: TOKEN_PRICE_E6 });
+    delete (params as { v22?: unknown }).v22;
+    await launch(params);
+    const k = kinds(decodeLaunch());
+    expect(k).not.toContain("w38");
   });
 });
 
@@ -393,6 +475,11 @@ describe("wizard -> v2.2 wrapper: with LIMITS_P3 unset (the claim)", () => {
     const create = m1!.instructions.find((x) => x.programId.equals(SystemProgram.programId));
     expect(Buffer.from(create!.data).readBigUInt64LE(12)).toBe(BigInt(slabSizeFor(params)));
     expect(slabSizeFor(params)).toBe(4_059);
+    const t38 = m1!.instructions.filter((x) => x.programId.equals(PROGRAM) && x.data[0] === 38);
+    expect(t38).toHaveLength(1);
+    expect(Buffer.from(t38[0]!.data).readBigUInt64LE(9)).toBe(18_000n);
+    expect(t38[0]!.keys[0]!.isSigner).toBe(true);
+    expect(t38[0]!.keys[0]!.pubkey.equals(WALLET.publicKey)).toBe(true);
     record("p3-unset-m1", { initMarketHex: hex(im!.data), m1Instructions: m1!.instructions.length });
   });
 });

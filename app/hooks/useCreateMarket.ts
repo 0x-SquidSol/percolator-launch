@@ -124,7 +124,7 @@ import {
 } from "@/lib/create-market-v18";
 import { buildInitMatcherCtxArgs } from "@/lib/matcher-params";
 import { validateGrowthLaunch, type GrowthLaunch } from "@/lib/v21/growth-launch";
-import { buildLaunchBondIx, bondBundleTooLargeMessage, bondNeedsSingleTxMessage, encodeInitMarketDataWithV22, placeBondTranche } from "@/lib/v22/launch-wire";
+import { staleResolveLaunchIxs, buildLaunchBondIx, bondBundleTooLargeMessage, bondNeedsSingleTxMessage, encodeInitMarketDataWithV22, placeBondTranche } from "@/lib/v22/launch-wire";
 import type { V22LaunchParams } from "@/lib/v22/launch-plan";
 import { V21_COPY } from "@/lib/v21/copy";
 import { buildP3BindIxs, canonicalVaultLpMatcher, p3BindProgress, validateP3Wizard } from "@/lib/limits/p3-wizard";
@@ -2695,7 +2695,7 @@ export function useCreateMarket() {
                 connection, wallet,
                 abortSignal,
                 // UX WP-7: the keeper-registration memo rides in the InitMarket tx.
-                instructions: [createAtaIx, initMarketIx, ...(await seqKeeperMemo(wallet.publicKey, slabPk))],
+                instructions: [createAtaIx, initMarketIx, ...(await seqKeeperMemo(wallet.publicKey, slabPk)), ...staleResolveLaunchIxs(programId, wallet.publicKey, slabPk, Number(v17InitArgs.maxPortfolioAssets))],
                 computeUnits: 250_000,
               });
               if (isKeeperOracle && params.dexPoolAddress) saveProofTx(slabPk.toBase58(), sig);
@@ -2787,7 +2787,7 @@ export function useCreateMarket() {
               wallet,
               abortSignal,
               // UX WP-7: the keeper-registration memo rides in the InitMarket tx.
-              instructions: [createAccountIx, createAtaIx, initMarketIx, ...(await seqKeeperMemo(wallet.publicKey, slabPk))],
+              instructions: [createAccountIx, createAtaIx, initMarketIx, ...(await seqKeeperMemo(wallet.publicKey, slabPk)), ...staleResolveLaunchIxs(programId, wallet.publicKey, slabPk, Number(v17InitArgs.maxPortfolioAssets))],
               computeUnits: 300_000,
               signers: [slabKp],
               maxRetries: 0, // Don't auto-retry createAccount — use manual retry instead

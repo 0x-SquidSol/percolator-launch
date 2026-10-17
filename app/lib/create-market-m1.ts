@@ -9,7 +9,7 @@ import { PublicKey, SystemProgram, type TransactionInstruction } from "@solana/w
 import { createAssociatedTokenAccountInstruction } from "@solana/spl-token";
 import { ACCOUNTS_INIT_MARKET, WELL_KNOWN, buildAccountMetas, buildIx, encodeSetNftProgramId } from "@percolatorct/sdk";
 import type { GrowthLaunch } from "@/lib/v21/growth-launch";
-import { encodeInitMarketDataWithV22 } from "@/lib/v22/launch-wire";
+import { encodeInitMarketDataWithV22, staleResolveLaunchIxs } from "@/lib/v22/launch-wire";
 import type { V22LaunchParams } from "@/lib/v22/launch-plan";
 import type { InitMarketV17Args } from "@percolatorct/sdk";
 import { PERCOLATOR_NFT_PROGRAM_ID } from "@/lib/nft-program";
@@ -51,5 +51,7 @@ export function buildM1Instructions(p: M1Params): TransactionInstruction[] {
     }),
   ];
   if (p.memo) ixs.push(p.memo);
+  // v2.2: the stale window (tag 38) is part of every launch, signed by the creator while still marketauth (before the stake pool rotates it).
+  ixs.push(...staleResolveLaunchIxs(p.programId, p.wallet, p.slab, Number(p.initArgs.maxPortfolioAssets)));
   return ixs;
 }

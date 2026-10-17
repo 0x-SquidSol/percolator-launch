@@ -12,7 +12,7 @@
  * and the whole launch stays ONE transaction. There is no split: a bond launch with no single-transaction path is
  * refused with a calm message ({@link bondNeedsSingleTxMessage}) rather than sent in pieces.
  */
-import { PublicKey, SystemProgram, type TransactionInstruction } from "@solana/web3.js";
+import { PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
 import { deriveVaultLpExt } from "@/lib/v21/sdk";
 import { GROWTH_MAX_COLLATERAL_DECIMALS, growthCollateralDecimalsOk } from "@/lib/v22/sdk/records/growth-v19";
 import { encodeInitMarketData, type GrowthLaunch } from "@/lib/v21/growth-launch";
@@ -20,6 +20,7 @@ import type { InitMarketV17Args } from "@percolatorct/sdk";
 import { withBoundVaultLpTailP3 } from "./sdk/records/p3-vault-lp";
 import { buildInitBondTrancheIxV22, encodeInitMarketV22, IX_TAG_V22, type InitBondTrancheArgs } from "./sdk";
 import type { V22LaunchParams } from "./launch-plan";
+import { isDevnetV22Enabled } from "./flag";
 
 /** Tag numbers the reorder keys on (wrapper tags). */
 const TAG_CREATE_LP_VAULT = 74;
@@ -80,3 +81,49 @@ export const bondNeedsSingleTxMessage =
 
 /** What the wizard says when the bundle is too big to stay one transaction. */
 export const bondBundleTooLargeMessage = "A bond doesn't fit in the launch transaction for this market. Launch without the bond.";
+
+/** Tag 38 ConfigurePermissionlessResolve (wrapper `v16_program.rs` decode: `[38, frontier u64, stale_slots u64, force_close_delay u64, policy_sequence u64]`, 33 B). */
+export const TAG_CONFIGURE_PERMISSIONLESS_RESOLVE = 38;
+/** The stale window every v2.2 market gets (the seed kit's markets.v22.json): ~72 min at 400 ms; InitMarket writes 0 = a stale mark stays tradable forever. */
+export const PERMISSIONLESS_RESOLVE_STALE_SLOTS_V22 = 18_000n;
+/** Seed kit value (markets.v22.json forceCloseDelaySlots): about a day. */
+export const FORCE_CLOSE_DELAY_SLOTS_V22 = 216_000n;
+
+export function encodeConfigurePermissionlessResolveV22(a: { assetGenerationFrontier: bigint; staleSlots: bigint; forceCloseDelaySlots: bigint; policySequence: bigint }): Uint8Array {
+  const out = new Uint8Array(33);
+  const dv = new DataView(out.buffer);
+  out[0] = TAG_CONFIGURE_PERMISSIONLESS_RESOLVE;
+  dv.setBigUint64(1, a.assetGenerationFrontier, true);
+  dv.setBigUint64(9, a.staleSlots, true);
+  dv.setBigUint64(17, a.forceCloseDelaySlots, true);
+  dv.setBigUint64(25, a.policySequence, true);
+  return out;
+}
+
+/**
+ * Tag 38 for a FRESH market: marketauth (the creator, signer) and the market (writable). A fresh market's asset-generation frontier is
+ * `slots + 1` (initialAssetGenerationFrontier) and its permissionless-resolve control sequence is 0, so the policy sequence is 1.
+ * Must run before the stake InitPool rotates marketauth; the launch puts it right after InitMarket.
+ */
+export function buildConfigurePermissionlessResolveIxV22(programId: PublicKey, marketauth: PublicKey, market: PublicKey, assetSlots: number): TransactionInstruction {
+  return new TransactionInstruction({
+    programId,
+    keys: [
+      { pubkey: marketauth, isSigner: true, isWritable: false },
+      { pubkey: market, isSigner: false, isWritable: true },
+    ],
+    data: Buffer.from(
+      encodeConfigurePermissionlessResolveV22({
+        assetGenerationFrontier: BigInt(assetSlots) + 1n,
+        staleSlots: PERMISSIONLESS_RESOLVE_STALE_SLOTS_V22,
+        forceCloseDelaySlots: FORCE_CLOSE_DELAY_SLOTS_V22,
+        policySequence: 1n,
+      }),
+    ),
+  });
+}
+
+/** The v2.2 launch ALWAYS sets the stale window (S1-7: a market left at 0 never becomes resolvable by anyone). Empty with the flag off. */
+export function staleResolveLaunchIxs(programId: PublicKey, marketauth: PublicKey, market: PublicKey, assetSlots: number): TransactionInstruction[] {
+  return isDevnetV22Enabled() ? [buildConfigurePermissionlessResolveIxV22(programId, marketauth, market, assetSlots)] : [];
+}
