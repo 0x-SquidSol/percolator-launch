@@ -1710,8 +1710,8 @@ export async function POST(req: NextRequest) {
 
   // GH#1769: Ensure devnet_mints has a row for this market's devnet mint address.
   // The devnet-airdrop endpoint looks up devnet_mints.devnet_mint = mintAddress to
-  // find the mainnet_ca for price lookup. If the wizard's devnet-mirror-mint step
-  // ran, this row already exists and the upsert is a no-op. If the market was created
+  // find the mainnet_ca for price lookup. If a row already exists the upsert is a
+  // no-op. If the market was created
   // via the mobile API or a direct /api/markets POST (without going through the wizard),
   // this ensures the airdrop endpoint can still resolve the token metadata.
   // Only write if we have a valid mint_address and mainnet_ca (to avoid polluting the

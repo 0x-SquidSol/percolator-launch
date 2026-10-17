@@ -22,7 +22,7 @@
  * All six verified surviving by running them. A helper test plus a simulation of
  * the route is not a test of the route.
  *
- * Mocking follows the house pattern in devnet-register-mint-abuse-guards.test.ts:
+ * Mocking follows the house pattern in devnet-airdrop tests:
  * `vi.doMock` inside a loader with `vi.resetModules()`, because NETWORK and
  * DEVNET_ALLOWED_MINTS are module-level consts read at import time.
  */

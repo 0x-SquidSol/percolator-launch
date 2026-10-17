@@ -98,7 +98,7 @@ const EMERGENCY_DEVNET_MINTS: Set<string> = new Set([
   // availability — this is the one mint every new market's vault seed / LP deposit /
   // insurance top-up needs pre-funded.
   "DJ54k4wH92NTtNP8RuHAwG8si1bevXEknzctDdqYN8eC", // Sim-USDC (testUsdcMint)
-  // Mirror mints — mainnet tokens mirrored to devnet via /api/devnet-mirror-mint
+  // Mirror mints — mainnet tokens mirrored to devnet (the mirror-mint route is removed, #3473)
   // Last synced: 2026-03-28 from devnet_mints table
   "DJKjmSbWjhx925kuk1fS1BENCBnqXCfwUJjb9EKwSEnV", // Percolator (PERC)
   "J5XdjMKTboG6VE9VJjMDknqsZ7QfSxbS8PUzqt2rN48c", // USDC
@@ -225,7 +225,7 @@ export async function POST(req: NextRequest) {
       if (DEVNET_ALLOWED_MINTS.has(mintAddress)) {
         finallyPermitted = true;
       } else {
-        // Not in static list — check dynamic mirror-mint table as fallback
+        // Not in static list — check the devnet_mints table as fallback
         try {
           const { getServiceClient: _gsc } = await import("@/lib/supabase");
           const supabase = _gsc();
