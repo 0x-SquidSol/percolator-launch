@@ -11,6 +11,8 @@ import { STALE_SETTLE_COPY } from "@/lib/v22/stale-resolve";
 
 export interface StaleSettleNoticeViewProps {
   minutes: number;
+  /** "settled" = the market is already resolved: close out (no tag 39). */
+  kind?: "stale" | "settled";
   hasFunds: boolean;
   busy: boolean;
   error: string | null;
@@ -22,14 +24,14 @@ export interface StaleSettleNoticeViewProps {
 }
 
 /** Pure renderer (tested without a provider). */
-export const StaleSettleNoticeView: FC<StaleSettleNoticeViewProps> = ({ minutes, hasFunds, busy, error, done, canAct, onSettle, compact }) => (
+export const StaleSettleNoticeView: FC<StaleSettleNoticeViewProps> = ({ minutes, kind = "stale", hasFunds, busy, error, done, canAct, onSettle, compact }) => (
   <div
     role="status"
     data-testid="stale-settle-notice"
     className={`${compact ? "mx-4 my-2" : "mb-3"} border border-[var(--warning)]/30 bg-[var(--warning)]/[0.04] px-3 py-2 text-[11px]`}
   >
     <p className="text-[var(--text)]" data-testid="stale-settle-line">
-      {hasFunds ? STALE_SETTLE_COPY.line(minutes) : STALE_SETTLE_COPY.lineNoFunds(minutes)}
+      {kind === "settled" ? STALE_SETTLE_COPY.settledLine : hasFunds ? STALE_SETTLE_COPY.line(minutes) : STALE_SETTLE_COPY.lineNoFunds(minutes)}
     </p>
     {canAct && !done && (
       <button
@@ -39,7 +41,7 @@ export const StaleSettleNoticeView: FC<StaleSettleNoticeViewProps> = ({ minutes,
         disabled={busy}
         className="mt-2 border border-[var(--border)] px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.1em] text-[var(--text)] hover:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {busy ? STALE_SETTLE_COPY.busy : STALE_SETTLE_COPY.button}
+        {busy ? STALE_SETTLE_COPY.busy : kind === "settled" ? STALE_SETTLE_COPY.settledButton : STALE_SETTLE_COPY.button}
       </button>
     )}
     {done && <p className="mt-2 text-[var(--long)]" data-testid="stale-settle-done">{done}</p>}
@@ -54,6 +56,7 @@ export const StaleSettleNotice: FC<{ slabAddress: string; hasFunds: boolean; can
   return (
     <StaleSettleNoticeView
       minutes={s.view?.minutes ?? 0}
+      kind={s.view?.kind ?? "stale"}
       hasFunds={hasFunds}
       busy={s.busy}
       error={s.error}

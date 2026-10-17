@@ -14,7 +14,12 @@ const h = vi.hoisted(() => ({
   slot: null as bigint | null,
   sendTx: vi.fn(async (_p: unknown) => "sig"),
   simulateForGate: vi.fn(async (..._a: unknown[]) => ({ consumed: 1, err: null as unknown, logs: [] as string[], rpcFailed: false, simulated: [] as unknown[] })),
-  cleanup: vi.fn(async (_p: unknown) => ({ ok: true as const, closed: 1, signatures: ["s"] }) as { ok: true; closed: number; signatures: string[] } | { ok: false; reason: "progress-only" | "refused" | "others-remain"; signatures: string[] }),
+  /** The wallet's own portfolios, as the chain reports them (a Map of key -> state is derived from it). */
+  own: [] as { key: unknown; view: Record<string, unknown>; portfolioId: bigint; matcherSequence: bigint; positionEpoch: bigint }[],
+  loadOwn: vi.fn(async (..._a: unknown[]) => h.own),
+  signAll: vi.fn(async (_w: unknown, txs: unknown[]) => txs),
+  broadcast: vi.fn(async (_c: unknown, _tx: unknown) => "sig"),
+  simErr: null as unknown,
   refresh: vi.fn(),
   getAccountInfo: vi.fn(),
   getSlot: vi.fn(async () => 512_136_545),
@@ -36,12 +41,30 @@ vi.mock("@/hooks/useClusterSlot", () => ({ useClusterSlot: () => h.slot }));
 // PDA derivation under jsdom's Uint8Array realm cannot find a nonce; the vault authority is not what this test is about.
 vi.mock("@percolatorct/sdk", async (orig) => ({ ...(await orig<typeof import("@percolatorct/sdk")>()), deriveVaultAuthority: () => [MINT, 255] as [PublicKey, number] }));
 vi.mock("@solana/spl-token", async (orig) => ({ ...(await orig<typeof import("@solana/spl-token")>()), getAssociatedTokenAddressSync: () => WALLET }));
-vi.mock("@/lib/tx", () => ({ sendTx: h.sendTx, simulateForGate: h.simulateForGate }));
-vi.mock("@/lib/limits/own-portfolio-cleanup", () => ({ CLEANUP_CU: 600_000, cleanupOwnPortfoliosBeforeReclaim: h.cleanup }));
+vi.mock("@/lib/tx", () => ({
+  sendTx: h.sendTx,
+  simulateForGate: h.simulateForGate,
+  signAllCompat: h.signAll,
+  broadcastSignedTx: h.broadcast,
+  getFreshBlockhash: async () => "bh",
+  getPriorityFee: async () => 1000,
+  buildBatchTx: (p: { instructions: unknown[]; priorityFeeMicroLamports: number }) => ({ ixs: p.instructions, fee: p.priorityFeeMicroLamports }),
+}));
+vi.mock("@/lib/limits/own-portfolio-cleanup", () => ({
+  loadOwnPortfolios: h.loadOwn,
+  ownResolvedPayIxs: (_c: unknown, _p: unknown, tag: number) => [{ ix: "create" }, { ix: `pay${tag}` }],
+  ownerClosePortfolioIx: () => ({ ix: "close8" }),
+}));
+vi.mock("@/lib/self-heal", async (orig) => ({
+  ...(await orig<typeof import("@/lib/self-heal")>()),
+  computeBudgetPrefix: () => [],
+  connectionSelfHealDeps: () => ({ simulate: async () => ({ err: h.simErr }) }),
+}));
 
 import { StaleSettleNotice, StaleSettleNoticeView } from "@/components/trade/StaleSettleNotice";
 import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import { STALE_SETTLE_COPY, staleResolveStatusV22 } from "@/lib/v22/stale-resolve";
+import { resolveMarketGeometry } from "@/lib/v22/sdk/layout";
 
 const market = (): Uint8Array =>
   new Uint8Array(Buffer.from((JSON.parse(readFileSync(path.join(__dirname, "../../fixtures/v22-growth/chillhouse-t.market.json"), "utf8")) as { data: string }).data, "base64"));
@@ -56,7 +79,8 @@ beforeEach(() => {
   h.getAccountInfo.mockResolvedValue({ data: Buffer.from(market()) });
   h.getSlot.mockResolvedValue(Number(SNAP));
   h.simulateForGate.mockResolvedValue({ consumed: 1, err: null, logs: [], rpcFailed: false, simulated: [] });
-  h.cleanup.mockResolvedValue({ ok: true, closed: 1, signatures: ["s"] });
+  h.simErr = null;
+  h.own = [];
 });
 afterEach(() => {
   cleanup();
@@ -83,6 +107,30 @@ describe("StaleSettleNoticeView", () => {
     expect(screen.getByTestId("stale-settle-done")).toBeInTheDocument();
   });
 });
+
+const resolvedBytes = (): Uint8Array => {
+  const m = market();
+  const g = resolveMarketGeometry(m, { parser: "t", strictLength: false });
+  m[g.groupOff + g.layout.group.mode] = 1;
+  return m;
+};
+const LIVE = { owner: new Uint8Array(32), capital: 5_000_000n, pnl: 0n, reservedPnl: 0n, feeCredits: 0n, cancelDepositEscrow: 0n, activeBitmap: 1n, stale: false, bStale: false, rebalanceLock: false, liquidationLock: false, receiptPresent: false, receiptFinalized: false };
+const EMPTY = { ...LIVE, capital: 0n, activeBitmap: 0n };
+const PF = new PublicKey("7fU9teqRPQauqEykmQ9vszXvqu3GMcPXtCsM72LfEwoh");
+/** A chain where each CloseResolved takes one chunk; ClosePortfolio deletes the account. */
+function chain(chunks: number) {
+  let left = chunks;
+  h.own = [{ key: PF, view: LIVE, portfolioId: 1n, matcherSequence: 0n, positionEpoch: 0n }];
+  h.broadcast.mockImplementation(async (_c: unknown, tx: unknown) => {
+    const ixs = (tx as { ixs: { ix: string }[] }).ixs.map((x) => x.ix);
+    if (ixs.includes("pay30")) {
+      left -= 1;
+      if (left <= 0 && h.own[0]) h.own = [{ ...h.own[0], view: EMPTY }];
+    } else if (ixs.includes("close8")) h.own = [];
+    return "sig";
+  });
+}
+const sentKinds = () => h.broadcast.mock.calls.map((c) => ((c[1] as { ixs: { ix: string }[] }).ixs.map((x) => x.ix).find((x) => x !== "create") ?? ""));
 
 describe("StaleSettleNotice (hook wired)", () => {
   it("shows nothing on an unmatured market, an unknown slot, a flag-off build, or non-market bytes", () => {
@@ -111,10 +159,12 @@ describe("StaleSettleNotice (hook wired)", () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(h.sendTx).not.toHaveBeenCalled();
     expect(h.simulateForGate).not.toHaveBeenCalled();
-    expect(h.cleanup).not.toHaveBeenCalled();
+    expect(h.signAll).not.toHaveBeenCalled();
+    expect(h.broadcast).not.toHaveBeenCalled();
   });
 
-  it("click: simulate first, then tag 39 (9 bytes, the market), then the resolved exit with this wallet's accounts", async () => {
+  it("click: simulate first, then tag 39 (9 bytes, the market), then the trader exit in ONE signAll approval", async () => {
+    chain(3);
     render(<StaleSettleNotice slabAddress={SLAB} hasFunds canAct />);
     await click();
     await waitFor(() => expect(screen.getByTestId("stale-settle-done")).toHaveTextContent(STALE_SETTLE_COPY.settled));
@@ -127,11 +177,12 @@ describe("StaleSettleNotice (hook wired)", () => {
     expect(sent.instructions[0]!.programId.equals(WRAPPER)).toBe(true);
     expect(sent.instructions[0]!.keys[0]!.pubkey.toBase58()).toBe(SLAB);
     expect(h.simulateForGate.mock.invocationCallOrder[0]).toBeLessThan(h.sendTx.mock.invocationCallOrder[0]!);
-    expect(h.sendTx.mock.invocationCallOrder[0]).toBeLessThan(h.cleanup.mock.invocationCallOrder[0]!);
-    const c = h.cleanup.mock.calls[0]![0] as { owner: PublicKey; market: PublicKey; collateralMint: PublicKey };
-    expect(c.owner.equals(WALLET)).toBe(true);
-    expect(c.market.toBase58()).toBe(SLAB);
-    expect(c.collateralMint.equals(MINT)).toBe(true);
+    expect(h.sendTx.mock.invocationCallOrder[0]).toBeLessThan(h.signAll.mock.invocationCallOrder[0]!);
+    expect(h.signAll).toHaveBeenCalledTimes(1); // one approval for the whole exit
+    // exactly 3 CloseResolved + the ClosePortfolio were broadcast; the other pre-signed copies were skipped
+    expect(sentKinds().filter((k) => k === "pay30")).toHaveLength(3);
+    expect(sentKinds().filter((k) => k === "close8")).toHaveLength(1);
+    expect(sentKinds().length).toBe(4);
     expect(h.refresh).toHaveBeenCalled();
   });
 
@@ -140,7 +191,8 @@ describe("StaleSettleNotice (hook wired)", () => {
     await click();
     await waitFor(() => expect(screen.getByTestId("stale-settle-done")).toHaveTextContent(STALE_SETTLE_COPY.settledNoFunds));
     expect(h.sendTx).toHaveBeenCalledTimes(1);
-    expect(h.cleanup).not.toHaveBeenCalled();
+    expect(h.loadOwn).not.toHaveBeenCalled();
+    expect(h.signAll).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -152,16 +204,17 @@ describe("StaleSettleNotice (hook wired)", () => {
     await click();
     await waitFor(() => expect(screen.getByTestId("stale-settle-error")).toHaveTextContent(copy));
     expect(h.sendTx).not.toHaveBeenCalled();
-    expect(h.cleanup).not.toHaveBeenCalled();
+    expect(h.signAll).not.toHaveBeenCalled();
   });
 
-  it("refusal 21 (someone settled it first): skips the send and goes on to the exit", async () => {
+  it("refusal 21 (someone settled it first): skips tag 39 and goes on to the exit", async () => {
+    chain(1);
     h.simulateForGate.mockResolvedValue({ consumed: null, err: { InstructionError: [0, { Custom: 21 }] }, logs: [], rpcFailed: false, simulated: [] });
     render(<StaleSettleNotice slabAddress={SLAB} hasFunds canAct />);
     await click();
     await waitFor(() => expect(screen.getByTestId("stale-settle-done")).toBeInTheDocument());
     expect(h.sendTx).not.toHaveBeenCalled();
-    expect(h.cleanup).toHaveBeenCalledTimes(1);
+    expect(h.signAll).toHaveBeenCalledTimes(1);
   });
 
   it("the fresh read shows the market is no longer matured (a price landed): 27 copy, no simulation, nothing sent", async () => {
@@ -173,8 +226,8 @@ describe("StaleSettleNotice (hook wired)", () => {
     expect(h.sendTx).not.toHaveBeenCalled();
   });
 
-  it("settled but the payout is not ready (progress-only): calm line, no error", async () => {
-    h.cleanup.mockResolvedValue({ ok: false, reason: "progress-only", signatures: [] });
+  it("settled but the portfolio is not empty after the run: calm 'ready shortly' line, no error", async () => {
+    chain(30); // more chunks than the pre-signed copies can take
     render(<StaleSettleNotice slabAddress={SLAB} hasFunds canAct />);
     await click();
     await waitFor(() => expect(screen.getByTestId("stale-settle-done")).toHaveTextContent(STALE_SETTLE_COPY.settledPayoutSoon));
@@ -186,7 +239,7 @@ describe("StaleSettleNotice (hook wired)", () => {
     render(<StaleSettleNotice slabAddress={SLAB} hasFunds canAct />);
     await click();
     await waitFor(() => expect(screen.getByTestId("stale-settle-error")).toHaveTextContent(STALE_SETTLE_COPY.cancelled));
-    expect(h.cleanup).not.toHaveBeenCalled();
+    expect(h.signAll).not.toHaveBeenCalled();
   });
 
   it("a double click sends once", async () => {
@@ -199,5 +252,53 @@ describe("StaleSettleNotice (hook wired)", () => {
     await act(async () => release("sig"));
     await waitFor(() => expect(screen.getByTestId("stale-settle-done")).toBeInTheDocument());
     expect(h.sendTx).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("RESOLVED market (AUD-FC-A2): the trader's own exit replaces the failing Close", () => {
+  beforeEach(() => {
+    h.raw = resolvedBytes();
+    h.getAccountInfo.mockResolvedValue({ data: Buffer.from(resolvedBytes()) });
+  });
+
+  it("with a position: the settled line and 'Close and withdraw'; without funds there: nothing", () => {
+    const a = render(<StaleSettleNotice slabAddress={SLAB} hasFunds canAct />);
+    expect(screen.getByTestId("stale-settle-line")).toHaveTextContent(STALE_SETTLE_COPY.settledLine);
+    expect(screen.getByTestId("stale-settle-button")).toHaveTextContent("Close and withdraw");
+    a.unmount();
+    const b = render(<StaleSettleNotice slabAddress={SLAB} hasFunds={false} canAct />);
+    expect(b.container).toBeEmptyDOMElement();
+  });
+
+  it("click: NO tag 39 (the market is already resolved), CloseResolved copies pre-signed in one approval, 30 x chunks then 8", async () => {
+    chain(5);
+    render(<StaleSettleNotice slabAddress={SLAB} hasFunds canAct />);
+    await click();
+    await waitFor(() => expect(screen.getByTestId("stale-settle-done")).toHaveTextContent(STALE_SETTLE_COPY.settled));
+    expect(h.sendTx).not.toHaveBeenCalled();
+    expect(h.simulateForGate).not.toHaveBeenCalled();
+    expect(h.signAll).toHaveBeenCalledTimes(1);
+    const txs = h.signAll.mock.calls[0]![1] as { fee: number }[];
+    expect(new Set(txs.map((t) => t.fee)).size).toBe(txs.length); // distinct fees = distinct signatures
+    expect(sentKinds().filter((k) => k === "pay30")).toHaveLength(5);
+    expect(sentKinds().filter((k) => k === "close8")).toHaveLength(1);
+  });
+
+  it("a first CloseResolved the simulation refuses is dropped BEFORE the wallet opens", async () => {
+    chain(3);
+    h.simErr = { InstructionError: [2, { Custom: 14 }] };
+    render(<StaleSettleNotice slabAddress={SLAB} hasFunds canAct />);
+    await click();
+    await waitFor(() => expect(screen.getByTestId("stale-settle-done")).toHaveTextContent(STALE_SETTLE_COPY.settledPayoutSoon));
+    expect(h.signAll).not.toHaveBeenCalled();
+    expect(h.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("the wallet has nothing left on the market: 'Settled', nothing signed", async () => {
+    h.own = [];
+    render(<StaleSettleNotice slabAddress={SLAB} hasFunds canAct />);
+    await click();
+    await waitFor(() => expect(screen.getByTestId("stale-settle-done")).toHaveTextContent(STALE_SETTLE_COPY.settled));
+    expect(h.signAll).not.toHaveBeenCalled();
   });
 });

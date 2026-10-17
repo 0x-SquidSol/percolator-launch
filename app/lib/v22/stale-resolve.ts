@@ -87,6 +87,17 @@ export function staleResolveStatusV22(marketData: Uint8Array | null | undefined,
   }
 }
 
+/** The market's mode byte is Resolved (terminal). False for anything that is not a v2.2 market. Needs no cluster slot. */
+export function marketResolvedV22(marketData: Uint8Array | null | undefined): boolean {
+  if (!marketData) return false;
+  try {
+    const g = resolveMarketGeometry(marketData, { parser: "marketResolvedV22", strictLength: false });
+    return marketData[g.groupOff + g.layout.group.mode] === 1;
+  } catch {
+    return false;
+  }
+}
+
 /** The notice shows only on a Live market that has matured (never on an unmatured, disabled or already-resolved one). */
 export function showStaleSettle(status: StaleResolveStatusV22 | null): status is StaleResolveStatusV22 {
   return status !== null && status.canResolve;
@@ -103,6 +114,9 @@ export const STALE_SETTLE_COPY = {
   button: "Settle market",
   busy: "Settling…",
   settled: "Settled. Your funds are back in your wallet.",
+  /** A market that is already settled: the normal Close is replaced by this one. */
+  settledLine: "This market is settled. Close your position to get your funds back.",
+  settledButton: "Close and withdraw",
   settledNoFunds: "Settled.",
   /** Settled, but the payout needs a moment (a winner is paid after the loser settles). */
   settledPayoutSoon: "The market is settled. Your payout will be ready shortly; try again in a moment.",
