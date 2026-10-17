@@ -19,8 +19,8 @@
  */
 import type { TierConfig } from "@/lib/v22/sdk/records/growth-v19";
 import { PublicKey, SystemProgram, type TransactionInstruction } from "@solana/web3.js";
-import { DEVNET_V22_PROGRAM_IDS } from "@/lib/program-ids";
-import { BPS, CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET, VAULT_LP_MATCHER_CTX_LEN, VAULT_LP_MAX_JUNIOR_FLOOR_BPS, VAULT_LP_MIN_JUNIOR_FLOOR_BPS } from "./constants";
+import { pairedProgramSet, resolveDevnetProgramIds } from "@/lib/program-ids";
+import { BPS, VAULT_LP_MATCHER_CTX_LEN, VAULT_LP_MAX_JUNIOR_FLOOR_BPS, VAULT_LP_MIN_JUNIOR_FLOOR_BPS } from "./constants";
 import { buildDepositJuniorTrancheIx, buildInitVaultLpIx, type VaultLpMarket } from "./p3-ix";
 
 /** Default floor: 20% of the senior claim (the seed's P3 test markets use 1000-2000). */
@@ -43,18 +43,18 @@ export function validateP3Wizard(p: { juniorFloorBps: number; juniorAtoms: bigin
 }
 
 /**
- * Tag 94 accepts only the canonical matcher of the deployed wrapper (devnet v2: EDKKgRaV, 07a1d0eb; the v2.2 fresh wrapper 6kpg2wi7
- * pins AsHvEJ8z, `constants::CANONICAL_VAULT_LP_MATCHER_PROGRAM` of aca02ba6). The app's configured matcher must be that program,
- * else the bind would fail VaultLpMatcherNotApproved (81): refuse early. Both sets are accepted: this check used to know only the
- * v2 matcher, so every P3 wizard launch on 6kpg2wi7 died here ("not the canonical vault-LP matcher") and fell back.
+ * Tag 94 accepts only the canonical matcher of the deployed wrapper (`constants::CANONICAL_VAULT_LP_MATCHER_PROGRAM`): devnet v2 EDKKgRaV
+ * (07a1d0eb), the v2.2 fresh wrapper 6kpg2wi7 AsHvEJ8z (aca02ba6). The expected matcher is derived from the ACTIVE wrapper's program set
+ * (lib/program-ids.ts), never a literal here: the configured matcher must be the one that set pins, else the bind would fail
+ * VaultLpMatcherNotApproved (81), so refuse early. (This check used to know only the v2 matcher, so every P3 launch on 6kpg2wi7 built
+ * five steps and died at the sixth.)
  */
 export function canonicalVaultLpMatcher(configuredMatcher: string): PublicKey {
-  // Either deployment's canonical matcher passes; the configured wrapper's paired set decides which one is configured
-  // (lib/program-ids.ts), and the wrapper itself is the authority (tag 94 answers 81 for any other).
-  if (configuredMatcher !== CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET && configuredMatcher !== DEVNET_V22_PROGRAM_IDS.matcher) {
+  const canonical = pairedProgramSet(resolveDevnetProgramIds().wrapper).matcher;
+  if (configuredMatcher !== canonical) {
     throw new Error(`The configured matcher ${configuredMatcher} is not the protocol's canonical vault-LP matcher; the vault LP cannot be bound on this deployment.`);
   }
-  return new PublicKey(configuredMatcher);
+  return new PublicKey(canonical);
 }
 
 /**

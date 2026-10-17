@@ -117,3 +117,11 @@ export function resolveDevnetProgramIds(): ProgramIdSet {
       paired.stake,
   };
 }
+
+/**
+ * The program set the given wrapper was deployed with (matcher / nft / stake it pins). An unknown wrapper (a local fork) keeps the v2 set.
+ * The one place the app learns "which matcher belongs to this wrapper", so no caller carries its own matcher literal.
+ */
+export function pairedProgramSet(wrapper: string): Readonly<ProgramIdSet> {
+  return PAIRED_SETS[wrapper] ?? DEVNET_PROGRAM_IDS;
+}

@@ -2234,6 +2234,14 @@ export function useCreateMarket() {
       // anything is broadcast — a throw later would leave a half-built market (M4p sits after
       // M4a) and the batched path would fall back to the sequential one first.
       if (params.p3) {
+        // The vault-LP bind (the LAST of the sequential steps) needs the wrapper's canonical matcher. Check it now: a misconfigured
+        // matcher used to surface only at step 6, after five steps had landed and left a half-built market.
+        try {
+          canonicalVaultLpMatcher(getConfig().matcherProgramId);
+        } catch (e) {
+          setState((s) => ({ ...s, error: errorText(e) }));
+          return;
+        }
         const issue = validateP3Wizard({
           juniorFloorBps: params.p3.juniorFloorBps,
           juniorAtoms: params.p3.juniorAtoms,

@@ -19,6 +19,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { ed25519 } from "@noble/curves/ed25519";
 import { Connection, Keypair, PublicKey, SystemProgram, type Transaction } from "@solana/web3.js";
 import { IX_TAG, IX_TAG_P3, STAKE_IX, type InitMarketV17Args } from "@percolatorct/sdk";
@@ -83,7 +84,7 @@ vi.mock("@/lib/server-rpc", async () => {
 
 import { attemptFreshBatchedLaunch, type CreateMarketParams, type CreateMarketState } from "@/hooks/useCreateMarket";
 import { getConfig } from "@/lib/config";
-import { DEVNET_PROGRAM_IDS, DEVNET_V22_PROGRAM_IDS } from "@/lib/program-ids";
+import { DEVNET_PROGRAM_IDS, DEVNET_V22_PROGRAM_IDS, pairedProgramSet } from "@/lib/program-ids";
 import { POST as cosignPOST } from "@/app/api/playground/keeper-cosign/route";
 import { requestKeeperV1Signature, type KeeperCosignRequestBase } from "@/lib/launch-single-tx/deps";
 import type { LaunchSigStatus, SingleTxLaunchDeps } from "@/lib/launch-single-tx/run";
@@ -318,14 +319,29 @@ describe("wizard -> v2.2 wrapper: the program set and the slab", () => {
   });
 });
 
-describe("wizard -> v2.2 wrapper: the vault-LP matcher pre-check", () => {
-  it("accepts the v2.2 wrapper's canonical matcher (AsHvEJ8z) as well as the v2 one, and refuses any other", () => {
+describe("wizard -> v2.2 wrapper: the vault-LP matcher pre-check (AUD-FC-A1)", () => {
+  it("the expected matcher comes from the ACTIVE wrapper's program set (no literal): on 6kpg2wi7 it is AsHvEJ8z, the v2 matcher is refused", () => {
+    expect(pairedProgramSet(getConfig().programId).matcher).toBe(DEVNET_V22_PROGRAM_IDS.matcher);
     expect(canonicalVaultLpMatcher(DEVNET_V22_PROGRAM_IDS.matcher).toBase58()).toBe("AsHvEJ8zNctKmdeS57H5E4w6nkTLi3bPVpd6ZCLc2ayN");
-    expect(canonicalVaultLpMatcher(DEVNET_PROGRAM_IDS.matcher).toBase58()).toBe(DEVNET_PROGRAM_IDS.matcher);
+    expect(() => canonicalVaultLpMatcher(DEVNET_PROGRAM_IDS.matcher)).toThrow(/canonical vault-LP matcher/);
     expect(() => canonicalVaultLpMatcher(POOL.toBase58())).toThrow(/canonical vault-LP matcher/);
   });
-  it("the configured matcher of the v2.2 set is the one the wizard passes (no fallback at the bind)", () => {
+  it("the configured matcher of the v2.2 set is the one the wizard passes, so the bind (step 6 of the sequential path) no longer dies", () => {
     expect(getConfig().matcherProgramId).toBe(DEVNET_V22_PROGRAM_IDS.matcher);
+    expect(() => canonicalVaultLpMatcher(getConfig().matcherProgramId)).not.toThrow();
+  });
+  it("an unknown wrapper keeps the v2 set; the v2 wrapper still expects EDKKgRaV", () => {
+    expect(pairedProgramSet(DEVNET_PROGRAM_IDS.wrapper).matcher).toBe(DEVNET_PROGRAM_IDS.matcher);
+    expect(pairedProgramSet("11111111111111111111111111111111").matcher).toBe(DEVNET_PROGRAM_IDS.matcher);
+  });
+  it("create() checks the matcher BEFORE the first signature, so a misconfigured deployment never leaves a half-built market", () => {
+    const src = readFileSync(path.join(__dirname, "../../hooks/useCreateMarket.ts"), "utf8");
+    const entry = src.indexOf("async (params: CreateMarketParams, retryFromStep?: number)");
+    const check = src.indexOf("canonicalVaultLpMatcher(getConfig().matcherProgramId)", entry);
+    const firstSend = Math.min(...["sendTx(", "attemptFreshBatchedLaunch(", "signAllTransactions("].map((k) => src.indexOf(k, entry)).filter((i) => i > 0));
+    expect(entry).toBeGreaterThan(0);
+    expect(check).toBeGreaterThan(entry);
+    expect(check).toBeLessThan(firstSend);
   });
 });
 
