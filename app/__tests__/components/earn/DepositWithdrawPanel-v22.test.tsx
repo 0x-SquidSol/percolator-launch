@@ -60,6 +60,7 @@ describe("withdraw tab", () => {
     expect(useEarnExitV22.mock.calls.at(-1)![0]).toMatchObject({ mode: "pair", sourceDomain: 0 });
   });
   it("CONTROL flag off (params present): the existing button, no v2.2 hook", () => {
+    __setDevnetV22ForTest(false); // explicit off: independent of NEXT_PUBLIC_DEVNET_V22 in the environment
     render(<DepositWithdrawPanel {...base} exitV22={exitV22} />);
     openWithdraw();
     expect(screen.getByTestId("earn-withdraw-request")).toBeTruthy();
@@ -90,6 +91,7 @@ describe("pending redemption", () => {
     expect(screen.queryByTestId("earn-pending-claim-v22")).toBeNull();
   });
   it("CONTROL flag off: the legacy 'Finish withdrawal' claim", () => {
+    __setDevnetV22ForTest(false); // explicit off: independent of NEXT_PUBLIC_DEVNET_V22 in the environment
     render(<DepositWithdrawPanel {...pending} exitV22={exitV22} />);
     expect(screen.getByTestId("earn-withdraw-execute")).toBeTruthy();
     expect(screen.queryByTestId("earn-pending-claim-v22")).toBeNull();

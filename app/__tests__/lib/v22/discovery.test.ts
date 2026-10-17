@@ -53,6 +53,7 @@ describe("flag on: VERSION 18 and 19 are found", () => {
 });
 
 describe("flag off: unchanged (the installed behaviour, VERSION 18 only)", () => {
+  beforeEach(() => __setDevnetV22ForTest(false)); // explicit off: independent of NEXT_PUBLIC_DEVNET_V22 in the environment
   it("discoverMarkets does not find the v2.2 market", async () => {
     const found = await discoverMarkets(connection(), PROG, { sequential: true, maxTierQueries: 0 });
     expect(slabs(found)).toEqual([K21.toBase58()]);
@@ -70,6 +71,7 @@ describe("flag off: unchanged (the installed behaviour, VERSION 18 only)", () =>
 describe("closed-market tombstone stamps the VERSION of the program", () => {
   const tomb = (v: number) => stampHeader(new Uint8Array(16), 8, v);
   it("VERSION 19 counts as a tombstone only with the flag on; 18 always", () => {
+    __setDevnetV22ForTest(false); // explicit off: independent of NEXT_PUBLIC_DEVNET_V22 in the environment
     expect(isClosedMarketTombstone(tomb(18))).toBe(true);
     expect(isClosedMarketTombstone(tomb(19))).toBe(false);
     __setDevnetV22ForTest(true);
