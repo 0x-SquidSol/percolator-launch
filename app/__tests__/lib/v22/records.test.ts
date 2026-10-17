@@ -5,7 +5,7 @@ import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import { ACCOUNT_KIND, LAYOUT_V21, LAYOUT_V22, UnknownLayoutError, WRAPPER_ACCOUNT_MAGIC, type LayoutTable } from "@/lib/v22/sdk";
 import { decodeAssetGrowthV19, readAssetPricesP3, decodeAdlEpisode } from "@/lib/v22/records";
 import { readBankruptcyHlockActive } from "@/lib/v21/growth-market";
-import { decodeMarketHealth } from "@/lib/market-health";
+import { decodeMarketHealth, MARKET_HEALTH_SLICE_LEN } from "@/lib/market-health";
 
 const EFF = 123_456_789n;
 const RAW = 987_654_321n;
@@ -86,7 +86,10 @@ describe("market-health geometry", () => {
   it("reads the mode / h-lock bytes of each VERSION from the table", () => {
     __setDevnetV22ForTest(true);
     for (const L of [LAYOUT_V21, LAYOUT_V22]) {
-      const d = market(L);
+      const raw = market(L);
+      // The health slice is max(v2.1, v2.2) long with the flag on, so a 3,675 B v2.1 buffer is padded to the slice (an RPC dataSlice would be).
+      const d = new Uint8Array(Math.max(raw.length, MARKET_HEALTH_SLICE_LEN));
+      d.set(raw);
       d[L.marketGroupOff + L.group.mode] = 1; // Resolved
       const h = decodeMarketHealth(d, 0n, null);
       expect(h.mode).toBe(1);

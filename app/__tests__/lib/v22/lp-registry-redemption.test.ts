@@ -2,7 +2,7 @@
  * Review F5: the installed SDK 8.0.0 parseLpVaultRegistry / parseLpRedemption assert VERSION 18 and throw on a v2.2
  * (VERSION 19) account. The adapter in lib/v22/records.ts is VERSION-keyed with the flag on and the installed function with it off.
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Keypair } from "@solana/web3.js";
 import { parseLpRedemption as installedRedemption, parseLpVaultRegistry as installedRegistry } from "@percolatorct/sdk";
 import { __setDevnetV22ForTest } from "@/lib/v22/flag";
@@ -57,6 +57,7 @@ describe("flag on: VERSION 19 decodes", () => {
 });
 
 describe("flag off: parity with the installed SDK", () => {
+  beforeEach(() => __setDevnetV22ForTest(false)); // explicit off: independent of NEXT_PUBLIC_DEVNET_V22 in the environment
   it("same results on VERSION 18; VERSION 19 still throws exactly as before", () => {
     expect(parseLpVaultRegistry(registry(18))).toEqual(installedRegistry(registry(18)));
     expect(parseLpRedemption(redemption(18))).toEqual(installedRedemption(redemption(18)));

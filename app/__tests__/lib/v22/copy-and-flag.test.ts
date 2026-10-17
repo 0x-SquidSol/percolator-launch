@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished } from "vitest";
 import { STAKE_CONSENT_TEXT_V2, V22_COPY, consentDisplay } from "@/lib/v22/copy";
 import { __setDevnetV22ForTest, isDevnetV22Enabled } from "@/lib/v22/flag";
 import { CONSENT_VERSION_FIRST_LOSS_V5 } from "@/lib/v22/sdk";
@@ -61,6 +61,11 @@ describe("consent display layer", () => {
 describe("flag", () => {
   afterEach(() => __setDevnetV22ForTest(null));
   it("is OFF by default and only '1' / 'true' turn it on", () => {
+    // Env-sensitive by definition: the suite may be run with NEXT_PUBLIC_DEVNET_V22=1 (flag-on delta), so
+    // the "unset" default is asserted with the variable removed for this test only.
+    const prev = process.env.NEXT_PUBLIC_DEVNET_V22;
+    delete process.env.NEXT_PUBLIC_DEVNET_V22;
+    onTestFinished(() => { if (prev === undefined) delete process.env.NEXT_PUBLIC_DEVNET_V22; else process.env.NEXT_PUBLIC_DEVNET_V22 = prev; });
     expect(isDevnetV22Enabled()).toBe(false);
     __setDevnetV22ForTest(true);
     expect(isDevnetV22Enabled()).toBe(true);

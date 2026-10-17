@@ -1,6 +1,39 @@
 import { cleanup } from '@testing-library/react';
-import { afterEach, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, expect, vi } from 'vitest';
 import '@testing-library/jest-dom';
+import { __setDevnetV22ForTest } from '@/lib/v22/flag';
+import { __setDevnetV21ForTest } from '@/lib/v21/flag';
+import { V21_PINNED_FILES, V21_PINNED_TESTS } from './v21-contract-pins';
+
+// Flag-on runs (NEXT_PUBLIC_DEVNET_V22=1, scripts/flag-on-delta.mjs): v2.1 contract tests that cannot hold under v2.2 run with the flag
+// pinned OFF (see v21-contract-pins.ts). Everything else runs flag-on. Flag off this block does nothing.
+{
+  const envOn = process.env.NEXT_PUBLIC_DEVNET_V22 === '1' || process.env.NEXT_PUBLIC_DEVNET_V22 === 'true';
+  const testPath = (expect.getState().testPath ?? '').replace(/^.*\/app\//, '');
+  if (envOn && V21_PINNED_FILES.some(([f]) => f === testPath)) {
+    // Whole-file pin: drop the env var too (files that vi.resetModules() re-evaluate the flag module and would read it again).
+    const prev = process.env.NEXT_PUBLIC_DEVNET_V22;
+    const prev21 = process.env.NEXT_PUBLIC_DEVNET_V21;
+    delete process.env.NEXT_PUBLIC_DEVNET_V22;
+    delete process.env.NEXT_PUBLIC_DEVNET_V21;
+    __setDevnetV22ForTest(false);
+    __setDevnetV21ForTest(false);
+    afterAll(() => {
+      process.env.NEXT_PUBLIC_DEVNET_V22 = prev;
+      if (prev21 === undefined) delete process.env.NEXT_PUBLIC_DEVNET_V21; else process.env.NEXT_PUBLIC_DEVNET_V21 = prev21;
+    });
+  }
+  if (envOn) {
+    const mine = new Set(V21_PINNED_TESTS.filter(([f]) => f === testPath).map(([, n]) => n));
+    if (mine.size > 0) {
+      beforeEach(() => {
+        const name = (expect.getState().currentTestName ?? '').replace(/ > /g, ' ');
+        if (mine.has(name)) { __setDevnetV22ForTest(false); __setDevnetV21ForTest(false); }
+      });
+      afterEach(() => { __setDevnetV22ForTest(null); __setDevnetV21ForTest(null); });
+    }
+  }
+}
 
 // keeper-register re-reads a not-yet-visible creation tx in-request (app/api/playground/keeper-register);
 // tests must not sleep through that grace. The route's own tests set it explicitly when they exercise it.
