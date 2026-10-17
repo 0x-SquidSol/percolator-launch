@@ -5,6 +5,7 @@ import { getClientIp } from "@/lib/get-client-ip";
 import { createUpstashRateLimiter } from "@/lib/upstash-rate-limit";
 import { checkAdminSecret } from "@/lib/admin-secret";
 import { createAccountInfoCoalescer, parseAccountInfoParams, type Sender, type JsonRpcResponse } from "@/lib/rpc-coalesce";
+import { buildUpstreams, redactJson, safeErrorText, sharedUpstreamPool, type UpstreamSpec } from "@/lib/rpc-upstreams";
 import { recordAccountRead, recordRpcRequest, recordUpstreamCall, getRpcMetricsSnapshot } from "@/lib/rpc-metrics";
 
 export const dynamic = "force-dynamic";
@@ -178,6 +179,23 @@ function resolveUpstream(networkOverride?: "mainnet" | "devnet"): Upstream {
   };
   _upstreamCache[cacheKey] = upstream;
   return upstream;
+}
+
+/** The ordered upstreams (primary, then the server-env fallbacks) for a request's network. Same list, same allowlist, for every call. */
+function upstreamsFor(networkOverride?: "mainnet" | "devnet"): UpstreamSpec[] {
+  const primary = resolveUpstream(networkOverride);
+  return buildUpstreams(networkOverride ?? getDeploymentNetwork(), primary);
+}
+
+/**
+ * One JSON-RPC call through the ordered upstreams (lib/rpc-upstreams.ts): the first healthy one answers; quota / 429 / 5xx / network
+ * failures move on to the next and cool the failed one down. Anything returned is scrubbed of upstream URLs, hosts and keys; a total
+ * failure throws one generic error (no upstream detail).
+ */
+async function callUpstream(body: unknown, networkOverride?: "mainnet" | "devnet"): Promise<JsonRpcResponse> {
+  const ups = upstreamsFor(networkOverride);
+  const data = await sharedUpstreamPool().post(ups, body, networkOverride ?? getDeploymentNetwork());
+  return redactJson(data, ups) as JsonRpcResponse;
 }
 
 /**
@@ -401,16 +419,9 @@ function coalescerFor(networkOverride?: "mainnet" | "devnet") {
   let c = coalescers.get(k);
   if (!c) {
     const send: Sender = async (body) => {
-      const upstream = resolveUpstream(networkOverride);
       // Upstream calls actually billed; the browser-facing `in` count is recorded per request.
       recordUpstreamCall(body.method);
-      const response = await fetch(upstream.url, {
-        method: "POST",
-        headers: upstream.headers,
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(RPC_UPSTREAM_TIMEOUT_MS),
-      });
-      return (await response.json()) as JsonRpcResponse;
+      return callUpstream(body, networkOverride);
     };
     c = createAccountInfoCoalescer(send);
     coalescers.set(k, c);
@@ -454,7 +465,7 @@ async function processSingleRequest(
       const result = await inflightRequests.get(cacheKey)!;
       return { ...(result as Record<string, unknown>), id: req.id };
     } catch (err) {
-      console.error(`[/api/rpc] deduped request failed for method ${method}:`, err);
+      console.error(`[/api/rpc] deduped request failed for method ${method}:`, safeErrorText(err, upstreamsFor(networkOverride)));
       return {
         jsonrpc: "2.0",
         error: { code: -32603, message: "Upstream RPC request failed" },
@@ -478,15 +489,8 @@ async function processSingleRequest(
     // read-only requests are DEDUPLICATED on `cacheKey`, so every later caller
     // for the same method awaits the SAME hung promise (`:335-337`) rather than
     // issuing its own — one slow upstream call stalls all of them together.
-    const upstream = resolveUpstream(networkOverride);
     recordUpstreamCall(method);
-    const response = await fetch(upstream.url, {
-      method: "POST",
-      headers: upstream.headers,
-      body: JSON.stringify(req),
-      signal: AbortSignal.timeout(RPC_UPSTREAM_TIMEOUT_MS),
-    });
-    return await response.json();
+    return await callUpstream(req, networkOverride);
   })();
 
   // Register in-flight for dedup
@@ -511,7 +515,7 @@ async function processSingleRequest(
     // discarding every other (successful) result with one HTTP 500. Return a
     // JSON-RPC error object carrying this item's id instead, so the rest of the
     // batch — and single-request callers — still get a well-formed response.
-    console.error(`[/api/rpc] processSingleRequest failed for method ${method}:`, err);
+    console.error(`[/api/rpc] processSingleRequest failed for method ${method}:`, safeErrorText(err, upstreamsFor(networkOverride)));
     return {
       jsonrpc: "2.0",
       error: { code: -32603, message: "Upstream RPC request failed" },
@@ -707,7 +711,7 @@ export async function POST(req: NextRequest) {
       const results = settled.map((r, i) => {
         if (r.status === "fulfilled") return r.value;
         const item = body[i] as Record<string, unknown> | undefined;
-        console.error(`[/api/rpc] batch item ${i} rejected:`, r.reason);
+        console.error(`[/api/rpc] batch item ${i} rejected:`, safeErrorText(r.reason, upstreamsFor(networkOverride)));
         return {
           jsonrpc: "2.0",
           error: { code: -32603, message: "Upstream RPC request failed" },
@@ -730,7 +734,7 @@ export async function POST(req: NextRequest) {
     // Returning 400 for RPC errors breaks @solana/web3.js which treats non-2xx as network failures.
     return NextResponse.json(result, { status: 200 });
   } catch (error) {
-    console.error("[/api/rpc] Error:", error);
+    console.error("[/api/rpc] Error:", safeErrorText(error));
     return NextResponse.json(
       { jsonrpc: "2.0", error: { code: -32603, message: "Internal RPC proxy error" }, id: null },
       { status: 500 }

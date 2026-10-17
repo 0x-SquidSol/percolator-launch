@@ -1,5 +1,6 @@
 import { Connection, Transaction, type Commitment, type Signer } from "@solana/web3.js";
 import { getNetwork, getRpcEndpoint } from "./config";
+import { buildUpstreams, redactJson, sharedUpstreamPool } from "./rpc-upstreams";
 
 /**
  * Server-side Solana Connection for API routes.
@@ -34,8 +35,22 @@ export function getServerConnection(
   const origin =
     (process.env.RPC_UPSTREAM_ORIGIN ?? "").trim() ||
     (net === "devnet" ? "https://trade.padre.gg" : "");
+  // Ordered fallback (lib/rpc-upstreams.ts): when the primary is dead (quota, 429, 5xx, network) the next upstream answers. Only when a
+  // fallback is configured (devnet: the public RPC unless DEVNET_RPC_FALLBACK_URLS says otherwise); otherwise the plain Connection.
+  const cluster = net === "mainnet" ? "mainnet" : "devnet";
+  const upstreams = buildUpstreams(cluster, { url, headers: { "Content-Type": "application/json", ...(origin ? { Origin: origin } : {}) } });
+  const rotating: typeof fetch | undefined =
+    upstreams.length > 1
+      ? async (_input, init) => {
+          // web3.js sends the JSON-RPC body as a string. Anything else is not ours to rotate.
+          if (typeof init?.body !== "string") throw new Error("RPC request unavailable");
+          const data = await sharedUpstreamPool().post(upstreams, JSON.parse(init.body) as unknown, cluster);
+          return new Response(JSON.stringify(redactJson(data, upstreams)), { status: 200, headers: { "content-type": "application/json" } });
+        }
+      : undefined;
   return new Connection(url, {
     commitment,
+    ...(rotating ? { fetch: rotating } : {}),
     // Opt-in per call (default unchanged): web3.js otherwise retries HTTP 429 with backoff, which a
     // latency-sensitive probe must not do.
     ...(opts.disableRetryOnRateLimit ? { disableRetryOnRateLimit: true } : {}),
