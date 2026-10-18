@@ -582,3 +582,46 @@ export function stakePoolValue(
   if (total > U64_MAX_V5) return null;
   return { liquid: liquidWide, deployed, total };
 }
+
+// TODO(repin): percolator-sdk fix/v22-sdk-stake-winddown-accounts `quoteStakeWithdrawNowV5` / `collateralForLpV5` (stake processor.rs:1626-1631: a payout must fit the pool's LIQUID value).
+/** Collateral a burn of `lpAmount` LP pays: `floor(lp * (poolValue + 1) / (totalLpSupply + 1))` (stake `math::calc_collateral_for_withdraw`). Null on zero supply or u64 overflow. */
+export function collateralForLpV5(lpAmount: bigint, totalLpSupply: bigint, poolValue: bigint): bigint | null {
+  if (totalLpSupply === 0n) return null;
+  const c = (lpAmount * (poolValue + 1n)) / (totalLpSupply + 1n);
+  return c > U64_MAX_V5 ? null : c;
+}
+
+/** Result of {@link quoteStakeWithdrawNowV5}. All atoms except the LP amounts. */
+export interface StakeWithdrawQuoteV5 {
+  redeemable: bigint;
+  liquidCap: bigint;
+  maxCollateralNow: bigint;
+  maxLpNow: bigint;
+  capBinds: boolean;
+  deferred: bigint;
+}
+
+/**
+ * The most a FIRST_LOSS staker can withdraw right now: `min(redeemable, min(liquid, vaultBalance))`, and the largest LP burn that fits.
+ * Stake `process_withdraw` refuses (LiquidityBufferExhausted, 36) a payout above the pool's liquid value after an insurance loss.
+ */
+export function quoteStakeWithdrawNowV5(
+  pool: StakePoolValueFields & { totalLpSupply: bigint },
+  insUnits: { unitsStake: bigint; unitsTotal: bigint },
+  exitInsurance: bigint,
+  vaultBalance: bigint,
+  userLp: bigint,
+): StakeWithdrawQuoteV5 | null {
+  const v = stakePoolValue(pool, insUnits, exitInsurance);
+  if (!v) return null;
+  const redeemable = collateralForLpV5(userLp, pool.totalLpSupply, v.total);
+  if (redeemable === null) return null;
+  const liquidCap = v.liquid < vaultBalance ? v.liquid : vaultBalance;
+  const maxCollateralNow = redeemable < liquidCap ? redeemable : liquidCap;
+  let maxLpNow = userLp;
+  if (redeemable > liquidCap) {
+    maxLpNow = ((liquidCap + 1n) * (pool.totalLpSupply + 1n) - 1n) / (v.total + 1n);
+    if (maxLpNow > userLp) maxLpNow = userLp;
+  }
+  return { redeemable, liquidCap, maxCollateralNow, maxLpNow, capBinds: redeemable > liquidCap, deferred: redeemable - maxCollateralNow };
+}

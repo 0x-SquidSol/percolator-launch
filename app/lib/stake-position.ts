@@ -61,6 +61,7 @@ export function valueStakePosition(i: StakeValuationInput): number {
  * the user holds, which handleWithdraw then refused without a word.
  */
 export function stakeWithdrawChipAmount(lpBalanceRaw: bigint, pct: number, lpDecimals: number): string {
+  // `lpBalanceRaw` here is the amount the chips are a percentage OF: the balance, or the withdrawable-now cap when it binds.
   return formatTokenAmount((lpBalanceRaw * BigInt(pct)) / 100n, lpDecimals);
 }
 
@@ -75,12 +76,15 @@ export function exceedsStakedBalance(amount: string, lpBalanceRaw: bigint, lpDec
 }
 
 /** The one-line reason a typed withdraw amount can't go through, or null when it can (or is empty). */
-export function withdrawAmountError(amount: string, lpBalanceRaw: bigint, lpDecimals: number): string | null {
+export function withdrawAmountError(amount: string, lpBalanceRaw: bigint, lpDecimals: number, nowCapLpRaw?: bigint | null, overCapMessage = "That is more than can be withdrawn now."): string | null {
   let raw: bigint;
   try {
     raw = parseHumanAmount(amount, lpDecimals);
   } catch {
     return `Use up to ${lpDecimals} decimal places.`;
   }
-  return raw > lpBalanceRaw ? "Exceeds your staked balance." : null;
+  if (raw > lpBalanceRaw) return "Exceeds your staked balance.";
+  // First-loss pool after an insurance loss: the program pays only the liquid part (LiquidityBufferExhausted, 36), so refuse here, calmly.
+  if (nowCapLpRaw !== undefined && nowCapLpRaw !== null && raw > nowCapLpRaw) return overCapMessage;
+  return null;
 }

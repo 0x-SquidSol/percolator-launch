@@ -16,14 +16,15 @@ import {
 import { STAKE_POOL_SIZE_V1, decodeStakePoolV1 } from "@/hooks/useStakePool";
 import { getConfig } from "@/lib/config";
 import { unpackAccount, getMint } from "@solana/spl-token";
-import { readPoolTotalLpSupply, stakeWithdrawChipAmount, valueStakePosition, withdrawAmountError } from "@/lib/stake-position";
+import { STAKE_COLLATERAL_DECIMALS, readPoolTotalLpSupply, stakeWithdrawChipAmount, valueStakePosition, withdrawAmountError } from "@/lib/stake-position";
 import { useStakeDepositByPool } from "@/hooks/useStakeDepositByPool";
 import { useStakeFirstLoss } from "@/hooks/useStakeFirstLoss";
 import { FirstLossDeposit } from "@/components/stake/FirstLossDeposit";
 import { V22_COPY } from "@/lib/v22/copy";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { decodeStakePoolV5, deriveInsuranceUnitsV22 } from "@/lib/v22/sdk";
-import { isInsuranceOnly, stakePoolValueView } from "@/lib/v22/stake-pool-value";
+import { isInsuranceOnly, stakePoolValueView, stakeWithdrawCapView } from "@/lib/v22/stake-pool-value";
+import type { StakeWithdrawCapView } from "@/lib/v22/stake-pool-value";
 import { useStakeWithdrawByPool } from "@/hooks/useStakeWithdrawByPool";
 import { parseHumanAmount, formatHumanAmount } from "@/lib/parseAmount";
 import { formatTokenAmount } from "@/lib/format";
@@ -83,6 +84,8 @@ interface UserPosition {
   cooldownRemaining: number;
   cooldownTotal: number;
   cooldownElapsed: boolean;
+  /** First-loss pool only: the most that can be withdrawn now (null = no cap known; the balance applies). */
+  withdrawCap?: StakeWithdrawCapView | null;
 }
 
 /** Shape returned by /api/stake/pools */
@@ -257,14 +260,20 @@ async function fetchPoolPosition(
   }
   // v2.2 first-loss pool: the stake is worth its share of vault + deployed insurance, read fresh. Unreadable units
   // leave the base null so the valuation falls back to the API snapshot (whose TVL already includes deployed).
+  let withdrawCap: StakeWithdrawCapView | null = null;
   if (isDevnetV22Enabled() && pool.stakeKind === "first-loss") {
+    const vaultTokenAtoms = chainVaultAtoms;
     chainVaultAtoms = null;
     try {
       const [unitsKey] = deriveInsuranceUnitsV22(decodeStakePoolV5(poolInfo.data).percolatorProgram, slabPk);
       const unitsInfo = await connection.getAccountInfo(unitsKey);
-      chainVaultAtoms = stakePoolValueView(poolInfo.data, unitsInfo ? new Uint8Array(unitsInfo.data) : null)?.totalAtoms ?? null;
+      const unitsBytes = unitsInfo ? new Uint8Array(unitsInfo.data) : null;
+      chainVaultAtoms = stakePoolValueView(poolInfo.data, unitsBytes)?.totalAtoms ?? null;
+      // After an insurance loss a payout must fit the pool's liquid value (stake processor.rs:1626-1631); quote what can go out now.
+      withdrawCap = stakeWithdrawCapView(poolInfo.data, unitsBytes, vaultTokenAtoms, lpAccount.amount);
     } catch {
       chainVaultAtoms = null;
+      withdrawCap = null;
     }
   }
   const estimatedValue = valueStakePosition({
@@ -315,8 +324,14 @@ async function fetchPoolPosition(
     cooldownRemaining,
     cooldownTotal: pool.cooldownSlots,
     cooldownElapsed,
+    withdrawCap,
   };
 }
+
+/** The most LP (raw) the staker can burn now: the balance, or the withdrawable-now cap when it binds. */
+const withdrawMaxLpRaw = (p: { lpBalanceRaw: bigint; withdrawCap?: StakeWithdrawCapView | null }): bigint =>
+  p.withdrawCap?.capBinds ? p.withdrawCap.maxLpRaw : p.lpBalanceRaw;
+const withdrawCapLine = (cap: StakeWithdrawCapView): string => V22_COPY.stake.withdrawCap(formatUsd(Number(cap.maxAtoms) / 10 ** STAKE_COLLATERAL_DECIMALS));
 
 /* ── Header + Stats Strip ──────────────────────────────────────────────────
    Compact terminal header (mirrors EarnHeader) — a `// insurance lp` eyebrow,
@@ -463,9 +478,10 @@ function PositionCard({
 
   const handleWithdraw = useCallback(async () => {
     if (!position.cooldownElapsed) return;
+    if (withdrawMaxLpRaw(position) <= 0n) return; // nothing is withdrawable now (liquid cap 0): the button is disabled, never send a zero amount
     setTxStatus(null);
     try {
-      const sig = await withdraw(position.lpBalanceRaw);
+      const sig = await withdraw(withdrawMaxLpRaw(position));
       setTxStatus({ type: "success", msg: `Withdrawal confirmed: ${sig.slice(0, 8)}…` });
       onWithdrawSuccess?.();
     } catch (e) {
@@ -528,10 +544,11 @@ function PositionCard({
         <div className="space-y-2">
           {/* Withdraw button — all-or-nothing, full LP balance */}
           <button
-            disabled={!position.cooldownElapsed || withdrawLoading}
+            disabled={!position.cooldownElapsed || withdrawLoading || withdrawMaxLpRaw(position) <= 0n}
+            data-testid="stake-withdraw-available"
             onClick={handleWithdraw}
             className={`w-full rounded-sm py-2 text-[11px] font-semibold uppercase tracking-[0.1em] transition-all duration-200 ${
-              position.cooldownElapsed && !withdrawLoading
+              position.cooldownElapsed && !withdrawLoading && withdrawMaxLpRaw(position) > 0n
                 ? "border border-[var(--cyan)]/50 bg-[var(--cyan)]/[0.10] text-[var(--cyan)] hover:border-[var(--cyan)] hover:bg-[var(--cyan)]/[0.18]"
                 : "border border-[var(--border)] bg-[var(--bg)] text-[var(--text-secondary)] cursor-not-allowed"
             }`}
@@ -539,9 +556,12 @@ function PositionCard({
             {withdrawLoading
               ? "Withdrawing…"
               : position.cooldownElapsed
-              ? "Withdraw All →"
+              ? position.withdrawCap?.capBinds ? "Withdraw available →" : "Withdraw All →"
               : cooldown.label}
           </button>
+          {position.withdrawCap?.capBinds && (
+            <p data-testid="stake-withdraw-cap-note" className="text-[11px] text-[var(--text-muted)]">{withdrawCapLine(position.withdrawCap)}</p>
+          )}
 
           {/* Manage / Withdraw Partial — jumps to DepositWidget's Withdraw
               tab pre-selected to this pool, for a partial (not all-or-nothing)
@@ -701,7 +721,8 @@ function DepositWidget({
   const withdrawAmountNum = parseFloat(withdrawAmount) || 0;
   // handleWithdraw refuses more than the staked balance; say so here instead of a button that does nothing.
   // Never throws (extra decimals would make parseHumanAmount throw mid-render).
-  const withdrawAmountIssue = withdrawPosition ? withdrawAmountError(withdrawAmount, withdrawPosition.lpBalanceRaw, withdrawPosition.lpDecimals) : null;
+  const withdrawCap = withdrawPosition?.withdrawCap?.capBinds ? withdrawPosition.withdrawCap : null;
+  const withdrawAmountIssue = withdrawPosition ? withdrawAmountError(withdrawAmount, withdrawPosition.lpBalanceRaw, withdrawPosition.lpDecimals, withdrawCap?.maxLpRaw, V22_COPY.stake.withdrawOverCap) : null;
   const withdrawExceeds = withdrawAmountIssue !== null;
 
   // Bug #12: the Junior (first-loss) tranche selector was removed — DepositJunior
@@ -854,7 +875,7 @@ function DepositWidget({
       // String-based BigInt parsing (same approach as Deposit) to avoid float
       // precision loss, using the LP mint's real decimals from fetchPoolPosition.
       const rawAmount = parseHumanAmount(withdrawAmount, withdrawPosition.lpDecimals);
-      if (rawAmount <= 0n || rawAmount > withdrawPosition.lpBalanceRaw) return;
+      if (rawAmount <= 0n || rawAmount > withdrawMaxLpRaw(withdrawPosition)) return;
       const sig = await withdraw(rawAmount);
       setWithdrawAmount("");
       setWithdrawTxStatus({ type: "success", msg: `Withdrawal confirmed: ${sig.slice(0, 8)}…` });
@@ -1071,7 +1092,7 @@ function DepositWidget({
                 {connected && withdrawPosition && (
                   <button
                     type="button"
-                    onClick={() => setWithdrawAmount(formatHumanAmount(withdrawPosition.lpBalanceRaw, withdrawPosition.lpDecimals))}
+                    onClick={() => setWithdrawAmount(formatHumanAmount(withdrawMaxLpRaw(withdrawPosition), withdrawPosition.lpDecimals))}
                     className="text-[10px] text-[var(--text-muted)] tabular-nums transition-colors hover:text-[var(--accent-text)] cursor-pointer"
                     style={{ fontFamily: "var(--font-mono)" }}
                     title="Click to use full staked balance"
@@ -1096,7 +1117,7 @@ function DepositWidget({
                 />
                 <button
                   type="button"
-                  onClick={() => { if (withdrawPosition) setWithdrawAmount(formatHumanAmount(withdrawPosition.lpBalanceRaw, withdrawPosition.lpDecimals)); }}
+                  onClick={() => { if (withdrawPosition) setWithdrawAmount(formatHumanAmount(withdrawMaxLpRaw(withdrawPosition), withdrawPosition.lpDecimals)); }}
                   disabled={!withdrawPosition}
                   className="border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-[10px] font-medium uppercase tracking-[0.15em] text-[var(--text-secondary)] transition-colors hover:border-[var(--accent)]/30 hover:text-[var(--accent-text)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
@@ -1112,7 +1133,7 @@ function DepositWidget({
                       key={pct}
                       type="button"
                       onClick={() => {
-                        setWithdrawAmount(stakeWithdrawChipAmount(withdrawPosition.lpBalanceRaw, pct, withdrawPosition.lpDecimals));
+                        setWithdrawAmount(stakeWithdrawChipAmount(withdrawMaxLpRaw(withdrawPosition), pct, withdrawPosition.lpDecimals));
                         setWithdrawTxStatus(null);
                       }}
                       className="flex-1 rounded-sm border border-[var(--border)] bg-[var(--bg)] py-1 text-[10px] font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--cyan)]/30 hover:text-[var(--cyan)]"
@@ -1142,6 +1163,10 @@ function DepositWidget({
             )}
             {!withdrawPositionLoading && connected && !withdrawPositionError && !withdrawPosition && (
               <p className="text-[11px] text-[var(--text-muted)]">No staked balance in this pool.</p>
+            )}
+
+            {withdrawCap && (
+              <p data-testid="stake-withdraw-cap-note" className="text-[11px] text-[var(--text-muted)]">{withdrawCapLine(withdrawCap)}</p>
             )}
 
             {withdrawAmountIssue && (
