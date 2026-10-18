@@ -36,7 +36,7 @@
  * (STONK 2026-10-07 at 0.84 USDC; COLLECT/TEXTIT/Murphy 2026-09-29 at 0).
  */
 import { decodeAssetVaultLpP3 } from "@/lib/v22/records";
-import { layoutOf } from "@/lib/v22/layout";
+import { layoutOf, UnknownLayoutError } from "@/lib/v22/layout";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { ACCOUNT_KIND, LAYOUT_V21, LAYOUT_V22 } from "@/lib/v22/sdk";
 import { decodeMarketLiveness, planLivenessRepairs } from "@/lib/self-heal";
@@ -148,12 +148,18 @@ export function decodeMarketHealth(
   readSlot: bigint,
   lpCapital: bigint | null,
 ): MarketHealth {
+  // VERSION-keyed geometry; an unknown VERSION throws the typed UnknownLayoutError (flag on). Resolved BEFORE the length
+  // check, so a bad magic / VERSION / kind is named as such rather than as a short buffer.
+  const L = layoutOf(data, "decodeMarketHealth", ACCOUNT_KIND.Market);
   if (data.length < MARKET_HEALTH_SLICE_LEN) {
-    throw new Error(`decodeMarketHealth: need ${MARKET_HEALTH_SLICE_LEN} bytes, got ${data.length}`);
+    const msg = `need ${MARKET_HEALTH_SLICE_LEN} bytes, got ${data.length}`;
+    // AUD-T4-2: flag on, the slice is sized for the larger (v2.2, 4,059 B) layout, so a 3,675 B v2.1 market lands here. That is
+    // a layout this build does not read health from: the typed refusal (calm "unsupported layout" UI via isUnsupportedLayout),
+    // not a plain Error. Flag off keeps the historical plain Error.
+    if (isDevnetV22Enabled()) throw new UnknownLayoutError("TOO_SHORT", "decodeMarketHealth", msg, { version: L.version, kind: data[10] });
+    throw new Error(`decodeMarketHealth: ${msg}`);
   }
   const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  // VERSION-keyed geometry; an unknown VERSION throws the typed UnknownLayoutError (flag on).
-  const L = layoutOf(data, "decodeMarketHealth", ACCOUNT_KIND.Market);
   const g = L.marketGroupOff;
   const H_MODE = L.group.mode;
   const H_BANKRUPTCY_HLOCK = H_MODE - 5;
