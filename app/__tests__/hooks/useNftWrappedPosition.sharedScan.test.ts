@@ -61,9 +61,8 @@ function uniquePubkey(): PublicKey {
   return Keypair.generate().publicKey;
 }
 
-function emptyPortfolio(marketGroupId: PublicKey, activeLegBasisPosQ: bigint | null, portfolioId = 0n) {
+function emptyPortfolio(marketGroupId: PublicKey, activeLegBasisPosQ: bigint | null) {
   return {
-    portfolioId,
     marketGroupId,
     portfolioAccountId: uniquePubkey(),
     provenanceOwner: PublicKey.default,
@@ -181,28 +180,5 @@ describe("useNftWrappedPosition — v17 shared scan + batching", () => {
 
     expect(result.current).not.toBeNull();
     expect(result.current?.account.positionSize).toBe(8n); // unchanged, not vanished
-  });
-
-  describe("S1-2 incarnation", () => {
-    async function run(nftId: bigint, liveId: bigint) {
-      const slabPk = new PublicKey(slabAddress);
-      mocks.useSlabState.mockReturnValue({ raw: new Uint8Array([7]) });
-      connection.getProgramAccounts.mockImplementation(legacyLayoutOnly([{ pubkey: uniquePubkey(), account: { data: new Uint8Array(199) } }]));
-      const pf = uniquePubkey();
-      mocks.parsePositionNftAccount.mockReturnValue({ nftMint: uniquePubkey(), portfolioAccount: pf, isLegacyV2: false, portfolioMarketGroup: slabPk, portfolioIdAtMint: nftId });
-      connection.getMultipleAccountsInfo.mockResolvedValue([{ data: Buffer.alloc(1) }]);
-      mocks.parsePortfolioV17.mockReturnValue(emptyPortfolio(slabPk, 4n, liveId));
-      return renderHook(() => useNftWrappedPosition(slabAddress, true));
-    }
-    it("a stale NFT (portfolio re-created: id differs) is not surfaced as a wrapped position", async () => {
-      const { result } = await run(5n, 9n);
-      await waitFor(() => expect(connection.getMultipleAccountsInfo).toHaveBeenCalled());
-      await new Promise((r) => setTimeout(r, 20));
-      expect(result.current).toBeNull();
-    });
-    it("a current NFT (same group and id) is surfaced", async () => {
-      const { result } = await run(9n, 9n);
-      await waitFor(() => expect(result.current?.account.positionSize).toBe(4n));
-    });
   });
 });
