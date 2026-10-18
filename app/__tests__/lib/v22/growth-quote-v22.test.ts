@@ -123,36 +123,22 @@ describe("ticket quote follows the program's depth rules (band market)", () => {
     expect(rich.long.tier).toBe(1);
   });
 
-  describe("clock unknown = the most conservative reading", () => {
-    it("tier 0 (no loosening), and the stored depth still caps room at 0.5 x depth ($200)", () => {
-      const v = view(fresh(400n), null);
-      expect(v.long.tier).toBe(0);
-      expect(v.long.ceilingX100).toBeLessThanOrEqual(500);
-      expect(dollars(v.long.nCapQ)).toBeCloseTo(200, 0);
-    });
-
-    it("property: never above a slot-known reading while the reading is within its freshness window", () => {
-      const depths: Array<Depth | null> = [fresh(400n), fresh(30_000n), { ...fresh(30_000n), source: 2 }, null];
-      for (const d of depths) {
-        const unknown = view(d, null);
-        for (const nowSlot of [NOW - 10n, NOW, NOW + 100n]) {
-          const known = growthMarketView({ ...base(market(d), OI, 30_000n * USD), v22: { bandBps: BAND, nowSlot } })!;
-          const unk = growthMarketView({ ...base(market(d), OI, 30_000n * USD), v22: { bandBps: BAND, nowSlot: null } })!;
-          for (const side of ["long", "short"] as const) {
-            expect(unk[side].ceilingX100).toBeLessThanOrEqual(known[side].ceilingX100);
-            expect(unk[side].nCapQ ?? 0n).toBeLessThanOrEqual(known[side].nCapQ ?? 0n);
-            expect(unk[side].headroomQ ?? 0n).toBeLessThanOrEqual(known[side].headroomQ ?? 0n);
-          }
-        }
-        expect(unknown.long.tier).toBe(0);
+  describe("clock unknown = nothing is claimed (R-app-3560 L1)", () => {
+    it("no growth view at all: the stored depth decays with age, so no reading without the slot can be called conservative", () => {
+      for (const d of [fresh(400n), fresh(30_000n), { ...fresh(30_000n), source: 2 }, null]) {
+        expect(growthMarketView({ ...base(market(d), OI, 30_000n * USD), v22: { bandBps: BAND, nowSlot: null } })).toBeNull();
       }
     });
 
-    it("and never above the plain growth-1 room", () => {
-      for (const d of [fresh(400n), null]) {
-        const unk = view(d, null);
-        expect(unk.long.nCapQ ?? 0n).toBeLessThanOrEqual(growth1 ?? 0n);
-      }
+    it("a slot-known reading still works (the null is only for the unknown clock)", () => {
+      expect(growthMarketView({ ...base(market(fresh(400n)), OI, 30_000n * USD), v22: { bandBps: BAND, nowSlot: NOW } })).not.toBeNull();
+    });
+
+    it("and the old failure mode is gone: a long-stale depth read at its own slot would have quoted far more than the slot-known cap", () => {
+      const stale = { ...fresh(400n), slot: NOW - 200_000n, lastGoodSlot: NOW - 200_000n };
+      const known = growthMarketView({ ...base(market(stale), OI, 30_000n * USD), v22: { bandBps: BAND, nowSlot: NOW } })!;
+      expect(known.long.nCapQ ?? 0n).toBeLessThan(growth1 ?? 0n);
+      expect(growthMarketView({ ...base(market(stale), OI, 30_000n * USD), v22: { bandBps: BAND, nowSlot: null } })).toBeNull();
     });
   });
 });

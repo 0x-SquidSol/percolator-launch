@@ -36,14 +36,15 @@ function hlockOffset(raw: Uint8Array): number | null {
 }
 
 /**
- * Whether the DEPLOYED wrapper (devnet 6kpg2wi7, percolator-prog 81ed7fdf) applies the v2.2 growth depth rules (lambda_eff, kappa cap,
- * stored ratchet ceiling). It does not: `growth_ceiling_x100` is `min(L_launch, L_tier)` ("absent depth is tier 0") and every N_cap is the
- * plain `n_cap_q(C_m, lambda_bps, effective_price)`. Flip this when the growth-depth upgrade is deployed; the quote logic stays.
+ * Whether the DEPLOYED wrapper (devnet 6kpg2wi7) applies the v2.2 growth depth rules (lambda_eff, kappa cap on N_cap, stored ratchet
+ * ceiling). It does since 2026-10-15: the growth-tier commits (percolator-prog 557b2735, aa55dfde, 17536158) are ancestors of the
+ * deployed aca02ba6 (on chain as c659c91d, ledger deployments.md), and `n_cap_g8_q` is what the TradeCpi room clip and the post-fill
+ * gate read. With this false the ticket quoted `N_cap = C_m * lambda / P` (plain growth-1) on a tiered market where the program caps
+ * at `min(that, kappa * depth / P)`: ~9,000x too much room on CHILLHOUSE-T / swordcat-T (see __tests__/lib/v22/growth-depth-real-bytes.test.ts).
+ * Pinned to real account bytes there; flip back only if the deployed wrapper is rolled back to a build without growth tiers.
  */
-export const GROWTH_DEPTH_RULES_DEPLOYED = false;
+export const GROWTH_DEPTH_RULES_DEPLOYED = true;
 
-/** A tier threshold nothing can reach (whole USD, u32 range): used only to pin the tier to 0 while the clock is unknown. */
-const NO_TIER_USD = 4_000_000_000;
 
 /** The record, or null when growth is OFF / the bytes are not a market account. Never throws. */
 export function decodeGrowthRecord(raw: Uint8Array | null | undefined, assetIndex = 0): AssetGrowthV19 | null {
@@ -102,13 +103,11 @@ export interface GrowthMarketView {
 export function growthMarketView(i: GrowthMarketInput): GrowthMarketView | null {
   const decoded = decodeGrowthRecord(i.raw, i.assetIndex ?? 0);
   if (!decoded || !i.lp || i.lpEffectiveQ === null) return null;
-  // Clock unknown = the MOST conservative reading, never looser than a slot-known one: no tier can be earned (thresholds no pool
-  // can reach: tier 0, so lambda 1x and the ceiling stays at launch), and the stored depth is read as fresh (the "now" is its own
-  // slot), so the tier-0 kappa cap (0.5 x depth) still applies whenever a reading was ever stored. Slot-known readings only loosen.
-  const unknownClock = !!i.v22 && i.v22.nowSlot === null;
-  const record: AssetGrowthV19 = unknownClock
-    ? { ...decoded, tierThresholdUsd: [NO_TIER_USD, NO_TIER_USD, NO_TIER_USD] }
-    : decoded;
+  // Clock unknown (first paint, before the first slot poll, or an RPC outage): CLAIM NOTHING. The stored depth decays with age (the program's
+  // sticky cap is `last_good >> floor(age / 9000)`), so reading it as fresh overquotes the room (about 8x on a market whose keeper is
+  // down) and no reading can be called conservative without the slot. The ticket shows no growth numbers until the clock arrives.
+  if (i.v22 && i.v22.nowSlot === null) return null;
+  const record: AssetGrowthV19 = decoded;
   const hlockActive = readBankruptcyHlockActive(i.raw);
   const quoteInput: QuoteMaxLeverageInput = {
     engineImrBps: i.engine.initialMarginBps,
@@ -122,7 +121,7 @@ export function growthMarketView(i: GrowthMarketInput): GrowthMarketView | null 
     oiEffShortQ: i.engine.oiEffShortQ,
     priceE6: i.engine.effectivePriceE6,
     bankruptcyHlockActive: hlockActive,
-    ...(i.v22 ? { v22: { bandBps: i.v22.bandBps, nowSlot: i.v22.nowSlot ?? decoded.depthSlot } } : {}),
+    ...(i.v22 && i.v22.nowSlot !== null ? { v22: { bandBps: i.v22.bandBps, nowSlot: i.v22.nowSlot } } : {}),
   };
   return {
     record,
