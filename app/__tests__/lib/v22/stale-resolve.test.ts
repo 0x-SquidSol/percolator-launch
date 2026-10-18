@@ -100,10 +100,28 @@ describe("status from the market bytes (CHILLHOUSE-T)", () => {
     foreign[8] = 0x7f;
     expect(staleResolveStatusV22(foreign, SNAPSHOT_SLOT)).toBeNull();
   });
-  it("matches the SDK candidate (SDK_V22_DIST) on the same bytes", async () => {
-    const dir = process.env.SDK_V22_DIST;
-    if (!dir || !existsSync(`${dir}/dist/index.js`)) return;
-    const sdk = (await import(/* @vite-ignore */ `${dir}/dist/index.js`)) as {
+  // Golden vectors produced by the SDK candidate itself (percolator-sdk a18c199 `staleResolveStatusV22`) on these exact bytes: always asserted,
+  // no environment needed (a silently skipped cross-check proves nothing).
+  const SDK_GOLDEN = [
+    { offset: 122029n, canResolve: true, refusalCode: null, slotsRemaining: 0n },
+    { offset: 17999n, canResolve: false, refusalCode: 27, slotsRemaining: 1n },
+    { offset: 18000n, canResolve: true, refusalCode: null, slotsRemaining: 0n },
+    { offset: 5n, canResolve: false, refusalCode: 27, slotsRemaining: 17995n },
+    { offset: 0n, canResolve: false, refusalCode: 27, slotsRemaining: 18000n },
+  ] as const;
+  it("equals the SDK candidate's results on the same bytes (golden vectors from the SDK, incl. the exact edge)", () => {
+    expect(live.lastGoodOracleSlot).toBe(512_014_516n);
+    for (const g of SDK_GOLDEN) {
+      const a = staleResolveStatusV22(m, live.lastGoodOracleSlot + g.offset)!;
+      expect({ c: a.canResolve, r: a.refusalCode, n: a.slotsRemaining, s: a.staleSlots }).toEqual({ c: g.canResolve, r: g.refusalCode, n: g.slotsRemaining, s: 18_000n });
+    }
+    // and the wire: [39, 512136545 u64 LE]
+    expect(Buffer.from(encodeResolveStalePermissionlessV22(SNAPSHOT_SLOT)).toString("hex")).toBe("276195861e00000000");
+  });
+
+  // With the built SDK on hand, recompute everything live too (visible skip, never silent).
+  it.skipIf(!process.env.SDK_V22_DIST || !existsSync(`${process.env.SDK_V22_DIST}/dist/index.js`))("and recomputed live by the SDK dist (SDK_V22_DIST)", async () => {
+    const sdk = (await import(/* @vite-ignore */ `${process.env.SDK_V22_DIST}/dist/index.js`)) as {
       staleResolveStatusV22: (d: Uint8Array, s: bigint) => { canResolve: boolean; refusalCode: number | null; staleSlots: bigint; lastGoodOracleSlot: bigint; slotsRemaining: bigint | null };
       encodeResolveStalePermissionless: (s: bigint) => Uint8Array;
     };

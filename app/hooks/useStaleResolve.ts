@@ -57,6 +57,12 @@ export interface StaleResolveState {
   settle: () => Promise<void>;
 }
 
+/**
+ * One settle flow per market at a time, across every mounted notice (the ticket and the position row both mount the hook): two clicks
+ * would otherwise open two wallet prompts and race the same CloseResolved / ClosePortfolio chain.
+ */
+const inFlightSlabs = new Set<string>();
+
 /** Thrown for a refusal that already has its one calm line. */
 class CalmRefusal extends Error {}
 
@@ -79,7 +85,6 @@ export function useStaleResolve(slabAddress: string | null, hasFunds: boolean): 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
-  const inFlight = useRef(false);
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -97,17 +102,18 @@ export function useStaleResolve(slabAddress: string | null, hasFunds: boolean): 
   }, [status, resolved, hasFunds]);
 
   const settle = useCallback(async () => {
-    if (inFlight.current) return;
+    if (slabAddress && inFlightSlabs.has(slabAddress)) return;
     if (!slabAddress || !programId || !config || !wallet.publicKey) {
       setError(STALE_SETTLE_COPY.generic);
       return;
     }
-    inFlight.current = true;
+    inFlightSlabs.add(slabAddress);
     setBusy(true);
     setError(null);
     setDone(null);
     const payer = wallet.publicKey;
     const market = new PublicKey(slabAddress);
+    let marketSettled = false; // tag 39 landed (or someone else's did): from here on 'nothing was sent' is not true
     try {
       // Fresh read: the cached bytes may be a poll behind, and a price push (or another settler) changes the answer.
       const [info, slot] = await Promise.all([connection.getAccountInfo(market, "confirmed"), connection.getSlot("confirmed")]);
@@ -119,12 +125,16 @@ export function useStaleResolve(slabAddress: string | null, hasFunds: boolean): 
         if (sim.err) {
           const code = parseCustomInstructionError(sim.err)?.code;
           // 21: settled by someone else between the read and now: carry on to the exit.
+          if (code === 21) marketSettled = true;
           if (code !== 21) throw new CalmRefusal((code !== undefined ? staleResolveRefusalCopy(code) : null) ?? STALE_SETTLE_COPY.generic);
         } else {
           await sendTx({ connection, wallet, instructions: [ix], computeUnits: 200_000 });
+          marketSettled = true;
         }
       } else if (fresh.refusalCode !== 21) {
         throw new CalmRefusal(staleResolveRefusalCopy(fresh.refusalCode) ?? STALE_SETTLE_COPY.generic);
+      } else {
+        marketSettled = true;
       }
       if (!hasFunds) {
         setDone(STALE_SETTLE_COPY.settledNoFunds);
@@ -135,10 +145,11 @@ export function useStaleResolve(slabAddress: string | null, hasFunds: boolean): 
       if (e instanceof CalmRefusal) setError(e.message);
       else {
         const msg = errorText(e);
-        setError(/reject|declin|cancel/i.test(msg) ? STALE_SETTLE_COPY.cancelled : STALE_SETTLE_COPY.generic);
+        const declined = /reject|declin|cancel/i.test(msg);
+        setError(declined ? (marketSettled ? STALE_SETTLE_COPY.declinedAfterSettle : STALE_SETTLE_COPY.cancelled) : STALE_SETTLE_COPY.generic);
       }
     } finally {
-      inFlight.current = false;
+      inFlightSlabs.delete(slabAddress);
       if (alive.current) setBusy(false);
       refresh();
     }

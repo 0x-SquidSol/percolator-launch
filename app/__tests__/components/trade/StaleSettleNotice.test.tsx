@@ -242,6 +242,40 @@ describe("StaleSettleNotice (hook wired)", () => {
     expect(h.signAll).not.toHaveBeenCalled();
   });
 
+  it("declining the SECOND approval after tag 39 landed says the market IS settled (not 'nothing was sent')", async () => {
+    chain(2);
+    h.signAll.mockRejectedValueOnce(new Error("User rejected the request"));
+    render(<StaleSettleNotice slabAddress={SLAB} hasFunds canAct />);
+    await click();
+    await waitFor(() => expect(screen.getByTestId("stale-settle-error")).toHaveTextContent(STALE_SETTLE_COPY.declinedAfterSettle));
+    expect(screen.getByTestId("stale-settle-error")).not.toHaveTextContent("Nothing was sent");
+    expect(h.sendTx).toHaveBeenCalledTimes(1); // tag 39 did land
+    expect(h.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("two mounted notices for the same market (ticket + position row) share ONE in-flight lock: two clicks run one flow", async () => {
+    let release: (v: string) => void = () => undefined;
+    h.sendTx.mockImplementationOnce(() => new Promise<string>((r) => { release = r; }));
+    render(
+      <>
+        <StaleSettleNotice slabAddress={SLAB} hasFunds={false} canAct />
+        <StaleSettleNotice slabAddress={SLAB} hasFunds={false} canAct compact />
+      </>,
+    );
+    const [first, second] = screen.getAllByTestId("stale-settle-button");
+    await act(async () => {
+      fireEvent.click(first!);
+    });
+    await waitFor(() => expect(h.sendTx).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      fireEvent.click(second!); // the other component's own busy flag is still false: only the module-level lock stops it
+    });
+    await act(async () => release("sig"));
+    await waitFor(() => expect(screen.getAllByTestId("stale-settle-done").length).toBeGreaterThan(0));
+    expect(h.sendTx).toHaveBeenCalledTimes(1);
+    expect(h.simulateForGate).toHaveBeenCalledTimes(1);
+  });
+
   it("a double click sends once", async () => {
     let release: (v: string) => void = () => undefined;
     h.sendTx.mockImplementationOnce(() => new Promise<string>((r) => { release = r; }));

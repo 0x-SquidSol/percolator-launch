@@ -53,16 +53,29 @@ describe("CloseResolved / ClaimResolvedPayoutTopup builder", () => {
     expect(create.keys[1]!.pubkey.equals(close.keys[3]!.pubkey)).toBe(true);
   });
 
-  it("matches the SDK candidate's ACCOUNTS_CLOSE_RESOLVED / ACCOUNTS_CLAIM_RESOLVED_PAYOUT_TOPUP (SDK_V22_DIST), account by account", async () => {
-    const dir = process.env.SDK_V22_DIST;
-    if (!dir || !existsSync(`${dir}/dist/index.js`)) return;
-    type Spec = readonly { name: string; signer: boolean; writable: boolean }[];
-    const sdk = (await import(/* @vite-ignore */ `${dir}/dist/index.js`)) as { ACCOUNTS_CLOSE_RESOLVED: Spec; ACCOUNTS_CLAIM_RESOLVED_PAYOUT_TOPUP: Spec };
-    for (const [spec, ix] of [[sdk.ACCOUNTS_CLOSE_RESOLVED, close], [sdk.ACCOUNTS_CLAIM_RESOLVED_PAYOUT_TOPUP, topup]] as const) {
-      expect(spec.map((a) => a.name)).toEqual(["owner", "market", "portfolio", "destToken", "vaultToken", "vaultAuthority", "tokenProgram"]);
-      spec.forEach((a, i) => {
+  // The SDK candidate's ACCOUNTS_CLOSE_RESOLVED / ACCOUNTS_CLAIM_RESOLVED_PAYOUT_TOPUP (percolator-sdk src/abi/accounts.ts), vendored: always asserted.
+  const SDK_SPEC = [
+    { name: "owner", signer: true, writable: false },
+    { name: "market", signer: false, writable: true },
+    { name: "portfolio", signer: false, writable: true },
+    { name: "destToken", signer: false, writable: true },
+    { name: "vaultToken", signer: false, writable: true },
+    { name: "vaultAuthority", signer: false, writable: false },
+    { name: "tokenProgram", signer: false, writable: false },
+  ] as const;
+  it("matches the SDK's ACCOUNTS_CLOSE_RESOLVED / ACCOUNTS_CLAIM_RESOLVED_PAYOUT_TOPUP (vendored 7-entry spec), account by account", () => {
+    for (const ix of [close, topup]) {
+      SDK_SPEC.forEach((a, i) => {
         expect({ i, s: ix.keys[i]!.isSigner, w: ix.keys[i]!.isWritable }).toEqual({ i, s: a.signer, w: a.writable });
       });
     }
+  });
+
+  // With the built SDK on hand, compare the live export too (visible skip, never silent).
+  it.skipIf(!process.env.SDK_V22_DIST || !existsSync(`${process.env.SDK_V22_DIST}/dist/index.js`))("and the SDK dist's live export equals the vendored spec (SDK_V22_DIST)", async () => {
+    type Spec = readonly { name: string; signer: boolean; writable: boolean }[];
+    const sdk = (await import(/* @vite-ignore */ `${process.env.SDK_V22_DIST}/dist/index.js`)) as { ACCOUNTS_CLOSE_RESOLVED: Spec; ACCOUNTS_CLAIM_RESOLVED_PAYOUT_TOPUP: Spec };
+    expect(sdk.ACCOUNTS_CLOSE_RESOLVED).toEqual(SDK_SPEC);
+    expect(sdk.ACCOUNTS_CLAIM_RESOLVED_PAYOUT_TOPUP).toEqual(SDK_SPEC);
   });
 });

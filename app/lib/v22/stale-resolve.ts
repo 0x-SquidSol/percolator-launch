@@ -124,6 +124,8 @@ export const STALE_SETTLE_COPY = {
   behind: "The network is a little behind. Try again in a moment.",
   alreadySettled: "This market is already settled.",
   cancelled: "Cancelled. Nothing was sent.",
+  /** The wallet declined the exit AFTER the market was settled: the market is settled, the funds are still in it. */
+  declinedAfterSettle: "The market is settled. Choose Close and withdraw when you are ready to get your funds back.",
   generic: "Couldn't settle the market. Nothing was lost; try again in a moment.",
 } as const;
 
