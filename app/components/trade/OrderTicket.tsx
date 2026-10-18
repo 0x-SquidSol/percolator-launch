@@ -940,8 +940,10 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // with the pre-trade capital alone dropped it, so cutting a loser read as "covered".
   // ponytail: nominal size, as the rest of the ticket; an ADL-reduced leg is priced on its basis.
   const closedQ = sameDirection ? 0n : positionSize < existingAbsSize ? positionSize : existingAbsSize;
-  const closedPnl = closedQ > 0n && existingEntryPriceE6 > 0n && estEntry > 0n
-    ? computeMarkPnlLinear(existingPositionSize > 0n ? closedQ : -closedQ, existingEntryPriceE6, estEntry)
+  // #3534: priced from the RISK entry, like the rest of this preview: a loss settlement already took out of `capital`
+  // must not be charged again on the closed slice.
+  const closedPnl = closedQ > 0n && existingRiskEntryE6 > 0n && estEntry > 0n
+    ? computeMarkPnlLinear(existingPositionSize > 0n ? closedQ : -closedQ, existingRiskEntryE6, estEntry)
     : 0n;
   const equityAfterTrade = capitalAfterFund + closedPnl;
   const afterLiqPrice = hasOrder && combinedSignedSize !== 0n && combinedEntryPriceE6 > 0n
