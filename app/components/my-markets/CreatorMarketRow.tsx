@@ -32,6 +32,7 @@ import { subscribeSlab, getSnapshot } from "@/lib/priceStore/priceStore";
 import { formatUsdFromNumber, formatStatValue, formatSlotAge } from "@/lib/format";
 import { detectOracleMode, sanitizePriceE6, applyInvert, priceE6ToUsd } from "@/lib/oraclePrice";
 import { CreatorTranchePanel } from "@/components/limits/CreatorLimits";
+import { ADMIN_BURN_COPY } from "@/lib/admin-burn-copy";
 
 /** Same accrue-cliff threshold as useCreatedMarkets/CrankHealthCard — the
  *  asset's accrue slot (advances only via crank/trade) vs the current
@@ -648,15 +649,14 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
         onCancel={() => setShowTopUpInput(false)}
       />
 
-      {/* Burn admin key — requires typing BURN to confirm. Ported VERBATIM
-          from the flow this replaces; the gate text and disabled-until-exact-
-          match behavior are unchanged. */}
+      {/* Burn admin key — requires typing BURN to confirm. The gate text and disabled-until-exact-
+          match behavior are unchanged; #3463: the body states what a burn clears (lib/admin-burn-copy.ts). */}
       {showBurnConfirm && (
         <div className="fixed inset-0 z-50 flex justify-center overflow-y-auto overscroll-contain bg-black/60 py-4">
           <div className="mx-4 my-auto max-w-md w-full rounded-none border border-[var(--border)]/50 bg-[var(--bg)] p-8">
             <h3 className="text-sm font-semibold uppercase tracking-[0.1em] text-[var(--text)]">burn admin key</h3>
-            <p className="mt-2 text-[11px] text-[var(--text-secondary)]">
-              This is permanent and irreversible. You will never be able to update config, set oracle, or perform any admin actions on this market again.
+            <p data-testid="burn-what-it-clears" className="mt-2 text-[11px] text-[var(--text-secondary)]">
+              {ADMIN_BURN_COPY.confirm}
             </p>
             {/* Tag 90 (WithdrawCreatorFee) is gated on asset 0's asset_admin only: once burned, no
                 creator fee on this market can ever be claimed again, and any unclaimed pot is
