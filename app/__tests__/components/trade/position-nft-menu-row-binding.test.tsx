@@ -48,7 +48,7 @@ vi.mock("@/hooks/useNftWrappedPosition", () => ({
 vi.mock("@/components/providers/SlabProvider", () => ({ useSlabState: () => ({ config: { collateralMint: MINT_OWN } }) }));
 vi.mock("@/hooks/useTokenMeta", () => ({ useTokenMeta: () => ({ symbol: "USDC", decimals: 6 }) }));
 vi.mock("@/hooks/useMarketInfo", () => ({ useMarketInfo: () => ({ market: { symbol: "SOL" } }) }));
-vi.mock("@/components/trade/SendPositionNftModal", () => ({ SendPositionNftModal: () => null, sendNftCopy: () => "" }));
+vi.mock("@/components/trade/SendPositionNftModal", () => ({ SendPositionNftModal: () => null, sendNftCopy: () => "", NFT_STALE_SEND_REFUSED: "" }));
 
 import { PositionNftMenu } from "@/components/trade/PositionNftMenu";
 

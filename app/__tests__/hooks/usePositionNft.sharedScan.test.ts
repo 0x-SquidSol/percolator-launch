@@ -65,6 +65,16 @@ vi.mock("@percolatorct/sdk", async () => {
   };
 });
 
+// S1-2: the app parses NFTs with its own v3 port (the installed SDK 8.0.0 parser rejects version 3). These tests drive the
+// parser through `mocks.parsePositionNftAccount`; the stand-in returns a LEGACY (unbound, never stale) record merged with it.
+vi.mock("@/lib/v22/sdk/nft-v3", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/v22/sdk/nft-v3")>("@/lib/v22/sdk/nft-v3");
+  return {
+    ...actual,
+    parsePositionNftAccountV3: (d: Uint8Array) => ({ isLegacyV2: true, portfolioMarketGroup: null, portfolioIdAtMint: null, ...mocks.parsePositionNftAccount(d) }),
+  };
+});
+
 import { usePositionNft } from "@/hooks/usePositionNft";
 
 // Real, random Keypair-derived pubkeys (not structured fill()-style bytes) —
@@ -132,9 +142,10 @@ describe("usePositionNft — v17 shared scan + batching", () => {
 
     // No own unwrapped portfolio here (leg-less / not found) — falls through
     // to the held-NFT scan.
-    connection.getProgramAccounts.mockImplementation(async (pid: PublicKey) => {
+    connection.getProgramAccounts.mockImplementation(async (pid: PublicKey, cfg?: { filters?: Array<{ dataSize?: number }> }) => {
       if (pid.equals(programId)) return []; // own-portfolio scan: nothing
-      // NFT-program held scan: two NFTs held by this wallet.
+      // NFT-program held scan: two NFTs held by this wallet (legacy 199 B layout; the 239 B query finds none).
+      if (cfg?.filters?.[0]?.dataSize === 239) return [];
       return [
         { pubkey: uniquePubkey(), account: { data: new Uint8Array(199) } },
         { pubkey: uniquePubkey(), account: { data: new Uint8Array(199) } },

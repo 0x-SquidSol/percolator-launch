@@ -230,6 +230,7 @@ const NFT_ERROR_CODE_MAP: Record<number, string> = {
   25: "Market ID mismatch - the slab slot this NFT points to was reused by a newer position. This NFT no longer represents a valid position.",
   26: "This market's NFT registry isn't configured yet - minting a Position NFT isn't available for this market.",
   27: "This position spans multiple legs (cross-margin) and can't be wrapped as a single NFT - only single-position portfolios are eligible.",
+  28: "This NFT belongs to an earlier version of the account and no longer controls it. Burn it to reclaim its rent.",
 };
 
 /** Hard-coded NFT program id. Matches app/lib/nft-program.ts. Kept here to

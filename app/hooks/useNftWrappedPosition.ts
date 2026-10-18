@@ -5,7 +5,7 @@ import { PublicKey } from "@solana/web3.js";
 import { useConnectionCompat, useWalletCompat } from "@/hooks/useWalletCompat";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { PERCOLATOR_NFT_PROGRAM_ID } from "@/lib/nft-program";
-import { parsePositionNftAccount } from "@percolatorct/sdk";
+import { parsePositionNftAccountV3, nftIncarnationStatus, isNftStale, type PositionNftStateV3 } from "@/lib/v22/sdk/nft-v3";
 import { portfolioV17ToAccount, triggerHeldNftScan, type UserAccountInfo } from "@/lib/userAccountScan";
 import { parsePortfolio, isWrapperAccount } from "@/lib/v22/layout";
 
@@ -27,7 +27,7 @@ export interface NftWrappedPosition extends UserAccountInfo {
  * still controls it via the NFT it holds.
  *
  * This hook finds it the only way still possible: scan the NFT program for a
- * `PositionNft` whose `last_holder` (offset 167) is this wallet, read the
+ * `PositionNft` whose `last_holder` (offset 167, both layouts) is this wallet, read the
  * `portfolio_account` (offset 10) it wraps, and load that escrowed portfolio for
  * full live data (size, capital, PnL) — identical to a normal position, just
  * owned by the escrow PDA rather than the wallet.
@@ -87,11 +87,12 @@ export function useNftWrappedPosition(
           pubkey: PublicKey;
           nftMint: PublicKey;
           portfolioAccount: PublicKey;
+          nft: PositionNftStateV3;
         }> = [];
         for (const nft of nfts) {
           try {
-            const parsed = parsePositionNftAccount(nft.data);
-            parsedNfts.push({ pubkey: nft.pubkey, nftMint: parsed.nftMint, portfolioAccount: parsed.portfolioAccount });
+            const parsed = parsePositionNftAccountV3(nft.data);
+            parsedNfts.push({ pubkey: nft.pubkey, nftMint: parsed.nftMint, portfolioAccount: parsed.portfolioAccount, nft: parsed });
           } catch {
             continue;
           }
@@ -116,6 +117,9 @@ export function useNftWrappedPosition(
           } catch {
             continue;
           }
+          // S1-2: an NFT of an EARLIER incarnation of this portfolio keypair is not a position
+          // (usePositionNft surfaces it for EmergencyBurn instead).
+          if (isNftStale(nftIncarnationStatus(parsedNfts[i].nft, pf))) continue;
           const onThisMarket = pf.marketGroupId?.equals(slabPk) ?? false;
           const activeLeg = pf.legs.find((l) => l.active);
           if (onThisMarket && activeLeg && activeLeg.basisPosQ !== 0n) {

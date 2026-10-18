@@ -40,7 +40,22 @@ vi.mock("@percolatorct/sdk", async () => {
   };
 });
 
+// S1-2: the app parses NFTs with its own v3 port (the installed SDK 8.0.0 parser rejects version 3). These tests drive the
+// parser through `mocks.parsePositionNftAccount`; the stand-in returns a LEGACY (unbound, never stale) record merged with it.
+vi.mock("@/lib/v22/sdk/nft-v3", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/v22/sdk/nft-v3")>("@/lib/v22/sdk/nft-v3");
+  return {
+    ...actual,
+    parsePositionNftAccountV3: (d: Uint8Array) => ({ isLegacyV2: true, portfolioMarketGroup: null, portfolioIdAtMint: null, ...mocks.parsePositionNftAccount(d) }),
+  };
+});
+
 import { useNftWrappedPosition } from "@/hooks/useNftWrappedPosition";
+
+
+/** The held-NFT scan runs once per layout (239 = v3, 199 = legacy v2); these fixtures are legacy 199 B records. */
+const legacyLayoutOnly = (list: unknown[]) => async (_pid: unknown, cfg: { filters: Array<{ dataSize?: number }> }) =>
+  cfg.filters[0].dataSize === 199 ? list : [];
 
 function uniquePubkey(): PublicKey {
   return Keypair.generate().publicKey;
@@ -100,10 +115,10 @@ describe("useNftWrappedPosition — v17 shared scan + batching", () => {
     const raw = new Uint8Array([1]);
     mocks.useSlabState.mockReturnValue({ raw });
 
-    connection.getProgramAccounts.mockResolvedValue([
+    connection.getProgramAccounts.mockImplementation(legacyLayoutOnly([
       { pubkey: uniquePubkey(), account: { data: new Uint8Array(199) } },
       { pubkey: uniquePubkey(), account: { data: new Uint8Array(199) } },
-    ]);
+    ]));
 
     const nftMintOther = uniquePubkey();
     const pfOther = uniquePubkey(); // different market
@@ -141,7 +156,7 @@ describe("useNftWrappedPosition — v17 shared scan + batching", () => {
     mocks.useSlabState.mockImplementation(() => ({ raw }));
 
     const heldNftPk = uniquePubkey();
-    connection.getProgramAccounts.mockResolvedValue([{ pubkey: heldNftPk, account: { data: new Uint8Array(199) } }]);
+    connection.getProgramAccounts.mockImplementation(legacyLayoutOnly([{ pubkey: heldNftPk, account: { data: new Uint8Array(199) } }]));
 
     const nftMint = uniquePubkey();
     const pfPk = uniquePubkey();

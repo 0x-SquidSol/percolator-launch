@@ -53,6 +53,10 @@ Discovery: `lib/v22/sdk/discovery.ts` (verbatim port) behind `lib/v22/discovery.
 - **Share counts use the share mint's own decimals** (`DepositWithdrawPanel` `lpDecimals`); the #3276 wallet note is gated on the chain (`lpShareWalletNoteV22`, `hooks/useLpShareToken.ts`).
 - **Leg cap**: `planLegGroups` never puts more than 4 trade legs in one transaction (`lib/trade-leg-groups.ts`). The app builds multi-leg orders as single-leg TradeCpi instructions on asset 0 (it never emits BatchTradeCpi, tag 67).
 
+## S1-2: Position NFT layout v3 (DRAFT, do not merge before the S1-2 program fix is approved and merged)
+
+percolator-nft `fix/v22-audit-1017-s1-2-nft-incarnation` @ 95dcece grows `PositionNftV16` 199 -> 239 B (version 2 -> 3), appending `portfolio_market_group` (199..231) and `portfolio_id_at_mint` (231..239); `last_holder` stays at 167. New NFT error 28 `StalePortfolioIncarnation`. The installed `@percolatorct/sdk` 8.0.0 parser accepts only version 2, so the app parses with `lib/v22/sdk/nft-v3.ts` (port of percolator-sdk PR #414). Held-NFT scans query BOTH dataSizes (239 and 199) in parallel and fail closed. A v3 NFT whose (market group, id) differs from the live portfolio is stale: not shown as a position, Send refused with one line, Burn routes to EmergencyBurn (simulated Custom(28)). A legacy v2 NFT is shown as before while `LEGACY_V2_NFT_TREATED_AS_STALE` is false; flip it in the change that points the app at the deployed S1-2 program (which rejects 199 B accounts).
+
 ## Reading a flag-on suite (by-name delta)
 `NEXT_PUBLIC_DEVNET_V22=1 npx vitest run` is not a usable signal on its own: ~300 v2.1-fixture tests fail by design. Use the delta:
 `cd app && node scripts/flag-on-delta.mjs <base-worktree>/app` runs the suite with the flag on in both checkouts (`vitest --reporter=json`) and lists only the tests that fail here and not in the base (exit 1 if any). Choose the base that isolates your change (a worktree of the previous head, or the playground-merge-only commit). `--json-base` / `--json-head` reuse saved reports.

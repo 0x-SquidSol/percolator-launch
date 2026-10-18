@@ -13,10 +13,13 @@ import {
   parsePositionNftAccount as parsePositionNftAccountLib,
   POSITION_NFT_STATE_LEN as POSITION_NFT_STATE_LEN_V12,
 } from "@/lib/nft-program";
+import { deriveNftPda as deriveNftPdaV17 } from "@percolatorct/sdk";
 import {
-  deriveNftPda as deriveNftPdaV17,
-  parsePositionNftAccount as parsePositionNftAccountSdk,
-} from "@percolatorct/sdk";
+  parsePositionNftAccountV3,
+  nftIncarnationStatus,
+  isNftStale,
+  POSITION_NFT_LEGACY_V2_LEN,
+} from "@/lib/v22/sdk/nft-v3";
 import {
   triggerPortfolioScan,
   triggerHeldNftScan,
@@ -24,8 +27,8 @@ import {
 } from "@/lib/userAccountScan";
 import { parsePortfolio, isWrapperAccount } from "@/lib/v22/layout";
 
-// Minimum byte length accepted by the v17 (SDK) NFT account parser.
-const POSITION_NFT_STATE_LEN_V17 = 199;
+// Minimum byte length accepted by the v17 NFT account parser (the legacy v2 layout; v3 is 239, checked by the parser).
+const POSITION_NFT_STATE_LEN_V17 = POSITION_NFT_LEGACY_V2_LEN;
 
 export interface UsePositionNftResult {
   /** Whether the position NFT has been minted (PDA account exists on-chain) */
@@ -38,6 +41,13 @@ export interface UsePositionNftResult {
   nftPdaAddress: string | null;
   /** Loading state */
   isLoading: boolean;
+  /**
+   * S1-2: the NFT found here was minted against an EARLIER incarnation of the portfolio (it was closed and
+   * re-created), so it controls nothing. `hasMintedNft` is true (the NFT exists and holds rent) and
+   * `pendingSettlement` is true; the UI must not show it as a position or offer Send, only EmergencyBurn.
+   * Absent = false.
+   */
+  stale?: boolean;
 }
 
 /**
@@ -46,7 +56,7 @@ export interface UsePositionNftResult {
  *
  * v17 markets (isV17Account(raw)):
  *   PDA seeds: ["position_nft", portfolioAccount, marketId_u64_LE]
- *   Layout: SDK parsePositionNftAccount (199 bytes, nftMint at offset 42)
+ *   Layout: nft-v3 parsePositionNftAccountV3 (239 bytes; legacy 199 parses as legacy; nftMint at offset 42)
  *
  * v12 markets (fallback):
  *   PDA seeds: ["position_nft", slab, user_idx_u16_LE]
@@ -120,7 +130,7 @@ export function usePositionNft(slabAddress: string): UsePositionNftResult {
           // 2. Read the active leg's marketId from the (already-parsed,
           //    already owner-reverified, already M10-sorted) shared result.
           // 3. Derive PDA with SDK seeds: ["position_nft", portfolio, marketId_u64_LE].
-          // 4. Fetch the PDA account and parse with SDK parser (199 bytes).
+          // 4. Fetch the PDA account and parse with the v3 parser (239 bytes, or legacy 199).
           setState((prev) => ({ ...prev, isLoading: prev.nftPdaAddress === null }));
 
           const ownerWalletPk = new PublicKey(walletPubkeyStr!);
@@ -182,7 +192,20 @@ export function usePositionNft(slabAddress: string): UsePositionNftResult {
             if (cancelled) return;
 
             if (accountInfo && accountInfo.data.length >= POSITION_NFT_STATE_LEN_V17) {
-              const parsed = parsePositionNftAccountSdk(new Uint8Array(accountInfo.data));
+              const parsed = parsePositionNftAccountV3(new Uint8Array(accountInfo.data));
+
+              // S1-2: the NFT at this PDA belongs to an earlier incarnation of the portfolio keypair.
+              if (scanResult && isNftStale(nftIncarnationStatus(parsed, scanResult.portfolio))) {
+                setState({
+                  hasMintedNft: true,
+                  nftMint: parsed.nftMint,
+                  pendingSettlement: true,
+                  nftPdaAddress: ownNftPdaStr,
+                  isLoading: false,
+                  stale: true,
+                });
+                return;
+              }
 
               setState({
                 hasMintedNft: true,
@@ -215,7 +238,7 @@ export function usePositionNft(slabAddress: string): UsePositionNftResult {
           // and after receiving a transferred NFT (mirrors
           // useNftWrappedPosition, which uses the identical last_holder scan).
           // Shared scan — byte-for-byte the same query useNftWrappedPosition
-          // runs (dataSize=199 + last_holder@167==wallet), joined here rather
+          // runs (dataSize=239 and 199 + last_holder@167==wallet), joined here rather
           // than fired independently (lib/userAccountScan.ts).
           const heldNfts = await triggerHeldNftScan({
             connection,
@@ -234,14 +257,16 @@ export function usePositionNft(slabAddress: string): UsePositionNftResult {
             pubkey: PublicKey;
             nftMint: PublicKey;
             portfolioAccount: PublicKey;
+            nft: ReturnType<typeof parsePositionNftAccountV3>;
           }> = [];
           for (const heldNft of heldNfts) {
             try {
-              const parsedNft = parsePositionNftAccountSdk(heldNft.data);
+              const parsedNft = parsePositionNftAccountV3(heldNft.data);
               parsedHeldNfts.push({
                 pubkey: heldNft.pubkey,
                 nftMint: parsedNft.nftMint,
                 portfolioAccount: parsedNft.portfolioAccount,
+                nft: parsedNft,
               });
             } catch {
               continue;
@@ -254,6 +279,8 @@ export function usePositionNft(slabAddress: string): UsePositionNftResult {
             );
             if (cancelled) return;
 
+            // S1-2: a stale NFT is remembered but never wins over a current one on this market.
+            let staleIdx = -1;
             for (let i = 0; i < parsedHeldNfts.length; i++) {
               const wrappedPfInfo = wrappedInfos[i];
               if (!wrappedPfInfo) continue;
@@ -264,6 +291,10 @@ export function usePositionNft(slabAddress: string): UsePositionNftResult {
                 continue;
               }
               if (!(wrappedPf.marketGroupId?.equals(slabPk) ?? false)) continue;
+              if (isNftStale(nftIncarnationStatus(parsedHeldNfts[i].nft, wrappedPf))) {
+                if (staleIdx < 0) staleIdx = i;
+                continue;
+              }
               const wrappedLeg = wrappedPf.legs.find((l) => l.active);
               setState({
                 hasMintedNft: true,
@@ -272,6 +303,17 @@ export function usePositionNft(slabAddress: string): UsePositionNftResult {
                 pendingSettlement: !wrappedLeg || wrappedLeg.basisPosQ === 0n,
                 nftPdaAddress: parsedHeldNfts[i].pubkey.toBase58(),
                 isLoading: false,
+              });
+              return;
+            }
+            if (staleIdx >= 0) {
+              setState({
+                hasMintedNft: true,
+                nftMint: parsedHeldNfts[staleIdx].nftMint,
+                pendingSettlement: true,
+                nftPdaAddress: parsedHeldNfts[staleIdx].pubkey.toBase58(),
+                isLoading: false,
+                stale: true,
               });
               return;
             }

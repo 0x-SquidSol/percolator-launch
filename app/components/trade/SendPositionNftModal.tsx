@@ -22,9 +22,18 @@ interface SendPositionNftModalProps {
   nftMintShort: string;
   loading: boolean;
   error: string | null;
+  /**
+   * S1-2: this NFT belongs to an earlier incarnation of the portfolio and controls nothing. Sending is refused
+   * with one calm line and Confirm stays disabled.
+   */
+  stale?: boolean;
   onConfirm: (destination: PublicKey) => void;
   onCancel: () => void;
 }
+
+/** The one calm line shown when a stale NFT (earlier incarnation of the portfolio) is asked to be sent. */
+export const NFT_STALE_SEND_REFUSED =
+  "This NFT belongs to an earlier version of the account and can't be sent. Burn it to reclaim its rent.";
 
 function isValidPubkey(input: string): PublicKey | null {
   // Trim before the length check: a pasted address often carries a space or newline.
@@ -42,6 +51,7 @@ export const SendPositionNftModal: FC<SendPositionNftModalProps> = ({
   nftMintShort,
   loading,
   error,
+  stale = false,
   onConfirm,
   onCancel,
 }) => {
@@ -74,7 +84,7 @@ export const SendPositionNftModal: FC<SendPositionNftModalProps> = ({
 
   const parsedDest = isValidPubkey(destInput);
   const pubkeyInvalid = destInput.length > 0 && !parsedDest;
-  const canConfirm = parsedDest !== null && acknowledged && !loading;
+  const canConfirm = parsedDest !== null && acknowledged && !loading && !stale;
 
   // Trap Escape + Tab, match the other modals (ClosePositionModal /
   // TradeConfirmationModal). Without the Tab-wrap, focus escaped the dialog
@@ -204,6 +214,12 @@ export const SendPositionNftModal: FC<SendPositionNftModalProps> = ({
               I understand the other wallet will control this position.
             </span>
           </label>
+
+          {stale && (
+            <div data-testid="send-nft-stale" className="rounded-none border border-[var(--short)]/30 bg-[var(--short)]/5 px-3 py-2">
+              <p className="text-[10px] text-[var(--short)]">{NFT_STALE_SEND_REFUSED}</p>
+            </div>
+          )}
 
           {/* On-chain error surfaced from the simulation / tx */}
           {error && (

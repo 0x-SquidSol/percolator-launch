@@ -12,7 +12,6 @@ import {
   parseAllAccounts,
   parseConfig,
   parseParams,
-  parsePositionNftAccount,
   parseWrapperConfigV17,
   AccountKind,
   V17_HEADER_LEN,
@@ -20,7 +19,13 @@ import {
   type Account,
 } from "@percolatorct/sdk";
 import { isSentinelValue } from "@/lib/health";
-import { isLpPortfolio } from "@/lib/userAccountScan";
+import { isLpPortfolio, getHeldNftProgramAccounts } from "@/lib/userAccountScan";
+import {
+  parsePositionNftAccountV3,
+  nftIncarnationStatus,
+  isNftStale,
+  type PositionNftStateV3,
+} from "@/lib/v22/sdk/nft-v3";
 import { type EntryPriceSource } from "@/lib/trading";
 import { parseV17RiskParams } from "@/lib/v17-engine-config";
 import {
@@ -1075,24 +1080,21 @@ export async function fetchPortfolioSnapshot(
   // each one wraps. Scan-level failures fail CLOSED (rethrow, see the catch
   // below); only per-NFT parse errors are skipped best-effort.
   try {
-    const POSITION_NFT_V17_LEN = 199;
-    const NFT_LAST_HOLDER_OFF = 167;
-    const nfts = await connection.getProgramAccounts(PERCOLATOR_NFT_PROGRAM_ID, {
-      filters: [
-        { dataSize: POSITION_NFT_V17_LEN },
-        { memcmp: { offset: NFT_LAST_HOLDER_OFF, bytes: pkStr } },
-      ],
-    });
+    // Both layouts (239 B v3 and 199 B legacy v2; last_holder @167 in each): a single dataSize filter would
+    // drop every held NFT of the other layout. Fails closed: the catch below rethrows.
+    const nfts = await getHeldNftProgramAccounts(connection, PERCOLATOR_NFT_PROGRAM_ID, pkStr);
 
     // Parse each NFT to find the escrowed portfolio it points at, then
     // batch-fetch ALL of them in one getMultipleAccountsInfo — this used
     // to be a serial getAccountInfo call PER NFT (a wallet holding
     // several wrapped positions paid one round-trip per NFT here).
     const portfolioPks: PublicKey[] = [];
+    const nftsByPortfolio: PositionNftStateV3[] = [];
     for (const nft of nfts) {
       try {
-        const parsed = parsePositionNftAccount(new Uint8Array(nft.account.data as Buffer));
+        const parsed = parsePositionNftAccountV3(new Uint8Array(nft.account.data as Buffer));
         portfolioPks.push(parsed.portfolioAccount);
+        nftsByPortfolio.push(parsed);
       } catch {
         // Skip unparseable NFT accounts — nothing to batch-fetch for them.
       }
@@ -1112,6 +1114,10 @@ export async function fetchPortfolioSnapshot(
           const pfInfo = pfInfos[i];
           if (!pfInfo || !pfInfo.data) continue;
           const portfolio = parsePortfolio(new Uint8Array(pfInfo.data));
+          // S1-2: an NFT minted against an EARLIER incarnation of this portfolio keypair (closed and
+          // re-created) controls nothing. Never surface it as a position; the trade page offers
+          // EmergencyBurn for it (usePositionNft).
+          if (isNftStale(nftIncarnationStatus(nftsByPortfolio[i], portfolio))) continue;
           // Only surface a wrapped position that still has an active leg
           // (a closed-but-unburned NFT wraps a size-0 leg).
           const activeLeg = portfolio.legs.find((l) => l.active);

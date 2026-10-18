@@ -464,10 +464,25 @@ describe("userAccountScan — held-NFT scan store", () => {
     return { pubkey, account: { data } };
   }
 
+  /** The held-NFT scan queries each layout separately (S1-2: dataSize 239 = v3, 199 = legacy v2). */
+  function byLayout(v3: unknown[], v2: unknown[] = []) {
+    return async (_pid: PublicKey, cfg: { filters: Array<{ dataSize?: number }> }) => (cfg.filters[0].dataSize === 239 ? v3 : v2);
+  }
+
+  it("queries both layouts (239 and 199) and merges them", async () => {
+    const { connection, getProgramAccounts } = makeConnection();
+    const a = new PublicKey(new Uint8Array(32).fill(7));
+    const b = new PublicKey(new Uint8Array(32).fill(8));
+    getProgramAccounts.mockImplementation(byLayout([nftAccount(a, new Uint8Array(239))], [nftAccount(b)]));
+    const out = await triggerHeldNftScan({ connection, nftProgramId, wallet, raw: new Uint8Array([9]) });
+    expect(out.map((r) => r.data.length).sort()).toEqual([199, 239]);
+    expect(getProgramAccounts.mock.calls.map((c) => c[1].filters[0].dataSize).sort()).toEqual([199, 239]);
+  });
+
   it("dedupes concurrent triggers for the identical `raw` reference", async () => {
     const { connection, getProgramAccounts } = makeConnection();
     const nftPk = new PublicKey(new Uint8Array(32).fill(7));
-    getProgramAccounts.mockResolvedValue([nftAccount(nftPk)]);
+    getProgramAccounts.mockImplementation(byLayout([nftAccount(nftPk)]));
 
     const raw = new Uint8Array([1]);
     const [a, b] = await Promise.all([
@@ -475,7 +490,7 @@ describe("userAccountScan — held-NFT scan store", () => {
       triggerHeldNftScan({ connection, nftProgramId, wallet, raw }),
     ]);
 
-    expect(getProgramAccounts).toHaveBeenCalledTimes(1);
+    expect(getProgramAccounts).toHaveBeenCalledTimes(2); // one scan = one query per layout
     expect(a).toBe(b);
     expect(a).toHaveLength(1);
   });
@@ -483,7 +498,7 @@ describe("userAccountScan — held-NFT scan store", () => {
   it("keeps the same array reference when nothing changed", async () => {
     const { connection, getProgramAccounts } = makeConnection();
     const nftPk = new PublicKey(new Uint8Array(32).fill(7));
-    getProgramAccounts.mockResolvedValue([nftAccount(nftPk)]);
+    getProgramAccounts.mockImplementation(byLayout([nftAccount(nftPk)]));
 
     const key = makeHeldNftScanKey(nftProgramId, wallet);
     const listener = vi.fn();
@@ -492,7 +507,7 @@ describe("userAccountScan — held-NFT scan store", () => {
     await triggerHeldNftScan({ connection, nftProgramId, wallet, raw: new Uint8Array([1]) });
     const first = getHeldNftSnapshot(key);
 
-    getProgramAccounts.mockResolvedValue([nftAccount(nftPk)]);
+    getProgramAccounts.mockImplementation(byLayout([nftAccount(nftPk)]));
     await triggerHeldNftScan({ connection, nftProgramId, wallet, raw: new Uint8Array([2]) });
     const second = getHeldNftSnapshot(key);
 
@@ -503,13 +518,13 @@ describe("userAccountScan — held-NFT scan store", () => {
   it("keeps last-good NFT list on a transient error instead of an empty array", async () => {
     const { connection, getProgramAccounts } = makeConnection();
     const nftPk = new PublicKey(new Uint8Array(32).fill(7));
-    getProgramAccounts.mockResolvedValueOnce([nftAccount(nftPk)]);
+    getProgramAccounts.mockImplementationOnce(byLayout([nftAccount(nftPk)])).mockImplementationOnce(byLayout([]));
 
     const key = makeHeldNftScanKey(nftProgramId, wallet);
     await triggerHeldNftScan({ connection, nftProgramId, wallet, raw: new Uint8Array([1]) });
     expect(getHeldNftSnapshot(key)).toHaveLength(1);
 
-    getProgramAccounts.mockRejectedValueOnce(new Error("timeout"));
+    getProgramAccounts.mockRejectedValue(new Error("timeout")); // either layout failing keeps last-good
     const resolved = await triggerHeldNftScan({ connection, nftProgramId, wallet, raw: new Uint8Array([2]) });
 
     expect(resolved).toHaveLength(1); // last-good, not []

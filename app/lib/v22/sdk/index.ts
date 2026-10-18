@@ -25,3 +25,4 @@ export * from "./errors-v22";
 export * from "./v22-trade-fee";
 export * from "./v22-multi-asset-trade";
 export * as v22Slab from "./slab";
+export * from "./nft-v3";

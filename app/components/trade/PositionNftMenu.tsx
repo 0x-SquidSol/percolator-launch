@@ -25,7 +25,7 @@ import { useTokenMeta } from "@/hooks/useTokenMeta";
 import { useMarketInfo } from "@/hooks/useMarketInfo";
 import { formatTokenAmount } from "@/lib/format";
 import { sanitizeSymbol } from "@/lib/symbol-utils";
-import { SendPositionNftModal } from "@/components/trade/SendPositionNftModal";
+import { SendPositionNftModal, NFT_STALE_SEND_REFUSED } from "@/components/trade/SendPositionNftModal";
 
 export const NFT_MENU_COPY = {
   menuLabel: "More position actions",
@@ -48,6 +48,12 @@ export const NFT_MENU_COPY = {
   heldElsewhere: "Held as an NFT by another wallet",
   closedTitle: "Your NFT-wrapped position has closed",
   closedBody: "Unwrap the NFT to get back any collateral left in it.",
+  /** S1-2: an NFT of an earlier version of this account (it was closed and re-created). Not a position; only burning is offered. */
+  staleTitle: "An old position NFT is still in your wallet",
+  staleBody: "It belongs to an earlier version of this account and no longer controls a position. Burn it to reclaim its rent.",
+  staleBurn: "Burn NFT",
+  /** The one calm line shown instead of Send for a stale NFT (same text as the Send modal's refusal). */
+  staleSendRefused: NFT_STALE_SEND_REFUSED,
 } as const;
 
 export interface PositionNftMenuViewProps {
@@ -56,12 +62,14 @@ export interface PositionNftMenuViewProps {
   collateralLabel: string;
   busy: "wrap" | "send" | "unwrap" | null;
   error: string | null;
+  /** S1-2: the held NFT is of an earlier incarnation of the portfolio: Send is refused (one calm line), only Burn is offered. */
+  staleNft?: boolean;
   onWrap: () => void;
   onSend: () => void;
   onUnwrap: () => void;
 }
 
-export const PositionNftMenuView: FC<PositionNftMenuViewProps> = ({ canWrap, isWrapped, collateralLabel, busy, error, onWrap, onSend, onUnwrap }) => {
+export const PositionNftMenuView: FC<PositionNftMenuViewProps> = ({ canWrap, isWrapped, collateralLabel, busy, error, staleNft = false, onWrap, onSend, onUnwrap }) => {
   const [open, setOpen] = useState(false);
   const [confirmWrap, setConfirmWrap] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
@@ -123,7 +131,7 @@ export const PositionNftMenuView: FC<PositionNftMenuViewProps> = ({ canWrap, isW
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
-  if (!canWrap && !isWrapped) return null;
+  if (!canWrap && !isWrapped && !staleNft) return null;
   const item = "block w-full px-3 py-2 text-left text-[11px] text-[var(--text)] hover:bg-[var(--accent)]/[0.08] disabled:opacity-40 min-h-[44px] md:min-h-0";
   return (
     <div
@@ -160,6 +168,16 @@ export const PositionNftMenuView: FC<PositionNftMenuViewProps> = ({ canWrap, isW
               }}>
               {NFT_MENU_COPY.wrap}
             </button>
+          )}
+          {staleNft && !isWrapped && (
+            <>
+              <p data-testid="position-nft-stale-line" role="note" className="max-w-[220px] px-3 py-2 text-[10px] leading-relaxed text-[var(--text-secondary)]">
+                {NFT_MENU_COPY.staleSendRefused}
+              </p>
+              <button role="menuitem" type="button" data-testid="position-nft-stale-burn" className={item} disabled={busy !== null} onClick={() => { setOpen(false); onUnwrap(); }}>
+                {busy === "unwrap" ? "Burning…" : NFT_MENU_COPY.staleBurn}
+              </button>
+            </>
           )}
           {isWrapped && (
             <>
@@ -219,7 +237,7 @@ export const PositionNftMenuView: FC<PositionNftMenuViewProps> = ({ canWrap, isW
  *  only Send/Unwrap. Omitted = the legacy merged behavior. */
 export const PositionNftMenu: FC<{ slabAddress: string; row?: "own" | "wrapped" }> = ({ slabAddress, row }) => {
   const userAccount = useUserAccount();
-  const { hasMintedNft, nftMint, nftPdaAddress } = usePositionNft(slabAddress);
+  const { hasMintedNft, nftMint, nftPdaAddress, stale: nftStale } = usePositionNft(slabAddress);
   const { mint: mintNft, loading: mintLoading, error: mintError } = useMintPositionNft(slabAddress);
   const wrappedScan = useNftWrappedPosition(slabAddress, true);
   const wrapped = row === "own" ? null : wrappedScan;
@@ -259,10 +277,12 @@ export const PositionNftMenu: FC<{ slabAddress: string; row?: "own" | "wrapped" 
         // Wrap exactly the account this row and the sheet's collateral describe (own.pubkey), never a
         // re-discovered one: a wallet can own two portfolios on a market. No pubkey, no Wrap.
         canWrap={own?.pubkey != null && !pendingMint}
-        isWrapped={row === "own" ? false : isNftPresent}
+        // S1-2: a stale NFT is not a wrapped position - no Send / Unwrap here (ClosedPositionNftNotice offers the burn).
+        isWrapped={row === "own" ? false : isNftPresent && !nftStale}
         collateralLabel={collateralLabel}
         busy={busy}
         error={mintError || burnError || transferError}
+        staleNft={!!nftStale && row !== "own"}
         onWrap={() => {
           const pk = own?.pubkey;
           if (!pk) return;
@@ -274,12 +294,13 @@ export const PositionNftMenu: FC<{ slabAddress: string; row?: "own" | "wrapped" 
         onSend={() => setShowSend(true)}
         onUnwrap={() => void burn()}
       />
-      {showSend && isNftPresent && mintAddress && (
+      {showSend && isNftPresent && !nftStale && mintAddress && (
         <SendPositionNftModal
           positionSummary={summary}
           nftMintShort={`${mintAddress.slice(0, 8)}…${mintAddress.slice(-6)}`}
           loading={transferLoading}
           error={transferError}
+          stale={!!nftStale}
           onCancel={() => setShowSend(false)}
           onConfirm={async (dest) => {
             const sig = await transfer(dest);
@@ -298,7 +319,7 @@ export const PositionNftMenu: FC<{ slabAddress: string; row?: "own" | "wrapped" 
  * be transferred. Hidden once an unwrap lands, so a click during the rescan can't hit "already burned?".
  */
 export const ClosedPositionNftNotice: FC<{ slabAddress: string }> = ({ slabAddress }) => {
-  const { hasMintedNft, pendingSettlement, nftMint, nftPdaAddress } = usePositionNft(slabAddress);
+  const { hasMintedNft, pendingSettlement, nftMint, nftPdaAddress, stale } = usePositionNft(slabAddress);
   const { burn, loading, error } = useBurnPositionNft(
     slabAddress,
     nftMint && nftPdaAddress ? { nftMint, nftPdaAddress } : undefined,
@@ -307,8 +328,8 @@ export const ClosedPositionNftNotice: FC<{ slabAddress: string }> = ({ slabAddre
   if (!hasMintedNft || !pendingSettlement || !nftPdaAddress || burnedPda === nftPdaAddress) return null;
   return (
     <div data-testid="closed-nft-notice" className="mx-auto -mt-4 mb-6 max-w-[260px] text-center">
-      <p className="text-[11px] font-medium text-[var(--text)]">{NFT_MENU_COPY.closedTitle}</p>
-      <p className="mt-1 text-[10px] leading-relaxed text-[var(--text-secondary)]">{NFT_MENU_COPY.closedBody}</p>
+      <p className="text-[11px] font-medium text-[var(--text)]">{stale ? NFT_MENU_COPY.staleTitle : NFT_MENU_COPY.closedTitle}</p>
+      <p className="mt-1 text-[10px] leading-relaxed text-[var(--text-secondary)]">{stale ? NFT_MENU_COPY.staleBody : NFT_MENU_COPY.closedBody}</p>
       <button
         type="button"
         data-testid="closed-nft-unwrap"
@@ -320,7 +341,7 @@ export const ClosedPositionNftNotice: FC<{ slabAddress: string }> = ({ slabAddre
         }
         className="mt-2 min-h-[44px] border border-[var(--accent)]/50 bg-[var(--accent)]/[0.08] px-4 text-[11px] font-semibold text-[var(--accent)] disabled:opacity-40 md:min-h-0 md:py-1.5"
       >
-        {loading ? "Unwrapping…" : NFT_MENU_COPY.unwrap}
+        {loading ? "Unwrapping…" : stale ? NFT_MENU_COPY.staleBurn : NFT_MENU_COPY.unwrap}
       </button>
       {error && (
         <p data-testid="closed-nft-error" className="mt-1 text-[10px] text-[var(--short)]">

@@ -68,7 +68,8 @@
 
 import { pickOwnerPortfolio } from "@/lib/owner-portfolio";
 import { Buffer } from "buffer";
-import { PublicKey, type Connection } from "@solana/web3.js";
+import { PublicKey, type AccountInfo, type Connection } from "@solana/web3.js";
+import { POSITION_NFT_LEGACY_V2_LEN, POSITION_NFT_STATE_LEN_V3 } from "@/lib/v22/sdk/nft-v3";
 import {
   AccountKind,
   type Account,
@@ -506,11 +507,41 @@ export function applyConfirmedFill(key: string, signedSizeDeltaQ: bigint): boole
 // Held-NFT scan store — PositionNft accounts with last_holder (offset 167) == wallet
 // ---------------------------------------------------------------------------
 
-/** PositionNftV16 on-chain layout is exactly 199 bytes. */
-const POSITION_NFT_V17_LEN = 199;
+/** PositionNftV16 on-chain layout v3 (S1-2 incarnation binding) is exactly 239 bytes. */
+const POSITION_NFT_V3_LEN = POSITION_NFT_STATE_LEN_V3;
+/** Pre-S1-2 layout v2 is 199 bytes. Still queried: a program that has not been upgraded (or an NFT minted before the
+ *  upgrade) holds these, and a dataSize filter of 239 alone would make every held legacy NFT vanish. */
+const POSITION_NFT_V2_LEN = POSITION_NFT_LEGACY_V2_LEN;
 /** `last_holder` — the NFT's current/most-recent holder wallet (set to the
  *  minter at mint, rewritten to the recipient on every transfer). */
 const NFT_LAST_HOLDER_OFF = 167;
+
+/**
+ * Every PositionNft a wallet holds (`last_holder` @167 == wallet), across BOTH layouts: one getProgramAccounts per
+ * dataSize (239 = v3, 199 = legacy v2), run in parallel. `last_holder` is at 167 in both layouts. If EITHER query
+ * fails this throws (fail closed: callers keep their last-good snapshot rather than publish a half-empty list).
+ *
+ * @param connection Solana connection.
+ * @param nftProgramId The percolator-nft program id.
+ * @param wallet Base58 wallet address.
+ * @returns The matching accounts, v3 first then legacy v2.
+ * @example
+ * const nfts = await getHeldNftProgramAccounts(connection, PERCOLATOR_NFT_PROGRAM_ID, wallet.toBase58());
+ */
+export async function getHeldNftProgramAccounts(
+  connection: Connection,
+  nftProgramId: PublicKey,
+  wallet: string,
+): Promise<Array<{ pubkey: PublicKey; account: AccountInfo<Buffer> }>> {
+  const [v3, v2] = await Promise.all(
+    [POSITION_NFT_V3_LEN, POSITION_NFT_V2_LEN].map((dataSize) =>
+      connection.getProgramAccounts(nftProgramId, {
+        filters: [{ dataSize }, { memcmp: { offset: NFT_LAST_HOLDER_OFF, bytes: wallet } }],
+      }),
+    ),
+  );
+  return [...v3, ...v2];
+}
 
 export interface HeldNftRaw {
   pubkey: PublicKey;
@@ -544,7 +575,7 @@ function notifyHeldNft(entry: HeldNftEntry): void {
   for (const l of entry.listeners) l();
 }
 
-/** Full byte-compare — held-NFT accounts are a handful of 199-byte records at
+/** Full byte-compare — held-NFT accounts are a handful of 199/239-byte records at
  *  most per wallet, so a byte compare is cheap and avoids parsing just to
  *  decide whether anything changed. */
 function heldNftArraysEqual(a: HeldNftRaw[] | null, b: HeldNftRaw[] | null): boolean {
@@ -611,12 +642,7 @@ export function triggerHeldNftScan(params: HeldNftScanParams): Promise<HeldNftRa
 
 async function runHeldNftScan(entry: HeldNftEntry, params: HeldNftScanParams): Promise<HeldNftRaw[]> {
   try {
-    const results = await params.connection.getProgramAccounts(params.nftProgramId, {
-      filters: [
-        { dataSize: POSITION_NFT_V17_LEN },
-        { memcmp: { offset: NFT_LAST_HOLDER_OFF, bytes: params.wallet.toBase58() } },
-      ],
-    });
+    const results = await getHeldNftProgramAccounts(params.connection, params.nftProgramId, params.wallet.toBase58());
     const mapped: HeldNftRaw[] = results.map((r) => ({
       pubkey: r.pubkey,
       data: r.account.data instanceof Uint8Array ? r.account.data : new Uint8Array(r.account.data),
