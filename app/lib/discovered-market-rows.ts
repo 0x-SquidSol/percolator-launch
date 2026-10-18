@@ -133,11 +133,12 @@ function discoveredToApiRow(
     const playgroundMeta = PLAYGROUND_SLAB_META[slabAddress];
     // Live engine stats parsed from the raw market-group bytes (see the extra
     // getMultipleAccountsInfo read in discoverMarketsOnChain). undefined when
-    // that read failed — fields then keep the previous zeroed placeholders.
+    // that read failed — OI then keeps the zeroed placeholders and insurance is null (unknown).
     const oiLong = lotNums.oiLong;
     const oiShort = lotNums.oiShort;
     const totalOi = lotNums.totalOi;
-    const insurance = v17Oi ? Number(v17Oi.insuranceBalance) : 0;
+    // A failed read leaves the fund unknown (null): Earn and my-markets show "—" for it, not $0.
+    const insurance = v17Oi ? Number(v17Oi.insuranceBalance) : null;
     return {
       slab_address: slabAddress,
       program_id: programId,

@@ -1489,7 +1489,7 @@ export async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise
           const slab = slabPk.toBase58();
           saveProofTx(slab, single.signature);
           if (keeperPayload) rememberRegistrationPayload(slab, keeperPayload);
-          saveRegisterRequest({ slabAddress: slab, mainnetCA: keeperRequestBase.mainnetCA, dexPoolAddress: keeperRequestBase.dexPoolAddress, dexType: keeperRequestBase.dexType, symbol: keeperRequestBase.symbol });
+          saveRegisterRequest({ slabAddress: slab, mainnetCA: keeperRequestBase.mainnetCA, dexPoolAddress: keeperRequestBase.dexPoolAddress, dexType: keeperRequestBase.dexType, symbol: keeperRequestBase.symbol, payloadRequired: true });
         }
         const msg =
           single.status === "unknown"
@@ -2179,7 +2179,7 @@ export function useCreateMarket() {
     };
     // Saved so a later visit can resume a registration this page did not finish
     // (lib/keeper-register-client.ts resumePendingRegistrations).
-    saveRegisterRequest({ slabAddress: slab, mainnetCA: request.mainnetCA, dexPoolAddress: request.dexPoolAddress, dexType: request.dexType, symbol: request.symbol });
+    saveRegisterRequest({ slabAddress: slab, mainnetCA: request.mainnetCA, dexPoolAddress: request.dexPoolAddress, dexType: request.dexType, symbol: request.symbol, payloadRequired: true });
     setState((s) => ({ ...s, keeperPhase: "connecting", keeperMessage: KEEPER_REGISTER_COPY.connecting }));
     void runKeeperRegistration({
       attempt: () => postKeeperRegistration(request),
@@ -3628,7 +3628,8 @@ export function useCreateMarket() {
               ],
             }));
             if (portfolioAccounts.length === 0) {
-              throw new Error("LP portfolio not found — Step 2 (LP init) may not have completed. Please retry from step 2.");
+              // Step 3 as the launch view counts (LaunchProgress shows step index + 1); LP init is index 2.
+              throw new Error("LP portfolio not found — Step 3 (LP init) may not have completed. Please retry from step 3.");
             }
             depositPortfolioPk = portfolioAccounts[0].pubkey;
           } else {

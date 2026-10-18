@@ -122,8 +122,9 @@ const DEVNET_ROW_TEMPLATE: Record<string, unknown> = {
   open_interest_short: 0,
   total_open_interest: 0,
   total_open_interest_usd: 0,
-  insurance_fund: 0,
-  insurance_balance: 0,
+  // Not read for these static rows: unknown (null), not an empty fund.
+  insurance_fund: null,
+  insurance_balance: null,
   total_accounts: 0,
   funding_rate: null,
   net_lp_pos: 0,
