@@ -13,6 +13,8 @@ import { NFT_MENU_COPY } from "@/components/trade/PositionNftMenu";
 import { useNftWrappedPosition } from "@/hooks/useNftWrappedPosition";
 import { isMockMode } from "@/lib/mock-mode";
 import { isMockSlab } from "@/lib/mock-trade-data";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
+import { STALE_SETTLE_COPY, marketResolvedV22 } from "@/lib/v22/stale-resolve";
 
 export interface OrderTicketClosePanelProps {
   slabAddress: string;
@@ -94,7 +96,7 @@ export const OrderTicketClosePanel: FC<OrderTicketClosePanelProps> = ({
   const closeTarget = portfolioPk ? { portfolioPk } : undefined;
   const { priceE6, priceUsd } = useLivePrice();
   // What the chain settles a close at: the stored mark, not the live-store price (matters when the price is behind).
-  const { config: slabConfig, wrapperConfigV17 } = useSlabState();
+  const { config: slabConfig, wrapperConfigV17, raw: marketRaw } = useSlabState();
   const settleMarkE6 = onChainMarkE6(slabConfig, wrapperConfigV17 !== null);
 
   const currentPriceE6 = priceE6 ?? 0n;
@@ -171,6 +173,20 @@ export const OrderTicketClosePanel: FC<OrderTicketClosePanelProps> = ({
           You have no open position in this market to close. Switch to Open to place a trade.
         </p>
         <LastCloseTxLink slabAddress={slabAddress} className="mt-3" />
+      </div>
+    );
+  }
+
+  // AUD-FC-A2: on a RESOLVED market a normal close builds a trade the program refuses (21, then 14: "Invalid engine configuration").
+  // The way out is CloseResolved, offered by the "Close and withdraw" button of the settled notice right above the ticket
+  // (components/trade/StaleSettleNotice.tsx, hooks/useStaleResolve.ts); the close form is not offered here.
+  if (isDevnetV22Enabled() && marketResolvedV22(marketRaw)) {
+    return (
+      <div data-testid="close-panel-settled" role="status" className="rounded-none border border-[var(--border)] bg-[var(--bg-surface)] px-3 py-6 text-center">
+        <p className="text-[12px] font-medium text-[var(--text)]">{STALE_SETTLE_COPY.settledLine}</p>
+        <p className="mx-auto mt-1.5 max-w-[260px] text-[11px] leading-relaxed text-[var(--text-secondary)]">
+          Use &ldquo;{STALE_SETTLE_COPY.settledButton}&rdquo; above.
+        </p>
       </div>
     );
   }
