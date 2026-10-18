@@ -5,7 +5,23 @@ import { getClientIp } from "@/lib/get-client-ip";
 import { createUpstashRateLimiter } from "@/lib/upstash-rate-limit";
 import { checkAdminSecret } from "@/lib/admin-secret";
 import { createAccountInfoCoalescer, parseAccountInfoParams, type Sender, type JsonRpcResponse } from "@/lib/rpc-coalesce";
-import { buildUpstreams, redactJson, safeErrorText, sharedUpstreamPool, type UpstreamSpec } from "@/lib/rpc-upstreams";
+import { buildUpstreams, redactJson, safeErrorText, sharedUpstreamPool, UpstreamRateLimitedError, type UpstreamSpec } from "@/lib/rpc-upstreams";
+import { RATE_LIMITED_RPC_ERROR } from "@/lib/server-rpc";
+
+/**
+ * AUD-RAPP #3563: results that mean "every upstream refused for rate". A single request answers HTTP 429 with one; a batch answers 429
+ * only when every item is one. Kept out of the JSON (a WeakSet), so the body is a plain JSON-RPC error either way.
+ */
+const rateLimitedResults = new WeakSet<object>();
+function upstreamFailureResult(err: unknown, id: unknown): Record<string, unknown> {
+  if (err instanceof UpstreamRateLimitedError) {
+    const r = { jsonrpc: "2.0", error: { ...RATE_LIMITED_RPC_ERROR }, id };
+    rateLimitedResults.add(r);
+    return r;
+  }
+  return { jsonrpc: "2.0", error: { code: -32603, message: "Upstream RPC request failed" }, id };
+}
+const isRateLimitedResult = (r: unknown): boolean => typeof r === "object" && r !== null && rateLimitedResults.has(r);
 import { recordAccountRead, recordRpcRequest, recordUpstreamCall, getRpcMetricsSnapshot } from "@/lib/rpc-metrics";
 
 export const dynamic = "force-dynamic";
@@ -466,11 +482,7 @@ async function processSingleRequest(
       return { ...(result as Record<string, unknown>), id: req.id };
     } catch (err) {
       console.error(`[/api/rpc] deduped request failed for method ${method}:`, safeErrorText(err, upstreamsFor(networkOverride)));
-      return {
-        jsonrpc: "2.0",
-        error: { code: -32603, message: "Upstream RPC request failed" },
-        id: req.id,
-      };
+      return upstreamFailureResult(err, req.id);
     }
   }
 
@@ -516,11 +528,7 @@ async function processSingleRequest(
     // JSON-RPC error object carrying this item's id instead, so the rest of the
     // batch — and single-request callers — still get a well-formed response.
     console.error(`[/api/rpc] processSingleRequest failed for method ${method}:`, safeErrorText(err, upstreamsFor(networkOverride)));
-    return {
-      jsonrpc: "2.0",
-      error: { code: -32603, message: "Upstream RPC request failed" },
-      id: req.id,
-    };
+    return upstreamFailureResult(err, req.id);
   } finally {
     inflightRequests.delete(cacheKey);
   }
@@ -719,7 +727,8 @@ export async function POST(req: NextRequest) {
         };
       });
 
-      return NextResponse.json(results, { status: 200 });
+      const allRateLimited = results.length > 0 && results.every(isRateLimitedResult);
+      return NextResponse.json(results, { status: allRateLimited ? 429 : 200 });
     }
 
     // --- Single request handling ---
@@ -732,7 +741,8 @@ export async function POST(req: NextRequest) {
     const result = await processSingleRequest(body as JsonRpcRequest, networkOverride);
     // JSON-RPC errors are application-level, not transport-level — always return HTTP 200.
     // Returning 400 for RPC errors breaks @solana/web3.js which treats non-2xx as network failures.
-    return NextResponse.json(result, { status: 200 });
+    // The one exception is a real rate limit from every upstream: HTTP 429, which web3.js handles as such (back-off).
+    return NextResponse.json(result, { status: isRateLimitedResult(result) ? 429 : 200 });
   } catch (error) {
     console.error("[/api/rpc] Error:", safeErrorText(error));
     return NextResponse.json(

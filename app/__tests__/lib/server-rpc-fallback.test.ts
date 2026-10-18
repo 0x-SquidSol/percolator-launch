@@ -78,3 +78,24 @@ describe("getServerConnection fallback", () => {
     __setSharedUpstreamPoolForTest(null);
   });
 });
+
+describe("getServerConnection: every upstream rate-limiting us is a 429, not a generic failure (AUD-RAPP #3563)", () => {
+  it("the rotating fetch answers HTTP 429, so disableRetryOnRateLimit fails fast with a 429 and no upstream detail", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      const { method: m, id } = JSON.parse(String(init?.body)) as { method: string; id: unknown };
+      if (m === "getGenesisHash" && u === FB) return rpc(CLUSTER_GENESIS.devnet, id);
+      return new Response(JSON.stringify({ error: { code: -32429, message: `max usage ${u}` } }), { status: 429 });
+    }) as typeof fetch;
+    vi.resetModules();
+    vi.stubEnv("DEVNET_RPC_URL", PRIMARY);
+    vi.stubEnv("DEVNET_RPC_FALLBACK_URLS", FB);
+    vi.stubEnv("NEXT_PUBLIC_DEFAULT_NETWORK", "devnet");
+    const m = await import("@/lib/server-rpc");
+    const c = m.getServerConnection("confirmed", { disableRetryOnRateLimit: true });
+    const e = await c.getSlot().catch((x) => x as Error);
+    expect(e).toBeInstanceOf(Error);
+    expect(e.message).toMatch(/429/);
+    expect(`${e.message} ${e.stack ?? ""}`).not.toMatch(/primary-rpc|PRIMARYKEY|fallback-one|SECRETPATH/);
+  });
+});

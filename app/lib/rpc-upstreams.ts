@@ -17,6 +17,11 @@
  *    ambiguous failure. At most 3 upstream attempts and a 20 s budget per request; redirects are refused.
  *    A failed upstream is cooled down (30 s, doubling to 5 min); once its cooldown ends it is tried FIRST again (the primary re-probe), and
  *    one success resets it. When every upstream is cooling they are all tried anyway, soonest-ready first.
+ *    A DEFINITE refusal (401/403/429, a quota code, a non-JSON 2xx) cools at once. An AMBIGUOUS one (timeout, network error, 408, 5xx)
+ *    cools only on a second strike within {@link STRIKE_WINDOW_MS}, and never when the request was a heavy read (getProgramAccounts
+ *    and friends): a client can make those slow on purpose, and must not be able to demote the primary for everyone that way.
+ *    When every attempt was refused for RATE (429 / -32429 / -32005) the pool throws {@link UpstreamRateLimitedError}, so callers can
+ *    answer HTTP 429 (web3.js's own back-off and `disableRetryOnRateLimit`, the app's "network busy" line) instead of a generic failure.
  *  - The method allowlist, batch limit and rate limit live in the route and apply before any upstream is chosen, so they are identical
  *    on every upstream.
  *  - Nothing that identifies an upstream (URL, host, key) is ever returned to a caller, put in a header, or logged: failures surface as
@@ -92,13 +97,24 @@ export class UpstreamUnavailableError extends Error {
   }
 }
 
+/** Every attempt was refused for rate (HTTP 429 or a quota code). Still generic: no upstream detail. */
+export class UpstreamRateLimitedError extends UpstreamUnavailableError {
+  constructor() {
+    super();
+    this.name = "UpstreamRateLimitedError";
+  }
+}
+
 /** An upstream that cannot serve us right now (counts toward its cooldown). Never carries upstream detail. */
 class UpstreamFailure extends Error {
   /** The request may have been processed (timeout, dropped connection, 5xx after the body was sent). */
   readonly ambiguous: boolean;
-  constructor(ambiguous: boolean) {
+  /** Refused for rate: HTTP 429 or a quota JSON-RPC code. */
+  readonly rateLimited: boolean;
+  constructor(ambiguous: boolean, rateLimited = false) {
     super("upstream failure");
     this.ambiguous = ambiguous;
+    this.rateLimited = rateLimited;
   }
 }
 
@@ -122,6 +138,28 @@ function isQuotaItem(x: unknown): boolean {
 export function isQuotaBody(body: unknown): boolean {
   if (Array.isArray(body)) return body.length > 0 && body.every(isQuotaItem);
   return isQuotaItem(body);
+}
+
+/**
+ * Allowlisted reads a client can make slow or heavy on purpose (large scans, history). Their timeouts / 5xx never cool an upstream:
+ * the upstream may be fine and the request the problem (AUD-RAPP #3563 L2).
+ */
+export const HEAVY_RPC_METHODS: ReadonlySet<string> = new Set([
+  "getProgramAccounts",
+  "getSignaturesForAddress",
+  "getTransaction",
+  "getBlock",
+  "getMultipleAccounts",
+  "getTokenAccountsByOwner",
+  "getTokenLargestAccounts",
+]);
+
+/** Two ambiguous failures within this window cool an upstream; one does not. */
+export const STRIKE_WINDOW_MS = 60_000;
+
+function isHeavyBody(body: unknown): boolean {
+  const one = (x: unknown): boolean => !!x && typeof x === "object" && HEAVY_RPC_METHODS.has(String((x as { method?: unknown }).method));
+  return Array.isArray(body) ? body.some(one) : one(body);
 }
 
 /** Methods that change state: never re-sent after an ambiguous failure (the client checks getSignatureStatuses instead). */
@@ -172,6 +210,8 @@ export interface PoolDeps {
 interface Health {
   fails: number;
   coolUntil: number;
+  /** Time of an ambiguous failure not yet acted on (the first strike), or 0. */
+  strikeAt: number;
 }
 
 export interface PoolResult {
@@ -210,8 +250,22 @@ export class UpstreamPool {
     return this.health.get(u.id)?.coolUntil ?? 0;
   }
 
-  private markFail(u: UpstreamSpec): void {
-    const h = this.health.get(u.id) ?? { fails: 0, coolUntil: 0 };
+  /**
+   * Count a failure against `u`. A definite refusal cools at once. An ambiguous one is a first strike (no cooldown), and cools only if
+   * another ambiguous failure lands within STRIKE_WINDOW_MS; for a heavy read it is ignored entirely.
+   */
+  private markFail(u: UpstreamSpec, how: { ambiguous: boolean; heavy?: boolean } = { ambiguous: false }): void {
+    const h = this.health.get(u.id) ?? { fails: 0, coolUntil: 0, strikeAt: 0 };
+    if (how.ambiguous) {
+      if (how.heavy) return;
+      const now = this.now();
+      if (h.strikeAt === 0 || now - h.strikeAt > STRIKE_WINDOW_MS) {
+        h.strikeAt = now;
+        this.health.set(u.id, h);
+        return;
+      }
+    }
+    h.strikeAt = 0;
     h.fails += 1;
     h.coolUntil = this.now() + Math.min(this.base * 2 ** (h.fails - 1), this.max);
     this.health.set(u.id, h);
@@ -246,7 +300,7 @@ export class UpstreamPool {
       throw new UpstreamFailure(true); // timeout, reset, DNS, redirect: the body may or may not have been processed
     }
     const status = typeof res.status === "number" ? res.status : 200;
-    if (COOLING_STATUS(status)) throw new UpstreamFailure(!DEFINITE_REJECT_STATUS(status));
+    if (COOLING_STATUS(status)) throw new UpstreamFailure(!DEFINITE_REJECT_STATUS(status), status === 429);
     let json: unknown;
     try {
       json = await res.json();
@@ -254,7 +308,7 @@ export class UpstreamPool {
       if (status >= 200 && status < 300) throw new UpstreamFailure(true); // a 2xx that is not JSON: a broken upstream
       throw new RequestRefused(); // a plain-text 4xx: the request's own fault
     }
-    if (isQuotaBody(json)) throw new UpstreamFailure(false); // refused before processing (quota / unhealthy)
+    if (isQuotaBody(json)) throw new UpstreamFailure(false, true); // refused before processing (quota / unhealthy)
     return { json, status };
   }
 
@@ -285,7 +339,7 @@ export class UpstreamPool {
         if (!ok) this.warn(`[rpc-upstreams] a ${network} fallback answered from a different cluster: ignored`);
         return ok;
       } catch (e) {
-        if (e instanceof UpstreamFailure) this.markFail(u); // could not tell: not cached, tried again after the cooldown
+        if (e instanceof UpstreamFailure) this.markFail(u, { ambiguous: e.ambiguous }); // could not tell: not cached, tried again later
         return false;
       } finally {
         this.probing.delete(u.id);
@@ -306,6 +360,10 @@ export class UpstreamPool {
   async postRaw(upstreams: readonly UpstreamSpec[], body: unknown, network: RpcNetwork, opts: { signal?: AbortSignal } = {}): Promise<PoolResult> {
     const started = this.now();
     const mutating = isMutatingBody(body);
+    const heavy = isHeavyBody(body);
+    // All-429: true while every attempt so far was refused for rate.
+    let failures = 0;
+    let rateLimited = 0;
     const ready = upstreams.filter((u) => !this.isCooling(u));
     const order = ready.length > 0 ? ready : [...upstreams].sort((a, b) => this.coolUntil(a) - this.coolUntil(b));
     let attempts = 0;
@@ -332,13 +390,17 @@ export class UpstreamPool {
         return r;
       } catch (e) {
         if (e instanceof RequestRefused) break; // the request's own fault: no cooldown, no other upstream
-        this.markFail(u);
+        const ambiguous = e instanceof UpstreamFailure ? e.ambiguous : true;
+        this.markFail(u, { ambiguous, heavy });
+        failures += 1;
+        if (e instanceof UpstreamFailure && e.rateLimited) rateLimited += 1;
         if (mutating) {
           if (e instanceof UpstreamFailure && e.ambiguous) break; // may have been processed: never re-send
           resent = true;
         }
       }
     }
+    if (failures > 0 && rateLimited === failures) throw new UpstreamRateLimitedError();
     throw new UpstreamUnavailableError();
   }
 
