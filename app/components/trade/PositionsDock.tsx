@@ -40,6 +40,9 @@ import { AddMarginModal } from "@/components/trade/AddMarginModal";
 import { PnlShareButton } from "@/components/share/PnlShareButton";
 import { isPnlPoolCapped, poolPayableCapacity, type PnlCardData } from "@/lib/pnl-card";
 import { useSlabState } from "@/components/providers/SlabProvider";
+import { StaleSettleNotice } from "@/components/trade/StaleSettleNotice";
+import { marketResolvedV22 } from "@/lib/v22/stale-resolve";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { useBandRentView } from "@/hooks/useBandRentView";
 import { useLotTradingGuard } from "@/hooks/useLotTradingGuard";
 import { HoldingFeeChip } from "@/components/v22/HoldingFeeChip";
@@ -190,6 +193,8 @@ const PositionRow: FC<{ slabAddress: string; wrappedRow?: boolean }> = memo(func
   const lotExp = lotExpOf(slabRawForLot);
 
   const [showCloseModal, setShowCloseModal] = useState(false);
+  // A Resolved market cannot take a normal close (the program answers 21 then 14): the notice below carries the exit (CloseResolved).
+  const marketIsResolved = isDevnetV22Enabled() && marketResolvedV22(slabRawForLot);
   const [showMarginModal, setShowMarginModal] = useState(false);
 
   const lpEntry = useMemo(() => accounts.find(({ account }) => account.kind === AccountKind.LP) ?? null, [accounts]);
@@ -611,7 +616,7 @@ const PositionRow: FC<{ slabAddress: string; wrappedRow?: boolean }> = memo(func
                     // the wallet popup with zero blocking round-trips.
                     onClick={() => { resetPhase(); prewarmClose(closeTarget); setShowCloseModal(true); }}
                     data-testid="position-close"
-                    disabled={closeLoading || lpUnderfunded || !hasValidMark || engineStale || bandCloseBlocked || lotGuard !== null}
+                    disabled={closeLoading || lpUnderfunded || !hasValidMark || engineStale || bandCloseBlocked || lotGuard !== null || marketIsResolved}
                     title={!hasValidMark ? "Waiting for price data…" : engineStale ? catchUpAvailableLine(bandCatchUpMs(bandView), "close") : bandCloseBlocked ? V22_COPY.band.catchingUp : lotGuard ?? undefined}
                     className="rounded-none border border-[var(--short)]/30 px-3 py-1 text-[9px] font-medium uppercase tracking-[0.1em] text-[var(--short)] transition-colors duration-150 hover:bg-[var(--short)]/8 hover:border-[var(--short)]/50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
@@ -642,6 +647,7 @@ const PositionRow: FC<{ slabAddress: string; wrappedRow?: boolean }> = memo(func
           </tbody>
         </table>
       </div>
+      {!wrappedRow && isDevnetV22Enabled() && <StaleSettleNotice slabAddress={slabAddress} hasFunds canAct compact />}
       {!wrappedRow && (
         <div className="px-4 py-2">
           <WarmupProgress slabAddress={slabAddress} accountIdx={activeInfo.idx} />
