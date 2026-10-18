@@ -1216,6 +1216,10 @@ export async function sendTx({
             if (sig && lastError && (lastError as { signature?: unknown }).signature === undefined) {
               (lastError as Error & { signature?: string }).signature = sig;
             }
+            // The blockhash it was signed with, so a caller can wait for the tx to land or provably expire (awaitAmbiguousOutcome).
+            if (sentBlockhash && lastError && (lastError as { blockhash?: unknown }).blockhash === undefined) {
+              (lastError as Error & { blockhash?: string }).blockhash = sentBlockhash;
+            }
             throw lastError;
           }
         }
