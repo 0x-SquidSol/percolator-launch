@@ -537,11 +537,15 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
               const leg = parsePortfolio(data).legs.find((l) => l.active);
               if (!leg) return 0n;
               const eng = slabInfo ? decodeMarketEngineView(new Uint8Array(slabInfo.data)) : null;
-              if (!eng) throw new Error("market unreadable");
+              if (!eng) {
+                closeLimitFromEngine(null, closeSize); // the market (so the price) is unreadable: the same calm refusal as the limit re-read
+                throw new Error("market unreadable");
+              }
               const eff = effectiveLeg(eng, leg);
               if (eff.kind === "invalid") throw new Error("leg invalid");
               return eff.kind === "reset" ? 0n : eff.signedQ;
-            } catch {
+            } catch (e) {
+              if (e instanceof UserFacingError) throw e;
               throw new UserFacingError("Could not verify your position before trying again, so nothing more was sent. Check your position, then retry.");
             }
           };
@@ -577,20 +581,18 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
               if (closeState.alreadyClosed) return g;
               closeLimitPriceE6 = closeLimitPriceE6 !== undefined ? await rereadCloseLimit() : undefined;
             }
-            try {
-              return await trade({
-                lpIdx,
-                userIdx,
-                size: closeSize,
-                ...(targetPk && { portfolioPk: targetPk }),
-                sizes: closeLegs,
-                ...(closeLimitPriceE6 !== undefined && { limitPriceE6: closeLimitPriceE6 }),
-              });
-            } catch (e) {
+            return trade({
+              lpIdx,
+              userIdx,
+              size: closeSize,
+              ...(targetPk && { portfolioPk: targetPk }),
+              sizes: closeLegs,
+              ...(closeLimitPriceE6 !== undefined && { limitPriceE6: closeLimitPriceE6 }),
+            }).catch((e: unknown) => {
               const sg = signatureFromError(errorText(e));
               if (sg) failedSigs.push(sg);
               throw e;
-            }
+            });
           };
           try {
             sig = await withTransientRetry(sendCloseOnce, { maxRetries: 2, delayMs: 3000 });
