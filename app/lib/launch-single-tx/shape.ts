@@ -46,6 +46,9 @@ const V22_INIT_BOND_TRANCHE_TAG = 107;
 /** Wrapper tag 122 (v2.2 InitLpShareMetadata, the Earn share token's name); same number as IX_TAG_V22.InitLpShareMetadata. */
 const V22_INIT_LP_SHARE_METADATA_TAG = 122;
 
+/** Wrapper tag 38 (ConfigurePermissionlessResolve): the stale window every v2.2 market is launched with. */
+const V22_CONFIGURE_PERMISSIONLESS_RESOLVE_TAG = 38;
+
 const WRAPPER_TAGS = {
   InitMarket: IX_TAG.InitMarket,
   SetNftProgramId: IX_TAG.SetNftProgramId,
@@ -71,6 +74,7 @@ export type LaunchIxKind =
   | `wrapper.${WrapperName}`
   | "wrapper.InitBondTranche"
   | "wrapper.InitLpShareMetadata"
+  | "wrapper.ConfigurePermissionlessResolve"
   | "wrapper.other"
   | "stake.InitPool"
   | "stake.BindInsuranceAuthority"
@@ -88,6 +92,7 @@ export const MARKETAUTH_GATED: readonly LaunchIxKind[] = [
   "wrapper.InitVaultLp",
   "wrapper.UpdateFeeSplit",
   "wrapper.InitBondTranche",
+  "wrapper.ConfigurePermissionlessResolve",
   // Only the ticker form is marketauth-gated, but the launch never sends either form after the rotation.
   "wrapper.InitLpShareMetadata",
 ];
@@ -114,6 +119,8 @@ export function classifyLaunchIx(ix: NeutralIx, p: LaunchPrograms): LaunchIxKind
     if (isDevnetV22Enabled() && tag === V22_INIT_BOND_TRANCHE_TAG) return "wrapper.InitBondTranche";
     // v2.2 (flag-gated): naming the Earn share token, right after CreateLpVault.
     if (isDevnetV22Enabled() && tag === V22_INIT_LP_SHARE_METADATA_TAG) return "wrapper.InitLpShareMetadata";
+    // v2.2 (flag-gated): the stale window, right after InitMarket.
+    if (isDevnetV22Enabled() && tag === V22_CONFIGURE_PERMISSIONLESS_RESOLVE_TAG) return "wrapper.ConfigurePermissionlessResolve";
     return "wrapper.other";
   }
   if (ix.programId === p.stake) {
@@ -141,6 +148,8 @@ export interface LaunchShapeOptions {
    * Earn-seed segment (after 107), exactly where the segment is moved to (see lib/v22/launch-wire.ts). Absent = the v2.1 shape.
    */
   shareName?: boolean;
+  /** v2.2: ConfigurePermissionlessResolve (tag 38) right after the memo / SetNftProgramId, before the keeper co-sign pair. */
+  staleResolve?: boolean;
 }
 
 /** The exact kind sequence of a single-transaction P3 launch. */
@@ -152,6 +161,7 @@ export function expectedLaunchShape(o: LaunchShapeOptions): LaunchIxKind[] {
     "wrapper.InitMarket",
     "wrapper.SetNftProgramId",
     ...(o.memo ? (["memo"] as const) : []),
+    ...(o.staleResolve ? (["wrapper.ConfigurePermissionlessResolve"] as const) : []),
     ...(o.cosign ? (["wrapper.ConfigureAuthMark", "wrapper.UpdateAssetAuthority"] as const) : []),
     "wrapper.TopUpInsurance",
     "wrapper.CreateLpVault",
@@ -278,6 +288,7 @@ export function launchBundleViolations(ixs: readonly NeutralIx[], ctx: LaunchBun
     feeSplit: kinds.includes("wrapper.UpdateFeeSplit"),
     bond: kinds.includes("wrapper.InitBondTranche"),
     shareName: kinds.includes("wrapper.InitLpShareMetadata"),
+    staleResolve: kinds.includes("wrapper.ConfigurePermissionlessResolve"),
   };
   const expected = expectedLaunchShape(opts);
   if (kinds.length !== expected.length || kinds.some((k, i) => k !== expected[i])) {
@@ -302,6 +313,12 @@ export function launchBundleViolations(ixs: readonly NeutralIx[], ctx: LaunchBun
   const createLp = first("wrapper.CreateLpVault");
   const bindLp = first("wrapper.InitVaultLp");
   if (createLp < 0 || bindLp < 0 || bindLp < createLp) v.push("InitVaultLp must follow CreateLpVault");
+
+  // v2.2: EVERY launch sets the stale window (S1-7). Without it permissionless_resolve_stale_slots stays 0 and a stale mark stays tradable.
+  if (isDevnetV22Enabled() && !kinds.includes("wrapper.ConfigurePermissionlessResolve")) v.push("a v2.2 launch must set the stale window (ConfigurePermissionlessResolve, tag 38)");
+  kinds.forEach((k, i) => {
+    if (k === "wrapper.ConfigurePermissionlessResolve") v.push(...staleResolveViolations(ixs[i]!, i, ctx));
+  });
 
   // v2.2: the share-token naming is bound to THIS market, funded and signed only by the creator, and carries a ticker the program accepts.
   kinds.forEach((k, i) => {
@@ -409,6 +426,28 @@ export function launchBundleViolations(ixs: readonly NeutralIx[], ctx: LaunchBun
       if (a.writable) v.push("the keeper is writable");
     }
   }
+  return v;
+}
+
+/** Tag 38: signed by the creator (marketauth at launch), on THIS market, exactly 18,000 stale slots, delay 216,000, frontier 2, sequence 1. */
+export function staleResolveViolations(ix: NeutralIx, i: number, ctx: LaunchBundleContext): string[] {
+  const v: string[] = [];
+  const d = ix.data;
+  if (d.length !== 33) return [`ix ${i}: ConfigurePermissionlessResolve data is not 33 bytes`];
+  if (ix.accounts.length !== 2) v.push(`ix ${i}: ConfigurePermissionlessResolve has ${ix.accounts.length} accounts (expected 2)`);
+  else {
+    if (ix.accounts[0]!.key !== ctx.payer || !ix.accounts[0]!.signer) v.push(`ix ${i}: ConfigurePermissionlessResolve must be signed by the creator`);
+    if (ix.accounts[1]!.key !== ctx.slab) v.push(`ix ${i}: ConfigurePermissionlessResolve is not for this market`);
+  }
+  const frontier = readU64(d, 1);
+  const stale = readU64(d, 9);
+  const delay = readU64(d, 17);
+  const seq = readU64(d, 25);
+  // A fresh one-asset launch: frontier = slots + 1 = 2 (initialAssetGenerationFrontier(1)), window and delay exactly the seed kit's.
+  if (frontier !== 2n) v.push(`ix ${i}: ConfigurePermissionlessResolve frontier is ${frontier}, expected 2 on a fresh one-asset market`);
+  if (stale !== 18_000n) v.push(`ix ${i}: ConfigurePermissionlessResolve stale window is ${stale}, expected 18000`);
+  if (delay !== 216_000n) v.push(`ix ${i}: ConfigurePermissionlessResolve force-close delay is ${delay}, expected 216000`);
+  if (seq !== 1n) v.push(`ix ${i}: ConfigurePermissionlessResolve policy sequence is ${seq}, expected 1 on a fresh market`);
   return v;
 }
 

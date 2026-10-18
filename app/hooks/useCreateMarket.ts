@@ -124,7 +124,7 @@ import {
 } from "@/lib/create-market-v18";
 import { buildInitMatcherCtxArgs } from "@/lib/matcher-params";
 import { validateGrowthLaunch, type GrowthLaunch } from "@/lib/v21/growth-launch";
-import { buildLaunchBondIx, bondBundleTooLargeMessage, bondNeedsSingleTxMessage, encodeInitMarketDataWithV22, placeBondTranche } from "@/lib/v22/launch-wire";
+import { staleResolveLaunchIxs, staleWindowRepair, buildConfigurePermissionlessResolveIxV22, buildLaunchBondIx, bondBundleTooLargeMessage, bondNeedsSingleTxMessage, encodeInitMarketDataWithV22, placeBondTranche } from "@/lib/v22/launch-wire";
 import type { V22LaunchParams } from "@/lib/v22/launch-plan";
 import { V21_COPY } from "@/lib/v21/copy";
 import { buildP3BindIxs, canonicalVaultLpMatcher, p3BindProgress, validateP3Wizard } from "@/lib/limits/p3-wizard";
@@ -2234,6 +2234,14 @@ export function useCreateMarket() {
       // anything is broadcast — a throw later would leave a half-built market (M4p sits after
       // M4a) and the batched path would fall back to the sequential one first.
       if (params.p3) {
+        // The vault-LP bind (the LAST of the sequential steps) needs the wrapper's canonical matcher. Check it now: a misconfigured
+        // matcher used to surface only at step 6, after five steps had landed and left a half-built market.
+        try {
+          canonicalVaultLpMatcher(getConfig().matcherProgramId);
+        } catch (e) {
+          setState((s) => ({ ...s, error: errorText(e) }));
+          return;
+        }
         const issue = validateP3Wizard({
           juniorFloorBps: params.p3.juniorFloorBps,
           juniorAtoms: params.p3.juniorAtoms,
@@ -2651,7 +2659,21 @@ export function useCreateMarket() {
             }
 
             if (isInitialized) {
-              // Market already initialized — skip to step 1
+              // Market already initialized — skip to step 1.
+              // v2.2: a market initialised without the stale window (permissionless_resolve_stale_slots == 0) gets it now, while the
+              // creator is still marketauth (before the stake pool rotates it). A failure here never stops the resume.
+              const repair = staleWindowRepair(new Uint8Array(existingAccount.data), wallet.publicKey);
+              if (repair) {
+                try {
+                  await sendTx({
+                    simulateBeforeSign: true, connection, wallet, abortSignal,
+                    instructions: [buildConfigurePermissionlessResolveIxV22(programId, wallet.publicKey, slabPk, repair.assetSlots)],
+                    computeUnits: 200_000,
+                  });
+                } catch (e) {
+                  console.warn("[useCreateMarket] resume: stale-window repair skipped:", errorText(e));
+                }
+              }
               setState((s) => ({
                 ...s,
                 txSigs: [...s.txSigs, "skipped-already-initialized"],
@@ -2695,7 +2717,7 @@ export function useCreateMarket() {
                 connection, wallet,
                 abortSignal,
                 // UX WP-7: the keeper-registration memo rides in the InitMarket tx.
-                instructions: [createAtaIx, initMarketIx, ...(await seqKeeperMemo(wallet.publicKey, slabPk))],
+                instructions: [createAtaIx, initMarketIx, ...(await seqKeeperMemo(wallet.publicKey, slabPk)), ...staleResolveLaunchIxs(programId, wallet.publicKey, slabPk, Number(v17InitArgs.maxPortfolioAssets))],
                 computeUnits: 250_000,
               });
               if (isKeeperOracle && params.dexPoolAddress) saveProofTx(slabPk.toBase58(), sig);
@@ -2787,7 +2809,7 @@ export function useCreateMarket() {
               wallet,
               abortSignal,
               // UX WP-7: the keeper-registration memo rides in the InitMarket tx.
-              instructions: [createAccountIx, createAtaIx, initMarketIx, ...(await seqKeeperMemo(wallet.publicKey, slabPk))],
+              instructions: [createAccountIx, createAtaIx, initMarketIx, ...(await seqKeeperMemo(wallet.publicKey, slabPk)), ...staleResolveLaunchIxs(programId, wallet.publicKey, slabPk, Number(v17InitArgs.maxPortfolioAssets))],
               computeUnits: 300_000,
               signers: [slabKp],
               maxRetries: 0, // Don't auto-retry createAccount — use manual retry instead

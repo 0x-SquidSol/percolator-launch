@@ -63,6 +63,7 @@ import {
   type SlabTierKey,
 } from "@percolatorct/sdk";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
+import { staleResolveLaunchIxs } from "@/lib/v22/launch-wire";
 import { portfolioAccountLen } from "@/lib/v22/layout";
 import { getConfig } from "@/lib/config";
 import { getServerConnection } from "@/lib/server-rpc";
@@ -396,6 +397,9 @@ export async function POST(req: NextRequest) {
     tx0.add(ComputeBudgetProgram.requestHeapFrame({ bytes: 131072 }));
     tx0.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }));
     tx0.add(createSlabIx, createVaultAtaIx, seedTransferIx, initMarketIx, setNftProgramIdIx);
+    // v2.2 (AUD S1-7): InitMarket writes permissionless_resolve_stale_slots = 0, so a market launched without the stale window never
+    // becomes resolvable by anyone. Every v2.2 launch path sets it right after InitMarket, signed by the deployer (still marketauth).
+    for (const ix of staleResolveLaunchIxs(programId, deployerPk, slabPk, assetSlots)) tx0.add(ix);
 
     // ═══════════════════════════════════════════════════════════════════════════
     // TX 1: LP Portfolio Init (v17 replacement for pre-LP crank)
