@@ -1,5 +1,6 @@
 import { Connection, Transaction, type Commitment, type Signer } from "@solana/web3.js";
 import { getNetwork, getRpcEndpoint } from "./config";
+import { buildUpstreams, redactJson, sharedUpstreamPool, type RpcNetwork, type UpstreamSpec } from "./rpc-upstreams";
 
 /**
  * Server-side Solana Connection for API routes.
@@ -22,6 +23,19 @@ import { getNetwork, getRpcEndpoint } from "./config";
  * SERVER-ONLY: reads `process.env.DEVNET_RPC_URL` / `RPC_UPSTREAM_ORIGIN`, which
  * are undefined in the browser. Client code must keep using the `/api/rpc` proxy.
  */
+/**
+ * The `fetch` handed to web3.js when fallbacks exist: it ignores the URL web3.js built (the pool picks the upstream), returns the answering
+ * upstream's real status, honours the caller's abort signal, and throws one generic error when nothing could answer.
+ */
+export function makeRotatingFetch(upstreams: readonly UpstreamSpec[], cluster: RpcNetwork): typeof fetch {
+  return async (_input, init) => {
+    // web3.js sends the JSON-RPC body as a string. Anything else is not ours to rotate.
+    if (typeof init?.body !== "string") throw new Error("RPC request unavailable");
+    const r = await sharedUpstreamPool().postRaw(upstreams, JSON.parse(init.body) as unknown, cluster, init.signal ? { signal: init.signal } : {});
+    return new Response(JSON.stringify(redactJson(r.json, upstreams)), { status: r.status, headers: { "content-type": "application/json" } });
+  };
+}
+
 export function getServerConnection(
   commitment: Commitment = "confirmed",
   opts: { disableRetryOnRateLimit?: boolean } = {},
@@ -34,8 +48,14 @@ export function getServerConnection(
   const origin =
     (process.env.RPC_UPSTREAM_ORIGIN ?? "").trim() ||
     (net === "devnet" ? "https://trade.padre.gg" : "");
+  // Ordered fallback (lib/rpc-upstreams.ts): when the primary is dead (quota, 429, 5xx, network) the next upstream answers. Only when a
+  // fallback is configured (devnet: the public RPC unless DEVNET_RPC_FALLBACK_URLS says otherwise); otherwise the plain Connection.
+  const cluster = net === "mainnet" ? "mainnet" : "devnet";
+  const upstreams = buildUpstreams(cluster, { url, headers: { "Content-Type": "application/json", ...(origin ? { Origin: origin } : {}) } });
+  const rotating = upstreams.length > 1 ? makeRotatingFetch(upstreams, cluster) : undefined;
   return new Connection(url, {
     commitment,
+    ...(rotating ? { fetch: rotating } : {}),
     // Opt-in per call (default unchanged): web3.js otherwise retries HTTP 429 with backoff, which a
     // latency-sensitive probe must not do.
     ...(opts.disableRetryOnRateLimit ? { disableRetryOnRateLimit: true } : {}),
