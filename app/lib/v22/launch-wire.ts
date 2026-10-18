@@ -21,6 +21,8 @@ import { withBoundVaultLpTailP3 } from "./sdk/records/p3-vault-lp";
 import { buildInitBondTrancheIxV22, encodeInitMarketV22, IX_TAG_V22, type InitBondTrancheArgs } from "./sdk";
 import type { V22LaunchParams } from "./launch-plan";
 import { isDevnetV22Enabled } from "./flag";
+import { resolveMarketGeometry } from "./sdk/layout";
+import { parseWrapperConfigV17 } from "./sdk/slab";
 
 /** Tag numbers the reorder keys on (wrapper tags). */
 const TAG_CREATE_LP_VAULT = 74;
@@ -126,4 +128,22 @@ export function buildConfigurePermissionlessResolveIxV22(programId: PublicKey, m
 /** The v2.2 launch ALWAYS sets the stale window (S1-7: a market left at 0 never becomes resolvable by anyone). Empty with the flag off. */
 export function staleResolveLaunchIxs(programId: PublicKey, marketauth: PublicKey, market: PublicKey, assetSlots: number): TransactionInstruction[] {
   return isDevnetV22Enabled() ? [buildConfigurePermissionlessResolveIxV22(programId, marketauth, market, assetSlots)] : [];
+}
+
+/**
+ * Resume repair (AUD R-app-3562 L2): a market initialised without the stale window (by an earlier client or path) has
+ * `permissionless_resolve_stale_slots == 0`. While the creator is still marketauth, tag 38 can still set it. Returns the slot count to build
+ * the instruction with, or null when nothing is to be done (flag off, not a v2.2 market, window already set, or marketauth moved on,
+ * after which only that authority could set it).
+ */
+export function staleWindowRepair(marketData: Uint8Array | null | undefined, creator: PublicKey): { assetSlots: number } | null {
+  if (!isDevnetV22Enabled() || !marketData) return null;
+  try {
+    const g = resolveMarketGeometry(marketData, { parser: "staleWindowRepair", strictLength: false });
+    const cfg = parseWrapperConfigV17(marketData);
+    if (cfg.permissionlessResolveStaleSlots !== 0n || !cfg.marketauth.equals(creator) || g.slotCount < 1) return null;
+    return { assetSlots: g.slotCount };
+  } catch {
+    return null;
+  }
 }

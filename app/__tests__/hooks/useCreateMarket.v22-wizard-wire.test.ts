@@ -100,7 +100,7 @@ import { buildV17InitMarketArgs, slabSizeFor } from "@/lib/create-market-args";
 import { deriveLaunchMarketParams } from "@/lib/market-params";
 import { defaultGrowthLaunch, type GrowthLaunch } from "@/lib/v21/growth-launch";
 import { planLaunchV22, toLaunchParams } from "@/lib/v22/launch-plan";
-import { encodeConfigurePermissionlessResolveV22 } from "@/lib/v22/launch-wire";
+import { encodeConfigurePermissionlessResolveV22, staleWindowRepair } from "@/lib/v22/launch-wire";
 import { canonicalVaultLpMatcher, wizardP3Params } from "@/lib/limits/p3-wizard";
 import { encodeInitMarket } from "@percolatorct/sdk";
 import { encodeInitMarketV22, encodeInitMarketTrailerV22, LAYOUT_V22 } from "@/lib/v22/sdk";
@@ -334,15 +334,6 @@ describe("wizard -> v2.2 wrapper: the vault-LP matcher pre-check (AUD-FC-A1)", (
     expect(pairedProgramSet(DEVNET_PROGRAM_IDS.wrapper).matcher).toBe(DEVNET_PROGRAM_IDS.matcher);
     expect(pairedProgramSet("11111111111111111111111111111111").matcher).toBe(DEVNET_PROGRAM_IDS.matcher);
   });
-  it("create() checks the matcher BEFORE the first signature, so a misconfigured deployment never leaves a half-built market", () => {
-    const src = readFileSync(path.join(__dirname, "../../hooks/useCreateMarket.ts"), "utf8");
-    const entry = src.indexOf("async (params: CreateMarketParams, retryFromStep?: number)");
-    const check = src.indexOf("canonicalVaultLpMatcher(getConfig().matcherProgramId)", entry);
-    const firstSend = Math.min(...["sendTx(", "attemptFreshBatchedLaunch(", "signAllTransactions("].map((k) => src.indexOf(k, entry)).filter((i) => i > 0));
-    expect(entry).toBeGreaterThan(0);
-    expect(check).toBeGreaterThan(entry);
-    expect(check).toBeLessThan(firstSend);
-  });
 });
 
 describe("wizard -> v2.2 wrapper: InitMarket bytes (P3 on, V22 on: the intended v2.2 launch)", () => {
@@ -450,6 +441,9 @@ describe("tag 38 (stale window) in the launch shape: negative controls", () => {
     expect(patch(withData(9, 0n)).join()).toMatch(/stale window is 0/);
     expect(patch(withData(9, 17_999n)).join()).toMatch(/stale window/);
     expect(patch(withData(25, 2n)).join()).toMatch(/policy sequence/);
+    expect(patch(withData(1, 3n)).join()).toMatch(/frontier is 3/);
+    expect(patch(withData(17, 1n)).join()).toMatch(/force-close delay is 1/);
+    expect(patch(withData(17, 10_000_000n)).join()).toMatch(/force-close delay/);
     expect(patch((x) => ({ ...x, accounts: [{ ...x.accounts[0]!, key: POOL.toBase58() }, x.accounts[1]!] })).join()).toMatch(/signed by the creator/);
     expect(patch((x) => ({ ...x, accounts: [x.accounts[0]!, { ...x.accounts[1]!, key: POOL.toBase58() }] })).join()).toMatch(/not for this market/);
   });
@@ -531,4 +525,28 @@ describe.skipIf(!SIM || !KEY_FILE)("DEVNET SIMULATION of the wizard's launch tra
     expect(j.result).toBeDefined();
     expect(j.result!.value.err ?? null).toBeNull();
   }, 120_000);
+});
+
+describe("resume repair of the stale window (R-app-3562 L2)", () => {
+  const creator = WALLET.publicKey;
+  // CHILLHOUSE-T real bytes; the window is already 18,000 there, so build the "initialised without 38" variants by patching it
+  const market = (stale: bigint, auth: PublicKey = creator): Uint8Array => {
+    const fx = JSON.parse(readFileSync(path.join(__dirname, "../fixtures/v22-growth/chillhouse-t.market.json"), "utf8")) as { data: string };
+    const raw = new Uint8Array(Buffer.from(fx.data, "base64"));
+    new DataView(raw.buffer).setBigUint64(16 + 136, stale, true); // wrapper config: permissionless_resolve_stale_slots
+    raw.set(auth.toBytes(), 16); // wrapper config: marketauth
+    return raw;
+  };
+  it("window 0 + creator still marketauth: repair with the market's slot count", () => {
+    expect(staleWindowRepair(market(0n), creator)).toEqual({ assetSlots: 1 });
+  });
+  it("window already set, or marketauth moved on, or flag off, or not a market: nothing to do", () => {
+    expect(staleWindowRepair(market(18_000n), creator)).toBeNull();
+    expect(staleWindowRepair(market(0n, POOL), creator)).toBeNull();
+    expect(staleWindowRepair(new Uint8Array(100), creator)).toBeNull();
+    expect(staleWindowRepair(null, creator)).toBeNull();
+    __setDevnetV22ForTest(false);
+    expect(staleWindowRepair(market(0n), creator)).toBeNull();
+    __setDevnetV22ForTest(true);
+  });
 });

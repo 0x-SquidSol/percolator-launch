@@ -429,12 +429,7 @@ export function launchBundleViolations(ixs: readonly NeutralIx[], ctx: LaunchBun
   return v;
 }
 
-/**
- * Tag 122 inside a launch. Everything the instruction names is derived from THIS launch's slab and wrapper (registry, share mint, the
- * Metaplex metadata PDA, the wrapper's fee-payer PDA), the payer and marketauth are the creator (fee payer) and nobody else, and the data is
- * `[122][n][ticker]` with a program-valid ticker (`A-Z0-9`, n <= 8; n = 0 is the generic form, which carries no market / marketauth accounts).
- */
-/** Tag 38: signed by the creator (marketauth at launch), on THIS market, exactly 18,000 stale slots, a force-close delay in the program's range, sequence 1. */
+/** Tag 38: signed by the creator (marketauth at launch), on THIS market, exactly 18,000 stale slots, delay 216,000, frontier 2, sequence 1. */
 export function staleResolveViolations(ix: NeutralIx, i: number, ctx: LaunchBundleContext): string[] {
   const v: string[] = [];
   const d = ix.data;
@@ -444,15 +439,23 @@ export function staleResolveViolations(ix: NeutralIx, i: number, ctx: LaunchBund
     if (ix.accounts[0]!.key !== ctx.payer || !ix.accounts[0]!.signer) v.push(`ix ${i}: ConfigurePermissionlessResolve must be signed by the creator`);
     if (ix.accounts[1]!.key !== ctx.slab) v.push(`ix ${i}: ConfigurePermissionlessResolve is not for this market`);
   }
+  const frontier = readU64(d, 1);
   const stale = readU64(d, 9);
   const delay = readU64(d, 17);
   const seq = readU64(d, 25);
+  // A fresh one-asset launch: frontier = slots + 1 = 2 (initialAssetGenerationFrontier(1)), window and delay exactly the seed kit's.
+  if (frontier !== 2n) v.push(`ix ${i}: ConfigurePermissionlessResolve frontier is ${frontier}, expected 2 on a fresh one-asset market`);
   if (stale !== 18_000n) v.push(`ix ${i}: ConfigurePermissionlessResolve stale window is ${stale}, expected 18000`);
-  if (delay === null || delay === 0n || delay > 10_000_000n) v.push(`ix ${i}: ConfigurePermissionlessResolve force-close delay is out of range`);
+  if (delay !== 216_000n) v.push(`ix ${i}: ConfigurePermissionlessResolve force-close delay is ${delay}, expected 216000`);
   if (seq !== 1n) v.push(`ix ${i}: ConfigurePermissionlessResolve policy sequence is ${seq}, expected 1 on a fresh market`);
   return v;
 }
 
+/**
+ * Tag 122 inside a launch. Everything the instruction names is derived from THIS launch's slab and wrapper (registry, share mint, the
+ * Metaplex metadata PDA, the wrapper's fee-payer PDA), the payer and marketauth are the creator (fee payer) and nobody else, and the data is
+ * `[122][n][ticker]` with a program-valid ticker (`A-Z0-9`, n <= 8; n = 0 is the generic form, which carries no market / marketauth accounts).
+ */
 export function shareNameViolations(ix: NeutralIx, i: number, ctx: LaunchBundleContext): string[] {
   const v: string[] = [];
   const wrapper = new PublicKey(ctx.programs.wrapper);
