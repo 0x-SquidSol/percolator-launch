@@ -364,10 +364,44 @@ describe("mutating requests (sendTransaction) are never re-sent after an ambiguo
     expect(sentTo(net)).toEqual([PRIMARY_URL, FB1]);
   });
 
-  it("'already processed' on the re-sent tx is a SUCCESS with the tx's own signature", async () => {
-    const dup = { jsonrpc: "2.0", id: 9, error: { code: -32002, message: "Transaction simulation failed: This transaction has already been processed" } };
-    const net = fakeNet({ [PRIMARY_URL]: { status: 429 }, [FB1]: { body: dup } }, { [FB1]: G });
-    expect(await new UpstreamPool({ fetchImpl: net.fetchImpl }).post(mk(), SEND, "devnet")).toEqual({ jsonrpc: "2.0", id: 9, result: SIG });
+  const DUP = { jsonrpc: "2.0", id: 9, error: { code: -32002, message: "Transaction simulation failed: This transaction has already been processed" } };
+  /** FB1 answers sendTransaction with `send`, and getSignatureStatuses with `status`. */
+  const dupNet = (send: unknown, status: unknown) => {
+    const calls: string[] = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      const b = JSON.parse(String(init.body)) as { method: string };
+      calls.push(`${url}:${b.method}`);
+      const json = (x: unknown) => ({ status: 200, json: async () => x }) as Response;
+      if (b.method === "getGenesisHash") return json({ result: G });
+      if (url === PRIMARY_URL) return { status: 429, json: async () => ({}) } as Response;
+      return b.method === "getSignatureStatuses" ? json(status) : json(send);
+    }) as unknown as typeof fetch;
+    return { fetchImpl, calls };
+  };
+  const KNOWN = { jsonrpc: "2.0", id: 1, result: { value: [{ slot: 5, confirmations: 1, err: null }] } };
+
+  it("'already processed' on the re-sent tx is a SUCCESS only with code -32002, the exact phrase AND a known signature", async () => {
+    const n = dupNet(DUP, KNOWN);
+    expect(await new UpstreamPool({ fetchImpl: n.fetchImpl }).post(mk(), SEND, "devnet")).toEqual({ jsonrpc: "2.0", id: 9, result: SIG });
+    expect(n.calls.filter((c) => c.endsWith("getSignatureStatuses"))).toHaveLength(1);
+  });
+
+  it.each([
+    ["a custom message that merely contains the words", { jsonrpc: "2.0", id: 9, error: { code: -32002, message: "account already processed by custom check" } }],
+    ["the right phrase under another code", { jsonrpc: "2.0", id: 9, error: { code: -32000, message: "This transaction has already been processed" } }],
+    ["the right code with another message", { jsonrpc: "2.0", id: 9, error: { code: -32002, message: "Transaction simulation failed: custom program error: 0x1b" } }],
+    ["a client-influenced echo of the words in a different error", { jsonrpc: "2.0", id: 9, error: { code: -32602, message: "invalid param: already been processed" } }],
+  ])("%s is NOT a success: the upstream's error goes back unchanged", async (_n, err) => {
+    const n = dupNet(err, KNOWN);
+    expect(await new UpstreamPool({ fetchImpl: n.fetchImpl }).post(mk(), SEND, "devnet")).toEqual(err);
+    expect(n.calls.some((c) => c.endsWith("getSignatureStatuses"))).toBe(false);
+  });
+
+  it("the exact error but the signature is NOT known to the cluster (or failed): not a success", async () => {
+    for (const status of [{ result: { value: [null] } }, { result: { value: [{ err: { InstructionError: [0, "x"] } }] } }]) {
+      const n = dupNet(DUP, status);
+      expect(await new UpstreamPool({ fetchImpl: n.fetchImpl }).post(mk(), SEND, "devnet")).toEqual(DUP);
+    }
   });
 
   it("a read-only request still fails over on the same ambiguous failures (simulateTransaction too)", async () => {

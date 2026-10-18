@@ -148,7 +148,9 @@ export function sendTransactionSignature(body: unknown): string | null {
   }
 }
 
-const ALREADY_PROCESSED = /already (been )?processed/i;
+/** The runtime's exact answer to a duplicate: JSON-RPC code -32002 with this phrase. Anything looser (custom messages) is not a success. */
+const ALREADY_PROCESSED_CODE = -32002;
+const ALREADY_PROCESSED_PHRASE = "This transaction has already been processed";
 
 export interface PoolDeps {
   fetchImpl?: typeof fetch;
@@ -256,6 +258,19 @@ export class UpstreamPool {
     return { json, status };
   }
 
+  /** getSignatureStatuses on one upstream: the signature exists and did not fail. */
+  private async signatureKnown(u: UpstreamSpec, sig: string, budgetMs: number, signal?: AbortSignal): Promise<boolean> {
+    try {
+      const r = (await this.attempt(u, { jsonrpc: "2.0", id: 1, method: "getSignatureStatuses", params: [[sig], { searchTransactionHistory: true }] }, budgetMs, signal)).json as {
+        result?: { value?: ({ err?: unknown } | null)[] };
+      };
+      const st = r?.result?.value?.[0];
+      return !!st && (st.err === null || st.err === undefined);
+    } catch {
+      return false;
+    }
+  }
+
   /** A fallback may serve only if it is on the deployment's cluster (genesis hash, cached; one probe at a time per upstream). */
   private clusterOk(u: UpstreamSpec, network: RpcNetwork, budgetMs: number): Promise<boolean> {
     const c = this.cluster.get(u.id);
@@ -305,10 +320,13 @@ export class UpstreamPool {
         const r = await this.attempt(u, body, this.deadlineMs - (this.now() - started), opts.signal);
         this.markOk(u);
         if (mutating && resent && !Array.isArray(body)) {
-          const err = (r.json as { error?: { message?: unknown } } | null)?.error;
-          if (err && typeof err.message === "string" && ALREADY_PROCESSED.test(err.message)) {
+          const err = (r.json as { error?: { code?: unknown; message?: unknown } } | null)?.error;
+          if (err && err.code === ALREADY_PROCESSED_CODE && typeof err.message === "string" && err.message.includes(ALREADY_PROCESSED_PHRASE)) {
             const sig = sendTransactionSignature(body);
-            if (sig) return { json: { jsonrpc: "2.0", id: (body as { id?: unknown }).id ?? null, result: sig }, status: 200 };
+            // Confirm with the same upstream that the signature really is known to the cluster before calling it a success.
+            if (sig && (await this.signatureKnown(u, sig, this.deadlineMs - (this.now() - started), opts.signal))) {
+              return { json: { jsonrpc: "2.0", id: (body as { id?: unknown }).id ?? null, result: sig }, status: 200 };
+            }
           }
         }
         return r;
