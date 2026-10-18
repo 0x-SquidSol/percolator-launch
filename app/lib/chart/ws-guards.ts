@@ -149,7 +149,7 @@ export class ConnectionLimiter {
 
 /** The parts of an upgrade request the gate reads (node:http IncomingMessage satisfies it). */
 export interface UpgradeRequestLike {
-  headers: { "x-forwarded-for"?: string | string[] | undefined };
+  headers: Record<string, string | string[] | undefined>;
   socket: { remoteAddress?: string | undefined; once(event: "close", fn: () => void): unknown };
 }
 
