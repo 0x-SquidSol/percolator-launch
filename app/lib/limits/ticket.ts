@@ -207,10 +207,13 @@ export function deriveTicketLimits(i: TicketLimitsInput): TicketLimits {
         out.clampToQ = lim.maxQ;
       }
     }
-    // Blocked only when this ticket's direction cannot reduce the taker (room 0).
-    out.sameOwner = out.sameOwnerCloseOnly && sameOwnerRoomQ(i.takerPosQ, i.direction) === 0n;
-    if (out.sameOwner) out.issues.push({ kind: "same-owner", severity: "error", title: "Can't open from this wallet", message: COPY.sameOwner });
   }
+  // C3 (feature check): the wrapper refuses the creator / LP owner's opening trade on EVERY build (Custom 67), so the detection does not
+  // depend on the P1 flag or on the risk limits having loaded (it used to: the ticket then offered an open the program refuses).
+  if (!out.sameOwnerCloseOnly && sameOwnerBlocked(i.takerOwner, L.lp?.owner ?? L.sameOwnerLpOwner ?? null, L.assetAdmin)) out.sameOwnerCloseOnly = true;
+  // Blocked only when this ticket's direction cannot reduce the taker (room 0).
+  out.sameOwner = out.sameOwnerCloseOnly && sameOwnerRoomQ(i.takerPosQ, i.direction) === 0n;
+  if (out.sameOwner) out.issues.push({ kind: "same-owner", severity: "error", title: "Can't open from this wallet", message: COPY.sameOwner });
 
   // ── Devnet v2.1: growth-v19 dynamic leverage (feature-detected; absent on today's programs) ──
   const growth = i.growth ? growthTicketDecision(i.growth, i.direction, i.takerPosQ, i.sizeQ) : null;

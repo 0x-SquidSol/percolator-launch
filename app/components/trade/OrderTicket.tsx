@@ -392,7 +392,15 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   useEffect(() => () => pendingWatchRef.current?.abort(), []);
   const [humanError, setHumanError] = useState<string | null>(null);
   /** UX WP-1: a refusal the resolver mapped (simulation-gated: the wallet never opened). */
-  const [refusal, setRefusal] = useState<UserMessage | null>(null);
+  const [refusal, setRefusalRaw] = useState<UserMessage | null>(null);
+  // C3 (feature check): the program said "this wallet can only close here" (SameOwnerTrade, 67) although the ticket's own reading did not
+  // know (limits flags off / no risk limits). Remember it for this wallet and market so the Open button stops offering what it refuses.
+  const [learnedSameOwnerKey, setLearnedSameOwnerKey] = useState<string | null>(null);
+  const sameOwnerKey = `${slabAddress}:${publicKey?.toBase58() ?? ""}`;
+  const setRefusal = (u: UserMessage | null) => {
+    if (u?.kind === "same-owner") setLearnedSameOwnerKey(sameOwnerKey);
+    setRefusalRaw(u);
+  };
   const [engineLockError, setEngineLockError] = useState<string | null>(null);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [confirmSnapshot, setConfirmSnapshot] = useState<{
@@ -1067,7 +1075,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     openingPaused: !mockMode && (vaultEmpty || lpDepleted || lpUnderfunded || riskGateActive),
     lpDepleted: !mockMode && lpDepleted,
     lpIsVault,
-    sameOwner: ticketLimits.sameOwner,
+    sameOwner: ticketLimits.sameOwner || (learnedSameOwnerKey === sameOwnerKey && sameOwnerRoomQ(existingPositionSize, direction) === 0n),
     exceedsBalance,
     shortfallLabel: fundingMode ? fundLabel : `${formatTokenAmount(shortfall, decimals)} ${collateralSymbol}`,
     feeOverMax,

@@ -223,7 +223,7 @@ describe("resolveUserMessage (§5.3): every code, both wallet shapes, plain word
     expect(r("Attempt to debit an account but found no record of a prior credit.").action?.id).toBe("get-funds");
     expect(r('{"InstructionError":[1,"NotEnoughAccountKeys"]}').kind).toBe("out-of-date");
     expect(r("Blockhash not found").kind).toBe("network-slow");
-    expect(r("429 Too Many Requests").kind).toBe("rpc-unreachable");
+    expect(r("429 Too Many Requests").kind).toBe("network-busy"); // C4
     const u = r("custom program error: 0x7e7e7e");
     expect(u.kind).toBe("unmapped");
     expect(u.body).toBe("Something went wrong and nothing was sent.");
