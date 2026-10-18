@@ -101,7 +101,7 @@ vi.mock("@/lib/tx", async (orig) => ({
   sendTx: (...a: unknown[]) => sendTx(...a),
 }));
 
-import { useFirstTrade } from "@/hooks/useFirstTrade";
+import { useFirstTrade, FIRST_TRADE_NO_LIMIT } from "@/hooks/useFirstTrade";
 import { takeFillResult } from "@/lib/limits/fill-check";
 import { fmtQ } from "@/lib/limits/format";
 
@@ -184,5 +184,16 @@ describe("fmtQ: a non-zero size below the 4 dp shown never reads as 0", () => {
     expect(fmtQ(100n)).toBe("0.0001");
     expect(fmtQ(822_500n)).toBe("0.8225");
     expect(fmtQ(12_400_000n)).toBe("12.4");
+  });
+
+  it("#3522: a limit of 0 (no slippage check on chain) is refused before anything is signed", async () => {
+    sendTx.mockResolvedValue("sigNoLimit");
+    const { result } = renderHook(() => useFirstTrade(Keypair.generate().publicKey.toBase58()));
+    await act(async () => {
+      await expect(
+        result.current.fundAndTrade({ size: 822_500n, depositAtoms: 55_060_000n, limitPriceE6: 0n, amountLabel: "55.06 USDC" }),
+      ).rejects.toThrow(FIRST_TRADE_NO_LIMIT);
+    });
+    expect(sendTx).not.toHaveBeenCalled();
   });
 });
