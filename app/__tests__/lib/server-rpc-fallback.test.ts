@@ -51,4 +51,30 @@ describe("getServerConnection fallback", () => {
     expect(e).toBeInstanceOf(Error);
     expect(`${e.message} ${e.stack ?? ""}`).not.toMatch(/primary-rpc|PRIMARYKEY|fallback-one|SECRETPATH/);
   });
+
+  it("the rotating fetch returns the answering upstream's real status and body, and honours an abort", async () => {
+    const seen: string[] = [];
+    global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(String(url));
+      const { id } = JSON.parse(String(init?.body)) as { id: unknown };
+      if (String(url) === PRIMARY) return new Response("{}", { status: 503 });
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32602, message: "bad params" } }), { status: 400, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    vi.resetModules();
+    const { makeRotatingFetch } = await import("@/lib/server-rpc");
+    const { buildUpstreams, UpstreamPool, __setSharedUpstreamPoolForTest } = await import("@/lib/rpc-upstreams");
+    __setSharedUpstreamPoolForTest(new UpstreamPool({ warn: () => undefined }));
+    const ups = buildUpstreams("devnet", { url: PRIMARY, headers: {} }, { DEVNET_RPC_FALLBACK_URLS: "" } as unknown as NodeJS.ProcessEnv);
+    const f = makeRotatingFetch([{ ...ups[0]!, url: "https://rpc.fallback-one.test/x", id: "z", primary: true }], "devnet");
+    const res = await f("ignored", { method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "getSlot", params: [] }) });
+    expect(res.status).toBe(400); // a request error passes through with its real status (not forced to 200)
+    expect(await res.json()).toMatchObject({ error: { code: -32602 } });
+    const ac = new AbortController();
+    ac.abort();
+    const before = seen.length;
+    await expect(f("ignored", { method: "POST", body: "{}", signal: ac.signal })).rejects.toThrow("RPC upstream unavailable");
+    expect(seen.length).toBe(before); // an aborted caller sends nothing
+    await expect(f("ignored", { method: "POST", body: new Uint8Array(1) })).rejects.toThrow();
+    __setSharedUpstreamPoolForTest(null);
+  });
 });

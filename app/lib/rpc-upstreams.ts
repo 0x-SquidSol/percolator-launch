@@ -11,7 +11,10 @@
  *    `NEXT_PUBLIC_*`, never request input). https only. Unset on devnet = the public devnet RPC; unset on mainnet = none.
  *  - A FALLBACK must be the same cluster as the deployment: its genesis hash is checked against the cluster's, once (cached). A
  *    mismatch is never used (and is re-checked only after a long delay). The primary is the operator's own setting and is not checked.
- *  - Switch on HTTP 429 / 401 / 403 / 408 / 5xx, a "max usage" / rate-limit JSON-RPC error, a network error, a timeout or a non-JSON body.
+ *  - Switch on a transport error, a timeout, HTTP 401 / 403 / 408 / 429 / 5xx, a non-JSON 2xx body, or a quota JSON-RPC CODE (-32429 /
+ *    -32005; never the message text, which a client can influence). Other 4xx answers are the request's own fault: no switch, no cooldown.
+ *    A mutating request (sendTransaction) is moved on only after a DEFINITE pre-processing rejection and is never re-sent after an
+ *    ambiguous failure. At most 3 upstream attempts and a 20 s budget per request; redirects are refused.
  *    A failed upstream is cooled down (30 s, doubling to 5 min); once its cooldown ends it is tried FIRST again (the primary re-probe), and
  *    one success resets it. When every upstream is cooling they are all tried anyway, soonest-ready first.
  *  - The method allowlist, batch limit and rate limit live in the route and apply before any upstream is chosen, so they are identical
@@ -20,6 +23,7 @@
  *    one generic error, and any upstream body that is passed through is scrubbed of the configured URLs, hosts and keys.
  */
 import { createHash } from "node:crypto";
+import bs58 from "bs58";
 
 export type RpcNetwork = "devnet" | "mainnet";
 
@@ -88,28 +92,73 @@ export class UpstreamUnavailableError extends Error {
   }
 }
 
-const FAIL_STATUS = (s: number): boolean => s === 401 || s === 403 || s === 408 || s === 429 || s >= 500;
+/** An upstream that cannot serve us right now (counts toward its cooldown). Never carries upstream detail. */
+class UpstreamFailure extends Error {
+  /** The request may have been processed (timeout, dropped connection, 5xx after the body was sent). */
+  readonly ambiguous: boolean;
+  constructor(ambiguous: boolean) {
+    super("upstream failure");
+    this.ambiguous = ambiguous;
+  }
+}
+
+/** The request itself was refused (a 4xx that is not about us): not the upstream's fault, so no cooldown and no failover. */
+class RequestRefused extends Error {}
+
+/** HTTP statuses that mean "this upstream will not serve you" and that DEFINITELY happened before any processing. */
+const DEFINITE_REJECT_STATUS = (s: number): boolean => s === 401 || s === 403 || s === 429;
+/** HTTP statuses that count against an upstream (cooldown). 5xx and 408 may arrive after the body was processed. */
+const COOLING_STATUS = (s: number): boolean => DEFINITE_REJECT_STATUS(s) || s === 408 || s >= 500;
+/** JSON-RPC error CODES (never the message text, which a client can influence) for quota / unhealthy upstream. */
 const QUOTA_CODES = new Set([-32429, -32005]);
-const QUOTA_TEXT = /max usage|rate.?limit|too many requests|quota|exhausted|credits/i;
 
 function isQuotaItem(x: unknown): boolean {
   if (!x || typeof x !== "object") return false;
-  const e = (x as { error?: { code?: unknown; message?: unknown } }).error;
-  if (!e || typeof e !== "object") return false;
-  if (typeof e.code === "number" && QUOTA_CODES.has(e.code)) return true;
-  return typeof e.message === "string" && QUOTA_TEXT.test(e.message);
+  const e = (x as { error?: { code?: unknown } }).error;
+  return !!e && typeof e === "object" && typeof e.code === "number" && QUOTA_CODES.has(e.code);
 }
 
-/** The upstream answered, but only to say it will not serve us (quota / rate limit). A batch fails only if EVERY item does. */
+/** The upstream answered, but only to say it will not serve us (quota / unhealthy), by CODE. A batch fails only if EVERY item does. */
 export function isQuotaBody(body: unknown): boolean {
   if (Array.isArray(body)) return body.length > 0 && body.every(isQuotaItem);
   return isQuotaItem(body);
 }
 
+/** Methods that change state: never re-sent after an ambiguous failure (the client checks getSignatureStatuses instead). */
+export const MUTATING_RPC_METHODS: ReadonlySet<string> = new Set(["sendTransaction", "requestAirdrop"]);
+
+function isMutatingBody(body: unknown): boolean {
+  const one = (x: unknown): boolean => !!x && typeof x === "object" && MUTATING_RPC_METHODS.has(String((x as { method?: unknown }).method));
+  return Array.isArray(body) ? body.some(one) : one(body);
+}
+
+/** The first signature of a sendTransaction's raw tx (base64 encoding, as the app sends), or null when it cannot be read. */
+export function sendTransactionSignature(body: unknown): string | null {
+  try {
+    const params = (body as { params?: unknown[] }).params;
+    const raw = params?.[0];
+    const enc = (params?.[1] as { encoding?: string } | undefined)?.encoding ?? "base58";
+    if (typeof raw !== "string") return null;
+    const bytes = enc === "base64" ? Uint8Array.from(Buffer.from(raw, "base64")) : bs58.decode(raw);
+    const count = bytes[0];
+    if (count === undefined || count === 0 || count >= 128 || bytes.length < 1 + 64) return null;
+    return bs58.encode(bytes.subarray(1, 65));
+  } catch {
+    return null;
+  }
+}
+
+const ALREADY_PROCESSED = /already (been )?processed/i;
+
 export interface PoolDeps {
   fetchImpl?: typeof fetch;
   now?: () => number;
+  /** Per attempt. */
   timeoutMs?: number;
+  /** Across all attempts of one request. */
+  deadlineMs?: number;
+  /** Most upstream attempts one request may make (the genesis probe is shared and not counted). */
+  maxAttempts?: number;
   cooldownBaseMs?: number;
   cooldownMaxMs?: number;
   /** How long a wrong-cluster verdict is kept before the fallback is checked again. */
@@ -123,12 +172,21 @@ interface Health {
   coolUntil: number;
 }
 
+export interface PoolResult {
+  json: unknown;
+  /** The HTTP status the answering upstream returned. */
+  status: number;
+}
+
 export class UpstreamPool {
   private readonly health = new Map<string, Health>();
   private readonly cluster = new Map<string, { ok: boolean; until: number }>();
+  private readonly probing = new Map<string, Promise<boolean>>();
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
   private readonly timeoutMs: number;
+  private readonly deadlineMs: number;
+  private readonly maxAttempts: number;
   private readonly base: number;
   private readonly max: number;
   private readonly recheck: number;
@@ -137,7 +195,9 @@ export class UpstreamPool {
   constructor(d: PoolDeps = {}) {
     this.fetchImpl = d.fetchImpl ?? ((...a) => fetch(...a));
     this.now = d.now ?? Date.now;
-    this.timeoutMs = d.timeoutMs ?? 15_000;
+    this.timeoutMs = d.timeoutMs ?? 10_000;
+    this.deadlineMs = d.deadlineMs ?? 20_000;
+    this.maxAttempts = d.maxAttempts ?? 3;
     this.base = d.cooldownBaseMs ?? 30_000;
     this.max = d.cooldownMaxMs ?? 300_000;
     this.recheck = d.mismatchRecheckMs ?? 600_000;
@@ -164,49 +224,109 @@ export class UpstreamPool {
     return this.coolUntil(u) > this.now();
   }
 
-  /** One JSON-RPC POST to one upstream; throws on anything that should make the caller move on. */
-  private async attempt(u: UpstreamSpec, body: unknown): Promise<unknown> {
-    const res = await this.fetchImpl(u.url, { method: "POST", headers: u.headers, body: JSON.stringify(body), signal: AbortSignal.timeout(this.timeoutMs) });
-    if (FAIL_STATUS(res.status)) throw new Error("upstream status");
-    const json: unknown = await res.json();
-    if (isQuotaBody(json)) throw new Error("upstream quota");
-    return json;
+  /**
+   * One JSON-RPC POST to one upstream. Throws {@link UpstreamFailure} when the upstream cannot serve us (transport error, 401/403/408/
+   * 429/5xx, a quota CODE, a non-JSON 2xx body) and {@link RequestRefused} for any other non-JSON / error status (the request's own fault).
+   * Never reads JSON-RPC message text.
+   */
+  private async attempt(u: UpstreamSpec, body: unknown, budgetMs: number, signal?: AbortSignal): Promise<PoolResult> {
+    const timeout = AbortSignal.timeout(Math.max(1, Math.min(this.timeoutMs, budgetMs)));
+    let res: Response;
+    try {
+      res = await this.fetchImpl(u.url, {
+        method: "POST",
+        headers: u.headers,
+        body: JSON.stringify(body),
+        redirect: "error",
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      });
+    } catch {
+      throw new UpstreamFailure(true); // timeout, reset, DNS, redirect: the body may or may not have been processed
+    }
+    const status = typeof res.status === "number" ? res.status : 200;
+    if (COOLING_STATUS(status)) throw new UpstreamFailure(!DEFINITE_REJECT_STATUS(status));
+    let json: unknown;
+    try {
+      json = await res.json();
+    } catch {
+      if (status >= 200 && status < 300) throw new UpstreamFailure(true); // a 2xx that is not JSON: a broken upstream
+      throw new RequestRefused(); // a plain-text 4xx: the request's own fault
+    }
+    if (isQuotaBody(json)) throw new UpstreamFailure(false); // refused before processing (quota / unhealthy)
+    return { json, status };
   }
 
-  /** A fallback may serve only if it is on the deployment's cluster (genesis hash, cached). */
-  private async clusterOk(u: UpstreamSpec, network: RpcNetwork): Promise<boolean> {
+  /** A fallback may serve only if it is on the deployment's cluster (genesis hash, cached; one probe at a time per upstream). */
+  private clusterOk(u: UpstreamSpec, network: RpcNetwork, budgetMs: number): Promise<boolean> {
     const c = this.cluster.get(u.id);
-    if (c && (c.ok || c.until > this.now())) return c.ok;
-    try {
-      const r = (await this.attempt(u, { jsonrpc: "2.0", id: 1, method: "getGenesisHash", params: [] })) as { result?: unknown };
-      const ok = typeof r?.result === "string" && r.result === CLUSTER_GENESIS[network];
-      this.cluster.set(u.id, { ok, until: ok ? Infinity : this.now() + this.recheck });
-      if (!ok) this.warn(`[rpc-upstreams] a ${network} fallback answered from a different cluster: ignored`);
-      return ok;
-    } catch {
-      this.markFail(u); // could not tell: not cached, tried again after the cooldown
-      return false;
-    }
+    if (c && (c.ok || c.until > this.now())) return Promise.resolve(c.ok);
+    const running = this.probing.get(u.id);
+    if (running) return running;
+    const p = (async () => {
+      try {
+        const r = (await this.attempt(u, { jsonrpc: "2.0", id: 1, method: "getGenesisHash", params: [] }, budgetMs)).json as { result?: unknown };
+        const ok = typeof r?.result === "string" && r.result === CLUSTER_GENESIS[network];
+        this.cluster.set(u.id, { ok, until: ok ? Infinity : this.now() + this.recheck });
+        if (!ok) this.warn(`[rpc-upstreams] a ${network} fallback answered from a different cluster: ignored`);
+        return ok;
+      } catch (e) {
+        if (e instanceof UpstreamFailure) this.markFail(u); // could not tell: not cached, tried again after the cooldown
+        return false;
+      } finally {
+        this.probing.delete(u.id);
+      }
+    })();
+    this.probing.set(u.id, p);
+    return p;
   }
 
   /**
-   * POST `body` to the first healthy upstream. Returns the parsed JSON. Throws {@link UpstreamUnavailableError} (generic) when none
-   * could answer.
+   * POST `body` to the first healthy upstream; returns the parsed JSON and the answering upstream's status. Throws
+   * {@link UpstreamUnavailableError} (generic) when none could answer.
+   *
+   * A MUTATING request (sendTransaction) is moved to the next upstream only after a DEFINITE pre-processing rejection (401/403/429 or
+   * a quota code). After an ambiguous failure (timeout, network error, 5xx) it is NOT re-sent: the generic error goes back and the
+   * client checks getSignatureStatuses. An "already processed" answer to a re-sent tx is a success.
    */
-  async post(upstreams: readonly UpstreamSpec[], body: unknown, network: RpcNetwork): Promise<unknown> {
+  async postRaw(upstreams: readonly UpstreamSpec[], body: unknown, network: RpcNetwork, opts: { signal?: AbortSignal } = {}): Promise<PoolResult> {
+    const started = this.now();
+    const mutating = isMutatingBody(body);
     const ready = upstreams.filter((u) => !this.isCooling(u));
     const order = ready.length > 0 ? ready : [...upstreams].sort((a, b) => this.coolUntil(a) - this.coolUntil(b));
+    let attempts = 0;
+    let resent = false;
     for (const u of order) {
-      if (!u.primary && !(await this.clusterOk(u, network))) continue;
+      if (opts.signal?.aborted) break;
+      const left = this.deadlineMs - (this.now() - started);
+      if (left <= 0 || attempts >= this.maxAttempts) break;
+      if (!u.primary && !(await this.clusterOk(u, network, left))) continue;
+      attempts += 1;
       try {
-        const json = await this.attempt(u, body);
+        const r = await this.attempt(u, body, this.deadlineMs - (this.now() - started), opts.signal);
         this.markOk(u);
-        return json;
-      } catch {
+        if (mutating && resent && !Array.isArray(body)) {
+          const err = (r.json as { error?: { message?: unknown } } | null)?.error;
+          if (err && typeof err.message === "string" && ALREADY_PROCESSED.test(err.message)) {
+            const sig = sendTransactionSignature(body);
+            if (sig) return { json: { jsonrpc: "2.0", id: (body as { id?: unknown }).id ?? null, result: sig }, status: 200 };
+          }
+        }
+        return r;
+      } catch (e) {
+        if (e instanceof RequestRefused) break; // the request's own fault: no cooldown, no other upstream
         this.markFail(u);
+        if (mutating) {
+          if (e instanceof UpstreamFailure && e.ambiguous) break; // may have been processed: never re-send
+          resent = true;
+        }
       }
     }
     throw new UpstreamUnavailableError();
+  }
+
+  /** {@link postRaw} returning only the parsed JSON. */
+  async post(upstreams: readonly UpstreamSpec[], body: unknown, network: RpcNetwork, opts: { signal?: AbortSignal } = {}): Promise<unknown> {
+    return (await this.postRaw(upstreams, body, network, opts)).json;
   }
 }
 

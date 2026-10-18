@@ -149,6 +149,42 @@ describe("/api/rpc upstream fallback", () => {
     });
   });
 
+  it("sendTransaction after an AMBIGUOUS primary failure is not re-sent; after a definite rejection (429) it is", async () => {
+    const tx = { jsonrpc: "2.0", id: 5, method: "sendTransaction", params: [Buffer.concat([Buffer.from([1]), Buffer.alloc(64, 3), Buffer.from("m")]).toString("base64"), { encoding: "base64" }] };
+    handler = (u, b) => {
+      if (u === PRIMARY) throw new Error(`timed out talking to ${PRIMARY}`);
+      return b.method === "getGenesisHash" ? ok(CLUSTER_GENESIS.devnet) : ok("SIG", b.id);
+    };
+    let POST = await route(ENV);
+    let res = await POST(req(tx));
+    let text = await res.text();
+    expect(JSON.parse(text)).toEqual({ jsonrpc: "2.0", id: 5, error: { code: -32603, message: "Upstream RPC request failed" } });
+    expect(urls.filter((u) => u === FB)).toEqual([]); // the fallback never saw the transaction (nor a probe)
+    expect(SECRET_RE.test(everything(res, text))).toBe(false);
+    urls = [];
+    handler = (u, b) => (u === PRIMARY ? { status: 429, json: async () => ({}) } : b.method === "getGenesisHash" ? ok(CLUSTER_GENESIS.devnet) : ok("SIG", b.id));
+    POST = await route(ENV);
+    res = await POST(req(tx));
+    text = await res.text();
+    expect(JSON.parse(text)).toEqual({ jsonrpc: "2.0", id: 5, result: "SIG" });
+  });
+
+  it("a client-influenced error echo ('quota') does not cool the primary: the next call still goes to it", async () => {
+    let primaryCalls = 0;
+    handler = (u, b) => {
+      if (u === PRIMARY) {
+        primaryCalls++;
+        return { status: 200, json: async () => ({ jsonrpc: "2.0", id: b.id, error: { code: -32602, message: "Asset Not Found: quota" } }) };
+      }
+      return ok(1, b.id);
+    };
+    const POST = await route(ENV);
+    await POST(req({ jsonrpc: "2.0", id: 1, method: "getAsset", params: ["quota"] }));
+    await POST(req({ jsonrpc: "2.0", id: 2, method: "getAsset", params: ["quota2"] }));
+    expect(primaryCalls).toBe(2);
+    expect(urls.includes(FB)).toBe(false);
+  });
+
   it("a fallback list given only as a NEXT_PUBLIC_ variable is ignored (server env only); the devnet default is used instead", async () => {
     handler = (u, b) => (u === PRIMARY ? { status: 429, json: async () => ({}) } : b.method === "getGenesisHash" ? ok(CLUSTER_GENESIS.devnet) : ok(5, b.id));
     const POST = await route({ DEVNET_RPC_URL: PRIMARY, DEVNET_RPC_FALLBACK_URLS: undefined, NEXT_PUBLIC_DEVNET_RPC_FALLBACK_URLS: "https://leak.test/" });

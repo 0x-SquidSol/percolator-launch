@@ -4,7 +4,10 @@
  * All upstream hosts and keys below are fake; the assertions are that none of them ever comes back out.
  */
 import { describe, expect, it, vi } from "vitest";
+import bs58 from "bs58";
 import {
+  MUTATING_RPC_METHODS,
+  sendTransactionSignature,
   CLUSTER_GENESIS,
   DEFAULT_DEVNET_FALLBACK,
   UpstreamPool,
@@ -88,7 +91,7 @@ describe("rotation", () => {
     ["HTTP 401", { status: 401, body: { error: "Unauthorized" } }],
     ["HTTP 503", { status: 503, body: {} }],
     ["a 200 with a max-usage JSON-RPC error", { body: { jsonrpc: "2.0", id: 7, error: { code: -32429, message: "max usage reached" } } }],
-    ["a rate-limit message", { body: { jsonrpc: "2.0", id: 7, error: { code: -32000, message: "Too many requests for this key" } } }],
+    ["a quota CODE (-32005) on a 200", { body: { jsonrpc: "2.0", id: 7, error: { code: -32005, message: "Node is unhealthy" } } }],
     ["a network error", { throws: "fetch failed ECONNRESET" }],
     ["a non-JSON body", { status: 200, text: "<html>" }],
   ] as [string, Reply][])("moves on after %s", async (_n, bad) => {
@@ -279,5 +282,152 @@ describe("redaction", () => {
     const t = safeErrorText(e, ups);
     expect(t).not.toMatch(/primary-rpc|PRIMARYKEY/);
     expect(t.length).toBeLessThanOrEqual(200);
+  });
+});
+
+describe("cooling counts only transport errors, 401/403/408/429/5xx and quota CODES (never message text)", () => {
+  const coolsPrimary = async (primary: Reply): Promise<boolean> => {
+    const net = fakeNet({ [PRIMARY_URL]: primary }, { [FB1]: G });
+    const pool = new UpstreamPool({ fetchImpl: net.fetchImpl });
+    const ups = mk();
+    await pool.post(ups, REQ, "devnet").catch(() => undefined);
+    return pool.isCooling(ups[0]!);
+  };
+  it("a client-influenced echo can never cool the primary: error text containing 'quota' / 'rate limit' / 'max usage' on an ordinary code", async () => {
+    for (const msg of ["Asset Not Found: quota", "bad param: rate limit", "no such key: max usage reached", "exhausted credits"]) {
+      expect(await coolsPrimary({ body: { jsonrpc: "2.0", id: 7, error: { code: -32602, message: msg } } })).toBe(false);
+    }
+  });
+  it("and the answer is passed through to the caller, not swallowed", async () => {
+    const echo = { jsonrpc: "2.0", id: 7, error: { code: -32602, message: "Asset Not Found: quota" } };
+    const net = fakeNet({ [PRIMARY_URL]: { body: echo } });
+    expect(await new UpstreamPool({ fetchImpl: net.fetchImpl }).post(mk(), REQ, "devnet")).toEqual(echo);
+    expect(net.calls).toHaveLength(1);
+  });
+  it("a plain-text 4xx (the request's own fault) neither cools nor moves on; other 4xx JSON answers pass through", async () => {
+    expect(await coolsPrimary({ status: 400, text: "bad request" })).toBe(false);
+    expect(await coolsPrimary({ status: 413, text: "too large" })).toBe(false);
+    const net = fakeNet({ [PRIMARY_URL]: { status: 404, body: { error: "nope" } } });
+    expect(await new UpstreamPool({ fetchImpl: net.fetchImpl }).post(mk(), REQ, "devnet")).toEqual({ error: "nope" });
+    const net2 = fakeNet({ [PRIMARY_URL]: { status: 400, text: "x" } }, { [FB1]: G });
+    await expect(new UpstreamPool({ fetchImpl: net2.fetchImpl }).post(mk(), REQ, "devnet")).rejects.toBeInstanceOf(UpstreamUnavailableError);
+    expect(net2.calls.every((c) => c.url === PRIMARY_URL)).toBe(true);
+  });
+  it.each([
+    ["HTTP 429", { status: 429 }],
+    ["HTTP 401", { status: 401 }],
+    ["HTTP 403", { status: 403 }],
+    ["HTTP 408", { status: 408 }],
+    ["HTTP 500", { status: 500 }],
+    ["a network error", { throws: "ECONNRESET" }],
+    ["a 200 that is not JSON", { status: 200, text: "<html>" }],
+    ["a quota code -32429", { body: { jsonrpc: "2.0", id: 7, error: { code: -32429, message: "x" } } }],
+  ] as [string, Reply][])("does cool on %s", async (_n, bad) => {
+    expect(await coolsPrimary(bad)).toBe(true);
+  });
+});
+
+describe("mutating requests (sendTransaction) are never re-sent after an ambiguous failure", () => {
+  const raw = Buffer.concat([Buffer.from([1]), Buffer.alloc(64, 7), Buffer.from("message-bytes")]);
+  const SEND = { jsonrpc: "2.0", id: 9, method: "sendTransaction", params: [raw.toString("base64"), { encoding: "base64" }] };
+  const SIG = bs58.encode(Buffer.alloc(64, 7));
+  const sentTo = (net: ReturnType<typeof fakeNet>) => net.calls.filter((c) => c.method === "sendTransaction").map((c) => c.url);
+
+  it("is classed as mutating; reads are not", () => {
+    expect(MUTATING_RPC_METHODS.has("sendTransaction")).toBe(true);
+    expect(MUTATING_RPC_METHODS.has("getSlot")).toBe(false);
+    expect(sendTransactionSignature(SEND)).toBe(SIG);
+  });
+
+  it.each([
+    ["a timeout / network error after the body was sent", { throws: "The operation timed out" }],
+    ["HTTP 500", { status: 500 }],
+    ["HTTP 503", { status: 503 }],
+    ["HTTP 408", { status: 408 }],
+    ["a 200 that is not JSON", { status: 200, text: "<html>" }],
+  ] as [string, Reply][])("%s: the tx goes to ONE upstream only; the caller gets the generic error", async (_n, bad) => {
+    const net = fakeNet({ [PRIMARY_URL]: bad }, { [FB1]: G, [FB2]: G });
+    const pool = new UpstreamPool({ fetchImpl: net.fetchImpl });
+    await expect(pool.post(mk(), SEND, "devnet")).rejects.toBeInstanceOf(UpstreamUnavailableError);
+    expect(sentTo(net)).toEqual([PRIMARY_URL]);
+  });
+
+  it.each([
+    ["HTTP 429", { status: 429 }],
+    ["HTTP 401", { status: 401 }],
+    ["HTTP 403", { status: 403 }],
+    ["a quota code -32429", { body: { jsonrpc: "2.0", id: 9, error: { code: -32429, message: "max usage" } } }],
+  ] as [string, Reply][])("a DEFINITE pre-processing rejection (%s) does move to the fallback", async (_n, bad) => {
+    const net = fakeNet({ [PRIMARY_URL]: bad, [FB1]: { body: { jsonrpc: "2.0", id: 9, result: SIG } } }, { [FB1]: G });
+    const r = await new UpstreamPool({ fetchImpl: net.fetchImpl }).post(mk(), SEND, "devnet");
+    expect(r).toEqual({ jsonrpc: "2.0", id: 9, result: SIG });
+    expect(sentTo(net)).toEqual([PRIMARY_URL, FB1]);
+  });
+
+  it("'already processed' on the re-sent tx is a SUCCESS with the tx's own signature", async () => {
+    const dup = { jsonrpc: "2.0", id: 9, error: { code: -32002, message: "Transaction simulation failed: This transaction has already been processed" } };
+    const net = fakeNet({ [PRIMARY_URL]: { status: 429 }, [FB1]: { body: dup } }, { [FB1]: G });
+    expect(await new UpstreamPool({ fetchImpl: net.fetchImpl }).post(mk(), SEND, "devnet")).toEqual({ jsonrpc: "2.0", id: 9, result: SIG });
+  });
+
+  it("a read-only request still fails over on the same ambiguous failures (simulateTransaction too)", async () => {
+    for (const method of ["getSlot", "simulateTransaction"]) {
+      const net = fakeNet({ [PRIMARY_URL]: { status: 503 } }, { [FB1]: G });
+      await new UpstreamPool({ fetchImpl: net.fetchImpl }).post(mk(), { ...REQ, method }, "devnet");
+      expect(net.calls.some((c) => c.url === FB1 && c.method === method)).toBe(true);
+    }
+  });
+});
+
+describe("amplification, deadline, redirects", () => {
+  it("at most 3 upstream attempts per request, however many fallbacks exist", async () => {
+    const env = { DEVNET_RPC_FALLBACK_URLS: "https://a.test,https://b.test,https://c.test,https://d.test" } as unknown as NodeJS.ProcessEnv;
+    const ups = buildUpstreams("devnet", { url: PRIMARY_URL, headers: {} }, env);
+    const g = Object.fromEntries(ups.map((u) => [u.url, G]));
+    const net = fakeNet(Object.fromEntries(ups.map((u) => [u.url, { status: 503 }])), g);
+    await new UpstreamPool({ fetchImpl: net.fetchImpl }).post(ups, REQ, "devnet").catch(() => undefined);
+    expect(net.calls.filter((c) => c.method === "getSlot")).toHaveLength(3);
+  });
+
+  it("concurrent requests share ONE cluster probe per fallback", async () => {
+    const net = fakeNet({ [PRIMARY_URL]: { status: 503 } }, { [FB1]: G });
+    const pool = new UpstreamPool({ fetchImpl: net.fetchImpl });
+    const ups = buildUpstreams("devnet", { url: PRIMARY_URL, headers: {} }, { DEVNET_RPC_FALLBACK_URLS: FB1 } as unknown as NodeJS.ProcessEnv);
+    await Promise.all(Array.from({ length: 20 }, () => pool.post(ups, REQ, "devnet")));
+    expect(net.calls.filter((c) => c.method === "getGenesisHash")).toHaveLength(1);
+  });
+
+  it("an overall deadline: a hung upstream cannot take more than the budget in total", async () => {
+    let t = 0;
+    const fetchImpl = (async (_u: string, init: RequestInit) => {
+      t += 8_000; // each hung attempt burns 8 s of (fake) time
+      void init;
+      throw new Error("timeout");
+    }) as unknown as typeof fetch;
+    const calls: number[] = [];
+    const counting = (async (u: string, i: RequestInit) => {
+      calls.push(t);
+      return fetchImpl(u, i);
+    }) as unknown as typeof fetch;
+    const pool = new UpstreamPool({ fetchImpl: counting, now: () => t, deadlineMs: 20_000, maxAttempts: 9 });
+    const ups = buildUpstreams("devnet", { url: PRIMARY_URL, headers: {} }, { DEVNET_RPC_FALLBACK_URLS: "" } as unknown as NodeJS.ProcessEnv);
+    const many = [ups[0]!, { ...ups[0]!, id: "x2", primary: true }, { ...ups[0]!, id: "x3", primary: true }, { ...ups[0]!, id: "x4", primary: true }];
+    await pool.post(many, REQ, "devnet").catch(() => undefined);
+    expect(calls.length).toBeLessThanOrEqual(3); // 0 s, 8 s, 16 s start; the 4th would start at 24 s > the 20 s budget
+  });
+
+  it("redirects are refused (redirect: 'error') and the abort signal is honoured", async () => {
+    const seen: RequestInit[] = [];
+    const fetchImpl = (async (_u: string, init: RequestInit) => {
+      seen.push(init);
+      return { status: 200, json: async () => ({ result: 1 }) } as Response;
+    }) as unknown as typeof fetch;
+    const pool = new UpstreamPool({ fetchImpl });
+    await pool.post(mk(), REQ, "devnet");
+    expect(seen[0]!.redirect).toBe("error");
+    const ac = new AbortController();
+    ac.abort();
+    await expect(pool.post(mk(), REQ, "devnet", { signal: ac.signal })).rejects.toBeInstanceOf(UpstreamUnavailableError);
+    expect(seen).toHaveLength(1);
   });
 });
