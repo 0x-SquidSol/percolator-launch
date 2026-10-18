@@ -16,6 +16,7 @@ export type QuarantineReason = string;
 export const QUARANTINED_FILES: ReadonlyArray<readonly [file: string, reason: QuarantineReason]> = [
   ["__tests__/api/markets-discovery-incomplete-filter.test.ts", "v2.1 mock seam: mocks the v2.1 SDK parser (or passes zero bytes) while v2.2 reads through lib/v22/layout. Needs a v2.2 fixture / mock rewrite."],
   ["__tests__/api/markets-health-route.test.ts", "v2.1 mock seam: mocks the v2.1 SDK parser (or passes zero bytes) while v2.2 reads through lib/v22/layout. Needs a v2.2 fixture / mock rewrite."],
+  ["__tests__/hooks/useClosePosition.engine-stale-resend.test.ts", "v2.1 fixture: copies the useClosePosition.explicit-target harness (VERSION-18 portfolio + ANSEM market bytes), refused by the VERSION-keyed v2.2 layout. Needs a v2.2 (VERSION 19) fixture rewrite. Its pure halves (isEngineStaleAtSend, the 19 line) run flag-on in copy-states-2026-10-18.test.ts."],
   ["__tests__/hooks/useAdminActions.test.ts", "v2.1 fixture: VERSION-18 / zero / 3,675 B market or portfolio bytes, refused by the VERSION-keyed v2.2 layout. Needs a v2.2 (VERSION 19) fixture rewrite."],
   ["__tests__/hooks/useWithdraw-portfolio-fastpath.test.ts", "v2.1 fixture: VERSION-18 / zero / 3,675 B market or portfolio bytes, refused by the VERSION-keyed v2.2 layout. Needs a v2.2 (VERSION 19) fixture rewrite."],
   ["__tests__/hooks/useWithdraw-portfolio-fastpath.test.ts", "v2.1 mock seam: mocks the v2.1 SDK parser (or passes zero bytes) while v2.2 reads through lib/v22/layout. Needs a v2.2 fixture / mock rewrite."],

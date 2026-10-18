@@ -1,6 +1,6 @@
 import { errorText } from "@/lib/error-text";
 import { resolveDevnetProgramIds } from "@/lib/program-ids";
-import { P2_ERROR_COPY } from "@/lib/limits/copy";
+import { P2_ERROR_COPY, TRADE_PRICES_MOVED_MESSAGE, NETWORK_BUSY_MESSAGE } from "@/lib/limits/copy";
 import { PORTFOLIO_LOOKUP_COPY } from "@/lib/owner-portfolio";
 /**
  * Percolator on-chain program error code to human-readable message mappings.
@@ -344,6 +344,12 @@ function extractCustomIndex(msg: string): number | null {
 // ERROR_CODE_MAP[19]/[21] and useEngineFreshness.ts for the corrected model.
 const TRANSIENT_CODES = new Set<number>([WRAPPER_ERR.EngineBStale, WRAPPER_ERR.OracleInvalid, WRAPPER_ERR.OracleStale]);
 
+/** HTTP 429 / provider rate-limit wording. A bare "429" is NOT enough (base58 signatures contain digit runs). */
+export function isRateLimitText(msg: string): boolean {
+  if (/confirmation timeout|may still land/i.test(msg)) return false;
+  return /too many requests|rate.?limits? exceeded|rate.?limited/i.test(msg) || (/\b429\b/.test(msg) && /rate.?limit/i.test(msg)) || /"code"\s*:\s*-32429\b/.test(msg);
+}
+
 export function isTransientError(msg: string): boolean {
   // A confirmation timeout must NEVER classify as transient: the tx may have
   // already landed, and withTransientRetry callers (OrderTicket handleTrade,
@@ -362,6 +368,7 @@ export function isTransientError(msg: string): boolean {
   // can contain it — so require explicit rate-limit phrasing, optionally
   // alongside a word-bounded 429 status code.
   if (/too many requests/i.test(msg)) return true;
+  if (isRateLimitText(msg)) return true;
   if (/\b429\b/.test(msg) && /rate.?limit/i.test(msg)) return true;
   return false;
 }
@@ -374,6 +381,12 @@ export function isOracleStaleError(msg: string): boolean {
   // these three, 19 is the ~500-slot accrue cliff and does not self-clear
   // from a normal price push or crank once tripped; it needs a re-seed.
   return code === WRAPPER_ERR.OracleStale || code === WRAPPER_ERR.OracleInvalid || code === WRAPPER_ERR.EngineBStale;
+}
+
+/** C1: a send that failed with EngineStale (19) and never confirmed (a timeout may have landed, so it never counts). */
+export function isEngineStaleAtSend(msg: string): boolean {
+  if (/confirmation timeout|may still land/i.test(msg)) return false;
+  return extractErrorCode(msg) === WRAPPER_ERR.EngineStale;
 }
 
 export function isEngineLockError(msg: string): boolean {
@@ -396,6 +409,8 @@ export function isEngineLockError(msg: string): boolean {
  *   TX1 below). Omit for the generic case; pass "trade" from a trade()-CPI
  *   submit path (open or close).
  */
+export { TRADE_PRICES_MOVED_MESSAGE, NETWORK_BUSY_MESSAGE };
+
 /** The market's config hasn't loaded yet; nothing was sent. */
 export const MARKET_LOADING_MESSAGE = "The market is still loading. Try again in a moment. Nothing was sent.";
 
@@ -429,6 +444,8 @@ export function humanizeError(rawMsg: string, context?: "trade"): string {
   const walletErr = detectWalletError(rawMsg);
   if (walletErr === "locked") return WALLET_LOCKED_MESSAGE;
   if (walletErr === "rejected") return "Transaction cancelled.";
+  // C4: a rate-limited RPC ("Connection rate limits exceeded", "429 Too Many Requests"). The tx was never accepted. Never matches a bare 429 inside a signature.
+  if (isRateLimitText(rawMsg)) return NETWORK_BUSY_MESSAGE;
   // The trade/deposit/withdraw/init hooks' guard when the market config hasn't loaded yet:
   // nothing was sent, and trying again in a moment works (same words as the ticket's resolver).
   if (/market not loaded/i.test(rawMsg)) return MARKET_LOADING_MESSAGE;
@@ -509,6 +526,9 @@ export function humanizeError(rawMsg: string, context?: "trade"): string {
     // The old text asserted (a) only, which sent debugging down the slippage
     // path while the real cause was (b). Keep it honest: name the likely cause
     // and the recovery. Only trade-submit call sites pass context: "trade".
+    if (code === WRAPPER_ERR.EngineStale && context === "trade" && !isNftProgramError(rawMsg) && (origin === null || origin === WRAPPER_PROGRAM_ID)) return TRADE_PRICES_MOVED_MESSAGE;
+    // C3: SameOwnerTrade (67) off a trade / close send with no attributing log line still gets its calm line.
+    if (code === WRAPPER_ERR.SameOwnerTrade && context === "trade" && !isNftProgramError(rawMsg) && (origin === null || origin === WRAPPER_PROGRAM_ID)) return P1_ERROR_MESSAGES[WRAPPER_ERR.SameOwnerTrade];
     if (code === WRAPPER_ERR.InvalidInstruction && context === "trade") {
       // v2.2 (Q-1): never guess "slippage" up front; the ticket refines this from chain state
       // (lib/v22/trade-refusal-9.ts: position cap / price limit / fee change).

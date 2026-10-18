@@ -18,7 +18,7 @@ import { effectiveLeg } from "@/lib/limits/effective-quantity";
 import { isPartialLegSendError } from "@/lib/trade-leg-groups";
 import { getLivePriceSnapshot } from "@/lib/priceStore/priceStore";
 import { useSlabState } from "@/components/providers/SlabProvider";
-import { humanizeError, UserFacingError, userFacingMessage, withTransientRetry } from "@/lib/errorMessages";
+import { humanizeError, isEngineStaleAtSend, UserFacingError, userFacingMessage, withTransientRetry } from "@/lib/errorMessages";
 import { getLpInventoryState, getMatcherCaps } from "@/lib/matcherCaps";
 import { lpInventoryRoomQ } from "@/lib/limits/lp-inventory-room";
 import { closeCapacityMessage } from "@/lib/marketCapacity";
@@ -516,23 +516,22 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
             const info = await connection.getAccountInfo(new PublicKey(slabAddress), "confirmed").catch(() => null);
             return closeLimitFromEngine(info ? decodeMarketEngineView(new Uint8Array(info.data)) : null, closeSize);
           };
+          // Every call rebuilds the trade (fresh crank prefix, fresh blockhash).
+          const sendCloseOnce = async () => {
+            if (attempt++ > 0 && closeLimitPriceE6 !== undefined) {
+              closeLimitPriceE6 = await rereadCloseLimit();
+            }
+            return trade({
+              lpIdx,
+              userIdx,
+              size: closeSize,
+              ...(targetPk && { portfolioPk: targetPk }),
+              sizes: closeLegs,
+              ...(closeLimitPriceE6 !== undefined && { limitPriceE6: closeLimitPriceE6 }),
+            });
+          };
           try {
-            sig = await withTransientRetry(
-              async () => {
-                if (attempt++ > 0 && closeLimitPriceE6 !== undefined) {
-                  closeLimitPriceE6 = await rereadCloseLimit();
-                }
-                return trade({
-                  lpIdx,
-                  userIdx,
-                  size: closeSize,
-                  ...(targetPk && { portfolioPk: targetPk }),
-                  sizes: closeLegs,
-                  ...(closeLimitPriceE6 !== undefined && { limitPriceE6: closeLimitPriceE6 }),
-                });
-              },
-              { maxRetries: 2, delayMs: 3000 },
-            );
+            sig = await withTransientRetry(sendCloseOnce, { maxRetries: 2, delayMs: 3000 });
           } catch (tradeErr) {
             const m = tradeErr instanceof Error ? tradeErr.message : String(tradeErr);
             if (isV17Market && programId && (await isReduceOnlyLock21(m, connection, new PublicKey(slabAddress), programId))) {
@@ -540,6 +539,10 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
               sig = r.signature;
               fill = r.fill;
               routedRebalance = true;
+            } else if (isEngineStaleAtSend(m)) {
+              // C1 (feature check): the app's own simulation passed, then the send hit EngineStale (19): the engine clock moved on
+              // between the two. Nothing landed, so ONE more send with a freshly built crank prefix and a re-read limit is safe.
+              sig = await sendCloseOnce();
             } else {
               throw tradeErr;
             }

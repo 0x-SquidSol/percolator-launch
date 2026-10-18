@@ -10,7 +10,7 @@
  * generated WRAPPER_ERR table (lib/wrapper-errors.ts), never a literal.
  */
 import { WRAPPER_ERR } from "../wrapper-errors";
-import { TICKET_FUNDS_LINE } from "./copy";
+import { NETWORK_BUSY_MESSAGE, TICKET_FUNDS_LINE } from "./copy";
 import { V21_COPY } from "../v21/copy";
 import { isDevnetV21Enabled } from "../v21/flag";
 import { WRAPPER_ERR_V21 } from "../v21/wrapper-errors";
@@ -18,7 +18,7 @@ import { isDevnetV22Enabled } from "../v22/flag";
 import { V22_NAME_BY_CODE } from "../v22/wrapper-errors";
 import { v22StakeMessage, v22WrapperMessage } from "../v22/error-message";
 import { resolveDevnetProgramIds } from "../program-ids";
-import { isLongStale, PRICE_STALLED } from "./price-stall";
+import { isLongStale, PRICE_CATCHING_UP, PRICE_STALLED } from "./price-stall";
 import { MAX_WAIT_BUDGET_MS, catchUpAvailableLine } from "./catchup-estimate";
 import { WALLET_REQUEST_CLOSED_COPY } from "../wallet-request-copy";
 
@@ -359,6 +359,10 @@ function resolveUserMessageInner(err: unknown, ctx: MessageContext): UserMessage
   if (/confirmation timeout|was not confirmed in|timed out waiting for confirmation/i.test(lower)) {
     return m("still-confirming", "wait", "Still confirming", "Still confirming. We'll update this when it lands.", { autoRetry: true });
   }
+  // C4: a rate-limited RPC has its own calm line (the tx was never accepted); a bare 429 digit run is not enough, so it needs rate-limit wording.
+  if (/too many requests|rate.?limits? exceeded|rate.?limited|-32429|\b429\b.{0,80}rate.?limit|rate.?limit.{0,80}\b429\b/i.test(p.raw) && p.code === null) {
+    return m("network-busy", "error", "Network busy", NETWORK_BUSY_MESSAGE, { action: { id: "try-again", label: "Try again" } });
+  }
   if (/\b429\b|too many requests|-32005|-32603|failed to fetch|network request failed|econnreset/i.test(p.raw) && p.code === null) {
     return m("rpc-unreachable", "error", "Couldn't reach Solana", "Couldn't reach Solana. Nothing was sent.", {
       action: { id: "try-again", label: "Try again" },
@@ -467,7 +471,7 @@ function resolveUserMessageInner(err: unknown, ctx: MessageContext): UserMessage
           : m("engine-catching-up", "wait", "Catching up", engineCatchUpBody(ctx, false));
       case W.OracleStale:
       case W.OracleInvalid:
-        return m("price-wait", "wait", "Waiting for price", "Waiting for a fresh price. This usually takes a few seconds.", { autoRetry: true });
+        return m("price-wait", "wait", PRICE_CATCHING_UP.title, PRICE_CATCHING_UP.body, { autoRetry: true });
       case W.EngineLockActive: {
         const h = ctx.health ?? {};
         if (h.resolved) return m("market-settled", "info", "Market settled", "Close any position and withdraw. There's nothing else to do.");

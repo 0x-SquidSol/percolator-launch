@@ -5,6 +5,14 @@
  */
 import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 import { P2_ERR, P3_ERR } from "./constants";
+import { PRICE_CATCHING_UP } from "./price-stall";
+
+/** C1: EngineStale (19) on a trade or close: the market moved on between the check and the send. Not the withdraw advice. */
+export const TRADE_PRICES_MOVED_MESSAGE = "Prices moved on while sending; nothing was sent. Try again.";
+
+/** C4: an RPC rate limit (HTTP 429). The transaction was never accepted. */
+export const NETWORK_BUSY_MESSAGE = "The network is busy; nothing was sent. Try again in a moment.";
+
 
 /**
  * A trade (open, add, reduce, close, flip) confirmed on chain but the position change could not
@@ -265,8 +273,9 @@ export const TICKET_COPY = {
     body: "Close-only for now after a liquidation. Closing works normally. New positions reopen once the positions on one side have closed, which depends on those traders and can take a while.",
     button: "Close-only for now",
   },
-  catchingUp: { title: "Catching up", body: "Prices are catching up. Trading resumes once the market has caught up.", button: "Waiting for prices…" },
-  waitingPrice: { title: "Waiting for price", body: "Waiting for a fresh price. This usually takes a few seconds.", button: "Waiting for price…" },
+  // C2 (feature check 2026-10-18): both "behind" rows and the header status line read the ONE catching-up copy (lib/limits/price-stall.ts).
+  catchingUp: { ...PRICE_CATCHING_UP },
+  waitingPrice: { ...PRICE_CATCHING_UP },
   sidePaused: {
     title: (sides: string) => `New ${sides} paused`,
     body: (sides: string, side: string, others: string) =>

@@ -11,6 +11,7 @@ import { useEngineState } from "@/hooks/useEngineState";
 import { useOracleFreshness } from "@/hooks/useOracleFreshness";
 import { useSingleMarketHealth } from "@/hooks/useMarketHealth";
 import { marketHeaderStatus, type HeaderStatus } from "@/lib/market-header-status";
+import { useHeaderPriceFacts } from "@/hooks/useHeaderPriceFacts";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { lotExpOf, tokenUsdOfLotUsd } from "@/lib/v22/lot";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
@@ -47,7 +48,7 @@ function fundingRateBpsTo8h(rateBps: bigint): number {
 }
 
 /** P3-3: Market health badge — surfaces oracle/liquidity status in the ticker bar */
-type HealthBadgeState = "live" | "no-oracle" | "no-liquidity" | "inactive" | "settled" | "close-only" | "paused" | "catching-up";
+type HealthBadgeState = "live" | "no-oracle" | "no-liquidity" | "inactive" | "settled" | "close-only" | "paused" | "catching-up" | "no-recent-price";
 
 /**
  * The badge follows the status line rendered under this bar (MarketHeaderStatus, the same
@@ -60,6 +61,9 @@ export function healthBadgeState(oracleDown: boolean, vaultEmpty: boolean, statu
   if (status?.kind === "resolved") return "settled";
   if (oracleDown && vaultEmpty) return "inactive";
   if (vaultEmpty) return "no-liquidity";
+  // C2: one state machine with the status line and the ticket. A price that is only old reads "no recent price" / "catching up", not "no oracle".
+  if (status?.kind === "no-recent-price") return "no-recent-price";
+  if (oracleDown && status?.kind === "engine-catching-up") return "catching-up";
   if (oracleDown) return "no-oracle";
   if (status?.kind === "adl-reduce-only") return "close-only";
   if (status?.kind === "engine-catching-up") return "catching-up";
@@ -78,6 +82,7 @@ export const MarketHealthBadge = memo(function MarketHealthBadge({ oracleDown, v
     settled:       { label: "SETTLED",      icon: "■",  cls: "text-[var(--text-secondary)] bg-[var(--bg-surface)] border-[var(--border)]", pulse: false, tooltip: status?.body ?? "" },
     "close-only":  { label: "CLOSE-ONLY",   icon: "◉",  cls: "text-[var(--warning)] bg-[var(--warning)]/10 border-[var(--warning)]/20", pulse: false, tooltip: status?.body ?? "" },
     paused:        { label: "PAUSED",       icon: "◉",  cls: "text-[var(--warning)] bg-[var(--warning)]/10 border-[var(--warning)]/20", pulse: false, tooltip: status?.body ?? "" },
+    "no-recent-price": { label: "NO RECENT PRICE", icon: "◉", cls: "text-[var(--warning)] bg-[var(--warning)]/10 border-[var(--warning)]/20", pulse: false, tooltip: status?.body ?? "" },
     "catching-up": { label: "CATCHING UP",  icon: "◉",  cls: "text-[var(--warning)] bg-[var(--warning)]/10 border-[var(--warning)]/20", pulse: true,  tooltip: status?.body ?? "" },
   };
 
@@ -103,19 +108,29 @@ export const MarketHealthBadge = memo(function MarketHealthBadge({ oracleDown, v
  * reads clearly (the 24h direction is carried by the change badge, not this
  * number). No layout shift.
  */
-function MarkPrice({ priceUsd, priceE6, lotExp = 0 }: { priceUsd: number | null; priceE6: bigint | null; lotExp?: number }) {
+function MarkPrice({ priceUsd, priceE6, lotExp = 0, lastKnown = false }: { priceUsd: number | null; priceE6: bigint | null; lotExp?: number; lastKnown?: boolean }) {
   const flash = usePriceFlash(priceE6);
   const flashColor =
     flash === "up" ? "text-[var(--long)]" : flash === "down" ? "text-[var(--short)]" : "text-[var(--text)]";
 
+  const text = formatMarkPrice(priceUsd != null ? tokenUsdOfLotUsd(priceUsd, lotExp) : priceUsd);
   return (
-    <span
-      data-testid="header-price"
-      className={`text-base md:text-2xl font-bold tabular-nums shrink-0 whitespace-nowrap transition-colors duration-300 ease-out ${flashColor}`}
-      style={{ fontFamily: "var(--font-mono)" }}
-    >
-      {formatMarkPrice(priceUsd != null ? tokenUsdOfLotUsd(priceUsd, lotExp) : priceUsd)}
-    </span>
+    <>
+      <span
+        data-testid="header-price"
+        data-last-known={lastKnown ? "true" : undefined}
+        title={lastKnown ? "Last known price. This market has no recent price." : undefined}
+        className={`text-base md:text-2xl font-bold tabular-nums shrink-0 whitespace-nowrap transition-colors duration-300 ease-out ${lastKnown ? "text-[var(--text-secondary)]" : flashColor}`}
+        style={{ fontFamily: "var(--font-mono)" }}
+      >
+        {text}
+      </span>
+      {lastKnown && (
+        <span data-testid="header-price-last-known" className="text-[10px] uppercase tracking-[0.1em] text-[var(--text-muted)]">
+          last known
+        </span>
+      )}
+    </>
   );
 }
 
@@ -179,7 +194,10 @@ export const MarketInfoBar: FC<MarketInfoBarProps> = ({ slabAddress, symbol, log
       : false;
   // Same row and same derivation as the MarketHeaderStatus line the trade page renders under this bar.
   const healthRow = useSingleMarketHealth(slabAddress);
-  const headerStatus = useMemo(() => marketHeaderStatus(healthRow), [healthRow]);
+  const priceFacts = useHeaderPriceFacts();
+  const headerStatus = useMemo(() => marketHeaderStatus(healthRow, Date.now(), priceFacts), [healthRow, priceFacts]);
+  // C2: the price shown is the last one the market had when it is behind for good.
+  const priceIsLastKnown = headerStatus?.kind === "no-recent-price";
 
   // volume_24h is the indexer's SUM(ABS(size)) in engine Q units (base-asset
   // amount, POS_SCALE 1e6) — NOT dollars. It used to be formatted as USD
@@ -221,7 +239,7 @@ export const MarketInfoBar: FC<MarketInfoBarProps> = ({ slabAddress, symbol, log
       <span className="hidden md:block h-6 w-px bg-[var(--border)] shrink-0" />
 
       {/* Mark Price — large; flashes long/short on each tick (see MarkPrice) */}
-      <MarkPrice priceUsd={priceUsd} priceE6={priceE6} lotExp={lotExp} />
+      <MarkPrice priceUsd={priceUsd} priceE6={priceE6} lotExp={lotExp} lastKnown={priceIsLastKnown} />
 
       {/* 24h change badge — semantic long/short tokens, same as the rest of
           the terminal (was hardcoded Tailwind green/red before). */}
