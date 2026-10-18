@@ -33,6 +33,7 @@ import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 import { createPortfolioAccountIx } from "@/lib/v22/layout";
 import { marketOffsetsOrNull } from "@/lib/v22/market-offsets";
 import { sanitizePriceE6 } from "@/lib/oraclePrice";
+import { computeLimitPriceE6 } from "@/lib/slippage";
 
 /** offset_of!(AssetOracleProfileV16, next_portfolio_id); the profile opens the asset wrapper. */
 export const OP_NEXT_PORTFOLIO_ID = 480;
@@ -78,7 +79,8 @@ export function firstTradeDepositAtoms(marginAtoms: bigint, feeAtoms: bigint, de
  * effective price (v16 compute_account_health_cert / target_effective_lag_loss_penalty), while the
  * ticket sizes from the display feed. engineGateBps turns that into two numbers vs the display:
  * the price ratio r and the lag penalty. A margin M at leverage lev then needs
- * M x lev x (IM x r + lag + fee x r). At a max leverage that divides 10000 (10x, 5x, ...) there is
+ * M x lev x (IM x r + lag + fee x rf), rf = the fee's price ratio (engineGateBps.feeRatioBps: a long's fee
+ * is charged at the fill, which may be anywhere up to its limit). At a max leverage that divides 10000 (10x, 5x, ...) there is
  * no slack, so an unadjusted Max was refused Custom(49) on every fee-charging market.
  * Omitting initialMarginBps keeps the legacy cap.
  */
@@ -104,10 +106,10 @@ export function tradableMarginAtoms(p: {
   const lev100 = BigInt(Math.max(100, Math.round(p.leverage100)));
   const fee = p.feeBps > 0n ? p.feeBps : 0n;
   const im = p.initialMarginBps ?? 0n;
-  const { r, lag } = gateOf(p.gate);
+  const { r, rf, lag } = gateOf(p.gate);
   // Per unit of margin, scaled by GATE_SCALE: the engine IM (with the lag penalty) and the fee.
   const imPer = lev100 * (im * r + lag * RATIO_ONE);
-  const feePer = lev100 * fee * r;
+  const feePer = lev100 * fee * rf;
   if (W > 0n) {
     // Bundled: the ticket deposits max(M, engine IM) - A + fee, so the gate holds after the fee.
     const m = ((W + A) * GATE_SCALE) / ((imPer > GATE_SCALE ? imPer : GATE_SCALE) + feePer);
@@ -125,6 +127,13 @@ export interface EngineGate {
   ratioBps: bigint;
   /** The engine's target-lag penalty as a share of the display notional, bps, rounded up. */
   lagBps: bigint;
+  /**
+   * The price the taker fee is charged at, vs the display, bps, rounded up. The engine charges the fee on the
+   * matcher's exec price (v16.rs:18667), not the effective price. A long's exec may sit anywhere up to its limit,
+   * the effective price x 1.05 (#3462, lib/open-limit.ts), so a long's fee is priced at max(ratio, limit); a short's
+   * exec is at or above its (lower) limit, which bounds nothing upward, so it keeps the ratio. Omitted = ratioBps.
+   */
+  feeRatioBps?: bigint;
 }
 
 /** 10_000 bps = 1x. */
@@ -141,6 +150,7 @@ const MAX_PAD_ATOMS = 9n;
 
 const gateOf = (g?: EngineGate) => ({
   r: g && g.ratioBps > RATIO_ONE ? g.ratioBps : RATIO_ONE,
+  rf: g && (g.feeRatioBps ?? g.ratioBps) > RATIO_ONE ? (g.feeRatioBps ?? g.ratioBps) : RATIO_ONE,
   lag: g && g.lagBps > 0n ? g.lagBps : 0n,
 });
 
@@ -168,7 +178,13 @@ export function engineGateBps(
   const up = (n: bigint) => (n * RATIO_ONE + displayE6 - 1n) / displayE6;
   const p = eff > target ? eff : target;
   const adverse = target === 0n ? 0n : side === "long" ? (target < eff ? eff - target : 0n) : target > eff ? target - eff : 0n;
-  return { ratioBps: p > displayE6 ? up(p) : RATIO_ONE, lagBps: adverse > 0n ? up(adverse) : 0n };
+  const ratioBps = p > displayE6 ? up(p) : RATIO_ONE;
+  // A long's fee is charged at its fill, which the matcher may put anywhere up to the limit the ticket sends
+  // (computeLimitPriceE6 around the effective price, exactly as lib/open-limit.ts builds it).
+  const longLimit = side === "long" ? computeLimitPriceE6({ markE6: eff, size: 1n }) : 0n;
+  const limitBps = longLimit > displayE6 ? up(longLimit) : RATIO_ONE;
+  const feeRatioBps = limitBps > ratioBps ? limitBps : ratioBps;
+  return { ratioBps, lagBps: adverse > 0n ? up(adverse) : 0n, feeRatioBps };
 }
 
 /**
@@ -182,13 +198,13 @@ export function engineOpenNeedAtoms(
   feeBps: bigint,
   gate?: EngineGate,
 ): { im: bigint; lag: bigint; fee: bigint } {
-  const { r, lag } = gateOf(gate);
+  const { r, rf, lag } = gateOf(gate);
   const term = (num: bigint, den: bigint) => (num > 0n ? (num + den - 1n) / den + ENGINE_CEIL_PAD : 0n);
   if (notionalAtoms <= 0n) return { im: 0n, lag: 0n, fee: 0n };
   return {
     im: term(notionalAtoms * initialMarginBps * r, 100_000_000n),
     lag: term(notionalAtoms * lag, RATIO_ONE),
-    fee: term(notionalAtoms * feeBps * r, 100_000_000n),
+    fee: term(notionalAtoms * feeBps * rf, 100_000_000n),
   };
 }
 

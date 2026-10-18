@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { tradableMarginAtoms, firstTradeDepositAtoms, fundDepositAtoms, engineOpenNeedAtoms, engineGateBps, type EngineGate } from "@/lib/first-trade";
 import { computeTradingFee } from "@/lib/trading";
 import { computeNotionalNative } from "@/lib/notional";
+import { computeLimitPriceE6 } from "@/lib/slippage";
 
 const U = 1_000_000n;
 // The deposit the ticket would bundle for margin M on an account with A available (OrderTicket marginShort/fundNeededAtoms).
@@ -66,9 +67,10 @@ describe("tradableMarginAtoms vs the engine's IM gate (fee, engine price, target
   }
   // The engine (v16): Q from the display feed; fee = checked_fee_bps(trade_fee_notional_ceil(Q, exec));
   // IM = margin_requirement(risk_notional_ceil(Q, eff)) + risk_notional_ceil(Q, adverse lag).
-  function enginePasses(M: bigint, account: bigint, lev: number, imBps: bigint, feeBps: bigint, px: Px, side: "long" | "short"): boolean {
+  // `exec`: the matcher's fill price, which the fee is charged on (v16.rs:18667); default the effective price.
+  function enginePasses(M: bigint, account: bigint, lev: number, imBps: bigint, feeBps: bigint, px: Px, side: "long" | "short", exec: bigint = px.eff): boolean {
     const Q = (computeNotionalNative(M, lev) * 1_000_000n) / D;
-    const fee = ceilDiv(ceilDiv(Q * px.eff, 1_000_000n) * feeBps, 10_000n);
+    const fee = ceilDiv(ceilDiv(Q * exec, 1_000_000n) * feeBps, 10_000n);
     const im = ceilDiv(ceilDiv(Q * px.eff, 1_000_000n) * imBps, 10_000n);
     const adverse = side === "long" ? (px.target < px.eff ? px.eff - px.target : 0n) : px.target > px.eff ? px.target - px.eff : 0n;
     return account - fee >= im + ceilDiv(Q * adverse, 1_000_000n);
@@ -101,7 +103,32 @@ describe("tradableMarginAtoms vs the engine's IM gate (fee, engine price, target
                 expect(enginePasses(M, A + dep, lev, imBps, feeBps, px, side), ctx).toBe(true);
                 // ...and still once the effective price has stepped to its target before landing.
                 expect(enginePasses(M, A + dep, lev, imBps, feeBps, { eff: px.target, target: px.target }, side), ctx).toBe(true);
+                // #3554 review: a long's fee is charged at the fill, which the matcher may put anywhere up to the limit the
+                // ticket sends (effective x 1.05, lib/open-limit.ts). Max must survive the worst one.
+                if (side === "long") {
+                  const worstExec = computeLimitPriceE6({ markE6: px.eff, size: 1n });
+                  expect(enginePasses(M, A + dep, lev, imBps, feeBps, px, side, worstExec), `${ctx} exec ${worstExec}`).toBe(true);
+                }
               }
+  });
+
+  it("#3554 review: a long Max at max leverage survives the matcher filling above the effective price (fee on exec, up to the limit)", () => {
+    // 10x (IM 10%), fee 30 bps, engine = feed, in-market only. The limit the ticket sends is effective x 1.05 (#3462).
+    const imBps = 1000n, feeBps = 30n, lev = maxLev(imBps), A = 100n * U;
+    const px = at(10_000n, 10_000n);
+    const limit = computeLimitPriceE6({ markE6: px.eff, size: 1n });
+    expect(limit).toBe((D * 10_500n) / 10_000n);
+    const gate = engineGateBps(D, { effectivePriceE6: px.eff, targetPriceE6: px.target }, "long");
+    expect(gate.feeRatioBps).toBe(10_500n);
+    const M = tradableMarginAtoms({ inMarketAvailable: A, walletAtoms: 0n, leverage100: lev * 100, feeBps, initialMarginBps: imBps, gate });
+    for (const exec of [px.eff, (px.eff * 10_200n) / 10_000n, limit])
+      expect(enginePasses(M, A, lev, imBps, feeBps, px, "long", exec), `exec ${exec}`).toBe(true);
+    // Control: the fee priced at the effective price only (the PR as submitted) is refused 49 by a fill at the limit.
+    const atEff = tradableMarginAtoms({ inMarketAvailable: A, walletAtoms: 0n, leverage100: lev * 100, feeBps, initialMarginBps: imBps, gate: { ratioBps: gate.ratioBps, lagBps: gate.lagBps } });
+    expect(atEff).toBeGreaterThan(M);
+    expect(enginePasses(atEff, A, lev, imBps, feeBps, px, "long", limit)).toBe(false);
+    // A short's exec is bounded below by its limit, not above: its fee keeps the engine ratio.
+    expect(engineGateBps(D, { effectivePriceE6: px.eff, targetPriceE6: px.target }, "short").feeRatioBps).toBe(10_000n);
   });
 
   it("the live case: 100 free, empty wallet, 10x, fee 30 bps — Max fits the fee instead of using all 100", () => {
@@ -121,8 +148,11 @@ describe("tradableMarginAtoms vs the engine's IM gate (fee, engine price, target
 describe("engineGateBps", () => {
   const eng = (eff: bigint, target: bigint) => ({ effectivePriceE6: eff, targetPriceE6: target });
   it("an engine price at or below the feed with no lag adds nothing", () => {
-    expect(engineGateBps(150_000_000n, eng(150_000_000n, 150_000_000n), "long")).toEqual({ ratioBps: 10_000n, lagBps: 0n });
-    expect(engineGateBps(150_000_000n, eng(140_000_000n, 140_000_000n), "short")).toEqual({ ratioBps: 10_000n, lagBps: 0n });
+    // A long's fee still prices at its limit (effective x 1.05); a short's at the ratio.
+    expect(engineGateBps(150_000_000n, eng(150_000_000n, 150_000_000n), "long")).toEqual({ ratioBps: 10_000n, lagBps: 0n, feeRatioBps: 10_500n });
+    expect(engineGateBps(150_000_000n, eng(140_000_000n, 140_000_000n), "short")).toEqual({ ratioBps: 10_000n, lagBps: 0n, feeRatioBps: 10_000n });
+    // An engine 10% under the feed: the long's limit (0.9 x 1.05 = 0.945 of the feed) is below the feed too.
+    expect(engineGateBps(150_000_000n, eng(135_000_000n, 135_000_000n), "long").feeRatioBps).toBe(10_000n);
   });
   it("above the feed: the ratio, rounded up, from the higher of effective and target", () => {
     expect(engineGateBps(150_000_000n, eng(150_150_000n, 150_150_000n), "long").ratioBps).toBe(10_010n);
