@@ -5,6 +5,7 @@ import { PublicKey } from "@solana/web3.js";
 import { useConnectionCompat, useWalletCompat } from "@/hooks/useWalletCompat";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { PERCOLATOR_NFT_PROGRAM_ID } from "@/lib/nft-program";
+import { resolveNftLegacyIsStale } from "@/lib/nft-incarnation";
 import { parsePositionNftAccountV3, nftIncarnationStatus, isNftStale, type PositionNftStateV3 } from "@/lib/v22/sdk/nft-v3";
 import { portfolioV17ToAccount, triggerHeldNftScan, type UserAccountInfo } from "@/lib/userAccountScan";
 import { parsePortfolio, isWrapperAccount } from "@/lib/v22/layout";
@@ -79,6 +80,8 @@ export function useNftWrappedPosition(
           raw: raw!,
         });
         if (cancelled) return;
+        const legacyIsStale = await resolveNftLegacyIsStale(connection, PERCOLATOR_NFT_PROGRAM_ID, nfts.some((n) => n.data.length === 239));
+        if (cancelled) return;
 
         // 2. Parse every held NFT up front (cheap, synchronous), then batch-
         //    fetch all their wrapped portfolios in ONE getMultipleAccountsInfo
@@ -119,7 +122,7 @@ export function useNftWrappedPosition(
           }
           // S1-2: an NFT of an EARLIER incarnation of this portfolio keypair is not a position
           // (usePositionNft surfaces it for EmergencyBurn instead).
-          if (isNftStale(nftIncarnationStatus(parsedNfts[i].nft, pf))) continue;
+          if (isNftStale(nftIncarnationStatus(parsedNfts[i].nft, pf), legacyIsStale)) continue;
           const onThisMarket = pf.marketGroupId?.equals(slabPk) ?? false;
           const activeLeg = pf.legs.find((l) => l.active);
           if (onThisMarket && activeLeg && activeLeg.basisPosQ !== 0n) {

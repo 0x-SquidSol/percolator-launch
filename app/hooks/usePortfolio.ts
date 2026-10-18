@@ -19,6 +19,7 @@ import {
   type Account,
 } from "@percolatorct/sdk";
 import { isSentinelValue } from "@/lib/health";
+import { resolveNftLegacyIsStale } from "@/lib/nft-incarnation";
 import { isLpPortfolio, getHeldNftProgramAccounts } from "@/lib/userAccountScan";
 import {
   parsePositionNftAccountV3,
@@ -1083,6 +1084,8 @@ export async function fetchPortfolioSnapshot(
     // Both layouts (239 B v3 and 199 B legacy v2; last_holder @167 in each): a single dataSize filter would
     // drop every held NFT of the other layout. Fails closed: the catch below rethrows.
     const nfts = await getHeldNftProgramAccounts(connection, PERCOLATOR_NFT_PROGRAM_ID, pkStr);
+    // Legacy 199 B NFTs are dead once the S1-2 NFT build is deployed (config / ProgramData probe / a 239 B record seen).
+    const legacyIsStale = await resolveNftLegacyIsStale(connection, PERCOLATOR_NFT_PROGRAM_ID, nfts.some((n) => n.account.data.length === 239));
 
     // Parse each NFT to find the escrowed portfolio it points at, then
     // batch-fetch ALL of them in one getMultipleAccountsInfo — this used
@@ -1117,7 +1120,7 @@ export async function fetchPortfolioSnapshot(
           // S1-2: an NFT minted against an EARLIER incarnation of this portfolio keypair (closed and
           // re-created) controls nothing. Never surface it as a position; the trade page offers
           // EmergencyBurn for it (usePositionNft).
-          if (isNftStale(nftIncarnationStatus(nftsByPortfolio[i], portfolio))) continue;
+          if (isNftStale(nftIncarnationStatus(nftsByPortfolio[i], portfolio), legacyIsStale)) continue;
           // Only surface a wrapped position that still has an active leg
           // (a closed-but-unburned NFT wraps a size-0 leg).
           const activeLeg = portfolio.legs.find((l) => l.active);

@@ -52,6 +52,9 @@ export const NFT_MENU_COPY = {
   staleTitle: "An old position NFT is still in your wallet",
   staleBody: "It belongs to an earlier version of this account and no longer controls a position. Burn it to reclaim its rent.",
   staleBurn: "Burn NFT",
+  /** A legacy NFT under the upgraded program: every burn path rejects it, so no button, only this line. */
+  unrecoverableTitle: "An old position NFT can't be recovered here",
+  unrecoverableBody: "It was created before a program upgrade and can't be recovered in the app. Contact support.",
   /** The one calm line shown instead of Send for a stale NFT (same text as the Send modal's refusal). */
   staleSendRefused: NFT_STALE_SEND_REFUSED,
 } as const;
@@ -64,12 +67,14 @@ export interface PositionNftMenuViewProps {
   error: string | null;
   /** S1-2: the held NFT is of an earlier incarnation of the portfolio: Send is refused (one calm line), only Burn is offered. */
   staleNft?: boolean;
+  /** S1-2: the stale NFT is a legacy v2 under the upgraded program: nothing can burn it, so no Burn item, only the support line. */
+  staleUnrecoverable?: boolean;
   onWrap: () => void;
   onSend: () => void;
   onUnwrap: () => void;
 }
 
-export const PositionNftMenuView: FC<PositionNftMenuViewProps> = ({ canWrap, isWrapped, collateralLabel, busy, error, staleNft = false, onWrap, onSend, onUnwrap }) => {
+export const PositionNftMenuView: FC<PositionNftMenuViewProps> = ({ canWrap, isWrapped, collateralLabel, busy, error, staleNft = false, staleUnrecoverable = false, onWrap, onSend, onUnwrap }) => {
   const [open, setOpen] = useState(false);
   const [confirmWrap, setConfirmWrap] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
@@ -172,11 +177,13 @@ export const PositionNftMenuView: FC<PositionNftMenuViewProps> = ({ canWrap, isW
           {staleNft && !isWrapped && (
             <>
               <p data-testid="position-nft-stale-line" role="note" className="max-w-[220px] px-3 py-2 text-[10px] leading-relaxed text-[var(--text-secondary)]">
-                {NFT_MENU_COPY.staleSendRefused}
+                {staleUnrecoverable ? NFT_MENU_COPY.unrecoverableBody : NFT_MENU_COPY.staleSendRefused}
               </p>
-              <button role="menuitem" type="button" data-testid="position-nft-stale-burn" className={item} disabled={busy !== null} onClick={() => { setOpen(false); onUnwrap(); }}>
-                {busy === "unwrap" ? "Burning…" : NFT_MENU_COPY.staleBurn}
-              </button>
+              {!staleUnrecoverable && (
+                <button role="menuitem" type="button" data-testid="position-nft-stale-burn" className={item} disabled={busy !== null} onClick={() => { setOpen(false); onUnwrap(); }}>
+                  {busy === "unwrap" ? "Burning…" : NFT_MENU_COPY.staleBurn}
+                </button>
+              )}
             </>
           )}
           {isWrapped && (
@@ -237,7 +244,7 @@ export const PositionNftMenuView: FC<PositionNftMenuViewProps> = ({ canWrap, isW
  *  only Send/Unwrap. Omitted = the legacy merged behavior. */
 export const PositionNftMenu: FC<{ slabAddress: string; row?: "own" | "wrapped" }> = ({ slabAddress, row }) => {
   const userAccount = useUserAccount();
-  const { hasMintedNft, nftMint, nftPdaAddress, stale: nftStale } = usePositionNft(slabAddress);
+  const { hasMintedNft, nftMint, nftPdaAddress, stale: nftStale, staleKind } = usePositionNft(slabAddress);
   const { mint: mintNft, loading: mintLoading, error: mintError } = useMintPositionNft(slabAddress);
   const wrappedScan = useNftWrappedPosition(slabAddress, true);
   const wrapped = row === "own" ? null : wrappedScan;
@@ -283,6 +290,7 @@ export const PositionNftMenu: FC<{ slabAddress: string; row?: "own" | "wrapped" 
         busy={busy}
         error={mintError || burnError || transferError}
         staleNft={!!nftStale && row !== "own"}
+        staleUnrecoverable={staleKind === "unrecoverable"}
         onWrap={() => {
           const pk = own?.pubkey;
           if (!pk) return;
@@ -319,13 +327,22 @@ export const PositionNftMenu: FC<{ slabAddress: string; row?: "own" | "wrapped" 
  * be transferred. Hidden once an unwrap lands, so a click during the rescan can't hit "already burned?".
  */
 export const ClosedPositionNftNotice: FC<{ slabAddress: string }> = ({ slabAddress }) => {
-  const { hasMintedNft, pendingSettlement, nftMint, nftPdaAddress, stale } = usePositionNft(slabAddress);
+  const { hasMintedNft, pendingSettlement, nftMint, nftPdaAddress, stale, staleKind } = usePositionNft(slabAddress);
   const { burn, loading, error } = useBurnPositionNft(
     slabAddress,
     nftMint && nftPdaAddress ? { nftMint, nftPdaAddress } : undefined,
   );
   const [burnedPda, setBurnedPda] = useState<string | null>(null);
   if (!hasMintedNft || !pendingSettlement || !nftPdaAddress || burnedPda === nftPdaAddress) return null;
+  if (stale && staleKind === "unrecoverable") {
+    // A legacy NFT under the upgraded program: Burn / EmergencyBurn / Reconcile all reject it (InvalidAccountData), so no button.
+    return (
+      <div data-testid="unrecoverable-nft-notice" className="mx-auto -mt-4 mb-6 max-w-[260px] text-center">
+        <p className="text-[11px] font-medium text-[var(--text)]">{NFT_MENU_COPY.unrecoverableTitle}</p>
+        <p className="mt-1 text-[10px] leading-relaxed text-[var(--text-secondary)]">{NFT_MENU_COPY.unrecoverableBody}</p>
+      </div>
+    );
+  }
   return (
     <div data-testid="closed-nft-notice" className="mx-auto -mt-4 mb-6 max-w-[260px] text-center">
       <p className="text-[11px] font-medium text-[var(--text)]">{stale ? NFT_MENU_COPY.staleTitle : NFT_MENU_COPY.closedTitle}</p>

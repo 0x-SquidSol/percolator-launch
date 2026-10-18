@@ -2,11 +2,11 @@
  * Position NFT layout v3 (S1-2 incarnation binding, percolator-nft 95dcece): the app's parser port, the incarnation
  * classification, both-layout held-NFT scan, error 28 routing and the stale-NFT UX. Not part of the v2.1 quarantine.
  */
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render } from "@testing-library/react";
 import { PublicKey, type Connection } from "@solana/web3.js";
 import {
-  LEGACY_V2_NFT_TREATED_AS_STALE,
+  staleNftKind,
   POSITION_NFT_LEGACY_V2_LEN,
   POSITION_NFT_STATE_LEN_V3,
   isNftCurrentForPortfolio,
@@ -20,6 +20,14 @@ import { isStaleIncarnationSim } from "@/hooks/useBurnPositionNft";
 import { PositionNftMenuView, NFT_MENU_COPY } from "@/components/trade/PositionNftMenu";
 import { SendPositionNftModal, NFT_STALE_SEND_REFUSED } from "@/components/trade/SendPositionNftModal";
 import { PERCOLATOR_NFT_PROGRAM_ID } from "@/lib/nft-program";
+import { resetNftIncarnationCache, resolveNftLegacyIsStale } from "@/lib/nft-incarnation";
+
+const cfg = vi.hoisted(() => ({ deployed: false, minDeploySlot: null as number | null }));
+// Per-cluster S1-2 deploy config (lib/program-ids.ts); toggled per test.
+vi.mock("@/lib/program-ids", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/program-ids")>("@/lib/program-ids");
+  return { ...actual, nftS12Deploy: () => ({ deployed: cfg.deployed, minDeploySlot: cfg.minDeploySlot }) };
+});
 
 const MAGIC = 0x5045_5243_4e46_5400n;
 
@@ -71,7 +79,7 @@ describe("incarnation classification", () => {
     expect(nftIncarnationStatus(cur, live)).toBe("current");
     const recreated = parsePositionNftAccountV3(nftBytes(3, { group, id: 6n }));
     expect(nftIncarnationStatus(recreated, live)).toBe("stale");
-    expect(isNftStale(nftIncarnationStatus(recreated, live))).toBe(true);
+    expect(isNftStale(nftIncarnationStatus(recreated, live), false)).toBe(true);
     const otherGroup = parsePositionNftAccountV3(nftBytes(3, { group: PublicKey.unique(), id: 7n }));
     expect(nftIncarnationStatus(otherGroup, live)).toBe("stale");
     expect(nftIncarnationStatus(cur, { marketGroupId: undefined, portfolioId: 7n })).toBe("stale");
@@ -83,8 +91,10 @@ describe("incarnation classification", () => {
   it("legacy v2 is classified legacy and, while the S1-2 program is not the one in use, is NOT hidden", () => {
     const legacy = parsePositionNftAccountV3(nftBytes(2));
     expect(nftIncarnationStatus(legacy, live)).toBe("legacy");
-    expect(LEGACY_V2_NFT_TREATED_AS_STALE).toBe(false);
-    expect(isNftStale("legacy")).toBe(false);
+    expect(isNftStale("legacy", false)).toBe(false);
+    expect(isNftStale("legacy", true)).toBe(true); // under the S1-2 program a legacy NFT is dead
+    expect(staleNftKind(legacy)).toBe("unrecoverable");
+    expect(staleNftKind(parsePositionNftAccountV3(nftBytes(3, { group, id: 1n })))).toBe("burnable");
   });
 });
 
@@ -156,5 +166,62 @@ describe("stale NFT UX", () => {
     const confirm = Array.from(document.querySelectorAll("button")).find((b) => /send/i.test(b.textContent ?? "") && b.textContent !== "Cancel");
     if (confirm) fireEvent.click(confirm);
     expect(onConfirm).not.toHaveBeenCalled();
+  });
+});
+
+describe("resolveNftLegacyIsStale: keyed off deployed state, not a code constant", () => {
+  const pd = (slot: bigint) => {
+    const b = new Uint8Array(12);
+    const v = new DataView(b.buffer);
+    v.setUint32(0, 3, true);
+    v.setBigUint64(4, slot, true);
+    return { data: Buffer.from(b) };
+  };
+  const connWithSlot = (slot: bigint | "throw") => ({
+    getAccountInfo: vi.fn(async () => {
+      if (slot === "throw") throw new Error("429");
+      return pd(slot);
+    }),
+  });
+  beforeEach(() => {
+    resetNftIncarnationCache();
+    cfg.deployed = false;
+    cfg.minDeploySlot = null;
+  });
+  it("pre-S1-2 (config false, no probe slot, no v3 seen): legacy stays valid, and no RPC is made", async () => {
+    const c = connWithSlot(1n);
+    expect(await resolveNftLegacyIsStale(c, PERCOLATOR_NFT_PROGRAM_ID, false)).toBe(false);
+    expect(c.getAccountInfo).not.toHaveBeenCalled();
+  });
+  it("config flipped in the runbook step -> legacy is stale", async () => {
+    cfg.deployed = true;
+    expect(await resolveNftLegacyIsStale(connWithSlot(1n), PERCOLATOR_NFT_PROGRAM_ID)).toBe(true);
+  });
+  it("a 239 B record seen proves the S1-2 build; the answer is then sticky", async () => {
+    expect(await resolveNftLegacyIsStale(connWithSlot(1n), PERCOLATOR_NFT_PROGRAM_ID, true)).toBe(true);
+    expect(await resolveNftLegacyIsStale(connWithSlot(1n), PERCOLATOR_NFT_PROGRAM_ID, false)).toBe(true);
+  });
+  it("ProgramData slot probe: >= minDeploySlot -> stale; below -> not; a probe error never flips to stale or back", async () => {
+    cfg.minDeploySlot = 1000;
+    // PDA derivation is unreliable under this jsdom/pure-JS-bigint environment (see usePositionNft.sharedScan.test.ts); the address is not under test.
+    vi.spyOn(PublicKey, "findProgramAddressSync").mockReturnValue([PublicKey.default, 255]);
+    expect(await resolveNftLegacyIsStale(connWithSlot(999n), PERCOLATOR_NFT_PROGRAM_ID)).toBe(false);
+    resetNftIncarnationCache();
+    expect(await resolveNftLegacyIsStale(connWithSlot("throw"), PERCOLATOR_NFT_PROGRAM_ID)).toBe(false);
+    resetNftIncarnationCache();
+    expect(await resolveNftLegacyIsStale(connWithSlot(1000n), PERCOLATOR_NFT_PROGRAM_ID)).toBe(true);
+    // sticky even if a later probe reads an older slot
+    expect(await resolveNftLegacyIsStale(connWithSlot(5n), PERCOLATOR_NFT_PROGRAM_ID)).toBe(true);
+    vi.restoreAllMocks();
+  });
+});
+
+describe("unrecoverable legacy NFT (A-2): no burn button", () => {
+  const base = { canWrap: false, isWrapped: false, collateralLabel: "1 USDC", busy: null, error: null, onWrap: () => undefined, onSend: () => undefined, onUnwrap: () => undefined };
+  it("menu: unrecoverable shows the support line and NO Burn item", () => {
+    const { getByTestId, queryByTestId } = render(<PositionNftMenuView {...base} staleNft staleUnrecoverable />);
+    fireEvent.click(getByTestId("position-nft-menu-button"));
+    expect(getByTestId("position-nft-stale-line").textContent).toBe(NFT_MENU_COPY.unrecoverableBody);
+    expect(queryByTestId("position-nft-stale-burn")).toBeNull();
   });
 });

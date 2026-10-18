@@ -13,11 +13,14 @@ import {
   parsePositionNftAccount as parsePositionNftAccountLib,
   POSITION_NFT_STATE_LEN as POSITION_NFT_STATE_LEN_V12,
 } from "@/lib/nft-program";
+import { resolveNftLegacyIsStale } from "@/lib/nft-incarnation";
 import { deriveNftPda as deriveNftPdaV17 } from "@percolatorct/sdk";
 import {
   parsePositionNftAccountV3,
   nftIncarnationStatus,
   isNftStale,
+  staleNftKind,
+  type StaleNftKind,
   POSITION_NFT_LEGACY_V2_LEN,
 } from "@/lib/v22/sdk/nft-v3";
 import {
@@ -48,6 +51,11 @@ export interface UsePositionNftResult {
    * Absent = false.
    */
   stale?: boolean;
+  /**
+   * What can be done about a stale NFT: "burnable" (EmergencyBurn reclaims its rent) or "unrecoverable" (a legacy 199 B
+   * NFT under the S1-2 program: every burn path rejects it, so the UI offers no burn, only a support line).
+   */
+  staleKind?: StaleNftKind;
 }
 
 /**
@@ -195,7 +203,9 @@ export function usePositionNft(slabAddress: string): UsePositionNftResult {
               const parsed = parsePositionNftAccountV3(new Uint8Array(accountInfo.data));
 
               // S1-2: the NFT at this PDA belongs to an earlier incarnation of the portfolio keypair.
-              if (scanResult && isNftStale(nftIncarnationStatus(parsed, scanResult.portfolio))) {
+              const legacyIsStaleOwn = await resolveNftLegacyIsStale(connection, PERCOLATOR_NFT_PROGRAM_ID, accountInfo.data.length === 239);
+              if (cancelled) return;
+              if (scanResult && isNftStale(nftIncarnationStatus(parsed, scanResult.portfolio), legacyIsStaleOwn)) {
                 setState({
                   hasMintedNft: true,
                   nftMint: parsed.nftMint,
@@ -203,6 +213,7 @@ export function usePositionNft(slabAddress: string): UsePositionNftResult {
                   nftPdaAddress: ownNftPdaStr,
                   isLoading: false,
                   stale: true,
+                  staleKind: staleNftKind(parsed),
                 });
                 return;
               }
@@ -246,6 +257,8 @@ export function usePositionNft(slabAddress: string): UsePositionNftResult {
             wallet: ownerWalletPk,
             raw: raw!,
           });
+          if (cancelled) return;
+          const legacyIsStale = await resolveNftLegacyIsStale(connection, PERCOLATOR_NFT_PROGRAM_ID, heldNfts.some((n) => n.data.length === 239));
           if (cancelled) return;
 
           // Parse every held NFT (cheap, synchronous) up front, then batch-
@@ -291,7 +304,7 @@ export function usePositionNft(slabAddress: string): UsePositionNftResult {
                 continue;
               }
               if (!(wrappedPf.marketGroupId?.equals(slabPk) ?? false)) continue;
-              if (isNftStale(nftIncarnationStatus(parsedHeldNfts[i].nft, wrappedPf))) {
+              if (isNftStale(nftIncarnationStatus(parsedHeldNfts[i].nft, wrappedPf), legacyIsStale)) {
                 if (staleIdx < 0) staleIdx = i;
                 continue;
               }
@@ -314,6 +327,7 @@ export function usePositionNft(slabAddress: string): UsePositionNftResult {
                 nftPdaAddress: parsedHeldNfts[staleIdx].pubkey.toBase58(),
                 isLoading: false,
                 stale: true,
+                staleKind: staleNftKind(parsedHeldNfts[staleIdx].nft),
               });
               return;
             }

@@ -59,6 +59,27 @@ const PAIRED_SETS: Readonly<Record<string, Readonly<ProgramIdSet>>> = Object.fre
   [DEVNET_V22_PROGRAM_IDS.wrapper]: DEVNET_V22_PROGRAM_IDS,
 });
 
+/**
+ * Whether the S1-2 NFT build (Position NFT layout v3, 239 B, incarnation binding) is DEPLOYED at an NFT program id.
+ * Both programs are upgraded IN PLACE (same ids), so this cannot be inferred from the id: it is flipped in the SAME
+ * runbook step that records the NFT upgrade in deployments.md / ci/deployed-refs.env. While false, a legacy 199 B NFT is a
+ * valid position; once true it is a dead NFT (the program rejects accounts under 239 B) and the app shows it as
+ * unrecoverable. `minDeploySlot` (the slot of the upgrade, from ProgramData) additionally lets the runtime probe in
+ * `lib/nft-incarnation.ts` flip the behaviour without a redeploy of the app: null = no probe. An unlisted id is pre-S1-2.
+ */
+export interface NftS12Deploy {
+  deployed: boolean;
+  minDeploySlot: number | null;
+}
+const NFT_S12_DEPLOY: Readonly<Record<string, Readonly<NftS12Deploy>>> = Object.freeze({
+  [DEVNET_V22_PROGRAM_IDS.nft]: { deployed: false, minDeploySlot: null },
+  [DEVNET_PROGRAM_IDS.nft]: { deployed: false, minDeploySlot: null },
+});
+/** @param nftProgramId Base58 NFT program id. @returns Its recorded S1-2 deploy state (pre-S1-2 when unlisted). */
+export function nftS12Deploy(nftProgramId: string): Readonly<NftS12Deploy> {
+  return NFT_S12_DEPLOY[nftProgramId] ?? { deployed: false, minDeploySlot: null };
+}
+
 export const MAINNET_PROGRAM_IDS: Readonly<Omit<ProgramIdSet, "nft">> = Object.freeze({
   wrapper: "ESa89R5Es3rJ5mnwGybVRG1GrNt9etP11Z5V2QWD4edv",
   matcher: "GDK8wx38kpiSVSfGTVNiSdptX3Z5R4kQyqh6Q3QX6wmi",

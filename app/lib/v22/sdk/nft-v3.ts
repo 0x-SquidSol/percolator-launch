@@ -223,14 +223,6 @@ export function isNftCurrentForPortfolio(
 export type NftIncarnationStatus = "current" | "stale" | "legacy";
 
 /**
- * Whether a legacy v2 NFT is hidden as stale. FALSE while the NFT program in use is still the pre-S1-2 build (a
- * v2 NFT is then the only layout and fully valid, so hiding it would blank every held position). Flip to true in the
- * same change that points the app at the deployed S1-2 program: that program rejects 199 B accounts, so a legacy NFT
- * can no longer authorize anything.
- */
-export const LEGACY_V2_NFT_TREATED_AS_STALE = false;
-
-/**
  * Classify a parsed NFT against the live portfolio.
  *
  * @param nft       Parsed NFT ({@link parsePositionNftAccountV3}).
@@ -250,7 +242,28 @@ export function nftIncarnationStatus(
     : "stale";
 }
 
-/** True when the NFT must not be shown as a position, sent, or burned normally: offer EmergencyBurn instead. */
-export function isNftStale(status: NftIncarnationStatus): boolean {
-  return status === "stale" || (status === "legacy" && LEGACY_V2_NFT_TREATED_AS_STALE);
+/**
+ * True when the NFT must not be shown as a position or sent.
+ *
+ * @param status        {@link nftIncarnationStatus} of the NFT.
+ * @param legacyIsStale Whether the NFT program in use is the S1-2 build ({@link resolveNftLegacyIsStale}): that build
+ *   rejects 199 B accounts, so a legacy NFT authorizes nothing. While the program is still pre-S1-2 a legacy NFT is the
+ *   only layout and fully valid, so it stays visible (hiding it would blank every held position).
+ * @returns true if the NFT is stale (v3 of an earlier incarnation, or legacy under the S1-2 program).
+ */
+export function isNftStale(status: NftIncarnationStatus, legacyIsStale: boolean): boolean {
+  return status === "stale" || (status === "legacy" && legacyIsStale);
+}
+
+/**
+ * What can be done about a stale NFT.
+ *   - "burnable":      v3 of an earlier incarnation: EmergencyBurn reclaims its rent (the program answers Custom(28) to Burn).
+ *   - "unrecoverable": legacy v2 under the S1-2 program: Burn, EmergencyBurn and Reconcile all reject accounts under
+ *                      239 B (InvalidAccountData, NOT 28), so the app cannot recover it. Offer no burn button.
+ */
+export type StaleNftKind = "burnable" | "unrecoverable";
+
+/** @param nft Parsed NFT. @returns The recovery kind for a stale NFT. */
+export function staleNftKind(nft: Pick<PositionNftStateV3, "isLegacyV2">): StaleNftKind {
+  return nft.isLegacyV2 ? "unrecoverable" : "burnable";
 }

@@ -36,7 +36,14 @@ const mocks = vi.hoisted(() => ({
   // random inputs — an environment quirk unrelated to this hook's logic).
   // Mocked out like the other SDK parsing functions below.
   deriveNftPda: vi.fn(),
+  deployedS12: false,
 }));
+
+// Per-cluster S1-2 deploy config (lib/program-ids.ts): flipped by the runbook in production; toggled per test here.
+vi.mock("@/lib/program-ids", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/program-ids")>("@/lib/program-ids");
+  return { ...actual, nftS12Deploy: () => ({ deployed: mocks.deployedS12, minDeploySlot: null }) };
+});
 
 vi.mock("@/hooks/useWalletCompat", () => ({
   useConnectionCompat: mocks.useConnectionCompat,
@@ -76,6 +83,7 @@ vi.mock("@/lib/v22/sdk/nft-v3", async () => {
 });
 
 import { usePositionNft } from "@/hooks/usePositionNft";
+import { resetNftIncarnationCache } from "@/lib/nft-incarnation";
 
 // Real, random Keypair-derived pubkeys (not structured fill()-style bytes) —
 // PDA derivation (deriveNftPdaV17, exercised for real in this file) needs an
@@ -85,8 +93,9 @@ function uniquePubkey(): PublicKey {
   return Keypair.generate().publicKey;
 }
 
-function emptyPortfolio(marketGroupId: PublicKey) {
+function emptyPortfolio(marketGroupId: PublicKey, portfolioId = 0n) {
   return {
+    portfolioId,
     marketGroupId,
     portfolioAccountId: uniquePubkey(),
     provenanceOwner: PublicKey.default,
@@ -230,5 +239,59 @@ describe("usePositionNft — v17 shared scan + batching", () => {
     // to "Not minted" (which would re-enable a doomed re-mint attempt).
     expect(result.current.hasMintedNft).toBe(true);
     expect(result.current.nftMint?.equals(nftMint)).toBe(true);
+  });
+
+  describe("S1-2 incarnation", () => {
+    async function run(nft: { isLegacyV2: boolean; id: bigint | null }, liveId: bigint) {
+      const slabPk = new PublicKey(slabAddress);
+      mocks.useSlabState.mockReturnValue({ programId, raw: new Uint8Array([3]) });
+      connection.getProgramAccounts.mockImplementation(async (pid: PublicKey, cfg?: { filters?: Array<{ dataSize?: number }> }) => {
+        if (pid.equals(programId)) return [];
+        if (cfg?.filters?.[0]?.dataSize === 239) return [];
+        return [{ pubkey: uniquePubkey(), account: { data: new Uint8Array(199) } }];
+      });
+      const pfA = uniquePubkey();
+      const nftMint = uniquePubkey();
+      mocks.parsePositionNftAccount.mockReturnValue({
+        nftMint, portfolioAccount: pfA, isLegacyV2: nft.isLegacyV2,
+        portfolioMarketGroup: nft.isLegacyV2 ? null : slabPk, portfolioIdAtMint: nft.id,
+      });
+      connection.getMultipleAccountsInfo.mockResolvedValue([{ data: Buffer.alloc(1) }]);
+      mocks.parsePortfolioV17.mockReturnValue({
+        ...emptyPortfolio(slabPk, liveId),
+        legs: [{ active: true, assetIndex: 0, marketId: 1n, side: 0, basisPosQ: 3n }],
+      });
+      return { ...renderHook(() => usePositionNft(slabAddress)), nftMint };
+    }
+    it("a stale v3 NFT surfaces as stale + burnable (EmergencyBurn), never as a normal wrapped position", async () => {
+      const { result, nftMint } = await run({ isLegacyV2: false, id: 5n }, 9n);
+      await waitFor(() => expect(result.current.stale).toBe(true));
+      expect(result.current.staleKind).toBe("burnable");
+      expect(result.current.hasMintedNft).toBe(true);
+      expect(result.current.pendingSettlement).toBe(true);
+      expect(result.current.nftMint?.equals(nftMint)).toBe(true);
+    });
+    it("a current v3 NFT is a normal wrapped position (not stale)", async () => {
+      const { result } = await run({ isLegacyV2: false, id: 9n }, 9n);
+      await waitFor(() => expect(result.current.hasMintedNft).toBe(true));
+      expect(result.current.stale).toBeFalsy();
+    });
+    it("a legacy v2 NFT is a normal position while the program is pre-S1-2", async () => {
+      const { result } = await run({ isLegacyV2: true, id: null }, 9n);
+      await waitFor(() => expect(result.current.hasMintedNft).toBe(true));
+      expect(result.current.stale).toBeFalsy();
+    });
+    it("a legacy v2 NFT under the S1-2 program is stale + UNRECOVERABLE (no burn path)", async () => {
+      resetNftIncarnationCache();
+      mocks.deployedS12 = true;
+      try {
+        const { result } = await run({ isLegacyV2: true, id: null }, 9n);
+        await waitFor(() => expect(result.current.stale).toBe(true));
+        expect(result.current.staleKind).toBe("unrecoverable");
+      } finally {
+        mocks.deployedS12 = false;
+        resetNftIncarnationCache();
+      }
+    });
   });
 });

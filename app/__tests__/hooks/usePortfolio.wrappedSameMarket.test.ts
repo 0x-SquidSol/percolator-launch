@@ -61,7 +61,7 @@ const tagged = (tag: number) => {
   return d;
 };
 
-function scenario(wrappedCount: 1 | 2) {
+function scenario(wrappedCount: 1 | 2, inc?: { nftId: bigint; liveId: bigint }) {
   const wallet = pk();
   const escrow = pk();
   const prog = pk();
@@ -82,11 +82,14 @@ function scenario(wrappedCount: 1 | 2) {
     }
     return {
       owner: escrow, marketGroupId: slab, capital: tag === 2 ? 1_000n : 2_000n, pnl: 0n, reservedPnl: 0n,
-      feeCredits: 0n, lastFeeSlot: 0n, legs: [{ active: true, basisPosQ: 5n }],
+      feeCredits: 0n, lastFeeSlot: 0n, legs: [{ active: true, basisPosQ: 5n }], portfolioId: inc?.liveId ?? 0n,
     };
   });
   const wrappedPfs = [pk(), pk()].slice(0, wrappedCount);
-  mocks.parsePositionNftAccount.mockImplementation((d: Uint8Array) => ({ portfolioAccount: wrappedPfs[d[0]] }));
+  mocks.parsePositionNftAccount.mockImplementation((d: Uint8Array) => ({
+    portfolioAccount: wrappedPfs[d[0]],
+    ...(inc ? { isLegacyV2: false, portfolioMarketGroup: slab, portfolioIdAtMint: inc.nftId } : {}),
+  }));
 
   const getMultipleAccountsInfo = vi
     .fn()
@@ -123,6 +126,16 @@ describe('usePortfolio: wrapped position on a market where the wallet also owns 
     expect(snap.positions.map((p) => p.nftWrapped).sort()).toEqual([false, true]);
     expect(snap.positions.every((p) => p.slabAddress === s.slab.toBase58())).toBe(true);
     expect(snap.totalDeposited).toBe(1_500n);
+  });
+
+  it('S1-2: a wrapped position whose NFT is of an EARLIER incarnation (id differs) is not listed; a matching id is', async () => {
+    const stale = scenario(1, { nftId: 5n, liveId: 9n });
+    const snapStale = await fetchPortfolioSnapshot(stale.connection, stale.wallet, stale.programIds);
+    expect(snapStale.positions.map((p) => p.nftWrapped)).toEqual([false]);
+    expect(snapStale.totalDeposited).toBe(500n);
+    const cur = scenario(1, { nftId: 9n, liveId: 9n });
+    const snapCur = await fetchPortfolioSnapshot(cur.connection, cur.wallet, cur.programIds);
+    expect(snapCur.positions.map((p) => p.nftWrapped).sort()).toEqual([false, true]);
   });
 
   it('lists two wrapped positions on the same market', async () => {
