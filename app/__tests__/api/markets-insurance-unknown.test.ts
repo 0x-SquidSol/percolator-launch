@@ -18,13 +18,15 @@ function load(file: string) {
 const ANSEM = load("5bVTTMRc.ansem.market.json"); // 1000 bps -> 10x
 
 const state = vi.hoisted(() => ({ row: {} as Record<string, unknown>, data: new Uint8Array(0), failOi: false }));
-vi.mock("@percolatorct/sdk", async (orig) => {
-  const actual = await orig<typeof import("@percolatorct/sdk")>();
+// v2.2: both callers read the market group through lib/v22/layout's parseMarketOI, which dispatches
+// to the v2.1 or v2.2 SDK parser by the flag; failing it there forces the failure in every mode.
+vi.mock("@/lib/v22/layout", async (orig) => {
+  const actual = await orig<typeof import("@/lib/v22/layout")>();
   return {
     ...actual,
-    parseMarketGroupV17OI: (d: Uint8Array) => {
+    parseMarketOI: (d: Uint8Array) => {
       if (state.failOi) throw new Error("bad market group");
-      return actual.parseMarketGroupV17OI(d);
+      return actual.parseMarketOI(d);
     },
   };
 });

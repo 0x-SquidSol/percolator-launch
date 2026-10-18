@@ -10,13 +10,15 @@ import path from "node:path";
 import { PublicKey } from "@solana/web3.js";
 
 const h = vi.hoisted(() => ({ failOi: false }));
-vi.mock("@percolatorct/sdk", async (orig) => {
-  const actual = await orig<typeof import("@percolatorct/sdk")>();
+// v2.2: both callers read the market group through lib/v22/layout's parseMarketOI, which dispatches
+// to the v2.1 or v2.2 SDK parser by the flag; failing it there forces the failure in every mode.
+vi.mock("@/lib/v22/layout", async (orig) => {
+  const actual = await orig<typeof import("@/lib/v22/layout")>();
   return {
     ...actual,
-    parseMarketGroupV17OI: (d: Uint8Array) => {
+    parseMarketOI: (d: Uint8Array) => {
       if (h.failOi) throw new Error("bad market group");
-      return actual.parseMarketGroupV17OI(d);
+      return actual.parseMarketOI(d);
     },
   };
 });
