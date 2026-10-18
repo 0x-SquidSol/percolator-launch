@@ -210,6 +210,7 @@ describe("wiring: the risk surfaces read the risk entry, display keeps the entry
     "components/portfolio/LiquidationRiskItem.tsx",
     "components/trade/OtherMarketPositions.tsx",
     "hooks/usePortfolio.ts",
+    "app/trader/[wallet]/page.tsx",
   ])("%s: risk entry from the polled position", (f) => {
     expect(src(f)).toContain("entryPriceE6: pos.riskEntryPrice ?? pos.effectiveEntryPrice,");
   });
