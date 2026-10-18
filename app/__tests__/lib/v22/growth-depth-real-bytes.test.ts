@@ -82,6 +82,10 @@ describe("GROWTH_DEPTH_RULES_DEPLOYED against the deployed wrapper's tiered mark
         expect(legacy!.long.nCapQ! / hookView().long.nCapQ!).toBeGreaterThan(1_000n);
       });
 
+      it("with the cluster clock unknown the hook's view is null: nothing is quoted (the stale depth would otherwise read as fresh)", () => {
+        expect(growthFor({ engine: i.engine, vaultLp: i.vaultLp }, { lp: i.lp }, i.lpQ, i.raw, 0, null)).toBeNull();
+      });
+
       it("the band comes from the account (the hook reads it the same way)", () => {
         expect(readBandRentView(i.raw, 0)?.band.bandBps).toBeGreaterThan(0);
       });
