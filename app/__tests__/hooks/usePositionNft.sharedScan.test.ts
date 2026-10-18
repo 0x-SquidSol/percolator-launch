@@ -75,6 +75,17 @@ vi.mock("@/lib/v22/sdk/nft-v3", async () => {
   };
 });
 
+// The hook reads portfolios through lib/v22/layout (VERSION-keyed under the v2.2 flag). Route those reads to the same parser mocks, so
+// these cases exercise the hook's logic in every flag mode (the bytes here are stand-ins, not real accounts).
+vi.mock("@/lib/v22/layout", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/v22/layout")>("@/lib/v22/layout");
+  return {
+    ...actual,
+    isWrapperAccount: (d: Uint8Array) => mocks.isV17Account(d),
+    parsePortfolio: (d: Uint8Array) => mocks.parsePortfolioV17(d),
+  };
+});
+
 import { usePositionNft } from "@/hooks/usePositionNft";
 
 // Real, random Keypair-derived pubkeys (not structured fill()-style bytes) —
