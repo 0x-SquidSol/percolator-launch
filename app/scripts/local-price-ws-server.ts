@@ -55,7 +55,7 @@ import { pickSolUsdE6 } from "../lib/priceStore/solUsd";
 import { isBlockedSlab } from "../lib/blocklist";
 import { createTickService, MAX_BODY_BYTES } from "../lib/chart/tick-service";
 import { bearerMatches } from "../lib/chart/tick-ingest";
-import { MAX_WATCHED_SLABS, RateLimiter, WS_MAX_PAYLOAD_BYTES, checkSubscribe, clientKey, isKnownSlab } from "../lib/chart/ws-guards";
+import { ConnectionLimiter, MAX_WATCHED_SLABS, createUpgradeGate, RateLimiter, WS_MAX_PAYLOAD_BYTES, checkSubscribe, clientKey, isKnownSlab } from "../lib/chart/ws-guards";
 import { getPgCandleStore, getPgSql } from "../lib/chart/pg-store";
 import { createTradeFeed, pgTradeQuery } from "../lib/chart/trade-feed";
 import type { TickMessage } from "../lib/chart/perp-types";
@@ -261,6 +261,9 @@ const tickService = createTickService({
   isKnownSlab: (slab) => isKnownSlab(slab, knownSlabs(), marketsLoaded, isBlockedSlab),
 });
 const ticksLimiter = new RateLimiter(30, 60_000); // GET /ticks: 30 per minute per client
+// #3514: WebSocket upgrades are capped per client and in total, and rate-limited per client.
+const upgradeLimiter = new RateLimiter(60, 60_000); // 60 upgrades per minute per client
+const wsConnections = new ConnectionLimiter();
 const tickRequestStartedAt = Date.now();
 
 const CORS = { "Access-Control-Allow-Origin": "*" };
@@ -317,7 +320,12 @@ const httpServer = createServer(async (req, res) => {
   json(404, { error: "not found" });
 });
 
-const wss = new WebSocketServer({ server: httpServer, maxPayload: WS_MAX_PAYLOAD_BYTES });
+const wss = new WebSocketServer({
+  server: httpServer,
+  maxPayload: WS_MAX_PAYLOAD_BYTES,
+  // #3514: per-client and total connection caps plus an upgrade rate limit (lib/chart/ws-guards.ts).
+  verifyClient: createUpgradeGate({ upgrades: upgradeLimiter, connections: wsConnections }),
+});
 
 function sendPrice(ws: WebSocket, slab: string, priceE6: bigint): void {
   if (ws.readyState !== WebSocket.OPEN) return;
