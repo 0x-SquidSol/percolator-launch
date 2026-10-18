@@ -58,6 +58,7 @@ import { explorerTxUrl, getNetwork } from "@/lib/config";
 import { useUserAccount, useUserAccountScanPending } from "@/hooks/useUserAccount";
 import { OrderTicketClosePanel } from "@/components/trade/OrderTicketClosePanel";
 import { terminalPositionPnl } from "@/lib/position-pnl";
+import { riskEntryFromSettled, riskLegOf, settledRiskAnchorE6 } from "@/lib/risk-entry";
 import { computeLimitPriceE6 } from "@/lib/slippage";
 import { openLimitE6 } from "@/lib/open-limit";
 import { resolveMarketPriceE6 } from "@/lib/oraclePrice";
@@ -572,6 +573,16 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       )
     : null;
   const existingEntryPriceE6 = existingResolved?.entry ?? 0n;
+  // #3534: the before/after liquidation preview is risk math: a fully settled single leg is priced from the settled
+  // back-solve (lib/risk-entry.ts), so a loss settlement already moved out of `capital` is not counted twice.
+  const existingRiskEntryE6 = (() => {
+    if (!userAccount || existingPositionSize === 0n) return existingEntryPriceE6;
+    const { riskLeg, activeLegCount } = riskLegOf(userAccount.account);
+    if (!riskLeg || riskLeg.side !== (existingPositionSize > 0n ? 0 : 1)) return existingEntryPriceE6;
+    const anchor = settledRiskAnchorE6(slabAdlFactors?.settle, riskLeg, activeLegCount);
+    const e = anchor === null ? null : riskEntryFromSettled(existingPositionSize, safeExistingPnl, anchor);
+    return e ?? existingEntryPriceE6;
+  })();
   // The Close tab previews size/PnL/balance for a close that acts on the leg's
   // EFFECTIVE size (engine plan_delta, v16.rs:6075), so it is handed that size -
   // never raw basis - and withholds the preview when the ADL state is unknown.
@@ -911,11 +922,11 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const sameDirection = existingPositionSize === 0n || (existingPositionSize > 0n) === (newSignedSize > 0n);
   const combinedEntryPriceE6 = sameDirection
     ? (existingAbsSize + positionSize > 0n
-        ? (existingEntryPriceE6 * existingAbsSize + estEntry * positionSize) / (existingAbsSize + positionSize)
+        ? (existingRiskEntryE6 * existingAbsSize + estEntry * positionSize) / (existingAbsSize + positionSize)
         : 0n)
     // Opposite direction: a partial reduce keeps the original cost basis; a
     // flip's residual position takes on this trade's fill price as its entry.
-    : (positionSize < existingAbsSize ? existingEntryPriceE6 : estEntry);
+    : (positionSize < existingAbsSize ? existingRiskEntryE6 : estEntry);
   // Cross-margin: the full account capital backs the position — including a fresh
   // open (withdraw is blocked while any leg is open). Price both the fresh-open and
   // scale-in cases with the same capital-based computeLiqPrice as PositionsDock /
@@ -936,8 +947,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const afterLiqPrice = hasOrder && combinedSignedSize !== 0n && combinedEntryPriceE6 > 0n
     ? computeLiqPrice(combinedEntryPriceE6, equityAfterTrade, combinedSignedSize, maintenanceMarginBps)
     : 0n;
-  const beforeLiqPrice = userAccount && userAccount.account.positionSize !== 0n && existingEntryPriceE6 > 0n
-    ? computeLiqPrice(existingEntryPriceE6, capital, userAccount.account.positionSize, maintenanceMarginBps)
+  const beforeLiqPrice = userAccount && userAccount.account.positionSize !== 0n && existingRiskEntryE6 > 0n
+    ? computeLiqPrice(existingRiskEntryE6, capital, userAccount.account.positionSize, maintenanceMarginBps)
     : 0n;
   // Cross-margin: where the account's collateral covers the resulting position
   // there is no liquidation price, and a "—" is not a risk number. The shared
@@ -961,7 +972,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     liqPriceE6: beforeLiqPrice,
     positionSize: existingPositionSize,
     capital,
-    entryPriceE6: existingEntryPriceE6,
+    entryPriceE6: existingRiskEntryE6,
     effectiveSize: existingPositionSize,
     markPriceE6: livePriceE6 ?? 0n,
     maintenanceMarginBps,

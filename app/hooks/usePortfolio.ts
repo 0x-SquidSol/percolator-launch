@@ -51,6 +51,7 @@ import {
   subscribePortfolioInvalidation,
 } from "@/lib/portfolio-invalidation";
 import { parsePortfolio, isWrapperAccount } from "@/lib/v22/layout";
+import { riskLegFields } from "@/lib/risk-entry";
 
 const MAINNET_STATIC_MARKETS = [
   {
@@ -200,6 +201,11 @@ export interface PortfolioPosition {
    * localStorage (saved at trade time) when account.entryPrice is 0.
    */
   effectiveEntryPrice: bigint;
+  /**
+   * #3534: the entry RISK math uses (PositionPnl.riskEntry): the settled back-solve when the leg has nothing pending,
+   * else `effectiveEntryPrice`. Absent on legacy v12 rows (= effectiveEntryPrice). Never displayed.
+   */
+  riskEntryPrice?: bigint;
   /** Last effective oracle price in e6 format */
   oraclePriceE6: bigint;
   /** Liquidation price in e6 format */
@@ -356,7 +362,7 @@ export function liveMarginCushion(pos: PortfolioPosition, liveMarkE6: bigint | n
   if (pos.adlKnown === false) return null;
   return computeMarginCushion({
     positionSize: pos.effectiveSize ?? pos.account?.positionSize ?? 0n,
-    entryPriceE6: pos.effectiveEntryPrice,
+    entryPriceE6: pos.riskEntryPrice ?? pos.effectiveEntryPrice,
     capital: pos.account?.capital ?? 0n,
     markPriceE6: markE6,
     maintenanceMarginBps: pos.maintenanceMarginBps,
@@ -535,6 +541,8 @@ export function buildV17Position(
     adlABasis: aBasis,
     adlKSnap: activeLeg ? activeLeg.kSnap : 0n,
     adlEpochSnap: activeLeg ? activeLeg.epochSnap : 0n,
+    // #3534: see lib/userAccountScan.ts portfolioV17ToAccount.
+    ...riskLegFields(portfolio.legs),
     schedPresent: null,
     schedRemainingQ: null,
     schedAnchorQ: null,
@@ -573,6 +581,7 @@ export function buildV17Position(
     initialMarginBps,
     maintenanceMarginBps,
     capital: account.capital,
+    ...riskLegFields(portfolio.legs),
   });
   // NOTE: when the ADL state is unknown `effectiveSize` falls back to raw basis
   // for SIZE display only (`adlKnown` is false so callers can say so); PnL never
@@ -616,6 +625,7 @@ export function buildV17Position(
     market,
     collateralMint,
     effectiveEntryPrice,
+    riskEntryPrice: pnlResult.riskEntry,
     oraclePriceE6,
     liquidationPriceE6,
     liquidationDistancePct,

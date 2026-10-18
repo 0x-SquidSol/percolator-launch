@@ -297,6 +297,9 @@ const PositionRow: FC<{ slabAddress: string; wrappedRow?: boolean }> = memo(func
   // "≈ $200.12" under the base-unit size: effective size at the mark; nothing without a mark.
   const sizeUsd = positionSizeUsdText(effectiveSize, currentPriceE6);
   const entryPriceE6 = pnlResult.entry;
+  // #3534: risk math (liq price, margin health, cushion tier) uses the risk entry: the settled back-solve when the leg
+  // has nothing pending, so a loss settlement already moved out of capital is not counted twice. Display keeps `entry`.
+  const riskEntryE6 = pnlResult.riskEntry;
   /** False when entry (and therefore PnL/ROE) cannot be honestly displayed. */
   const pnlIsKnown = pnlResult.pnlKnown;
   const entryKnown = isEntryKnown(pnlResult.entry, pnlResult.entrySource);
@@ -349,7 +352,7 @@ const PositionRow: FC<{ slabAddress: string; wrappedRow?: boolean }> = memo(func
     liqPriceE6,
     positionSize: account.positionSize,
     capital: account.capital,
-    entryPriceE6,
+    entryPriceE6: riskEntryE6,
     effectiveSize: pnlResult.effectiveSize,
     markPriceE6: currentPriceE6,
     maintenanceMarginBps: maintenanceBps,
@@ -369,7 +372,7 @@ const PositionRow: FC<{ slabAddress: string; wrappedRow?: boolean }> = memo(func
     // effective_abs_q). Unknown ADL state => not measurable (null), never a raw-size tier.
     const cushion = pnlResult.effectiveSize === null ? null : computeMarginCushion({
       positionSize: pnlResult.effectiveSize,
-      entryPriceE6,
+      entryPriceE6: riskEntryE6,
       capital: account.capital,
       markPriceE6: currentPriceE6,
       maintenanceMarginBps: maintenanceBps,

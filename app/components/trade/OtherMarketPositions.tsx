@@ -181,7 +181,8 @@ const OtherMarketRow: FC<{
     liqPriceE6,
     positionSize: pos.account?.positionSize ?? 0n,
     capital: pos.account?.capital ?? 0n,
-    entryPriceE6: pos.effectiveEntryPrice,
+    // #3534: risk math uses the risk entry (the settled back-solve when nothing is pending), never the display entry.
+    entryPriceE6: pos.riskEntryPrice ?? pos.effectiveEntryPrice,
     effectiveSize: pos.adlKnown ? pos.effectiveSize : null,
     markPriceE6: markE6,
     maintenanceMarginBps: pos.maintenanceMarginBps,

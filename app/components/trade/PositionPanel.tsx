@@ -181,6 +181,9 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const effectiveSize = pnlResult.effectiveSize ?? account.positionSize;
   const absPosition = abs(effectiveSize);
   const entryPriceE6 = pnlResult.entry;
+  // #3534: risk math (liq price, margin health, cushion tier) uses the risk entry: the settled back-solve when the leg
+  // has nothing pending, so a loss settlement already moved out of capital is not counted twice. Display keeps `entry`.
+  const riskEntryE6 = pnlResult.riskEntry;
   const pnlIsKnown = pnlResult.pnlKnown;
   /** The entry itself is real (server/cache/estimate), even if PnL is withheld. */
   const entryKnown = isEntryKnown(pnlResult.entry, pnlResult.entrySource);
@@ -203,7 +206,7 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     // EFFECTIVE size (see the liquidation price above); unknown ADL state => not measurable.
     const cushion = pnlResult.effectiveSize === null ? null : computeMarginCushion({
       positionSize: pnlResult.effectiveSize,
-      entryPriceE6,
+      entryPriceE6: riskEntryE6,
       capital: account.capital,
       markPriceE6: currentPriceE6,
       maintenanceMarginBps: maintenanceBps,
@@ -271,7 +274,7 @@ export const PositionPanel: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     liqPriceE6,
     positionSize: account.positionSize,
     capital: account.capital,
-    entryPriceE6,
+    entryPriceE6: riskEntryE6,
     effectiveSize: pnlResult.effectiveSize,
     markPriceE6: currentPriceE6,
     maintenanceMarginBps: maintenanceBps,

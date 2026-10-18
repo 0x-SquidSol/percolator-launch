@@ -77,6 +77,7 @@ import {
   type PortfolioV17,
 } from "@percolatorct/sdk";
 import { parsePortfolio } from "@/lib/v22/layout";
+import { riskLegFields } from "@/lib/risk-entry";
 
 // ---------------------------------------------------------------------------
 // Shared UserAccountInfo shape + v17→legacy Account mapper.
@@ -155,6 +156,8 @@ export function portfolioV17ToAccount(portfolio: PortfolioV17): Account {
     adlABasis: activeLeg ? activeLeg.aBasis : 0n,
     adlKSnap: activeLeg ? activeLeg.kSnap : 0n,
     adlEpochSnap: activeLeg ? activeLeg.epochSnap : 0n,
+    // #3534: the leg snapshots + active-leg count risk math needs to tell a fully settled leg (lib/risk-entry.ts).
+    ...riskLegFields(portfolio.legs),
     schedPresent: null,
     schedRemainingQ: null,
     schedAnchorQ: null,
