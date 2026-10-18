@@ -870,6 +870,11 @@ export async function sendTx({
   let healedComputeUnits = computeUnits;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    // #3565 Low (sendTx internal re-sign): what this attempt did on the wire. "none" = nothing was handed to a wallet or an RPC
+    // for broadcast; "rejected-preflight" = our own sendRawTransaction was refused by the RPC's preflight (never forwarded);
+    // "attempted" = it may be on the wire. Only the first two make an expiry error safe to re-sign after without waiting.
+    let broadcast = "none" as "none" | "rejected-preflight" | "attempted";
+    let sentBlockhash: string | undefined;
     try {
       // Latency: kick the blockhash fetch off FIRST so it overlaps the fee
       // lookup below (both usually resolve instantly from their caches after
@@ -1061,6 +1066,8 @@ export async function sendTx({
         // Only use atomic sign+send when there are no extra signers.
         // signAndSendTransaction may drop partial signatures from keypair signers.
         try {
+          broadcast = "attempted"; // the wallet broadcasts on approval: a failure from here on is not proof nothing was sent
+          sentBlockhash = tx.recentBlockhash ?? undefined;
           const sigBytes = await wallet.signAndSendTransaction(tx);
           // Privy returns raw signature bytes (64 bytes). Convert to base58.
           lastSignature = bs58.encode(sigBytes);
@@ -1120,11 +1127,15 @@ export async function sendTx({
           preSendSignature = bs58.encode(signed.signature);
         }
         try {
+          broadcast = "attempted";
+          sentBlockhash = signed.recentBlockhash ?? undefined;
           lastSignature = await connection.sendRawTransaction(signed.serialize(), {
             skipPreflight: skipPreflight ?? false,
             maxRetries: 5,
           });
         } catch (sendErr) {
+          // The RPC's preflight refused an expired / unknown blockhash: it never forwards such a tx, so a re-sign is safe.
+          if (!skipPreflight && isBlockhashExpiredError(sendErr)) broadcast = "rejected-preflight";
           const sendMsg = extractTxErrorMessage(sendErr);
           const isBatchError =
             sendMsg.includes("Missing response from batch") ||
@@ -1190,7 +1201,22 @@ export async function sendTx({
               return landedCheckSig; // Already landed — no retry needed
             }
           } catch {
-            // RPC error checking status — proceed with retry
+            // RPC error checking status: decided below (a definite pre-broadcast rejection may still be retried)
+          }
+        }
+
+        // #3565 Low: never re-sign after an AMBIGUOUS outcome. If the tx may be on the wire, wait until it either lands
+        // (return it), fails on chain, or provably cannot land any more (its blockhash expired with no status). Anything
+        // that cannot be decided throws, with the signature attached, so the caller's own landed / live-position checks run.
+        if (broadcast === "attempted") {
+          const sig = preSendSignature ?? lastSignature;
+          const outcome = sig && sentBlockhash ? await awaitAmbiguousOutcome(connection, sig, sentBlockhash) : "unknown";
+          if (outcome === "landed" && sig) return sig;
+          if (outcome !== "not-landed") {
+            if (sig && lastError && (lastError as { signature?: unknown }).signature === undefined) {
+              (lastError as Error & { signature?: string }).signature = sig;
+            }
+            throw lastError;
           }
         }
 
@@ -1231,6 +1257,47 @@ export async function sendTx({
   }
 
   throw lastError ?? new Error("Transaction failed after retries");
+}
+
+/** Test seam for {@link awaitAmbiguousOutcome}'s cadence. */
+export const AMBIGUOUS_OUTCOME_WAIT = { intervalMs: 2_000, maxMs: 100_000 };
+
+/**
+ * #3565 Low: the outcome of a tx that may be on the wire, without re-sending anything.
+ *  - "landed": confirmed / finalized without error;
+ *  - "failed": it landed and failed on chain (a re-sign would not be a retry of a lost tx);
+ *  - "not-landed": no status, and its blockhash is no longer valid (re-checked once after), so it can never land;
+ *  - "unknown": an RPC error, a missing capability, or still pending when the wait ends.
+ * Only "not-landed" makes a re-sign safe.
+ */
+export async function awaitAmbiguousOutcome(
+  connection: Connection,
+  signature: string,
+  blockhash: string,
+): Promise<"landed" | "failed" | "not-landed" | "unknown"> {
+  const status = async () => (await connection.getSignatureStatuses([signature], { searchTransactionHistory: true })).value[0] ?? null;
+  const start = Date.now();
+  try {
+    while (Date.now() - start <= AMBIGUOUS_OUTCOME_WAIT.maxMs) {
+      const st = await status();
+      if (st?.err) return "failed";
+      if (st && (st.confirmationStatus === "confirmed" || st.confirmationStatus === "finalized")) return "landed";
+      if (!st) {
+        if (typeof connection.isBlockhashValid !== "function") return "unknown";
+        const valid = (await connection.isBlockhashValid(blockhash, { commitment: "processed" })).value;
+        if (!valid) {
+          const again = await status();
+          if (!again) return "not-landed";
+          if (again.err) return "failed";
+          if (again.confirmationStatus === "confirmed" || again.confirmationStatus === "finalized") return "landed";
+        }
+      }
+      await new Promise((r) => setTimeout(r, AMBIGUOUS_OUTCOME_WAIT.intervalMs));
+    }
+  } catch {
+    return "unknown";
+  }
+  return "unknown";
 }
 
 /**
