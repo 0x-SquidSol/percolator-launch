@@ -26,12 +26,17 @@ vi.mock("@/lib/server-rpc", async () => {
   };
 });
 vi.mock("@/lib/upstash-rate-limit", () => {
-  const hits = new Map<string, number>();
+  const hits = new Map<string, number[]>();
   return {
-    createUpstashRateLimiter: (o: { limit: number }) => ({
+    // A sliding window counted per limiter (prefix) AND key, like the real Redis keys.
+    createUpstashRateLimiter: (o: { limit: number; prefix: string; windowMs: number }) => ({
       check: async (ip: string) => {
-        const n = (hits.get(ip) ?? 0) + 1;
-        hits.set(ip, n);
+        const k = `${o.prefix}:${ip}`;
+        const now = Date.now();
+        const ts = (hits.get(k) ?? []).filter((t) => t > now - o.windowMs);
+        ts.push(now);
+        hits.set(k, ts);
+        const n = ts.length;
         return { allowed: n <= o.limit, retryAfterSecs: 60 };
       },
     }),
@@ -137,6 +142,33 @@ describe("M-1: balance-aware, per-wallet, global budget, per-IP", () => {
     for (let i = 0; i < 4; i++) out.push(await grantServerSol({ connection: conn() as never, db, to: to(), ip: same, env: env() }));
     expect(out.map((g) => g.status)).toEqual(["sent", "sent", "sent", "skipped"]);
     expect(out[3]).toEqual({ status: "skipped", reason: "ip-limit" });
+  });
+  it("S3-C6: at most 5 per IP per DAY across fresh wallets (hourly window spread out)", async () => {
+    const { db } = fakeDb();
+    const same = ip();
+    const t0 = Date.now();
+    const out: string[] = [];
+    try {
+      // 7 grants, each 2 h apart, so the hourly cap never fires; only the daily one can.
+      for (let i = 0; i < 7; i++) {
+        vi.spyOn(Date, "now").mockReturnValue(t0 + i * 2 * 60 * 60 * 1000);
+        out.push((await grantServerSol({ connection: conn() as never, db, to: to(), ip: same, env: env() })).status);
+      }
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(out.filter((s) => s === "sent")).toHaveLength(5);
+    expect(out.slice(5)).toEqual(["skipped", "skipped"]);
+  });
+  it("S3-C6: a wallet is capped at 3 attempts per day even if its durable row is gone", async () => {
+    const { db, rows } = fakeDb();
+    const w = to();
+    const out: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      rows.length = 0; // simulate the UNIQUE row vanishing (released / cleaned up)
+      out.push((await grantServerSol({ connection: conn() as never, db, to: w, ip: ip(), env: env() })).status);
+    }
+    expect(out).toEqual(["sent", "sent", "sent", "skipped"]);
   });
   it("no key or no database: skipped (the caller uses the public airdrop)", async () => {
     const { db } = fakeDb();

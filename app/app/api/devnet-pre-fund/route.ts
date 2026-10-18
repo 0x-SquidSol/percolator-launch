@@ -41,6 +41,7 @@ import {
   PublicKey,
   Transaction,
 } from "@solana/web3.js";
+import type { Connection } from "@solana/web3.js";
 import {
   getAssociatedTokenAddress,
   createAssociatedTokenAccountInstruction,
@@ -49,6 +50,7 @@ import {
   getMint,
 } from "@solana/spl-token";
 import { getConfig } from "@/lib/config";
+import { DEVNET_GENESIS_HASH } from "@/lib/v22/devnet-guard";
 import {
   getServerConnection,
   sendAndConfirmServerTx,
@@ -64,13 +66,37 @@ import { reserveClaim, releaseClaim, peekClaim, PREFUND_CLAIM_TTL_MS } from "@/l
 
 export const dynamic = "force-dynamic";
 
-// Canonical env var first, legacy fallback; undefined = non-devnet (fail-closed).
-// The real devnet guard is the devnet_mints DB lookup below — only server-owned mints
-// recorded in devnet_mints can be funded.
-const NETWORK =
-  process.env.NEXT_PUBLIC_DEFAULT_NETWORK?.trim() ??
-  process.env.NEXT_PUBLIC_SOLANA_NETWORK?.trim();
-const ALLOW_MIRROR_MINTS = true; // Always allow devnet_mints table entries regardless of NETWORK
+/**
+ * S3-C5 (fix-all 2026-10-18): this endpoint mints with a server key, so it is refused
+ * unless the cluster is devnet. Two independent checks, both fail-closed:
+ *   1. the deployment network env (canonical var first, legacy fallback; unset =
+ *      refused) — the old ALLOW_MIRROR_MINTS=true bypass of this check is removed;
+ *   2. the genesis hash of the SAME connection the mint is sent on (previously only
+ *      getConfig().rpcUrl was checked, a different connection from the sender).
+ * Read per request, not at module load.
+ */
+function deploymentNetwork(): string | undefined {
+  return (
+    process.env.NEXT_PUBLIC_DEFAULT_NETWORK?.trim() ??
+    process.env.NEXT_PUBLIC_SOLANA_NETWORK?.trim()
+  );
+}
+
+/** Endpoints whose genesis hash has been proven to be devnet (positive verdicts only). */
+const provenDevnetEndpoints = new Set<string>();
+
+async function senderIsDevnet(connection: Connection): Promise<boolean> {
+  const key = connection.rpcEndpoint;
+  if (key && provenDevnetEndpoints.has(key)) return true;
+  try {
+    const hash = await withTimeout(connection.getGenesisHash(), 8_000);
+    if (hash !== DEVNET_GENESIS_HASH) return false;
+    if (key) provenDevnetEndpoints.add(key);
+    return true;
+  } catch {
+    return false; // unproven = refused
+  }
+}
 
 /**
  * Allowlist of devnet mint addresses this endpoint may fund.
@@ -158,12 +184,8 @@ export async function POST(req: NextRequest) {
   let releaseGateClaimOnExit: (() => Promise<void>) | null = null;
 
   try {
-    // Allow if: explicitly on devnet network OR the mint is a mirror mint (DB-gated)
-    // Mirror mints are always safe to fund — their authority is our keypair and they
-    // only exist on devnet. The DB lookup below is the real security gate.
-    const isDevnetNetwork = NETWORK === "devnet";
-    // Non-devnet requests proceed but will be rejected at the DB lookup if not a mirror mint
-    if (!isDevnetNetwork && !ALLOW_MIRROR_MINTS) {
+    // S3-C5: devnet only, no bypass.
+    if (deploymentNetwork() !== "devnet") {
       return NextResponse.json({ error: "Only available on devnet" }, { status: 403 });
     }
 
@@ -342,6 +364,15 @@ export async function POST(req: NextRequest) {
     }
 
     const connection = getServerConnection("confirmed");
+
+    // S3-C5: prove the connection the mint is SENT on is devnet before any read or send.
+    if (!(await senderIsDevnet(connection))) {
+      Sentry.captureMessage("devnet-pre-fund refused: sender connection is not proven devnet", {
+        level: "warning",
+        tags: { endpoint: "/api/devnet-pre-fund" },
+      });
+      return NextResponse.json({ error: "Only available on devnet" }, { status: 403 });
+    }
 
     // H3: read the on-chain balance FIRST — before touching the 1h rate gate.
     // All three devnet-pre-fund calls inside a single wizard launch (vault seed,

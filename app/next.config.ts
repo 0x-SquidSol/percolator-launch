@@ -1,6 +1,11 @@
 import type { NextConfig } from "next";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { stripPublicRpcKeys } from "./lib/public-env-guard";
+
+// S3-C10: never inline an RPC API key into the browser bundle (see lib/public-env-guard.ts).
+// Runs before the config object below is read, i.e. before any NEXT_PUBLIC_* is inlined.
+stripPublicRpcKeys();
 // withSentryConfig disabled — its build-time instrumentation is not Turbopack-
 // compatible (Next 16 builds with Turbopack) and injects Node-only code into the
 // Edge middleware bundle, which Vercel rejects at deploy ("referencing unsupported
