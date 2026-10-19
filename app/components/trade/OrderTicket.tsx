@@ -144,16 +144,10 @@ import { diagnoseV22TradeCustom9, positionCapBlocksOpen, positionCapCopy } from 
 import { readMaxPortfolioAssets } from "@/lib/v22/market-cap";
 import { growthMaxLeverageForOrder } from "@/lib/v21/growth-market";
 import { getPortfolioRawSnapshot, makePortfolioScanKey } from "@/lib/userAccountScan";
+import { sanitizeDecimalInput } from "@/lib/decimal-input";
 
 const SIZE_PRESETS = [25, 50, 75, 100];
 const MAX_DISPLAY_LEVERAGE = 200;
-
-function sanitizeDecimalInput(value: string): string {
-  const cleaned = value.replace(/[^0-9.]/g, "");
-  const dotIndex = cleaned.indexOf(".");
-  if (dotIndex === -1) return cleaned;
-  return cleaned.slice(0, dotIndex + 1) + cleaned.slice(dotIndex + 1).replace(/\./g, "");
-}
 
 // Truncate (never round) a number's decimal representation to `decimals`
 // places. Rounding up can produce a native amount slightly larger than the
