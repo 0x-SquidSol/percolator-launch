@@ -54,6 +54,8 @@ const asV22Record = (g: ReturnType<typeof oldDecodeAssetGrowthV19>): ReturnType<
         depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthLastGoodE6: 0n, depthLastGoodSlot: 0n,
         collateralDecimalsP1: 0, collateralDecimals: 6, depthRiseSlot64: 0,
         tierThresholdUsd: [0, 0, 0], tierLeverageX100: [0, 0, 0],
+        // controller round fields as a legacy (flags 0) record reads them: no volatility data, empty depth window, no rent snapshot
+        r3Layout: false, volHasData: false, volVarX100: 0, rentStamp64: 0, depthTw: Growth.DEPTH_TW_EMPTY, rentKinkBps: 0, rentNCapQ: 0n,
       };
 export const decodeAssetGrowthV19: typeof Growth.decodeAssetGrowthV19 = (d, i) => (on() ? Growth.decodeAssetGrowthV19(d, i) : asV22Record(oldDecodeAssetGrowthV19(d, i)));
 export const assetGrowthAccountOffsetV19 = (i: number, layout?: Parameters<typeof Growth.assetGrowthAccountOffsetV19>[1]): number =>

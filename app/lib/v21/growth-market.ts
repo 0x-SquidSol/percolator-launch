@@ -18,8 +18,11 @@ import {
   type MaxLeverageQuote,
   type QuoteMaxLeverageInput,
 } from "../v22/sdk/records/growth-v19";
-import { decodeAssetGrowthV19 } from "../v22/records";
+import * as R2 from "../v22/sdk/records/growth-v19-r2";
+import { decodeAssetGrowthV19, decodeAssetVaultLpDrawP3 } from "../v22/records";
 import { layoutOf } from "../v22/layout";
+import { readBandRentView } from "../v22/band-rent-state";
+import { parseV17RiskParams } from "../v17-engine-config";
 
 /**
  * Absolute offset of the bankruptcy h-lock byte: `groupOff + (layout.group.mode - 5)`. 592 + 621 = 1213 on v2.1
@@ -85,18 +88,82 @@ export interface GrowthMarketInput {
    * Devnet v2.2: engine `band_bps` and the polled cluster slot (null = unknown). Present, the quote applies the depth tier
    * (lambda_eff, kappa cap), graduation and the stored ratchet; with the slot unknown the CONSERVATIVE reading is used
    * (depth absent: tier 0, lambda 1x, no kappa cap). Absent, the growth-1 quote (flag off).
+   *
+   * Controller round + continuous leverage (wrapper e699d7da): the leverage target is the continuous depth curve (log2-interpolated
+   * between the tier anchors) capped by the volatility term and the graded stress cap. `drawOutstanding` / `modeLong` / `modeShort`
+   * pick the stress level and `vol` feeds L_vol ({@link growthControllerInputs} reads them from the market bytes); a record with
+   * volatility data and no `vol` fails closed to launch leverage.
    */
-  v22?: { bandBps: number; nowSlot: bigint | null };
+  v22?: {
+    bandBps: number;
+    nowSlot: bigint | null;
+    drawOutstanding?: boolean;
+    modeLong?: number;
+    modeShort?: number;
+    vol?: { liquidationFeeBps: bigint; bandMaxEpochSlots: bigint };
+  };
+}
+
+/**
+ * The controller inputs the v2.2 quote needs, from the market bytes the app already polls: `band_bps` and `band_max_epoch_slots`
+ * (band config), `liquidation_fee_bps` (engine config +78, pinned with `offset_of!(V16ConfigAccount, liquidation_fee_bps)` on engine
+ * 23f609b3), the engine side modes (real ADL) and the asset's draw record (`outstanding_mirror_atoms` / `pending_moved_atoms`, the
+ * draw stress). An unreadable part is left out: no `vol` fails the leverage closed to launch, an unreadable draw record reads as a
+ * draw (the more conservative stress). Pure; never throws.
+ */
+export function growthControllerInputs(
+  raw: Uint8Array,
+  assetIndex: number,
+  engine: { modeLong: number; modeShort: number },
+): { bandBps: number; drawOutstanding: boolean; modeLong: number; modeShort: number; vol?: { liquidationFeeBps: bigint; bandMaxEpochSlots: bigint } } {
+  const band = readBandRentView(raw, assetIndex);
+  let liq: bigint | null = null;
+  try {
+    liq = parseV17RiskParams(raw, 0n)?.liquidationFeeBps ?? null;
+  } catch {
+    liq = null;
+  }
+  let drawOutstanding = true;
+  try {
+    const d = decodeAssetVaultLpDrawP3(raw, assetIndex);
+    drawOutstanding = d === null ? false : d.outstandingMirrorAtoms !== 0n || d.pendingMovedAtoms !== 0n;
+  } catch {
+    drawOutstanding = true;
+  }
+  return {
+    bandBps: band?.band.bandBps ?? 0,
+    drawOutstanding,
+    modeLong: engine.modeLong,
+    modeShort: engine.modeShort,
+    ...(band !== null && liq !== null ? { vol: { liquidationFeeBps: liq, bandMaxEpochSlots: band.band.epochSlots } } : {}),
+  };
 }
 
 export interface GrowthMarketView {
   record: AssetGrowthV19;
+  /**
+   * v2.2 flag on, a LEGACY record (flags 0, written by the round-2 wrapper deployed on devnet): the same bytes decoded by the round-2
+   * port, whose step-table math the quote, the fee preview and the unlock line use. Null on a controller record (`r3Layout`: the
+   * continuous-leverage curve, ./sdk/records/growth-v19) and whenever the v2.2 input is absent (growth-1).
+   */
+  r2Record: R2.AssetGrowthV19 | null;
   quoteInput: QuoteMaxLeverageInput;
   long: MaxLeverageQuote;
   short: MaxLeverageQuote;
   hlockActive: boolean;
   tradeFeeBaseBps: bigint;
   maxTradingFeeBps: bigint;
+}
+
+/** The round-2 quote input: the same numbers, the legacy record decoded by the round-2 port, the band / clock only. */
+function r2Input(q: QuoteMaxLeverageInput, r2: R2.AssetGrowthV19): R2.QuoteMaxLeverageInput {
+  const { v22, growth: _g, ...rest } = q;
+  return { ...rest, growth: r2, ...(v22 ? { v22: { bandBps: v22.bandBps, nowSlot: v22.nowSlot } } : {}) };
+}
+
+/** Controller records: the continuous-leverage quote; legacy records under the v2.2 input: the round-2 quote (what that wrapper gates). */
+function quoteFor(q: QuoteMaxLeverageInput, r2: R2.AssetGrowthV19 | null, side: "long" | "short"): MaxLeverageQuote {
+  return r2 ? R2.quoteMaxLeverage(r2Input(q, r2), side) : quoteMaxLeverage(q, side);
 }
 
 /** Null when growth is OFF for this asset or the LP is not read yet (then nothing is claimed). */
@@ -121,13 +188,35 @@ export function growthMarketView(i: GrowthMarketInput): GrowthMarketView | null 
     oiEffShortQ: i.engine.oiEffShortQ,
     priceE6: i.engine.effectivePriceE6,
     bankruptcyHlockActive: hlockActive,
-    ...(i.v22 && i.v22.nowSlot !== null ? { v22: { bandBps: i.v22.bandBps, nowSlot: i.v22.nowSlot } } : {}),
+    ...(i.v22 && i.v22.nowSlot !== null
+      ? {
+          v22: {
+            bandBps: i.v22.bandBps,
+            nowSlot: i.v22.nowSlot,
+            ...(i.v22.drawOutstanding === undefined ? {} : { drawOutstanding: i.v22.drawOutstanding }),
+            ...(i.v22.modeLong === undefined ? {} : { modeLong: i.v22.modeLong }),
+            ...(i.v22.modeShort === undefined ? {} : { modeShort: i.v22.modeShort }),
+            ...(i.v22.vol === undefined ? {} : { vol: i.v22.vol }),
+          },
+        }
+      : {}),
   };
+  // Which wrapper generation wrote the record decides the math (the controller program sets GROWTH_FLAG_R3_LAYOUT from birth).
+  let r2Record: R2.AssetGrowthV19 | null = null;
+  if (quoteInput.v22 && !record.r3Layout && i.raw) {
+    try {
+      r2Record = R2.decodeAssetGrowthV19(i.raw, i.assetIndex ?? 0);
+    } catch {
+      r2Record = null;
+    }
+    if (r2Record === null) return null;
+  }
   return {
     record,
+    r2Record,
     quoteInput,
-    long: quoteMaxLeverage(quoteInput, "long"),
-    short: quoteMaxLeverage(quoteInput, "short"),
+    long: quoteFor(quoteInput, r2Record, "long"),
+    short: quoteFor(quoteInput, r2Record, "short"),
     hlockActive,
     tradeFeeBaseBps: i.engine.tradeFeeBaseBps,
     maxTradingFeeBps: i.engine.maxTradingFeeBps,
@@ -218,7 +307,11 @@ function growthTicketDecisionCore(
   const fill = growthFillForOrder(view, direction, takerEffQ, sizeQ);
   // The fee (and the users' OI after) is charged on the size that FILLS, not on the ask.
   const signedFill = direction === "long" ? fill.fillQ : -fill.fillQ;
-  const fee = fill.fillQ > 0n ? previewGrowthOpenFee(view.quoteInput, takerEffQ, signedFill, view.tradeFeeBaseBps) : null;
+  const fee = fill.fillQ > 0n
+    ? view.r2Record
+      ? R2.previewGrowthOpenFee(r2Input(view.quoteInput, view.r2Record), takerEffQ, signedFill, view.tradeFeeBaseBps)
+      : previewGrowthOpenFee(view.quoteInput, takerEffQ, signedFill, view.tradeFeeBaseBps)
+    : null;
   return {
     quote,
     reducing,
