@@ -25,7 +25,9 @@ import {
 } from "@/lib/v22/sdk/records/p2b-earn-abi";
 import { ADL_EPISODE_FIELD_OFF } from "@/lib/v22/sdk/records/p2b-lock-exits";
 import { ASSET_RISK_LIMITS_FIELD_OFF_P1, ASSET_RISK_LIMITS_LEN_P1, ASSET_RISK_LIMITS_SLOT_OFF_P1 } from "@/lib/v22/sdk/records/risk-limits-p1";
-import { ASSET_GROWTH_DEPTH_FIELD_OFF, ASSET_GROWTH_FIELD_OFF } from "@/lib/v22/sdk/records/growth-v19";
+import { ASSET_GROWTH_DEPTH_FIELD_OFF, ASSET_GROWTH_FIELD_OFF, ASSET_GROWTH_LEGACY_FIELD_OFF } from "@/lib/v22/sdk/records/growth-v19";
+import { ASSET_GROWTH_DEPTH_FIELD_OFF as R2_ASSET_GROWTH_DEPTH_FIELD_OFF, ASSET_GROWTH_FIELD_OFF as R2_ASSET_GROWTH_FIELD_OFF } from "@/lib/v22/sdk/records/growth-v19-r2";
+import growthCtl from "../../fixtures/v22-rust-growth-layout-3198539a.json";
 import { ASSET_VAULT_LP_DRAW_LEN_P3, ASSET_VAULT_LP_DRAW_SLOT_OFF_P3, ASSET_VAULT_LP_FIELD_OFF_P3, ASSET_VAULT_LP_P2B_FLAGS_OFF_P3, VAULT_LP_STATE_OFF_P3 } from "@/lib/v22/sdk/records/p3-vault-lp";
 import { STAKE_POOL_FIELD_OFF_V5, STAKE_POOL_SIZE_V5, STAKE_POOL_VERSION_V5 } from "@/lib/v22/sdk/v22-stake";
 import * as C from "@/lib/limits/constants";
@@ -175,9 +177,25 @@ describe("D-1 parity: SDK record field tables vs rustc", () => {
       rename: { maxEpisodeSlots: "adl_max_episode_slots", sinceSlot: "adl_episode_since_slot", epochKeyLong: "adl_episode_epoch_long", epochKeyShort: "adl_episode_epoch_short" },
     });
   });
-  it("growth record incl. the v2.2 depth / tier fields (growth-v19.ts)", () => {
-    expectTable(ASSET_GROWTH_FIELD_OFF, "AssetGrowthV19", { rename: { lLaunchX100: "l_launch_x100", lTierX100: "l_tier_x100", ceilX100: "ceil_x100", reserved: "rent_kink_bps" } });
-    expectTable(ASSET_GROWTH_DEPTH_FIELD_OFF, "AssetGrowthV19", { rename: { depthE6: "depth_e6", depthPrevE6: "depth_prev_e6", depthLastGoodE6: "depth_last_good_e6", collateralDecimalsP1: "collateral_decimals_p1", tierLeverageX100: "tier_leverage_x100", depthRiseSlot64: "depth_rise_slot64_le" } });
+  it("growth record incl. the v2.2 depth / tier fields: the round-2 port (growth-v19-r2.ts) vs the DEPLOYED struct", () => {
+    expectTable(R2_ASSET_GROWTH_FIELD_OFF, "AssetGrowthV19", { rename: { lLaunchX100: "l_launch_x100", lTierX100: "l_tier_x100", ceilX100: "ceil_x100", reserved: "rent_kink_bps" } });
+    expectTable(R2_ASSET_GROWTH_DEPTH_FIELD_OFF, "AssetGrowthV19", { rename: { depthE6: "depth_e6", depthPrevE6: "depth_prev_e6", depthLastGoodE6: "depth_last_good_e6", collateralDecimalsP1: "collateral_decimals_p1", tierLeverageX100: "tier_leverage_x100", depthRiseSlot64: "depth_rise_slot64_le" } });
+    // the controller port reads a legacy (flags 0) record through its legacy table: the same deployed bytes
+    expectTable(ASSET_GROWTH_LEGACY_FIELD_OFF, "AssetGrowthV19");
+  });
+  it("growth record: the controller / continuous-leverage port (growth-v19.ts) vs rustc offset_of! at percolator-prog 3198539a", () => {
+    const ctl = growthCtl.offsets as Record<string, number>;
+    const mism: string[] = [];
+    const check = (ts: Record<string, number>, rename: Record<string, string>): void => {
+      for (const [k, v] of Object.entries(ts)) {
+        const f = rename[k] ?? k.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`);
+        if (ctl[f] !== v) mism.push(`${k} (${f}): TS ${v} != Rust ${ctl[f]}`);
+      }
+    };
+    check(ASSET_GROWTH_FIELD_OFF, { volVarX100: "vol_var_x100_le", rentStamp64: "rent_stamp64_le", lLaunchX100: "l_launch_x100", lTierX100: "l_tier_x100", ceilX100: "ceil_x100", depthTwCur: "depth_tw_cur_le", depthTwPrev: "depth_tw_prev_le", reserved: "rent_kink_bps" });
+    check(ASSET_GROWTH_DEPTH_FIELD_OFF, { depthE6: "depth_e6", depthPrevE6: "depth_prev_e6", depthLastGoodE6: "depth_last_good_e6", collateralDecimalsP1: "collateral_decimals_p1", tierLeverageX100: "tier_leverage_x100", depthRiseSlot64: "depth_rise_slot64_le", depthTwBucket: "depth_tw_bucket_le" });
+    expect(mism).toEqual([]);
+    expect(growthCtl.size).toBe(120);
   });
   it("vault-LP state (absolute, +16 header) and per-asset vault LP / draw (p3-vault-lp.ts)", () => {
     // Byte 232 is `backstop_outstanding_atoms` (G9 lent insurance, u64), not padding (finding S3-D1a, fixed).

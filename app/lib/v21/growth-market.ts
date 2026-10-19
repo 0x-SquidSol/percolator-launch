@@ -155,7 +155,17 @@ export interface GrowthMarketView {
   maxTradingFeeBps: bigint;
 }
 
-/** The round-2 quote input: the same numbers, the legacy record decoded by the round-2 port, the band / clock only. */
+/**
+ * A LEGACY growth record (flags 0: written by the round-2 wrapper) in the round-2 port's shape, or null for a controller record
+ * (`r3Layout`). The only fields the two shapes do not share are the four dead dials at bytes 30..38 (validated 0 on every round-2
+ * record and never read by the round-2 math): they are 0 here. Pure.
+ */
+export function asRound2Record(g: AssetGrowthV19): R2.AssetGrowthV19 | null {
+  if (g.r3Layout) return null;
+  return { ...g, allocAlphaBps: 0, allocBufferBps: 0, cushionTargetBps: 0, cushionShareBps: 0 };
+}
+
+/** The round-2 quote input: the same numbers, the legacy record in the round-2 shape, the band / clock only. */
 function r2Input(q: QuoteMaxLeverageInput, r2: R2.AssetGrowthV19): R2.QuoteMaxLeverageInput {
   const { v22, growth: _g, ...rest } = q;
   return { ...rest, growth: r2, ...(v22 ? { v22: { bandBps: v22.bandBps, nowSlot: v22.nowSlot } } : {}) };
@@ -201,16 +211,9 @@ export function growthMarketView(i: GrowthMarketInput): GrowthMarketView | null 
         }
       : {}),
   };
-  // Which wrapper generation wrote the record decides the math (the controller program sets GROWTH_FLAG_R3_LAYOUT from birth).
-  let r2Record: R2.AssetGrowthV19 | null = null;
-  if (quoteInput.v22 && !record.r3Layout && i.raw) {
-    try {
-      r2Record = R2.decodeAssetGrowthV19(i.raw, i.assetIndex ?? 0);
-    } catch {
-      r2Record = null;
-    }
-    if (r2Record === null) return null;
-  }
+  // Which wrapper generation wrote the record decides the math (the controller program sets GROWTH_FLAG_R3_LAYOUT from birth). Without
+  // the v2.2 input the quote is growth-1 in both ports.
+  const r2Record = quoteInput.v22 ? asRound2Record(record) : null;
   return {
     record,
     r2Record,
