@@ -51,9 +51,8 @@ import { PLAYGROUND_SLAB_META } from "@/lib/playground-slab-meta";
 import { resolveMarketLp } from "@/lib/market-lp";
 import { isDevnetV21Enabled } from "@/lib/v21/flag";
 import { growthMarketView, type GrowthMarketView } from "@/lib/v21/growth-market";
-import { GROWTH_DEPTH_RULES_DEPLOYED } from "@/lib/v21/growth-market";
+import { GROWTH_DEPTH_RULES_DEPLOYED, growthControllerInputs } from "@/lib/v21/growth-market";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
-import { readBandRentView } from "@/lib/v22/band-rent-state";
 import { useClusterSlot } from "@/hooks/useClusterSlot";
 
 const POLL_MS = 20_000;
@@ -207,7 +206,8 @@ export function growthFor(
     // v2.2 depth rules (lambda_eff, kappa cap, stored ratchet) where the DEPLOYED wrapper applies them (6kpg2wi7 since the 10-15
     // growth-tier upgrade, GROWTH_DEPTH_RULES_DEPLOYED): the ticket's room, fee and leverage must be the numbers the program computes
     // for the clip and the gate (QA LEV-8). Unknown clock = conservative reading.
-    ...(isDevnetV22Enabled() && GROWTH_DEPTH_RULES_DEPLOYED ? { v22: { bandBps: readBandRentView(raw, assetIndex)?.band.bandBps ?? 0, nowSlot } } : {}),
+    // Controller round + continuous leverage (wrapper e699d7da): the stress inputs and the volatility config come from the same bytes.
+    ...(isDevnetV22Enabled() && GROWTH_DEPTH_RULES_DEPLOYED ? { v22: { ...growthControllerInputs(raw, assetIndex, engine), nowSlot } } : {}),
   });
 }
 

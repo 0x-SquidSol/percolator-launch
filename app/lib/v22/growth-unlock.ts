@@ -11,14 +11,17 @@
  * clamp enforced). Never a raw bps / x100 number. An off-band market has a fixed ceiling, so it gets none of it.
  */
 import { conservativeEquity } from "../v21/sdk";
-import type { GrowthMarketView } from "../v21/growth-market";
+import { asRound2Record, type GrowthMarketView } from "../v21/growth-market";
 import { V22_COPY } from "./copy";
 import { TEST_USDC, amountLabel, type TierCollateral } from "./tier-config";
+import { growthCeilingView as r2GrowthCeilingView } from "./sdk/records/growth-v19-r2";
 import {
   DEPTH_EVER,
   DEPTH_PREV_REAL,
   freshDepthE6,
   growthCeilingView,
+  realAdl,
+  stressLevel,
   type NextUnlock,
 } from "./sdk/records/growth-v19";
 
@@ -57,7 +60,15 @@ export function growthUnlockView(i: GrowthUnlockInput): GrowthUnlockView {
 
   const q = i.view.quoteInput;
   const cM = conservativeEquity(q.lpCapital, q.lpPnl, q.lpFeeCredits);
-  const cv = growthCeilingView(g, i.bandBps, i.nowSlot, cM, i.view.hlockActive);
+  // The same stress level and volatility inputs the quote used (controller round; continuous leverage e699d7da), so the line and the
+  // ticket's max leverage are one number. Without them (an older caller) the h-lock boolean is the stress, as before.
+  const qv = q.v22;
+  const stress = qv ? stressLevel(qv.drawOutstanding === true, realAdl(qv.modeLong ?? 0, qv.modeShort ?? 0), i.view.hlockActive) : i.view.hlockActive;
+  const vol = qv?.vol ? { engineImrBps: q.engineImrBps, liquidationFeeBps: qv.vol.liquidationFeeBps, bandMaxEpochSlots: qv.vol.bandMaxEpochSlots } : undefined;
+  // A legacy record (round-2 wrapper) is explained with the round-2 view, like its quote (lib/v21/growth-market.ts): by the record
+  // itself, whatever input the view was built with.
+  const r2 = asRound2Record(g);
+  const cv = r2 ? r2GrowthCeilingView(r2, i.bandBps, i.nowSlot, cM, i.view.hlockActive) : growthCeilingView(g, i.bandBps, i.nowSlot, cM, stress, vol);
   const dsByte = g.depthSource | (g.depthEver ? DEPTH_EVER : 0) | (g.depthPrevReal ? DEPTH_PREV_REAL : 0);
   const fresh = freshDepthE6(g.depthE6, g.depthPrevE6, g.depthSlot, dsByte, i.nowSlot);
   const sticky = g.depthEver && fresh === null;
