@@ -206,7 +206,7 @@ export function growthFor(
     // v2.2 depth rules (lambda_eff, kappa cap, stored ratchet) where the DEPLOYED wrapper applies them (6kpg2wi7 since the 10-15
     // growth-tier upgrade, GROWTH_DEPTH_RULES_DEPLOYED): the ticket's room, fee and leverage must be the numbers the program computes
     // for the clip and the gate (QA LEV-8). Unknown clock = conservative reading.
-    // Controller round + continuous leverage (wrapper e699d7da): the stress inputs and the volatility config come from the same bytes.
+    // Controller round + continuous leverage (wrapper 21b8ccfd, contlev3): the stress inputs and the volatility config come from the same bytes.
     ...(isDevnetV22Enabled() && GROWTH_DEPTH_RULES_DEPLOYED ? { v22: { ...growthControllerInputs(raw, assetIndex, engine), nowSlot } } : {}),
   });
 }
