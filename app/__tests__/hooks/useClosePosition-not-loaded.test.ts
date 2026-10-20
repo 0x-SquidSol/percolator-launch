@@ -30,6 +30,9 @@ vi.mock("@percolatorct/sdk", async (orig) => ({
 }));
 
 import { useClosePosition } from "@/hooks/useClosePosition";
+import { seedLotExp0 } from "../helpers/v22-fixtures";
+
+seedLotExp0();
 const SLAB = "AzagguvrWmRgcBpsKuqomW7Yb1YUUd6UzcrkiRsqdhr";
 
 describe("close before this market's position has loaded", () => {

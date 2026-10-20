@@ -95,6 +95,18 @@ vi.mock("@percolatorct/sdk", async () => {
   };
 });
 
+// The hook decodes the registry and the redemption ticket through lib/v22/records (flag off it delegates to the SDK parsers, flag on it is the
+// VERSION-keyed port). Route that seam to the SDK mocks above, so `vi.mocked(sdk.parseLpVaultRegistry)` below means the same in every mode.
+vi.mock("@/lib/v22/records", async (orig) => {
+  const real = await orig<typeof import("@/lib/v22/records")>();
+  const sdk = await import("@percolatorct/sdk");
+  return {
+    ...real,
+    parseLpVaultRegistry: (d: Uint8Array) => sdk.parseLpVaultRegistry(d),
+    parseLpRedemption: (d: Uint8Array) => sdk.parseLpRedemption(d),
+  };
+});
+
 vi.mock("@solana/spl-token", () => ({
   TOKEN_PROGRAM_ID: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
   getAssociatedTokenAddress: vi.fn(),

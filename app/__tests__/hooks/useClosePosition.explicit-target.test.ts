@@ -149,6 +149,9 @@ vi.mock("@/lib/trade-ix", async (orig) => {
 
 import { useClosePosition } from "@/hooks/useClosePosition";
 import { TARGET_COPY } from "@/lib/portfolio-target";
+import { seedLotExp0 } from "../helpers/v22-fixtures";
+
+seedLotExp0();
 
 function seed(accts: Record<string, { data: Buffer; owner?: PublicKey }>) {
   chain.clear();

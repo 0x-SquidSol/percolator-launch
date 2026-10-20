@@ -92,6 +92,9 @@ import { useSlabState } from "@/components/providers/SlabProvider";
 import { useClosePosition } from "@/hooks/useClosePosition";
 import { __setUnknownLotExpForTest } from "@/lib/v22/lot-registry";
 import { decodeMarketEngineView } from "@/lib/limits/decode";
+import { seedLotExp0 } from "../helpers/v22-fixtures";
+
+seedLotExp0();
 
 describe("useClosePosition fresh-state verification", () => {
   const slabAddress =

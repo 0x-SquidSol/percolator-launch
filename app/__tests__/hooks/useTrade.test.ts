@@ -137,6 +137,9 @@ vi.mock("@/lib/v18-wire", async (orig) => ({
 import { useConnectionCompat, useWalletCompat } from "@/hooks/useWalletCompat";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { sendTx, sendTxWaiting } from "@/lib/tx";
+import { seedLotExp0 } from "../helpers/v22-fixtures";
+
+seedLotExp0();
 
 /** The v17 trade is sent with sendTxWaiting; sendTx only carries a separate taker crank. */
 const sent = () => vi.mocked(sendTxWaiting);

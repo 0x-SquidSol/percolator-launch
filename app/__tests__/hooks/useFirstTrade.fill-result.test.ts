@@ -14,6 +14,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
 import * as C from "@/lib/limits/constants";
+import { blankPortfolio } from "../helpers/v22-fixtures";
 
 const WRAPPER = new PublicKey("ETDLAdiAyWnEUngspYczTXUceT6X8f92eZQvr8nmSkWB");
 const MARKET_ID = 1n;
@@ -23,7 +24,7 @@ const findV17Portfolio = vi.fn();
 
 /** Portfolio bytes with one asset-0 leg of signed size `q` (0 = no leg). */
 function portfolioWithPosition(q: bigint): Buffer {
-  const d = new Uint8Array(9563);
+  const d = new Uint8Array(blankPortfolio()); // the ACTIVE layout (9,563 B v18 flag off, 10,603 B VERSION 19 flag on); leg fields up to the basis do not move
   const dv = new DataView(d.buffer);
   const l = C.PF_LEGS;
   if (q !== 0n) {

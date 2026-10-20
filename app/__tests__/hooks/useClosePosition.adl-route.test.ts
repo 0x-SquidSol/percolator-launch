@@ -66,6 +66,9 @@ vi.mock("@/lib/portfolio-invalidation", () => ({ invalidatePortfolio: vi.fn() })
 vi.mock("@/lib/matcherCaps", () => ({ getMatcherCaps: vi.fn(async () => null), getLpInventoryState: vi.fn(async () => null) }));
 
 import { useClosePosition } from "@/hooks/useClosePosition";
+import { seedLotExp0 } from "../helpers/v22-fixtures";
+
+seedLotExp0();
 
 beforeEach(() => {
   tradeMock.mockReset();

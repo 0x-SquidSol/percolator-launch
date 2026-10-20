@@ -72,6 +72,9 @@ vi.mock("@/lib/matcherCaps", () => ({ getMatcherCaps: vi.fn(async () => null), g
 
 import { useClosePosition, COPY_RESET_LEG } from "@/hooks/useClosePosition";
 import { getMatcherCaps } from "@/lib/matcherCaps";
+import { seedLotExp0 } from "../helpers/v22-fixtures";
+
+seedLotExp0();
 
 beforeEach(() => {
   tradeMock.mockReset();

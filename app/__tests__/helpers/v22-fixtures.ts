@@ -223,3 +223,17 @@ export function marketImageOfLen(len: number): Buffer {
   }
   return d;
 }
+
+/**
+ * Open the v2.2 N1 lot gate with exponent 0 for every test of the calling file (flag off this is a no-op). With the flag on, a market's price is
+ * withheld until its lot exponent has been observed from market bytes; tests whose fixtures carry no market bytes say "this market has no lots"
+ * explicitly instead of relying on the app to guess. Reset after each test.
+ */
+export function seedLotExp0(): void {
+  beforeEach(() => {
+    __setUnknownLotExpForTest(0);
+  });
+  afterEach(() => {
+    __setUnknownLotExpForTest(null);
+  });
+}

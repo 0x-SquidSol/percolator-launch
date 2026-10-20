@@ -131,6 +131,9 @@ import { blankMarket } from "../helpers/v22-fixtures";
 import { fireEvent } from "@testing-library/react";
 import { formatUsdPriceE6 } from "@/lib/format";
 import { saveEntryPrice } from "@/lib/entry-price";
+import { seedLotExp0 } from "../helpers/v22-fixtures";
+
+seedLotExp0();
 
 interface Scenario {
   /** raw leg basis (signed) */
