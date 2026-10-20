@@ -64,7 +64,7 @@ export default function Home() {
       <section className="mx-auto flex min-h-[calc(72dvh-3.5rem)] max-w-[1100px] flex-col justify-center px-6 py-20 sm:px-8">
         <div className="reveal-up">
           <div className="mb-5 text-[11px] font-medium uppercase tracking-[0.25em] text-[var(--accent-text)]">
-            // devnet v2 · solana
+            // solana devnet
           </div>
         </div>
 
@@ -92,9 +92,9 @@ export default function Home() {
 
         <div className="reveal-up" style={{ animationDelay: "0.12s" }}>
           <p className="mt-6 max-w-[52ch] text-[15px] leading-relaxed text-[var(--text-secondary)]">
-            Any Solana token with an active DEX pool can have a leveraged market in about a minute, long
-            before the big exchanges get to it. Trade it long or short, or provide liquidity and earn its
-            fees. This is devnet: everything runs on free test funds.
+            Any Solana token with an active DEX pool can have a leveraged market in about a minute. Trade it
+            long or short, or deposit into its Earn vault for a share of its trading fees. This is devnet:
+            everything runs on free test funds.
           </p>
         </div>
 
