@@ -73,9 +73,9 @@ export function matcherPortfolio(enabled: boolean): Buffer {
  * (magic, VERSION 19, kind 1) and the group config up to the vault field (slot capacity). Callers write the fields they test through
  * `marketOffsets(d).hdr(C.H_*)`, so every other field reads 0, the way the old zero-filled v2.1 fixtures did.
  */
-export function v22BlankMarket(): Uint8Array {
+export function v22BlankMarket(slots = 1): Uint8Array {
   const src = v22MarketBytes();
-  const d = new Uint8Array(src.length);
+  const d = new Uint8Array(LAYOUT_V22.marketGroupOff + LAYOUT_V22.marketGroupLen + slots * LAYOUT_V22.assetSlotStride);
   const g = LAYOUT_V22.marketGroupOff;
   d.set(src.subarray(0, 16));
   d.set(src.subarray(g, g + LAYOUT_V22.group.vault), g);
@@ -133,10 +133,13 @@ export function blankPortfolio(): Buffer {
   return d;
 }
 
-/** An otherwise-zero market of the ACTIVE layout: header (magic, VERSION, kind 1) and, on v2.2, the group config. */
-export function blankMarket(): Uint8Array {
-  if (isDevnetV22Enabled()) return v22BlankMarket();
-  const d = new Uint8Array(LAYOUT_V21.marketGroupOff + LAYOUT_V21.marketGroupLen);
+/**
+ * An otherwise-zero market of the ACTIVE layout: header (magic, VERSION, kind 1) and, on v2.2, the group config. `slots` = whole asset slots
+ * after the group (v2.1 default 0, i.e. the group only, as the old fixtures were; v2.2 default 1, the smallest market the program creates).
+ */
+export function blankMarket(slots = 0): Uint8Array {
+  if (isDevnetV22Enabled()) return v22BlankMarket(slots || 1);
+  const d = new Uint8Array(LAYOUT_V21.marketGroupOff + LAYOUT_V21.marketGroupLen + slots * LAYOUT_V21.assetSlotStride);
   const v = new DataView(d.buffer);
   v.setBigUint64(0, LAYOUT_V21_MAGIC, true);
   v.setUint16(8, LAYOUT_V21.version, true);
