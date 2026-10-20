@@ -4,7 +4,7 @@
  * stale health certificate reverts VaultLpValuationStale (P3 Custom(85)). sendTx({vaultLpRepair})
  * prepends the permissionless crank of THE VAULT LP into the user's own tx — only when the
  * unmodified tx fails on exactly that; kill switch NEXT_PUBLIC_VAULT_LP_SELF_HEAL=0.
- * Market bytes: live PENGU (v18.2) with a Rust-laid-out bound AssetVaultLpV18 written at 896.
+ * Market bytes: the captured v2.2 one-slot market with a Rust-laid-out bound AssetVaultLpV18 written at 896.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
@@ -22,29 +22,38 @@ import { sendTx } from "@/lib/tx";
 import * as C from "@/lib/limits/constants";
 import { decodeMarketEngineView } from "@/lib/limits/decode";
 import { isValuationStaleFailure, planVaultLpRepair, type VaultLpRepairResult } from "@/lib/limits/vault-lp-repair";
+import { V22_AFTER_LEGS_SHIFT, pinV22, v22BlankPortfolio, v22MarketBytes } from "../../helpers/v22-fixtures";
+import { __setDevnetV22ForTest } from "@/lib/v22/flag";
+import { marketOffsets } from "@/lib/v22/market-offsets";
+
+pinV22();
 
 const FX = join(__dirname, "..", "..", "fixtures");
 const PROGRAM = new PublicKey("GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ");
 const MARKET = new PublicKey("ENdXK8k6iiWCAx4Z9XfoKLg9oXsEbPL4hEtmEmUqozDZ");
 const SIG = bs58.encode(new Uint8Array(64).fill(7));
 const layouts = JSON.parse(readFileSync(join(FX, "limits", "rust-layouts.json"), "utf8"));
-const PENGU = new Uint8Array(Buffer.from(readFileSync(join(FX, "v18-liveness", "pengu-market-v18-healthy.b64"), "utf8").trim(), "base64"));
+// Captured v2.2 (VERSION 19) one-slot market (helpers/v22-fixtures.ts). The vault-LP record is the rustc-laid-out AssetVaultLpV18 (its offsets
+// are identical in v22-rust-layout-aca02ba6.json, e.g. vault_lp_max_lev_bps @92), written at the slot's wrapper prefix +896.
+__setDevnetV22ForTest(true); // module-level decodes below run at collection time, before any beforeEach
+const PENGU = v22MarketBytes();
+const M = marketOffsets(PENGU);
 
 /** PENGU with a bound vault LP (key 0xAB..0xCD, from the rustc-laid-out fixture). */
 const BOUND_MARKET = (() => {
   const d = PENGU.slice();
-  d.set(Buffer.from(layouts.assetVaultLpHex, "hex"), C.assetWrapperOff(0) + C.ASSET_VAULT_LP_OFF);
+  d.set(Buffer.from(layouts.assetVaultLpHex, "hex"), M.wrapperOff(0) + C.ASSET_VAULT_LP_OFF);
   return d;
 })();
-const VAULT_LP = new PublicKey(BOUND_MARKET.slice(C.assetWrapperOff(0) + C.ASSET_VAULT_LP_OFF, C.assetWrapperOff(0) + C.ASSET_VAULT_LP_OFF + 32));
+const VAULT_LP = new PublicKey(BOUND_MARKET.slice(M.wrapperOff(0) + C.ASSET_VAULT_LP_OFF, M.wrapperOff(0) + C.ASSET_VAULT_LP_OFF + 32));
 const E = decodeMarketEngineView(BOUND_MARKET)!;
 
 function vaultLpPortfolio(current: boolean): Uint8Array {
-  const d = new Uint8Array(9579);
+  const d = new Uint8Array(v22BlankPortfolio());
   const v = new DataView(d.buffer);
   v.setBigUint64(C.PF_ACTIVE_BITMAP, 1n, true); // holds inventory
   if (current) {
-    const c = C.PF_HEALTH_CERT;
+    const c = C.PF_HEALTH_CERT + V22_AFTER_LEGS_SHIFT;
     v.setBigUint64(c + C.CERT_ORACLE_EPOCH, E.oracleEpoch, true);
     v.setBigUint64(c + C.CERT_FUNDING_EPOCH, E.fundingEpoch, true);
     v.setBigUint64(c + C.CERT_RISK_EPOCH, E.riskEpoch, true);
@@ -52,7 +61,7 @@ function vaultLpPortfolio(current: boolean): Uint8Array {
     v.setBigUint64(c + C.CERT_ACTIVE_BITMAP, 1n, true);
     d[c + C.CERT_VALID] = 1;
   } else {
-    d[C.PF_STALE_STATE] = 1;
+    d[C.PF_STALE_STATE + V22_AFTER_LEGS_SHIFT] = 1;
   }
   return d;
 }

@@ -1,4 +1,7 @@
 import { readFileSync } from "node:fs";
+import { afterEach, beforeEach } from "vitest";
+import { __setDevnetV22ForTest } from "@/lib/v22/flag";
+import { __setUnknownLotExpForTest } from "@/lib/v22/lot-registry";
 import { join } from "node:path";
 import { PublicKey } from "@solana/web3.js";
 import { LAYOUT_V22 } from "@/lib/v22/sdk/layout";
@@ -52,4 +55,47 @@ export function v22MatcherPortfolio(enabled: boolean, base: Buffer = v22Portfoli
   const d = Buffer.from(base);
   d.writeBigUInt64LE(enabled ? 1n : 0n, LAYOUT_V22.portfolio.matcherConfigOff + 96);
   return d;
+}
+
+/**
+ * An otherwise-ZERO v2.2 market (one slot, 4,059 B) that keeps only what makes it a market the decoders accept: the wrapper header
+ * (magic, VERSION 19, kind 1) and the group config up to the vault field (slot capacity). Callers write the fields they test through
+ * `marketOffsets(d).hdr(C.H_*)`, so every other field reads 0, the way the old zero-filled v2.1 fixtures did.
+ */
+export function v22BlankMarket(): Uint8Array {
+  const src = v22MarketBytes();
+  const d = new Uint8Array(src.length);
+  const g = LAYOUT_V22.marketGroupOff;
+  d.set(src.subarray(0, 16));
+  d.set(src.subarray(g, g + LAYOUT_V22.group.vault), g);
+  return d;
+}
+
+/**
+ * An otherwise-ZERO v2.2 portfolio (10,603 B): the wrapper header (magic, VERSION 19, kind 2) and the engine provenance header
+ * (version + layout discriminator) that the guard checks. Fields before the legs are written at the v2.1 constants (they do not move);
+ * fields after the legs (receipt, stale states, locks) at `constant + V22_AFTER_LEGS_SHIFT`.
+ */
+export function v22BlankPortfolio(): Buffer {
+  const src = v22PortfolioBase();
+  const d = Buffer.alloc(src.length);
+  const P = LAYOUT_V22.portfolio;
+  src.copy(d, 0, 0, 16);
+  src.copy(d, P.provenanceVersionOff, P.provenanceVersionOff, P.provenanceDiscriminatorOff + 2);
+  return d;
+}
+
+/** Bytes by which every portfolio field AFTER the legs moved from v2.1 to v2.2: `legCount * (legStride - 152)` (1,040). */
+export const V22_AFTER_LEGS_SHIFT = LAYOUT_V22.portfolio.legCount * (LAYOUT_V22.portfolio.legStride - 152);
+
+/** Pin the v2.2 flag ON (and lot exponent 0, so the N1 lot gate is open) for every test of the calling file, in every mode. */
+export function pinV22(): void {
+  beforeEach(() => {
+    __setDevnetV22ForTest(true);
+    __setUnknownLotExpForTest(0);
+  });
+  afterEach(() => {
+    __setDevnetV22ForTest(null);
+    __setUnknownLotExpForTest(null);
+  });
 }

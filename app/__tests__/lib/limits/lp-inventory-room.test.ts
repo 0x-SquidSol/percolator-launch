@@ -14,6 +14,8 @@ import { lpEffectiveSignedQ, lpInventoryRoomQ, matcherPricingInventoryQ } from "
 import { SIDE_MODE_RESET_PENDING } from "@/lib/limits/effective-quantity";
 import { UNLIMITED_CAPACITY } from "@/lib/marketCapacity";
 import { maxTradeSizePerSide } from "@/lib/limits/risk-limits";
+import { pinV22, v22BlankPortfolio } from "../../helpers/v22-fixtures";
+import { LAYOUT_V22 } from "@/lib/v22/sdk/layout";
 
 const B = 1_000_000_000n;
 
@@ -64,12 +66,15 @@ describe("lpInventoryRoomQ", () => {
 });
 
 describe("lpEffectiveSignedQ (port of 7a3ac04c raw_and_effective_signed_position_for_asset_view .1)", () => {
+  pinV22();
   const MARKET_ID = 7n;
   const portfolio = (legs: { slot: number; asset: number; marketId: bigint; side: number; basis: bigint; aBasis: bigint; epochSnap: bigint }[]) => {
-    const d = new Uint8Array(C.PF_LEGS + C.PF_MAX_LEGS * C.PF_LEG_LEN);
+    // v2.2: a VERSION-19 portfolio (legs are 217 B apart, epoch_snap at +118; the fields up to a_basis do not move).
+    const P = LAYOUT_V22.portfolio;
+    const d = new Uint8Array(v22BlankPortfolio());
     const v = new DataView(d.buffer);
     for (const l of legs) {
-      const o = C.PF_LEGS + l.slot * C.PF_LEG_LEN;
+      const o = P.legsOff + l.slot * P.legStride;
       d[o + C.LEG_ACTIVE] = 1;
       v.setUint32(o + C.LEG_ASSET_INDEX, l.asset, true);
       v.setBigUint64(o + C.LEG_MARKET_ID, l.marketId, true);
@@ -79,7 +84,7 @@ describe("lpEffectiveSignedQ (port of 7a3ac04c raw_and_effective_signed_position
       v.setBigUint64(o + C.LEG_BASIS_POS_Q + 8, u >> 64n, true);
       v.setBigUint64(o + C.LEG_A_BASIS, l.aBasis & ((1n << 64n) - 1n), true);
       v.setBigUint64(o + C.LEG_A_BASIS + 8, l.aBasis >> 64n, true);
-      v.setBigUint64(o + C.LEG_EPOCH_SNAP, l.epochSnap, true);
+      v.setBigUint64(o + P.leg.epochSnap, l.epochSnap, true);
     }
     return d;
   };
