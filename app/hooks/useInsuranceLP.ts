@@ -38,7 +38,7 @@ import { crankOracleTail } from "@/lib/limits/vault-lp-repair";
 import { MARKET_MODE_LIVE } from "@/lib/limits/constants";
 import { limitsFlags } from "@/lib/limits/flags";
 import { earnVaultLpRepairOption } from "@/lib/limits/vault-lp-repair";
-import { buildEarnDepositIxs, buildEarnExecuteIxs, buildRequestRedeemIx, earnTxPlan, sendWithHarvestOn84, sendWithUpgradeRetry, withForcedHarvest, type EarnTxPlan } from "@/lib/limits/earn-ixs";
+import { buildEarnDepositIxs, buildEarnExecuteIxs, buildRequestRedeemIx, earnRequestFloorAtoms, earnRequestQuoteAtoms, earnTxPlan, sendWithHarvestOn84, sendWithUpgradeRetry, withForcedHarvest, type EarnTxPlan } from "@/lib/limits/earn-ixs";
 import { SimulationRefusal } from "@/lib/tx";
 import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 import { resolveDevnetProgramIds } from "@/lib/program-ids";
@@ -923,6 +923,8 @@ export function useInsuranceLP() {
           programId: progPk, redeemer: wallet.publicKey!, registry: registryPda, lpMint: lpMintPda,
           redeemerLpAta: await getAssociatedTokenAddress(lpMintPda, wallet.publicKey!), escrow: escrowPda,
           redemption: redemptionPda, shares: lpAmount,
+          // AUD-S1-18: the floored 76; the floor sits EARN_REQUEST_FLOOR_BPS under today's quote.
+          minPayoutAtoms: earnRequestFloorAtoms(earnRequestQuoteAtoms(lpAmount, state)),
         });
       // ExecuteRedemption (tag 77) — collect collateral after cooldown.
       // BUG FIX (devnet flow-test 2026-07-01): this account list was missing the LP
@@ -1093,7 +1095,7 @@ export function useInsuranceLP() {
     } finally {
       setLoading(false);
     }
-  }, [wallet, connection, slabAddress, programId, slabState, state.lpVaultDomain, state.redemptionCooldownSlots, state.registryExists, refreshState, earnRepairFor]);
+  }, [wallet, connection, slabAddress, programId, slabState, state.lpVaultDomain, state.redemptionCooldownSlots, state.registryExists, state.splitPot, state.backingNavAtoms, state.lpSupply, refreshState, earnRepairFor]);
 
   /**
    * A pending redemption the vault cannot pay in full right now (EarnPayoutCapError): cancel it
@@ -1122,7 +1124,7 @@ export function useInsuranceLP() {
       const [escrowPda] = deriveLpEscrow(progPk, marketPk);
       const lpAta = await getAssociatedTokenAddress(lpMintPda, payer);
       const cancel = buildCancelRedemptionIx({ programId: progPk, redeemer: payer, registry: registryPda, redemption: redemptionPda, lpMint: lpMintPda, redeemerLpAta: lpAta, escrow: escrowPda });
-      const request = buildRequestRedeemIx({ programId: progPk, redeemer: payer, registry: registryPda, lpMint: lpMintPda, redeemerLpAta: lpAta, escrow: escrowPda, redemption: redemptionPda, shares });
+      const request = buildRequestRedeemIx({ programId: progPk, redeemer: payer, registry: registryPda, lpMint: lpMintPda, redeemerLpAta: lpAta, escrow: escrowPda, redemption: redemptionPda, shares, minPayoutAtoms: earnRequestFloorAtoms(earnRequestQuoteAtoms(shares, state)) });
       const gate = await simulateForGate(connection, payer, [cancel]);
       if (gate.err) throw gate.err instanceof Error ? gate.err : new Error(typeof gate.err === 'string' ? gate.err : JSON.stringify(gate.err));
       const [blockhash, fee] = await Promise.all([getFreshBlockhash(connection, true), getPriorityFee(connection)]);
@@ -1143,7 +1145,7 @@ export function useInsuranceLP() {
     } finally {
       setLoading(false);
     }
-  }, [wallet, connection, slabAddress, programId, refreshState]);
+  }, [wallet, connection, slabAddress, programId, state.splitPot, state.backingNavAtoms, state.lpSupply, refreshState]);
 
   return {
     state,

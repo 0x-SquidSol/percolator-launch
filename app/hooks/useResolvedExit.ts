@@ -29,7 +29,7 @@ import { loadResolvedExitSnapshot, type ResolvedExitSnapshot } from '@/lib/limit
 import { viewerOwnedKeys, viewerReceiptStatus, type ViewerReceipt } from '@/lib/limits/resolved-topup';
 import { exitStepIxs, type ExitIxContext } from '@/lib/limits/resolved-exit-ixs';
 import { runResolvedExit, type ResolvedExitRun } from '@/lib/limits/resolved-exit-run';
-import { buildRequestRedeemIx } from '@/lib/limits/earn-ixs';
+import { buildRequestRedeemIx, earnRequestFloorAtoms } from '@/lib/limits/earn-ixs';
 import {
   buildFinishList,
   FINISH_MAX_TXS,
@@ -75,6 +75,8 @@ export interface ResolvedExitState {
 /** The Earn request (76) the user's "Finish now and request my withdrawal" appends. */
 export interface FinishEarnRequest {
   shares: bigint;
+  /** AUD-S1-18: what 77 would pay for `shares` today (earnRequestQuoteAtoms); the request's floor sits under it. */
+  quoteAtoms?: bigint | null;
 }
 
 export function useResolvedExit(slabAddress: string | null) {
@@ -223,6 +225,7 @@ export function useResolvedExit(slabAddress: string | null) {
             escrow: deriveLpEscrow(prog, market)[0],
             redemption: deriveLpRedemption(prog, registry, payer)[0],
             shares: earn.shares,
+            minPayoutAtoms: earnRequestFloorAtoms(earn.quoteAtoms),
           });
         }
         if (items.length === 0) throw new Error('nothing to finish');

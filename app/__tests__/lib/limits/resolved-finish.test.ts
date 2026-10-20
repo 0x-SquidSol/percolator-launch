@@ -293,8 +293,8 @@ describe("AC1: a time, never a slot", () => {
 describe("the viewer's Earn position in the panel", () => {
   it("amount + requestable shares; none while a request is pending; nothing without shares", async () => {
     const { earnExitProps } = await import("@/lib/limits/resolved-finish");
-    expect(earnExitProps({ userLpBalance: 10n, userRedeemableValue: 1_250_000_000n, pendingRedemptionShares: 0n }, 6, "USDC")).toEqual({ earnAmount: "1250 USDC", requestableShares: 10n });
+    expect(earnExitProps({ userLpBalance: 10n, userRedeemableValue: 1_250_000_000n, pendingRedemptionShares: 0n }, 6, "USDC")).toEqual({ earnAmount: "1250 USDC", requestableShares: 10n, requestQuoteAtoms: null }); // no NAV given: no quote (AUD-S1-18)
     expect(earnExitProps({ userLpBalance: 10n, userRedeemableValue: 1n, pendingRedemptionShares: 4n }, 6, "USDC").requestableShares).toBe(0n);
-    expect(earnExitProps({ userLpBalance: 0n, userRedeemableValue: 0n, pendingRedemptionShares: 0n }, 6, "USDC")).toEqual({ earnAmount: null, requestableShares: 0n });
+    expect(earnExitProps({ userLpBalance: 0n, userRedeemableValue: 0n, pendingRedemptionShares: 0n }, 6, "USDC")).toEqual({ earnAmount: null, requestableShares: 0n, requestQuoteAtoms: null });
   });
 });
