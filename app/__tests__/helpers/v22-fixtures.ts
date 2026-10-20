@@ -19,6 +19,9 @@ const LAYOUT_V21_MAGIC = 0x5045_5243_5631_3600n;
  * Patches are written at offsets from the SDK table LAYOUT_V22 (pinned to rustc `offset_of!` by lib/v22/rust-layout-parity-d1.test.ts).
  */
 const FX = join(__dirname, "..", "fixtures");
+const RUST = JSON.parse(readFileSync(join(FX, "v22-rust-layout-aca02ba6.json"), "utf8")) as {
+  offsets: { EngineAssetSlotV16Account: Record<string, number>; BackingBucketV16Account: Record<string, number> };
+};
 const MARKET_FX = JSON.parse(readFileSync(join(FX, "v22-market-single-asset-SOL.json"), "utf8")) as { market: string; owner: string; dataBase64: string };
 const PORTFOLIO_FX = JSON.parse(readFileSync(join(FX, "v22-flat-winner-portfolio-2026-10-11.json"), "utf8")) as { market: string; owner: string; b64: string };
 
@@ -172,5 +175,23 @@ export function modePortfolio(fx: ReturnType<typeof modeFixtures>, o: { side: 0 
   d[V22_LEG_ACTIVE] = o.active === false ? 0 : 1;
   d[V22_LEG_SIDE] = o.side;
   d.writeBigUInt64LE(o.basis, V22_LEG_BASIS);
+  return d;
+}
+
+/**
+ * The captured one-slot v2.2 market with its backing buckets LAPSED: both sides' bucket is Fresh (status 1) with an expiry slot long in the past,
+ * so the engine would accept ExpireBackingBucket (tag 71) and the app plans a self-heal "expire" repair. Offsets are the rustc `offset_of!` values
+ * of the deployed struct (EngineAssetSlotV16Account.backing_long/short, BackingBucketV16Account.status/expiry_slot in v22-rust-layout-aca02ba6.json),
+ * read from that JSON rather than from the app's own tables.
+ */
+export function v22LapsedMarket(): Uint8Array {
+  const d = v22MarketBytes();
+  const engine = LAYOUT_V22.marketGroupOff + LAYOUT_V22.marketGroupLen + LAYOUT_V22.wrapperSlotLen;
+  const dv = new DataView(d.buffer, d.byteOffset, d.byteLength);
+  for (const side of [RUST.offsets.EngineAssetSlotV16Account.backing_long, RUST.offsets.EngineAssetSlotV16Account.backing_short]) {
+    const b = engine + side;
+    d[b + RUST.offsets.BackingBucketV16Account.status] = 1; // BUCKET_STATUS_FRESH
+    dv.setBigUint64(b + RUST.offsets.BackingBucketV16Account.expiry_slot, 1n, true);
+  }
   return d;
 }

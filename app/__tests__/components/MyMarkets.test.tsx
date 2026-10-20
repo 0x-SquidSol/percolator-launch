@@ -26,18 +26,18 @@ import {
 } from '../../components/my-markets/types';
 import type { CreatorMarketDetail } from '../../components/my-markets/types';
 import type { DiscoveredMarket } from '@percolatorct/sdk';
-import { V17_PORTFOLIO_ACCOUNT_LEN, V17_PORTFOLIO_IDENTITY_TRAILER_LEN } from '@percolatorct/sdk';
+import { V17_PORTFOLIO_IDENTITY_TRAILER_LEN } from '@percolatorct/sdk';
+import { blankPortfolio } from '../helpers/v22-fixtures';
 import type { CreatedMarket } from '../../hooks/useCreatedMarkets';
 
 /**
- * A v18 portfolio account as the creator scan sees it: exactly V17_PORTFOLIO_ACCOUNT_LEN bytes with
+ * A portfolio account as the creator scan sees it: exactly the layout's account length with
  * kind byte [10] = 2 (F-3), the matcher config followed by the identity trailer, and the config's
  * trailing control word (bit 0 = enabled) deciding LP (1) vs plain trading portfolio (0).
  */
 function makePortfolio(market: PublicKey, owner: PublicKey, lpEnabled: boolean): Buffer {
-  const data = Buffer.alloc(V17_PORTFOLIO_ACCOUNT_LEN);
-  Buffer.from([0x00, 0x36, 0x31, 0x56, 0x43, 0x52, 0x45, 0x50]).copy(data, 0); // magic
-  data[10] = 2; // account kind = portfolio
+  // The ACTIVE layout's portfolio: 9,563 B (v18) flag off, 10,603 B (VERSION 19, with the engine provenance header the guard checks) flag on.
+  const data = blankPortfolio(); // magic, VERSION, kind byte [10] = 2
   market.toBuffer().copy(data, 16); // market_group_id@16
   owner.toBuffer().copy(data, 116); // owner@116
   data.writeBigUInt64LE(lpEnabled ? 1n : 0n, data.length - 104 - V17_PORTFOLIO_IDENTITY_TRAILER_LEN + 96);

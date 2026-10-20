@@ -126,7 +126,8 @@ import { computeEngineLiqPrice } from "@/lib/liquidation-risk";
 import { parseAssetAdlFactors } from "@/lib/v17-adl";
 import { computeMarginCushion } from "@/lib/liquidation-risk";
 import { liveMarginCushion } from "@/hooks/usePortfolio";
-import { V17_MARKET_GROUP_OFF, V17_MARKET_GROUP_LEN, V17_MARKET_ASSET_SLOT_LEN, V17_ASSET_SLOT_WRAPPER_LEN } from "@percolatorct/sdk";
+import { activeLayout } from "@/lib/v22/layout";
+import { blankMarket } from "../helpers/v22-fixtures";
 import { fireEvent } from "@testing-library/react";
 import { formatUsdPriceE6 } from "@/lib/format";
 import { saveEntryPrice } from "@/lib/entry-price";
@@ -445,10 +446,13 @@ describe("one position, every surface, one PnL (#3077)", () => {
 
 // ── #3077 follow-ups ────────────────────────────────────────────────────────
 
-const SLOTS_BASE = V17_MARKET_GROUP_OFF + V17_MARKET_GROUP_LEN + V17_ASSET_SLOT_WRAPPER_LEN;
-/** A real v17 slab byte layout (parsed by the real parser), not a hand-built factors object. */
+/** Start of asset 0's engine slot in the ACTIVE layout (v2.1: 758 B group + 1,024 B wrapper prefix; v2.2: 806 B + 1,024 B). The asset-state fields
+ *  below (a_long 49, a_short 65, epoch_long 497, mode_long 513) are at the same offsets in both (rustc: v22-rust-layout-aca02ba6.json AssetStateV16Account). */
+const slotsBase = (): number => activeLayout().marketGroupOff + activeLayout().marketGroupLen + activeLayout().wrapperSlotLen;
+/** A real slab byte layout of the ACTIVE mode (parsed by the real parser), not a hand-built factors object. */
 function slabFactors(aLong: bigint, aShort: bigint, epochLong = 0n, modeLong = 0): Factors {
-  const buf = new Uint8Array(V17_MARKET_GROUP_OFF + V17_MARKET_GROUP_LEN + V17_MARKET_ASSET_SLOT_LEN);
+  const SLOTS_BASE = slotsBase();
+  const buf = blankMarket(1);
   const dv = new DataView(buf.buffer);
   const u128 = (off: number, v: bigint) => {
     dv.setBigUint64(SLOTS_BASE + off, v & 0xffffffffffffffffn, true);
