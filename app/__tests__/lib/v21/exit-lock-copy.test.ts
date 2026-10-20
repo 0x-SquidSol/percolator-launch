@@ -12,6 +12,10 @@ import { resolveDevnetProgramIds } from "@/lib/program-ids";
 import { decodeMarketHealth, MARKET_HEALTH_SLICE_LEN } from "@/lib/market-health";
 import { ADL_ONE } from "@/lib/limits/constants";
 import { marketRaw } from "./fixtures";
+import { decodeAdlEpisode as decodeAdlEpisodeV22 } from "@/lib/v22/sdk/records/p2b-lock-exits";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
+import { blankMarket } from "../../helpers/v22-fixtures";
+import { marketOffsets } from "@/lib/v22/market-offsets";
 import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import { __setDevnetV21ForTest } from "@/lib/v21/flag";
 
@@ -87,7 +91,8 @@ describe("close-only episode countdown", () => {
   const raw = (since: bigint | null, max = 0) => {
     const r = marketRaw({});
     if (since !== null) {
-      const off = 592 + 758 + 608; // asset 0 risk-limits record
+      const M = marketOffsets(r);
+      const off = M.wrapperOff(0) + M.layout.wrapperSlot.riskLimits; // asset 0 risk-limits record (same ADL-episode field offsets in v2.1 and v2.2)
       const dv = new DataView(r.buffer);
       const [kl, ks] = adlEpisodeKey(1n, 0n, 4n);
       dv.setUint32(off + ADL_EPISODE_FIELD_OFF.maxEpisodeSlots, max, true);
@@ -142,7 +147,9 @@ describe("close-only episode countdown", () => {
     expect(slotsToDuration(9_001n)).toBe("about 1 h 01 min");
   });
   it("the episode decoder reads the record at asset-slot 652..", () => {
-    const e = decodeAdlEpisode(raw(777n, 123), 0);
+    // The v2.1 SDK port reads at the fixed v2.1 geometry; on v2.2 the app reads through the VERSION-keyed decoder (same record, same field offsets).
+    const decode = isDevnetV22Enabled() ? decodeAdlEpisodeV22 : decodeAdlEpisode;
+    const e = decode(raw(777n, 123), 0);
     expect(e.sinceSlot).toBe(777n);
     expect(e.maxEpisodeSlots).toBe(123);
   });
@@ -199,8 +206,10 @@ describe("copy for 120/121/122, 92-99, 100-103", () => {
 describe("market health: the h-lock byte is non-zero, not === 1", () => {
   const health = (byte: number) => {
     const d = new Uint8Array(MARKET_HEALTH_SLICE_LEN);
+    d.set(blankMarket()); // the ACTIVE layout's header (VERSION 18 flag off, 19 flag on)
     d[10] = 1;
-    d[592 + 621] = byte;
+    const M = marketOffsets(d);
+    d[M.g + M.layout.group.mode - 5] = byte; // bankruptcy_hlock_active
     return decodeMarketHealth(d, 0n, null).bankruptcyHlock;
   };
   it("0 off, 1 on, attributed (3, 255) on", () => {
