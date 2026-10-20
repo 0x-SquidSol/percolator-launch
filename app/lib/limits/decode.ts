@@ -589,3 +589,22 @@ export function decodeTerminalBacking(d: Uint8Array, registryDomain: number): { 
   }
   return { residual, physical };
 }
+
+/**
+ * The same physical idle backing as `decodeTerminalBacking`, kept PER DOMAIN: `[registryDomain, sibling]`.
+ * Tag 102's Resolved payout draws from ONE source domain's bucket per call (`vault_pot_principal_withdraw`
+ * refuses when that bucket's `fresh_unliened_backing` is smaller than the amount), while its surplus gate
+ * (`physical - C`) is the sum of both. A junior claim above one bucket therefore needs two 102 calls.
+ */
+export function decodeTerminalBackingDomains(d: Uint8Array, registryDomain: number): readonly [bigint, bigint] | null {
+  const M = marketOffsetsOrNull(d, "decodeTerminalBackingDomains");
+  if (!M) return null;
+  if (!isV18MarketHeader(d) || d.length < M.g + M.layout.marketGroupLen) return null;
+  const out: bigint[] = [];
+  for (const dom of [registryDomain, registryDomain ^ 1]) {
+    const off = M.engineOff(Math.floor(dom / 2)) + M.slotRel(dom % 2 === 0 ? C.SLOT_BACKING_LONG : C.SLOT_BACKING_SHORT) + C.BUCKET_FRESH_UNLIENED_BACKING_NUM;
+    if (d.length < off + 16) return null;
+    out.push(u128(d, off) / C.BOUND_SCALE);
+  }
+  return [out[0]!, out[1]!];
+}

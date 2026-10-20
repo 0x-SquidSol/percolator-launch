@@ -23,7 +23,7 @@ import { WRAPPER_ERR } from '@/lib/wrapper-errors';
 import { keepAppMessage, plainMessage } from '@/lib/limits/user-message';
 import { assertDepositWithinBalance, readTokenBalance } from '@/lib/deposit-guard';
 import { decodeLpVaultRegistryDomain, decodeVaultLpState } from '@/lib/limits/decode';
-import { buildJuniorResolvedReleaseIxs, juniorReleaseNeedsHarvest } from '@/lib/limits/junior-resolved-release';
+import { buildJuniorResolvedReleaseIxs, juniorReleaseNeedsHarvest, juniorResolvedDomainIdle } from '@/lib/limits/junior-resolved-release';
 import { readEmptyCloseIxs } from '@/lib/limits/resolved-exit-load';
 import { sendWithTopup } from '@/lib/limits/resolved-topup';
 import { computeBudgetPrefix, connectionSelfHealDeps } from '@/lib/self-heal';
@@ -149,7 +149,7 @@ export function useJuniorTranche(slabAddress: string | null) {
       try {
         if (amount <= 0n) throw new Error('Enter an amount greater than zero.');
         const c = await context();
-        const ixs = buildJuniorResolvedReleaseIxs(c, amount, juniorReleaseNeedsHarvest(c.marketData, c.domain));
+        const ixs = buildJuniorResolvedReleaseIxs(c, amount, juniorReleaseNeedsHarvest(c.marketData, c.domain), juniorResolvedDomainIdle(c.marketData, c.domain));
         // 102 is refused 21 while any EMPTY portfolio is still materialized on the Resolved market:
         // the permissionless tag-8 closes go first in the same tx (sim-gated; dropped if they
         // would make it fail), so the junior never waits on the keeper.

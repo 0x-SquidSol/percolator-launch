@@ -121,11 +121,11 @@ export const COPY = {
   /** UX WP-8 (audit §3.9): keeper-first, a time not a slot, "Finish now" as a secondary link. */
   resolvedExit: {
     title: "Market settled",
-    status: "This market has settled. Payouts are being finalised automatically.",
+    status: "This market has settled. Payouts open once its last settlement steps have run. The keeper normally runs them; you can also run them yourself below.",
     /** P3 ordering: the viewer's resolved close ran before the vault LP settled (receipt partial). */
     partialReceipt: "Part of your payout is on its way — it completes automatically once the market finishes settling.",
     eta: (amount: string | null, at: string, rel: string) =>
-      amount ? `Your ${amount} will be ready to withdraw by about ${at} (${rel}).` : `Earn withdrawals open by about ${at} (${rel}).`,
+      amount ? `Your ${amount} can be withdrawn from about ${at} (${rel}) if the keeper runs the steps; sooner if you finish them yourself.` : `Earn withdrawals open from about ${at} (${rel}) if the keeper runs the steps; sooner if you finish them yourself.`,
     ready: "Everything on this market is settled. Earn withdrawals pay out now: use Withdraw below.",
     finishNow: (n: number, sol: string) =>
       `Anyone can speed this up. Finish the remaining ${n} step${n === 1 ? "" : "s"} now (about ${sol} SOL in network fees).`,
