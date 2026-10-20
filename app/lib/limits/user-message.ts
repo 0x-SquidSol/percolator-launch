@@ -10,7 +10,7 @@
  * generated WRAPPER_ERR table (lib/wrapper-errors.ts), never a literal.
  */
 import { WRAPPER_ERR } from "../wrapper-errors";
-import { NETWORK_BUSY_MESSAGE, TICKET_FUNDS_LINE } from "./copy";
+import { NETWORK_BUSY_MESSAGE, PRICES_OUT_OF_SYNC_COPY, TICKET_FUNDS_LINE } from "./copy";
 import { V21_COPY } from "../v21/copy";
 import { isDevnetV21Enabled } from "../v21/flag";
 import { WRAPPER_ERR_V21 } from "../v21/wrapper-errors";
@@ -358,6 +358,13 @@ function resolveUserMessageInner(err: unknown, ctx: MessageContext): UserMessage
   }
   if (/confirmation timeout|was not confirmed in|timed out waiting for confirmation/i.test(lower)) {
     return m("still-confirming", "wait", "Still confirming", "Still confirming. We'll update this when it lands.", { autoRetry: true });
+  }
+  // #3459: the live price and the trading price disagree (lib/slippage.ts FeedDisagreementError).
+  // Before the network check below: its raw text carries the deviation in bps, and 429 of them
+  // read as an HTTP 429 ("Couldn't reach Solana"); after it, the slippage check below read it as
+  // "the price moved while you were confirming", which is not what happened.
+  if ((err as { name?: string } | null)?.name === "FeedDisagreementError") {
+    return m("prices-out-of-sync", "wait", PRICES_OUT_OF_SYNC_COPY.title, PRICES_OUT_OF_SYNC_COPY.body);
   }
   // C4: a rate-limited RPC has its own calm line (the tx was never accepted); a bare 429 digit run is not enough, so it needs rate-limit wording.
   if (/too many requests|rate.?limits? exceeded|rate.?limited|-32429|\b429\b.{0,80}rate.?limit|rate.?limit.{0,80}\b429\b/i.test(p.raw) && p.code === null) {

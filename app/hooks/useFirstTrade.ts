@@ -54,6 +54,8 @@ import { isLossStaleError } from "@/lib/v21/loss-stale-retry";
 import { presignWait } from "@/lib/first-trade-wait";
 import { pythCrankAccount } from "@/lib/limits/oracle-tail";
 import { crankOracleTail } from "@/lib/limits/vault-lp-repair";
+import { UserFacingError } from "@/lib/errorMessages";
+import { CLOSE_PRICE_UNREADABLE } from "@/lib/close-limit";
 
 /** CU cap for [deposit, trade]: the trade's cap + the deposit. */
 const FUND_AND_TRADE_CU_CAP = tradeCuCap(1) + 60_000;
@@ -68,6 +70,8 @@ export const FIRST_TRADE_CU_CAP = FUND_AND_TRADE_CU_CAP + 60_000;
  */
 export const PRESIGN_WAIT_ATTEMPTS = 3;
 export const PRESIGN_WAIT_MS = 1_500;
+/** A fund-and-trade handed no worst-fill limit (0 = no slippage check on chain): the price could not be read. */
+export const FIRST_TRADE_NO_LIMIT = CLOSE_PRICE_UNREADABLE;
 
 /** A pre-sign wrapper refusal that the keeper's next step clears: EngineStale 19 / EngineLockActive 21. */
 export function isPresignWaitable(e: unknown, programId: PublicKey): boolean {
@@ -128,6 +132,10 @@ export function useFirstTrade(slabAddress: string) {
       // combined string told a connected user to unlock their wallet while the market was still loading.
       if (!wallet.publicKey) throw new Error("Wallet not connected");
       if (!mktConfig || !slabProgramId) throw new Error("Market not loaded");
+      // #3459 / #3522: this path never goes through useTrade's feed-vs-chain guard, so it must be handed a limit that
+      // was built and checked (lib/open-limit.ts, the ticket's confirm snapshot). On chain limit 0 means "no slippage
+      // check at all": refuse it here, before anything is signed, rather than send an unbounded open.
+      if (p.limitPriceE6 <= 0n) throw new UserFacingError(FIRST_TRADE_NO_LIMIT);
       assertKnownProgram(slabProgramId);
       const owner = wallet.publicKey;
       const programId = slabProgramId;

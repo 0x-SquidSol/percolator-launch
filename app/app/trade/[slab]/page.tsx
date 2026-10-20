@@ -31,7 +31,7 @@ import { isPlaceholderSymbol, SLUG_ALIASES } from "@/lib/symbol-utils";
 import { getNetwork } from "@/lib/config";
 import { RenderProfiler } from "@/components/dev/RenderProfiler";
 import TradingPageLoading from "./loading";
-import { ADMIN_BURN_COPY } from "@/lib/admin-burn-copy";
+import { ADMIN_BURN_COPY, creatorAdminBurned } from "@/lib/admin-burn-copy";
 import { MultiAssetNotice } from "@/components/trade/MultiAssetNotice";
 import { isMultiAssetMarket } from "@/lib/v22/market-cap";
 import { fetchMarketsList, listedMarketRows } from "@/lib/markets-list-client";
@@ -326,6 +326,8 @@ function TradePageInner({ slab }: { slab: string }) {
   const isLargeScreen = useIsLargeScreen();
 
   const { engine, config, header, raw: slabRaw, loading: slabLoading, error: slabError, layoutUnsupported } = useSlabState();
+  // #3463: the chip names the key a burn clears (asset 0's asset_admin), not the market authority in the header shim.
+  const adminBurned = creatorAdminBurned(slabRaw, header?.admin);
   // Boolean presence subscription, NOT the full live-price state: this keeps the
   // trade-page shell OFF the ~4-5/sec price-tick re-render path (it only needs to
   // know whether a price exists, for the no-data gate below). See useLivePriceHasData.
@@ -545,20 +547,14 @@ function TradePageInner({ slab }: { slab: string }) {
       <TradeMarketHealthBanner slab={slab} />
       <MarketLimitsStrip slab={slab} symbol={symbol} />
       <div className="flex items-center gap-3 py-1 overflow-x-auto whitespace-nowrap scrollbar-none">
-        {header?.admin && (
-          <Tooltip
-            text={
-              header.admin.toBase58() === "11111111111111111111111111111111"
-                ? ADMIN_BURN_COPY.burned
-                : ADMIN_BURN_COPY.active
-            }
-          >
-            <span className={`text-[9px] font-medium uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-sm border ${
-              header.admin.toBase58() === "11111111111111111111111111111111"
+        {adminBurned !== null && (
+          <Tooltip text={adminBurned ? ADMIN_BURN_COPY.burned : ADMIN_BURN_COPY.active}>
+            <span data-testid="creator-key-chip" className={`text-[9px] font-medium uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-sm border ${
+              adminBurned
                 ? "border-[var(--long)]/30 bg-[var(--long)]/5 text-[var(--long)]"
                 : "border-[var(--warning)]/30 bg-[var(--warning)]/5 text-[var(--warning)]"
             }`}>
-              {header.admin.toBase58() === "11111111111111111111111111111111" ? "Admin Renounced" : "Admin Active"}
+              {adminBurned ? ADMIN_BURN_COPY.chipBurned : ADMIN_BURN_COPY.chipActive}
             </span>
           </Tooltip>
         )}

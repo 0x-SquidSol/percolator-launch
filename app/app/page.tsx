@@ -85,8 +85,8 @@ export default function Home() {
 
         <div className="reveal-up" style={{ animationDelay: "0.12s" }}>
           <p className="mt-6 max-w-[52ch] text-[15px] leading-relaxed text-[var(--text-secondary)]">
-            Every market carries its own insurance fund, prices off live Solana DEX pools, and
-            can burn its own admin key. Fully on-chain, open to anyone, and open to any token.
+            Every market carries its own insurance fund and prices off live Solana DEX pools, and its
+            creator can give up their admin key after launch. Fully on-chain, open to anyone, and open to any token.
           </p>
         </div>
 

@@ -73,6 +73,7 @@ import {
 } from "@percolatorct/sdk";
 import { formatTokenAmount } from "@/lib/format";
 import { marketGeometry, isUnsupportedLayout } from "@/lib/v22/layout";
+import { parseAssetSettleState, type AssetSettleState } from "@/lib/risk-entry";
 
 /** `ADL_ONE` — the un-deleveraged side factor (percolator/src/lib.rs:16). */
 export const ADL_ONE = 1_000_000_000_000_000n;
@@ -110,6 +111,11 @@ export interface AssetAdlFactors {
   epochShort?: bigint;
   modeLong?: number;
   modeShort?: number;
+  /**
+   * #3534: the per-side K/F/B (and v2.2 rent) indices a leg settles against, plus the effective price K last accrued
+   * to (lib/risk-entry.ts). null/absent = unknown, and risk math keeps today's entry.
+   */
+  settle?: AssetSettleState | null;
 }
 
 function readU64LE(data: Uint8Array, offset: number): bigint {
@@ -174,6 +180,7 @@ export function parseAssetAdlFactors(
     epochShort: readU64LE(slabData, epochBase + EPOCH_SHORT_REL),
     modeLong: slabData[epochBase + MODE_LONG_REL],
     modeShort: slabData[epochBase + MODE_SHORT_REL],
+    settle: parseAssetSettleState(slabData, assetIndex),
   };
 }
 

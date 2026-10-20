@@ -45,11 +45,11 @@ import { computeNotionalNative } from "@/lib/notional";
 import { availableLeverage as availableLeverageFor, nextLeverageInputState, clampSliderLeverage, LEVERAGE_STEP } from "@/lib/leverage-control";
 import { useTrade, prewarmTradeSubmission, resolveLpTradeAccounts } from "@/hooks/useTrade";
 import { useFirstTrade } from "@/hooks/useFirstTrade";
-import { FIRST_TRADE_COPY, FirstTradeDepositError, firstTradeCancelledExtras, fundDepositAtoms, tradableMarginAtoms } from "@/lib/first-trade";
+import { FIRST_TRADE_COPY, FirstTradeDepositError, engineGateBps, engineOpenNeedAtoms, firstTradeCancelledExtras, fundDepositAtoms, tradableMarginAtoms } from "@/lib/first-trade";
 import { useMarketFillCap } from "@/hooks/useMarketFillCap";
 import { UNLIMITED_CAPACITY } from "@/lib/marketCapacity";
 import { isBlockedSlab } from "@/lib/blocklist";
-import { humanizeError, isEngineLockError, withTransientRetry } from "@/lib/errorMessages";
+import { humanizeError, isEngineLockError, UserFacingError, withTransientRetry } from "@/lib/errorMessages";
 import { useSingleMarketHealth } from "@/hooks/useMarketHealth";
 import { safeExplainMarketTxError } from "@/lib/market-error";
 import { PublicKey } from "@solana/web3.js";
@@ -58,7 +58,10 @@ import { explorerTxUrl, getNetwork } from "@/lib/config";
 import { useUserAccount, useUserAccountScanPending } from "@/hooks/useUserAccount";
 import { OrderTicketClosePanel } from "@/components/trade/OrderTicketClosePanel";
 import { terminalPositionPnl } from "@/lib/position-pnl";
+import { riskEntryFromSettled, riskLegOf, settledRiskAnchorE6 } from "@/lib/risk-entry";
 import { computeLimitPriceE6 } from "@/lib/slippage";
+import { openLimitE6 } from "@/lib/open-limit";
+import { resolveMarketPriceE6 } from "@/lib/oraclePrice";
 import { bindConfirmedLimitPrice } from "@/lib/confirmedTrade";
 import { useEngineState } from "@/hooks/useEngineState";
 import { useSlabState } from "@/components/providers/SlabProvider";
@@ -67,7 +70,7 @@ import { getLivePriceSnapshot } from "@/lib/priceStore/priceStore";
 import { useOracleFreshness } from "@/hooks/useOracleFreshness";
 import { useEngineFreshness } from "@/hooks/useEngineFreshness";
 import { AccountKind } from "@percolatorct/sdk";
-import { computeEstimatedEntryPrice, computeLiqPrice, computeTradingFee, computePositionInitialMargin, orderAgainstPosition, resolveEntryPrice } from "@/lib/trading";
+import { computeEstimatedEntryPrice, computeLiqPrice, computeMarkPnlLinear, computeTradingFee, computePositionInitialMargin, orderAgainstPosition, resolveEntryPrice } from "@/lib/trading";
 import { TradeConfirmationModal } from "@/components/trade/TradeConfirmationModal";
 import { InfoIcon } from "@/components/ui/Tooltip";
 import { usePrivyLogin, usePrivyAvailable } from "@/hooks/usePrivySafe";
@@ -132,7 +135,7 @@ import { FixPricingAction } from "@/components/trade/FixPricingAction";
 import { waitPolicy } from "@/lib/limits/price-stall";
 import { CATCHUP_COPY, catchUpBudgetMs, catchUpEstimate, catchUpLine, measureSlotMs, retryOnceAfterShortLag, SLOT_MS_DEFAULT } from "@/lib/limits/catchup-estimate";
 import { resolveUserMessage, type UserMessage, type UserMessageAction } from "@/lib/limits/user-message";
-import { TICKET_COPY } from "@/lib/limits/copy";
+import { PRICES_OUT_OF_SYNC_COPY, TICKET_COPY } from "@/lib/limits/copy";
 import { decodeMarketEngineView } from "@/lib/limits/decode";
 import { isAdlReduceOnly } from "@/lib/limits/adl-reduce-only";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
@@ -292,7 +295,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const { engine, params, insuranceBalance: liveInsuranceBalance, totalOI: liveTotalOI, hasData: engineHasData } = useEngineState();
   const { accounts, config: mktConfig, header, refresh: refreshSlab, programId: slabProgramId, raw: slabRaw, adlFactors: slabAdlFactors, wrapperConfigV17: slabWrapperV17 } = useSlabState();
   // F-3 / R1 (not flag-gated — deployed engine behaviour): ADL reduce-only after a bankruptcy.
-  const adlReduceOnly = useMemo(() => (slabRaw ? isAdlReduceOnly(decodeMarketEngineView(slabRaw)) : false), [slabRaw]);
+  // The slab's engine view, decoded once per slab update (ADL reduce-only below, and #3459's open limit).
+  const engineView = useMemo(() => (slabRaw ? decodeMarketEngineView(slabRaw) : null), [slabRaw]);
+  const adlReduceOnly = useMemo(() => isAdlReduceOnly(engineView), [engineView]);
   const tokenMeta = useTokenMeta(mktConfig?.collateralMint ?? null);
   // Non-reactive — see file-header comment. NOT `useLivePrice()`.
   const { priceUsd, priceE6: livePriceE6 } = getLivePriceSnapshot(slabAddress);
@@ -568,6 +573,16 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       )
     : null;
   const existingEntryPriceE6 = existingResolved?.entry ?? 0n;
+  // #3534: the before/after liquidation preview is risk math: a fully settled single leg is priced from the settled
+  // back-solve (lib/risk-entry.ts), so a loss settlement already moved out of `capital` is not counted twice.
+  const existingRiskEntryE6 = (() => {
+    if (!userAccount || existingPositionSize === 0n) return existingEntryPriceE6;
+    const { riskLeg, activeLegCount } = riskLegOf(userAccount.account);
+    if (!riskLeg || riskLeg.side !== (existingPositionSize > 0n ? 0 : 1)) return existingEntryPriceE6;
+    const anchor = settledRiskAnchorE6(slabAdlFactors?.settle, riskLeg, activeLegCount);
+    const e = anchor === null ? null : riskEntryFromSettled(existingPositionSize, safeExistingPnl, anchor);
+    return e ?? existingEntryPriceE6;
+  })();
   // The Close tab previews size/PnL/balance for a close that acts on the leg's
   // EFFECTIVE size (engine plan_delta, v16.rs:6075), so it is handed that size -
   // never raw basis - and withholds the preview when the ADL state is unknown.
@@ -594,6 +609,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const displayAvailable = mockMode
     ? effectiveBalance
     : (userAccount ? availableBalance : 0n) + (walletAtaBalance ?? 0n);
+  // The engine charges IM and the fee at ITS price (plus a lag penalty that depends on the side);
+  // the ticket sizes from the display feed (lib/first-trade.ts engineGateBps).
+  const engineGate = engineGateBps(livePriceE6, engineView, direction);
   const tradableBalance = mockMode
     ? effectiveBalance
     : tradableMarginAtoms({
@@ -601,6 +619,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
         walletAtoms: walletAtaBalance ?? 0n,
         leverage100: leverage * 100,
         feeBps: tradingFeeBps,
+        initialMarginBps,
+        gate: engineGate,
         decimals,
       });
   // Buying power: how large a position (in collateral notional) the user could
@@ -806,13 +826,25 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // The floor only applies with no open position, where vsPosition is always null.
   const imFloor = params?.minNonzeroImReq ?? 0n;
   const belowImFloor = existingPositionSize === 0n && marginNative > 0n && marginNative < imFloor;
-  const marginNeed = belowImFloor ? imFloor : marginNative;
+  // The engine's own IM for this size, at its price (the order is sized off the display feed).
+  const openNeed = engineOpenNeedAtoms(notionalNative, initialMarginBps, tradingFeeBps, engineGate);
+  const typedNeed = belowImFloor ? imFloor : marginNative;
+  // The engine floors the base IM, then adds the lag penalty: max(IM, floor) + lag.
+  const engineIm = existingPositionSize === 0n && imFloor > openNeed.im ? imFloor : openNeed.im;
+  // Mock mode has no engine (and no funding): it keeps the plain margin check.
+  const engineMargin = mockMode ? 0n : engineIm + openNeed.lag;
+  const marginNeed = engineMargin > typedNeed ? engineMargin : typedNeed;
   // An order on the other side of the open position cuts it instead of adding exposure:
   // it releases margin, and only a flip that ends larger can need any.
   const vsPosition = userAccount
     ? orderAgainstPosition(marginNative, positionSize, direction, existingPositionSize, lockedMargin, capital)
     : null;
-  const exceedsBalance = marginNative > 0n && (vsPosition ? vsPosition.shortBy > 0n : marginNeed > effectiveBalance);
+  // The engine charges the taker fee BEFORE its IM gate, so an order whose margin fits can still be
+  // refused 49 near max leverage: max(IM, floor) + fee must fit too. Not marginNeed + fee: below max
+  // leverage the engine needs far less than the typed margin, and that would force a pointless top-up.
+  const engineNeed = mockMode ? 0n : engineMargin + openNeed.fee;
+  const exceedsBalance =
+    marginNative > 0n && (vsPosition ? vsPosition.shortBy > 0n : marginNeed > effectiveBalance || engineNeed > effectiveBalance);
 
   const needsWallet = !connected;
   const needsAccount = connected && !userAccount && !accountPending;
@@ -849,8 +881,10 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       : marginNeed > availableBalance
         ? marginNeed - availableBalance
         : 0n;
-  const fundNeededAtoms = fundingMode && hasOrder ? fundDepositAtoms(marginShort, fee, walletAtaBalance ?? 0n, decimals) : 0n;
-  const fundMinAtoms = fundingMode && hasOrder ? marginShort + fee : 0n;
+  // The engine charges the fee at its price, which can sit above the receipt's feed-priced fee.
+  const fundFee = openNeed.fee > fee ? openNeed.fee : fee;
+  const fundNeededAtoms = fundingMode && hasOrder ? fundDepositAtoms(marginShort, fundFee, walletAtaBalance ?? 0n, decimals) : 0n;
+  const fundMinAtoms = fundingMode && hasOrder ? marginShort + fundFee : 0n;
   const fundEnteredAtoms = fundInput ? parsePercToNative(fundInput, decimals) : 0n;
   const fundAtoms = fundEnteredAtoms > 0n ? fundEnteredAtoms : fundNeededAtoms;
   const fundOverWallet = fundingMode && fundAtoms > (walletAtaBalance ?? 0n);
@@ -888,11 +922,11 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const sameDirection = existingPositionSize === 0n || (existingPositionSize > 0n) === (newSignedSize > 0n);
   const combinedEntryPriceE6 = sameDirection
     ? (existingAbsSize + positionSize > 0n
-        ? (existingEntryPriceE6 * existingAbsSize + estEntry * positionSize) / (existingAbsSize + positionSize)
+        ? (existingRiskEntryE6 * existingAbsSize + estEntry * positionSize) / (existingAbsSize + positionSize)
         : 0n)
     // Opposite direction: a partial reduce keeps the original cost basis; a
     // flip's residual position takes on this trade's fill price as its entry.
-    : (positionSize < existingAbsSize ? existingEntryPriceE6 : estEntry);
+    : (positionSize < existingAbsSize ? existingRiskEntryE6 : estEntry);
   // Cross-margin: the full account capital backs the position — including a fresh
   // open (withdraw is blocked while any leg is open). Price both the fresh-open and
   // scale-in cases with the same capital-based computeLiqPrice as PositionsDock /
@@ -901,11 +935,22 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // estimated entry, so one branch is correct for both. (Previously the fresh-open
   // case priced against only the order's margin, understating liq distance and
   // making the preview jump once the position opened on full capital.)
-  const afterLiqPrice = hasOrder && combinedSignedSize !== 0n && combinedEntryPriceE6 > 0n
-    ? computeLiqPrice(combinedEntryPriceE6, capitalAfterFund, combinedSignedSize, maintenanceMarginBps)
+  // A reduce or flip closes part (or all) of the existing leg: that slice's PnL, at this fill's
+  // price (estEntry already carries the fee), stays in the account's equity. Pricing the remainder
+  // with the pre-trade capital alone dropped it, so cutting a loser read as "covered".
+  // ponytail: nominal size, as the rest of the ticket; an ADL-reduced leg is priced on its basis.
+  const closedQ = sameDirection ? 0n : positionSize < existingAbsSize ? positionSize : existingAbsSize;
+  // #3534: priced from the RISK entry, like the rest of this preview: a loss settlement already took out of `capital`
+  // must not be charged again on the closed slice.
+  const closedPnl = closedQ > 0n && existingRiskEntryE6 > 0n && estEntry > 0n
+    ? computeMarkPnlLinear(existingPositionSize > 0n ? closedQ : -closedQ, existingRiskEntryE6, estEntry)
     : 0n;
-  const beforeLiqPrice = userAccount && userAccount.account.positionSize !== 0n && existingEntryPriceE6 > 0n
-    ? computeLiqPrice(existingEntryPriceE6, capital, userAccount.account.positionSize, maintenanceMarginBps)
+  const equityAfterTrade = capitalAfterFund + closedPnl;
+  const afterLiqPrice = hasOrder && combinedSignedSize !== 0n && combinedEntryPriceE6 > 0n
+    ? computeLiqPrice(combinedEntryPriceE6, equityAfterTrade, combinedSignedSize, maintenanceMarginBps)
+    : 0n;
+  const beforeLiqPrice = userAccount && userAccount.account.positionSize !== 0n && existingRiskEntryE6 > 0n
+    ? computeLiqPrice(existingRiskEntryE6, capital, userAccount.account.positionSize, maintenanceMarginBps)
     : 0n;
   // Cross-margin: where the account's collateral covers the resulting position
   // there is no liquidation price, and a "—" is not a risk number. The shared
@@ -913,16 +958,15 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const afterLiqDisplay = describeLiqPrice({
     liqPriceE6: afterLiqPrice,
     positionSize: hasOrder ? combinedSignedSize : 0n,
-    capital: capitalAfterFund,
+    capital: equityAfterTrade,
     entryPriceE6: combinedEntryPriceE6,
     effectiveSize: hasOrder ? combinedSignedSize : 0n,
     markPriceE6: livePriceE6 ?? 0n,
     maintenanceMarginBps,
-    // The combined entry inherits the existing one unless there is none, or
-    // this order flips through it (the residual takes this fill's price).
-    hasResolvedEntry:
-      combinedEntryPriceE6 > 0n &&
-      (existingPositionSize === 0n || existingEntryKnown || (!sameDirection && positionSize >= existingAbsSize)),
+    // Resolved only when the existing entry is known (or there is none). A flip's residual takes
+    // this fill's price, but the closed leg's PnL above is priced from the old entry, and when that
+    // entry is only the mark fallback (a pnl that can't be back-solved) the leg's PnL is unknown.
+    hasResolvedEntry: combinedEntryPriceE6 > 0n && (existingPositionSize === 0n || existingEntryKnown),
     formatPrice: (e6: bigint) => formatLotPriceE6(e6, lotExp),
     unknownText: "—",
   });
@@ -930,7 +974,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     liqPriceE6: beforeLiqPrice,
     positionSize: existingPositionSize,
     capital,
-    entryPriceE6: existingEntryPriceE6,
+    entryPriceE6: existingRiskEntryE6,
     effectiveSize: existingPositionSize,
     markPriceE6: livePriceE6 ?? 0n,
     maintenanceMarginBps,
@@ -957,15 +1001,36 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const beforeAvailable = displayAvailable;
   const afterUnclamped = displayAvailable - availableBalance + inMarketAfter;
   const afterAvailable = afterUnclamped > 0n ? afterUnclamped : 0n;
-  // Slippage: distance between the mark and the worst acceptable fill
-  // (same computeLimitPriceE6 useTrade itself uses to derive the on-chain
-  // limit when the caller doesn't supply one explicitly).
+  // #3459: an open's worst-fill limit. v17/v18: around the engine's effective price (the price the
+  // fill is priced and settled at), as a close's is; legacy: the live price, checked against the
+  // on-chain reference. Throws UserFacingError (price unreadable) or FeedDisagreementError.
+  const buildOpenLimitE6 = (signedSize: bigint): bigint =>
+    openLimitE6({
+      isV17: slabWrapperV17 != null,
+      engine: engineView,
+      feedE6: getLivePriceSnapshot(slabAddress).priceE6 ?? livePriceE6,
+      onChainRefE6: () => (mktConfig ? resolveMarketPriceE6({ ...mktConfig, oracleModeByte: slabWrapperV17?.oracleMode }) : null),
+      size: signedSize,
+    });
+  /** The ticket's line for a limit it could not build: nothing was signed or sent. */
+  const openLimitRefusal = (e: unknown): UserMessage | null => {
+    const details = { code: null, name: null, programId: null, logs: [], raw: e instanceof Error ? e.message : String(e) };
+    if ((e as { name?: string } | null)?.name === "FeedDisagreementError") {
+      return { kind: "prices-out-of-sync", variant: "wait", title: PRICES_OUT_OF_SYNC_COPY.title, body: PRICES_OUT_OF_SYNC_COPY.body, details };
+    }
+    if (e instanceof UserFacingError) {
+      return { kind: "price-unreadable", variant: "error", title: "Couldn't read the price", body: e.message, details };
+    }
+    return null;
+  };
+
+  // Slippage: the worst acceptable fill this order would be sent with (#3459: the same limit
+  // the confirm screen binds, from the engine's effective price on v17/v18). 0 when it can't be
+  // built; submit then refuses with the reason.
   const signedSizeForSlippage = direction === "short" ? -positionSize : positionSize;
   let slippageBoundE6 = 0n;
   try {
-    slippageBoundE6 = hasOrder && livePriceE6 && livePriceE6 > 0n
-      ? computeLimitPriceE6({ markE6: livePriceE6, size: signedSizeForSlippage })
-      : 0n;
+    slippageBoundE6 = hasOrder ? (mockMode ? computeLimitPriceE6({ markE6: livePriceE6 ?? 0n, size: signedSizeForSlippage }) : buildOpenLimitE6(signedSizeForSlippage)) : 0n;
   } catch {
     slippageBoundE6 = 0n;
   }
@@ -1052,7 +1117,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
 
   const feeOverMax = ticketLimits.issues.some((x) => x.kind === "fee-over-max");
   const feeFitQ = feeOverMax ? feeFitSizeQ(limitsInput) : null;
-  const shortfall = vsPosition ? vsPosition.shortBy : marginNeed > effectiveBalance ? marginNeed - effectiveBalance : 0n;
+  // The larger of the two needs: depositing just the margin gap would still leave the fee short.
+  const topNeed = engineNeed > marginNeed ? engineNeed : marginNeed;
+  const shortfall = vsPosition ? vsPosition.shortBy : topNeed > effectiveBalance ? topNeed - effectiveBalance : 0n;
 
   // Empty or zero size: the button says "Enter a size" rather than naming an order of nothing
   // ("Long SOL 1×", "Deposit 0.00 USDC & Long"). Submit is already disabled for it below.
@@ -1189,9 +1256,12 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             await lagRetry(() => fundAndTrade({
               size,
               depositAtoms: fundAtoms,
+              // The confirmed worst fill; else built the same way. `> 0n`, not `??`: a 0n here was
+              // sent as limit 0, i.e. no slippage limit at all (#3459).
               limitPriceE6:
-                snapshotLimitPriceE6 ??
-                computeLimitPriceE6({ markE6: getLivePriceSnapshot(slabAddress).priceE6 ?? livePriceE6 ?? 0n, size }),
+                snapshotLimitPriceE6 !== undefined && snapshotLimitPriceE6 > 0n
+                  ? snapshotLimitPriceE6
+                  : buildOpenLimitE6(direction === "short" ? -size : size),
               ...(ticketLimits.fee?.channel.enabled ? { feeBps: ticketLimits.fee.signedFeeBps } : {}),
               amountLabel: fundLabel,
               // The race re-opens the wallet, so the button goes back to "Confirm in wallet…".
@@ -2120,11 +2190,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
           <SummaryCell
             label="Liq. price"
             value={beforeLiqDisplay.text !== "—" && beforeLiqDisplay.text !== afterLiqDisplay.text ? `${beforeLiqDisplay.text} → ${afterLiqDisplay.text}` : afterLiqDisplay.text}
-            valueClass={
-              afterLiqDisplay.kind !== "price"
-                ? "text-[var(--text-secondary)]"
-                : direction === "long" ? "text-[var(--short)]" : "text-[var(--long)]"
-            }
+            // Neutral, like the dock/panel for a safe position: a new order always opens at tier
+            // "safe" (#3019), and green/red here read as profit/loss, not risk.
+            valueClass="text-[var(--text-secondary)]"
             tooltip={`Estimated liquidation price if this order fills at the estimated entry.${afterLiqDisplay.title ? ` ${afterLiqDisplay.title}` : ""}`}
           />
           <SummaryCell
@@ -2374,8 +2442,18 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             const freshPriceE6 = getLivePriceSnapshot(slabAddress).priceE6;
             let worstFillPriceE6 = 0n;
             try {
-              worstFillPriceE6 = freshPriceE6 && freshPriceE6 > 0n ? computeLimitPriceE6({ markE6: freshPriceE6, size: signedSize }) : 0n;
-            } catch {
+              // #3459: the limit this order is sent with, built now so the confirm screen shows it.
+              // v17/v18: the engine's effective price; legacy: the live price, checked against the
+              // chain. A limit that can't be built honestly is refused here, before anything opens.
+              worstFillPriceE6 = mockMode
+                ? (freshPriceE6 && freshPriceE6 > 0n ? computeLimitPriceE6({ markE6: freshPriceE6, size: signedSize }) : 0n)
+                : buildOpenLimitE6(signedSize);
+            } catch (e) {
+              const why = openLimitRefusal(e);
+              if (why) {
+                setRefusal(why);
+                return;
+              }
               worstFillPriceE6 = 0n;
             }
             setConfirmSnapshot({
