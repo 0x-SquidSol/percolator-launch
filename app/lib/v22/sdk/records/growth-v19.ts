@@ -1,8 +1,8 @@
 /*
- * LOCAL ADAPTER PORT, not original code: verbatim from percolator-sdk feat/v22-sdk-growth @ c837e7f (controller round + the continuous
- * leverage / capacity curve and continuous stress cap, bit-exact with percolator-prog feat/v22-continuous-leverage @ 3198539a; parity
- * suite in the SDK), src/abi/growth-v19.ts. Only the imports are retargeted (the vendored v22 layout/slab ports, sibling records ports,
- * and the installed @percolatorct/sdk 8.0.0 root). Records the round-2 wrapper wrote (flags 0) are quoted by ./growth-v19-r2.
+ * LOCAL ADAPTER PORT, not original code: verbatim from percolator-sdk feat/v22-sdk-growth @ 3a435f0 (controller round + the continuous
+ * leverage curve, LAGGING κ / λ_depth and STEPPED stress cap, bit-exact with percolator-prog feat/v22-continuous-leverage @ 21b8ccfd
+ * "contlev3"; parity suite in the SDK), src/abi/growth-v19.ts. Only the imports are retargeted (the vendored v22 layout/slab ports, sibling
+ * records ports, and the installed @percolatorct/sdk 8.0.0 root). Records the round-2 wrapper wrote (flags 0) are quoted by ./growth-v19-r2.
  * TODO(repin): delete when @percolatorct/sdk >= 9.0.0 ships and point ../../records.ts at the package. Do not edit here; fix upstream in percolator-sdk.
  */
 /**
@@ -1508,7 +1508,7 @@ export function growthMatcherCapsG8(i: NCapG8Input & { hlockActive: boolean; max
 
 // ============================================================================
 // Controller round (percolator-prog `feat/v22-growth-controller` @ 666df893; item 5's tier ramps REPLACED by the continuous curve of
-// `feat/v22-continuous-leverage` @ e699d7da): dials (item 5), volatility (item 6), graded stress
+// `feat/v22-continuous-leverage` @ 21b8ccfd): dials (item 5), volatility (item 6), graded stress
 // (item 3), rent snapshot smoothing + bind guard (item 7). Exact integer mirrors of `src/growth_v19.rs`.
 // ============================================================================
 
@@ -1518,9 +1518,11 @@ export const KAPPA_TABLE_BPS: readonly [bigint, bigint, bigint, bigint] = Object
 export const LAMBDA_DEPTH_TABLE_BPS: readonly [bigint, bigint, bigint, bigint] = Object.freeze([10_000n, 10_000n, 20_000n, 30_000n] as const);
 
 // ----------------------------------------------------------------------------
-// v2.2 continuous leverage (percolator-prog `feat/v22-continuous-leverage` @ e699d7da, `src/growth_v19.rs`): leverage / κ / λ_depth as ONE
+// v2.2 continuous leverage (percolator-prog `feat/v22-continuous-leverage` @ 21b8ccfd "contlev3", `src/growth_v19.rs`): leverage as ONE
 // continuous curve of depth, interpolated on log2(depth) between the anchors [T1/4, T1, T2, T3]. Equal to the tier table AT every anchor,
 // between the two neighbouring table values elsewhere (e.g. 7.5x at $50k on the default 5x / 10x / 20x table, where the step read 5x).
+// Security review M-1 (21b8ccfd): κ / λ_depth read a LAGGING curve on [T1, T2, T3, 4·T3] ({@link curvePosLag}), never looser than the step.
+// Security review M-2 (21b8ccfd): the stress cap is the STEPPED {@link stressCapX100} at the combined tier (3198539a's continuous cap is gone).
 // BIT-EXACT integer mirror (bigint): the same Q.16 log2 (leading zeros + 16 floor-squarings), the same floor, the same fail-closed results.
 // Parity: test/growth-curve-parity.test.ts against fixtures emitted by the wrapper's own functions.
 // ----------------------------------------------------------------------------
@@ -1653,7 +1655,8 @@ export function curveValue(p: CurvePos, t: readonly [bigint, bigint, bigint, big
 }
 
 /**
- * `curveValue(curvePos(d, th), t)`. Port of `growth_v19::curve_u64`.
+ * `curveValue(curvePos(d, th), t)`: the LEADING curve (leverage). Port of `growth_v19::curve_u64`. Since percolator-prog 21b8ccfd κ / λ_depth
+ * read the lagging curve ({@link curveLagU64}), not this.
  *
  * @param d             Depth (atoms).
  * @param thresholdsE6  Thresholds (atoms).
@@ -1666,6 +1669,69 @@ export function curveValue(p: CurvePos, t: readonly [bigint, bigint, bigint, big
  */
 export function curveU64(d: bigint, thresholdsE6: Triple<bigint>, t: readonly [bigint, bigint, bigint, bigint]): bigint {
   return curveValue(curvePos(d, thresholdsE6), t);
+}
+
+/**
+ * `KAPPA_LAG_TOP_MUL`: the lagging capacity curve's top segment is `[T3, 4·T3)` (security review M-1). Port of `growth_v19::KAPPA_LAG_TOP_MUL`.
+ */
+export const KAPPA_LAG_TOP_MUL = 4n;
+
+/**
+ * The LAGGING curve position (κ / λ_depth; percolator-prog 21b8ccfd, security review M-1: continuous but never looser than the round-2 step
+ * anywhere). The lag anchors `[T1, T2, T3, 4·T3]` are the leading anchors `[T1/4, T1, T2, T3]` shifted one place: for `lead.seg` 1..3 the lag
+ * position is the same fraction one segment down (no log2); at or past T3 (`lead.seg == 4`) it is the place on `[T3, 4·T3)` (`4·T3`
+ * saturating at u64: a saturated top anchor is never met and the segment is flat at `t[2]`, fail closed). Below T1 the value is `t[0]`; each
+ * step value is reached at the NEXT anchor. {@link CURVE_POS_FAIL} stays the failure position (reads `t[0]`). Port of
+ * `growth_v19::curve_pos_lag` (bit-exact).
+ *
+ * @param lead          The leading position, `curvePos(d, thresholdsE6)`.
+ * @param d             The same depth (atoms).
+ * @param thresholdsE6  Thresholds (atoms).
+ * @returns The lagging {@link CurvePos}.
+ * @example
+ * ```ts
+ * const th: [bigint, bigint, bigint] = [25_000n, 100_000n, 500_000n];
+ * curvePosLag(curvePos(50_000n, th), 50_000n, th); // { seg: 1, num: 65_536, den: 131_072 } (half-way from t[0] to t[1])
+ * ```
+ */
+export function curvePosLag(lead: CurvePos, d: bigint, thresholdsE6: Triple<bigint>): CurvePos {
+  switch (lead.seg) {
+    case 1: case 2: case 3: return { seg: lead.seg - 1, num: lead.num, den: lead.den };
+    case 4: {
+      const lo = thresholdsE6[2];
+      const prod = lo * KAPPA_LAG_TOP_MUL;
+      const hi = prod > U64_MAX ? U64_MAX : prod; // Rust saturating_mul
+      if (hi === U64_MAX || hi <= lo) return { seg: 3, num: 0, den: 0 };
+      if (d >= hi) return { seg: 4, num: 0, den: 0 };
+      const ld = log2Q16(d);
+      const llo = log2Q16(lo);
+      const lhi = log2Q16(hi);
+      if (ld === null || llo === null || lhi === null) return { ...CURVE_POS_FAIL };
+      const num = ld - llo;
+      const den = lhi - llo;
+      if (num < 0 || den < 0) return { ...CURVE_POS_FAIL }; // Rust: checked_sub -> CURVE_POS_FAIL
+      return { seg: 3, num: num < den ? num : den, den };
+    }
+    case 0: return { seg: 0, num: 0, den: 0 };
+    default: return { ...CURVE_POS_FAIL };
+  }
+}
+
+/**
+ * `curveValue(curvePosLag(curvePos(d, th), d, th), t)`: the lagging capacity curve (κ / λ_depth). Port of `growth_v19::curve_lag_u64`.
+ *
+ * @param d             Depth (atoms).
+ * @param thresholdsE6  Thresholds (atoms).
+ * @param t             4-entry table.
+ * @returns The lagging curve value at `d`.
+ * @example
+ * ```ts
+ * curveLagU64(200_000n, [25_000n, 100_000n, 500_000n], LAMBDA_DEPTH_TABLE_BPS); // 14_306n (the step there: 20_000)
+ * curveLagU64(50_000n, [25_000n, 100_000n, 500_000n], KAPPA_TABLE_BPS);         // 7_500n (the step there: 10_000)
+ * ```
+ */
+export function curveLagU64(d: bigint, thresholdsE6: Triple<bigint>, t: readonly [bigint, bigint, bigint, bigint]): bigint {
+  return curveValue(curvePosLag(curvePos(d, thresholdsE6), d, thresholdsE6), t);
 }
 
 /**
@@ -1695,19 +1761,20 @@ export function venueDepthCapped(effectiveDepthE6: bigint, depthSourceByte: numb
   return 0n;
 }
 
-/** The growth dials (`growth_v19::SmoothDials`), on the continuous curve. */
+/** The growth dials (`growth_v19::SmoothDials`): leverage on the leading curve, κ / λ_depth on the lagging curve (21b8ccfd). */
 export interface SmoothDials {
-  /** Leverage signal x100 = min(curve_L(venue), curve_L(book)) (BEFORE the volatility term). */
+  /** Leverage signal x100 = min(curve_L(venue), curve_L(book)) (leading curve; BEFORE the volatility term). */
   lSignalX100: number;
-  /** κ (bps of the cap depth) = min(curve_κ(venue), curve_κ(book)). */
+  /** κ (bps of the cap depth) = min(lag_κ(venue), lag_κ(book)) ({@link curveLagU64}: never looser than the step). */
   kappaBps: number;
-  /** λ_depth (bps) = min(curve_λ(venue), curve_λ(book)). */
+  /** λ_depth (bps) = min(lag_λ(venue), lag_λ(book)) ({@link curveLagU64}: never looser than the step). */
   lambdaDepthBps: number;
 }
 
 /**
  * The dials at a (venue, book) depth pair plus the venue-only leverage curve value (the push writer's fall-only upper bound, `>= lSignalX100`).
- * Each dial is `min(curve(venue), curve(book))` (= the curve at the smaller depth). Port of `growth_v19::smooth_dials_and_venue_l`.
+ * The leverage signal is `min(curve(venue), curve(book))` on the LEADING curve; κ / λ_depth are the same min on the LAGGING curve
+ * ({@link curvePosLag}, security review M-1: never looser than the step). Port of `growth_v19::smooth_dials_and_venue_l` (21b8ccfd).
  *
  * @param venueDepthE6  {@link venueDepthCapped}.
  * @param bookDepthE6   {@link bookDepthE6} of the bound LP (0 without `C_m`).
@@ -1717,7 +1784,7 @@ export interface SmoothDials {
  * @example
  * ```ts
  * smoothDialsAndVenueL(600_000n, 50_000n, [25_000n, 100_000n, 500_000n], [500, 500, 1_000, 2_000]);
- * // { dials: { lSignalX100: 750, kappaBps: 10_000, lambdaDepthBps: 15_000 }, venueLX100: 2_000 }
+ * // { dials: { lSignalX100: 750, kappaBps: 7_500, lambdaDepthBps: 10_000 }, venueLX100: 2_000 }
  * ```
  */
 export function smoothDialsAndVenueL(
@@ -1728,48 +1795,27 @@ export function smoothDialsAndVenueL(
 ): { dials: SmoothDials; venueLX100: number } {
   const pv = curvePos(venueDepthE6, thresholdsE6);
   const pb = curvePos(bookDepthE6, thresholdsE6);
-  const m2 = (t: readonly [bigint, bigint, bigint, bigint]): bigint => {
-    const a = curveValue(pv, t);
-    const b = curveValue(pb, t);
+  const qv = curvePosLag(pv, venueDepthE6, thresholdsE6);
+  const qb = curvePosLag(pb, bookDepthE6, thresholdsE6);
+  const m2 = (p: CurvePos, q: CurvePos, t: readonly [bigint, bigint, bigint, bigint]): bigint => {
+    const a = curveValue(p, t);
+    const b = curveValue(q, t);
     return a < b ? a : b;
   };
   const lt: [bigint, bigint, bigint, bigint] = [BigInt(lTableX100[0]), BigInt(lTableX100[1]), BigInt(lTableX100[2]), BigInt(lTableX100[3])];
   return {
-    dials: { lSignalX100: Number(m2(lt)), kappaBps: Number(m2(KAPPA_TABLE_BPS)), lambdaDepthBps: Number(m2(LAMBDA_DEPTH_TABLE_BPS)) },
+    dials: {
+      lSignalX100: Number(m2(pv, pb, lt)),
+      kappaBps: Number(m2(qv, qb, KAPPA_TABLE_BPS)),
+      lambdaDepthBps: Number(m2(qv, qb, LAMBDA_DEPTH_TABLE_BPS)),
+    },
     venueLX100: Number(curveValue(pv, lt)),
   };
 }
 
 /**
- * {@link smoothDialsAndVenueL} plus the two curve positions it used, for the continuous stress cap ({@link stressCapCurveX100}): the SIGNAL
- * position (of the smaller depth, `min(venue, book)`; the curve is monotone, so the curve there is the min of the two curves) and the
- * VENUE position (the push writer's fall-only bound). Port of `growth_v19::smooth_dials_venue_l_and_pos` (3198539a).
- *
- * @param venueDepthE6  {@link venueDepthCapped}.
- * @param bookDepthE6   {@link bookDepthE6} of the bound LP (0 without `C_m`).
- * @param thresholdsE6  Thresholds (atoms).
- * @param lTableX100    `[L0..L3]`.
- * @returns `{ dials, venueLX100, pos, venuePos }`.
- * @example
- * ```ts
- * smoothDialsVenueLAndPos(600_000n, 50_000n, [25_000n, 100_000n, 500_000n], [500, 500, 1_000, 2_000]).pos; // { seg: 2, num: 65_536, den: 131_072 } (the book)
- * ```
- */
-export function smoothDialsVenueLAndPos(
-  venueDepthE6: bigint,
-  bookDepthE6: bigint,
-  thresholdsE6: Triple<bigint>,
-  lTableX100: readonly [number, number, number, number],
-): { dials: SmoothDials; venueLX100: number; pos: CurvePos; venuePos: CurvePos } {
-  const { dials, venueLX100 } = smoothDialsAndVenueL(venueDepthE6, bookDepthE6, thresholdsE6, lTableX100);
-  const pv = curvePos(venueDepthE6, thresholdsE6);
-  const pb = curvePos(bookDepthE6, thresholdsE6);
-  return { dials, venueLX100, pos: venueDepthE6 <= bookDepthE6 ? pv : pb, venuePos: pv };
-}
-
-/**
- * The dials at a (venue, book) depth pair on the continuous curve (equal to the tier table at each anchor, log-interpolated between them).
- * Port of `growth_v19::smooth_dials`.
+ * The dials at a (venue, book) depth pair: leverage on the leading curve (equal to the tier table at each anchor, log-interpolated between
+ * them), κ / λ_depth on the lagging curve. Port of `growth_v19::smooth_dials`.
  *
  * @param venueDepthE6  {@link venueDepthCapped}.
  * @param bookDepthE6   {@link bookDepthE6} of the bound LP (0 without `C_m`).
@@ -1778,7 +1824,7 @@ export function smoothDialsVenueLAndPos(
  * @returns Dials.
  * @example
  * ```ts
- * smoothDials(110_000n, 600_000n, [25_000n, 100_000n, 500_000n], [500, 500, 1_000, 2_000]); // { lSignalX100: 1_059, kappaBps: 10_592, lambdaDepthBps: 20_592 }
+ * smoothDials(110_000n, 600_000n, [25_000n, 100_000n, 500_000n], [500, 500, 1_000, 2_000]); // { lSignalX100: 1_059, kappaBps: 10_000, lambdaDepthBps: 10_592 }
  * ```
  */
 export function smoothDials(venueDepthE6: bigint, bookDepthE6: bigint, thresholdsE6: Triple<bigint>, lTableX100: readonly [number, number, number, number]): SmoothDials {
@@ -2049,9 +2095,8 @@ export function stressLevel(drawOutstanding: boolean, realAdl_: boolean, hlock: 
 
 /**
  * The STEPPED stress cap on the target x100: none (`0xffff`) at level 0; `table[max(tier - s, 0)]` for s = 1 (draw) / 2 (ADL); `table[0]` under the
- * h-lock. Since percolator-prog 3198539a no program reader uses it (they read {@link stressCapCurveX100}, equal to this at every anchor); kept
- * as the reference step (next-tier previews at an anchor, tests).
- * Port of `growth_v19::stress_cap_x100`.
+ * h-lock. What every program reader uses (percolator-prog 21b8ccfd, security review M-2: under stress the target is `min(leverage curve,
+ * this)` at the discrete COMBINED tier; the push writer passes the venue tier). Port of `growth_v19::stress_cap_x100`.
  * @param stress  Level 0..3.
  * @param tier    Combined tier (step).
  * @param table   `[L0..L3]`.
@@ -2069,20 +2114,20 @@ export function stressCapX100(stress: number, tier: number, table: readonly [num
 }
 
 /**
- * The graded stress cap on the CONTINUOUS curve (x100): the leverage curve read `s` segments down at the SAME fractional position. Level 0:
- * none (`0xffff`); the h-lock (>= 3): launch; a draw (1) / real ADL (2) at segment 1..3 with `seg - 1 >= s`: `table[seg-1-s] +
- * floor((table[seg-s] - table[seg-1-s]) * num / den)`; at or past T3: `table[3 - s]`; below that (incl. below anchor 0 and
- * {@link CURVE_POS_FAIL}): `table[0]`. Equal to the stepped {@link stressCapX100} at every anchor, continuous in depth, never above the
- * unstressed curve. What every program reader uses since percolator-prog 3198539a (the gate at the signal position, the push writer at
- * the venue position). Port of `growth_v19::stress_cap_curve_x100` (bit-exact).
+ * @deprecated Removed from the program at percolator-prog 21b8ccfd (security review M-2: the stress cap is STEPPED again, {@link stressCapX100}).
+ * 3198539a's continuous stress cap, kept verbatim as the negative control of the parity suite; no SDK reader calls it.
+ *
+ * The leverage curve read `s` segments down at the SAME fractional position. Level 0: none (`0xffff`); the h-lock (>= 3): launch; a draw (1) /
+ * real ADL (2) at segment 1..3 with `seg - 1 >= s`: `table[seg-1-s] + floor((table[seg-s] - table[seg-1-s]) * num / den)`; at or past T3:
+ * `table[3 - s]`; below that (incl. below anchor 0 and {@link CURVE_POS_FAIL}): `table[0]`.
  *
  * @param stress  Level 0..3 ({@link stressLevel}).
- * @param p       Curve position ({@link curvePos}; the signal position for the gate).
+ * @param p       Curve position ({@link curvePos}).
  * @param table   `[L0..L3]`.
  * @returns Cap x100.
  * @example
  * ```ts
- * stressCapCurveX100(STRESS_DRAW, curvePos(200_000n, [25_000n, 100_000n, 500_000n]), [500, 500, 1_000, 2_000]); // 715 (the stepped cap: 500)
+ * stressCapCurveX100(STRESS_DRAW, curvePos(200_000n, [25_000n, 100_000n, 500_000n]), [500, 500, 1_000, 2_000]); // 715 (the program's stepped cap: 500)
  * ```
  */
 export function stressCapCurveX100(stress: number, p: CurvePos, table: readonly [number, number, number, number]): number {
@@ -2463,9 +2508,9 @@ export interface GrowthCeilingView {
   ceilingX100: number;
   /** Controller round: the graded stress level used (0 none, 1 draw, 2 real ADL, 3 h-lock). */
   stress: number;
-  /** The graded stress cap in force: {@link stressCapCurveX100} at the signal position (`0xffff` = none; equals the stepped cap at anchors). */
+  /** The graded stress cap in force: the STEPPED {@link stressCapX100} at the combined tier (21b8ccfd, review M-2; `0xffff` = none / off the clamp). */
   stressCapX100: number;
-  /** The dials on the continuous curve (κ / λ_depth feed the capacity; `lSignalX100` is BEFORE the volatility term). Tier-0 values off the clamp. */
+  /** The dials: leverage on the leading curve (`lSignalX100`, BEFORE the volatility term), κ / λ_depth on the lagging curve (feed the capacity). Tier-0 values off the clamp. */
   dials: SmoothDials;
   /** The venue-only leverage curve value x100 (the push writer's fall-only upper bound, `>= dials.lSignalX100`); 0 off the clamp. */
   venueLX100: number;
@@ -2488,8 +2533,9 @@ export interface GrowthCeilingView {
 /**
  * Derive tier, ceiling and next unlock for one asset, exactly as the wrapper's gate does (`growth_g8_ctx_view` + `growth_ceiling_x100`,
  * percolator-prog `666df893`): usable depth = `min(fresh, rate-limited last good, window minimum)`; `tier = min(venue, book)` (step tiers, for
- * graduation and the stress cap); the dials `min(curve(venue), curve(book))` on the continuous curve (`e699d7da`); the leverage signal capped by `L_vol` (launch with no volatility
- * data); the graded stress cap; `ceiling = min(stored, target)` on a clamp-enforced market.
+ * graduation and the STEPPED stress cap, 21b8ccfd review M-2); the dials `min(curve(venue), curve(book))`: leverage on the continuous curve, κ / λ_depth on
+ * the lagging curve (21b8ccfd review M-1); the leverage signal capped by `L_vol` (launch with no volatility data); `ceiling = min(stored, target)` on a
+ * clamp-enforced market.
  *
  * @param g          Decoded growth record.
  * @param bandBps    Engine `band_bps`.
@@ -2523,7 +2569,7 @@ export function growthCeilingView(g: AssetGrowthV19, bandBps: number, nowSlot: b
   const tier = clamp ? combinedTier(venue, book) : 0;
   const grad = graduationOn(clamp, bandBps, tier);
   const venueD = clamp ? venueDepthCapped(eff, dsByte, thresholds, g.attestedMaxTier) : 0n;
-  const dv = clamp ? smoothDialsVenueLAndPos(venueD, clamp && cM !== null ? bookD : 0n, thresholds, table) : null;
+  const dv = clamp ? smoothDialsAndVenueL(venueD, clamp && cM !== null ? bookD : 0n, thresholds, table) : null;
   const dials: SmoothDials = dv !== null
     ? dv.dials
     : { lSignalX100: 0, kappaBps: Number(KAPPA_TABLE_BPS[0]), lambdaDepthBps: Number(LAMBDA_DEPTH_TABLE_BPS[0]) };
@@ -2531,8 +2577,8 @@ export function growthCeilingView(g: AssetGrowthV19, bandBps: number, nowSlot: b
   const volInputsMissing = clamp && g.volHasData === true && vol === undefined;
   const lVol = clamp && vol !== undefined ? growthLVolX100(g, vol) : null;
   const lSignal = clamp ? lSignalWithVol(dials.lSignalX100, lVol, table[0]) : 0;
-  // continuous stress cap (3198539a): the curve s segments down at the signal position (min(venue, book)); stepped only at the anchors
-  const sCap = dv !== null ? stressCapCurveX100(st, dv.pos, table) : 0xffff;
+  // stepped stress cap at the combined tier (21b8ccfd, review M-2); off the clamp the program's ctx has no stress (u16::MAX)
+  const sCap = clamp ? stressCapX100(st, tier, table) : 0xffff;
   const target = targetCeilingX100(grad, st, g.lLaunchX100, g.lTierX100, lSignal, sCap);
   const launch = Math.min(g.lLaunchX100, g.lTierX100);
   const stored = g.ceilX100 === 0 ? launch : g.ceilX100;
@@ -2542,7 +2588,7 @@ export function growthCeilingView(g: AssetGrowthV19, bandBps: number, nowSlot: b
   if (clamp && st < STRESS_HLOCK) {
     for (let t = tier + 1; t <= GROWTH_MAX_TIER; t++) {
       const sig2 = lSignalWithVol(table[t] as number, lVol, table[0]);
-      // at the anchor of tier t the continuous stress cap equals the stepped one
+      // the program's stress cap at tier t (stepped, 21b8ccfd)
       const lev2 = targetCeilingX100(true, st, g.lLaunchX100, g.lTierX100, sig2, stressCapX100(st, t, table));
       if (lev2 <= target) continue;
       const needDepth = venue < t;

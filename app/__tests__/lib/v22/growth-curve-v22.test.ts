@@ -73,11 +73,12 @@ describe("continuous leverage on controller (R3) records", () => {
     });
   }
 
-  it("N_cap follows the kappa curve: kappa 1.0 at $50k ($50k of room), 1.4306 at $200k ($286.1k)", () => {
+  it("N_cap follows the LAGGING kappa curve (21b8ccfd M-1): kappa 0.75 at $50k ($37.5k of room), 1.0 at $200k ($200k); never above the step", () => {
+    // C_m $2M at lambda 1x never binds here, so N_cap = kappa * depth. 3198539a's leading curve read kappa 1.0 / 1.4306 ($50k / $286.12k).
     const at50 = growthMarketView(input(market(50_000n)))!;
-    expect(at50.long.nCapQ).toBe(50_000n * USD);
+    expect(at50.long.nCapQ).toBe(37_500n * USD);
     const at200 = growthMarketView(input(market(200_000n)))!;
-    expect(at200.long.nCapQ).toBe(286_120_000_000n);
+    expect(at200.long.nCapQ).toBe(200_000n * USD);
   });
 
   it("the unlock line climbs toward the curve: stored 5x at $50k -> next step 6x (ratchet), not 'needs $100k'", () => {
@@ -87,15 +88,17 @@ describe("continuous leverage on controller (R3) records", () => {
     expect(u.unlock).toMatchObject({ kind: "ratchet", leverageX100: 600 });
   });
 
-  it("a draw outstanding caps on the continuous stress cap (3198539a): $200k reads 7.15x (the stepped cap said 5x), $300k 8.41x", () => {
+  it("a draw outstanding caps on the STEPPED stress cap (21b8ccfd M-2): $200k / $300k read 5x (3198539a's continuous cap read 7.15x / 8.41x)", () => {
     const at = (usd: bigint) => {
       const i = input(market(usd));
       return growthMarketView({ ...i, v22: { ...i.v22!, drawOutstanding: true } })!;
     };
-    expect(at(200_000n).long.ceilingX100).toBe(715);
-    expect(at(200_000n).long.maxLeverageX100).toBe(714); // IMR ceil(1e6 / 715) = 1,399 bps
-    expect(at(300_000n).long.ceilingX100).toBe(841);
-    // real ADL: two segments down ($300k: launch)
+    expect(at(200_000n).long.ceilingX100).toBe(500);
+    expect(at(200_000n).long.maxLeverageX100).toBe(500);
+    expect(at(300_000n).long.ceilingX100).toBe(500);
+    // unstressed the same markets read the curve (14.30x / 16.82x): the cut is the stress cap, not the depth
+    expect(growthMarketView(input(market(200_000n)))!.long.ceilingX100).toBe(1_430);
+    // real ADL: two tiers down ($300k: launch)
     const i = input(market(300_000n));
     expect(growthMarketView({ ...i, v22: { ...i.v22!, modeShort: 1 } })!.long.ceilingX100).toBe(500);
   });

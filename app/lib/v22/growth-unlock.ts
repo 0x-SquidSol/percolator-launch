@@ -60,7 +60,7 @@ export function growthUnlockView(i: GrowthUnlockInput): GrowthUnlockView {
 
   const q = i.view.quoteInput;
   const cM = conservativeEquity(q.lpCapital, q.lpPnl, q.lpFeeCredits);
-  // The same stress level and volatility inputs the quote used (controller round; continuous leverage e699d7da), so the line and the
+  // The same stress level and volatility inputs the quote used (controller round; continuous leverage, contlev3 21b8ccfd), so the line and the
   // ticket's max leverage are one number. Without them (an older caller) the h-lock boolean is the stress, as before.
   const qv = q.v22;
   const stress = qv ? stressLevel(qv.drawOutstanding === true, realAdl(qv.modeLong ?? 0, qv.modeShort ?? 0), i.view.hlockActive) : i.view.hlockActive;

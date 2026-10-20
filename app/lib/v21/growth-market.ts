@@ -89,8 +89,9 @@ export interface GrowthMarketInput {
    * (lambda_eff, kappa cap), graduation and the stored ratchet; with the slot unknown the CONSERVATIVE reading is used
    * (depth absent: tier 0, lambda 1x, no kappa cap). Absent, the growth-1 quote (flag off).
    *
-   * Controller round + continuous leverage (wrapper e699d7da): the leverage target is the continuous depth curve (log2-interpolated
-   * between the tier anchors) capped by the volatility term and the graded stress cap. `drawOutstanding` / `modeLong` / `modeShort`
+   * Controller round + continuous leverage (wrapper 21b8ccfd, contlev3): the leverage target is the continuous depth curve (log2-interpolated
+   * between the tier anchors) capped by the volatility term and the graded STEPPED stress cap; κ / λ_depth (capacity) read the lagging
+   * curve, never looser than the round-2 step. `drawOutstanding` / `modeLong` / `modeShort`
    * pick the stress level and `vol` feeds L_vol ({@link growthControllerInputs} reads them from the market bytes); a record with
    * volatility data and no `vol` fails closed to launch leverage.
    */
