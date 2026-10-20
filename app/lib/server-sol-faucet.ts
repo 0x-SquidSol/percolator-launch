@@ -113,6 +113,20 @@ export async function sendServerSol(p: { connection: Connection; signer: SolFauc
 
 /** M-1: at most 3 server-SOL grants per IP per hour (on top of the shared fund limit). */
 const serverSolIpLimiter = createUpstashRateLimiter({ limit: 3, windowMs: 60 * 60 * 1000, prefix: "rl:server-sol" });
+/**
+ * S3-C6 (fix-all 2026-10-18): the hourly cap alone let one IP rotate fresh wallets for ~72 SOL/day,
+ * so two IPs drained the 100 SOL/day budget. A per-IP DAILY cap bounds that to 5 SOL/day/IP (the
+ * budget now needs 20+ IPs). Over it the caller falls back to the public airdrop, as before.
+ */
+export const SERVER_SOL_IP_DAILY_LIMIT = 5;
+const serverSolIpDailyLimiter = createUpstashRateLimiter({ limit: SERVER_SOL_IP_DAILY_LIMIT, windowMs: DAY_MS, prefix: "rl:server-sol-ip-day" });
+/**
+ * S3-C6: per-wallet daily attempt cap, independent of the database. The durable one-send-per-wallet
+ * rule is still the UNIQUE(wallet, fund_type) row; this bounds attempts if that row is ever missing
+ * (cleanup race, released reservation). 3 leaves room for retries after a send that never went out.
+ */
+export const SERVER_SOL_WALLET_DAILY_ATTEMPTS = 3;
+const serverSolWalletLimiter = createUpstashRateLimiter({ limit: SERVER_SOL_WALLET_DAILY_ATTEMPTS, windowMs: DAY_MS, prefix: "rl:server-sol-wallet-day" });
 
 export type ServerSolGrant =
   | { status: "sent"; signature: string; lamports: number }
@@ -228,9 +242,16 @@ export async function grantServerSol(p: { connection: Connection; db: Db | null;
     return { status: "skipped", reason: "failed" };
   }
   if (balance >= SERVER_SOL_TARGET_LAMPORTS) return { status: "funded", lamports: 0 };
+  let walletAllowed = false;
+  try {
+    walletAllowed = (await serverSolWalletLimiter.check(p.to.toBase58())).allowed;
+  } catch {
+    walletAllowed = false;
+  }
+  if (!walletAllowed) return { status: "skipped", reason: "wallet-limit" };
   let ipAllowed = false;
   try {
-    ipAllowed = (await serverSolIpLimiter.check(p.ip)).allowed;
+    ipAllowed = (await serverSolIpLimiter.check(p.ip)).allowed && (await serverSolIpDailyLimiter.check(p.ip)).allowed;
   } catch {
     ipAllowed = false;
   }

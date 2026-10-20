@@ -3,6 +3,7 @@ import { getRpcEndpoint, getAllProgramIds, getConfig } from "@/lib/config";
 import { createHash, timingSafeEqual } from "crypto";
 import { getClientIp } from "@/lib/get-client-ip";
 import { createUpstashRateLimiter } from "@/lib/upstash-rate-limit";
+import { rpcCallCost } from "@/lib/rpc-call-cost";
 import { checkAdminSecret } from "@/lib/admin-secret";
 import { createAccountInfoCoalescer, parseAccountInfoParams, type Sender, type JsonRpcResponse } from "@/lib/rpc-coalesce";
 import { buildUpstreams, redactJson, safeErrorText, sharedUpstreamPool, type UpstreamSpec } from "@/lib/rpc-upstreams";
@@ -629,10 +630,10 @@ const rpcRateLimiter = createUpstashRateLimiter({
   prefix: "rl:rpc-proxy",
 });
 
-async function isRateLimited(req: NextRequest): Promise<boolean> {
+async function isRateLimited(req: NextRequest, cost: number): Promise<boolean> {
   if (!Number.isFinite(RATE_LIMIT_MAX) || RATE_LIMIT_MAX <= 0) return false; // disabled
   const ip = getClientIp(req);
-  const result = await rpcRateLimiter.check(ip);
+  const result = await rpcRateLimiter.check(ip, cost);
   return !result.allowed;
 }
 
@@ -645,8 +646,29 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch (error) {
+    console.error("[/api/rpc] Error:", safeErrorText(error));
+    return NextResponse.json(
+      { jsonrpc: "2.0", error: { code: -32700, message: "Parse error" }, id: null },
+      { status: 400 }
+    );
+  }
+
+  // S3-C4: refuse an oversized batch BEFORE charging the limiter, so the cap is a
+  // hard bound on calls per HTTP request.
+  if (Array.isArray(body) && body.length > MAX_BATCH_SIZE) {
+    return NextResponse.json(
+      { jsonrpc: "2.0", error: { code: -32600, message: `Batch too large (max ${MAX_BATCH_SIZE})` }, id: null },
+      { status: 400 }
+    );
+  }
+
   // #2210: per-IP rate limit — Origin is spoofable, so cap drain rate regardless.
-  if (await isRateLimited(req)) {
+  // S3-C4: a batch is charged one unit per entry.
+  if (await isRateLimited(req, rpcCallCost(body))) {
     return NextResponse.json(
       { jsonrpc: "2.0", error: { code: -32005, message: "Rate limit exceeded" }, id: null },
       { status: 429 }
@@ -654,8 +676,6 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const body = await req.json();
-    const isBatch = Array.isArray(body);
 
     // PERC-469: Optional ?network=mainnet|devnet query param lets Privy configure both
     // Solana chains through the same proxy without exposing any Helius API key client-side.
@@ -679,18 +699,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    if (isBatch) {
+    if (Array.isArray(body)) {
       // --- Batch request handling ---
       if (body.length === 0) {
         return NextResponse.json(
           { jsonrpc: "2.0", error: { code: -32600, message: "Empty batch" }, id: null },
-          { status: 400 }
-        );
-      }
-
-      if (body.length > MAX_BATCH_SIZE) {
-        return NextResponse.json(
-          { jsonrpc: "2.0", error: { code: -32600, message: `Batch too large (max ${MAX_BATCH_SIZE})` }, id: null },
           { status: 400 }
         );
       }
@@ -723,7 +736,7 @@ export async function POST(req: NextRequest) {
     }
 
     // --- Single request handling ---
-    const error = validateRequest(body);
+    const error = validateRequest(body as Record<string, unknown>);
     if (error) {
       const status = error.error.code === -32601 ? 403 : 400;
       return NextResponse.json(error, { status });
