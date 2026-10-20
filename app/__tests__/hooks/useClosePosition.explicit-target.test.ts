@@ -13,31 +13,14 @@
  */
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { Keypair, PublicKey } from "@solana/web3.js";
+import { v22MarketBytes, v22Portfolio as portfolio, V22_OWNER as OWNER, V22_SLAB as SLAB, V22_PROGRAM as PROGRAM } from "../helpers/v22-fixtures";
+import { __setDevnetV22ForTest } from "@/lib/v22/flag";
+import { __setUnknownLotExpForTest } from "@/lib/v22/lot-registry";
 
-const FX = join(__dirname, "..", "fixtures");
-const b64 = (f: string) => Buffer.from(JSON.parse(readFileSync(join(FX, f), "utf8")).dataBase64, "base64");
-const MARKET = new Uint8Array(b64("5bVTTMRc.ansem.market.json"));
-const BASE = b64("DAC2a44p.portfolio.json");
-const OWNER = new PublicKey(BASE.subarray(116, 148));
-const SLAB = new PublicKey(BASE.subarray(16, 48)); // the market this portfolio belongs to
-const PROGRAM = new PublicKey("GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ");
-
-/** Fixture byte offsets of the first leg (probed against parsePortfolioV17). */
-const LEG_ACTIVE = 356;
-const LEG_SIDE = 369;
-const LEG_BASIS = 370;
-function portfolio(o: { side: 0 | 1; basis: bigint; active?: boolean; owner?: PublicKey; market?: PublicKey }): Buffer {
-  const d = Buffer.from(BASE);
-  d[LEG_ACTIVE] = o.active === false ? 0 : 1;
-  d[LEG_SIDE] = o.side;
-  d.writeBigUInt64LE(o.basis, LEG_BASIS);
-  if (o.owner) o.owner.toBuffer().copy(d, 116);
-  if (o.market) o.market.toBuffer().copy(d, 16);
-  return d;
-}
+// v2.2 (VERSION 19) captured bytes (helpers/v22-fixtures.ts): the one-slot SOL market and a flat 10,603 B portfolio patched to hold a leg.
+// The flag is pinned ON in beforeEach, so this runs the v2.2 path in every mode.
+const MARKET = v22MarketBytes();
 
 // Deterministic, ordered pubkeys: SHORT_PK < LONG_PK < FLAT_PK in base58 order.
 const sortedKeys = Array.from({ length: 3 }, (_, i) => Keypair.fromSeed(new Uint8Array(32).fill(i + 1)).publicKey)
@@ -194,6 +177,8 @@ const tradeKeysOfLastSend = () => {
 };
 
 beforeEach(() => {
+  __setDevnetV22ForTest(true);
+  __setUnknownLotExpForTest(0);
   sent.length = 0;
   tradeIxParams.length = 0;
   mocks.withdraw.mockReset();

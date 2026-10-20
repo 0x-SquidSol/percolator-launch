@@ -1,14 +1,13 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicKey } from "@solana/web3.js";
+import { v22MarketBytes } from "../helpers/v22-fixtures";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 // M-3: a v17/v18 close reads the market fresh for the ADL-effective quantity (real v18 bytes).
-const MARKET_BYTES = Buffer.from(
-  JSON.parse(readFileSync(join(__dirname, "..", "fixtures", "5bVTTMRc.ansem.market.json"), "utf8")).dataBase64,
-  "base64",
-);
+// Captured v2.2 (VERSION 19) one-slot market, not the v2.1 ANSEM bytes (helpers/v22-fixtures.ts).
+const MARKET_BYTES = Buffer.from(v22MarketBytes());
 
 const mocks = vi.hoisted(() => ({
   trade: vi.fn(),
@@ -66,13 +65,19 @@ vi.mock("@/lib/portfolio-invalidation", () => ({
   invalidatePortfolio: mocks.invalidatePortfolio,
 }));
 
-vi.mock("@/lib/errorMessages", () => ({
+vi.mock("@/lib/errorMessages", async (orig) => ({
+  ...(await orig<typeof import("@/lib/errorMessages")>()),
   humanizeError: (message: string) => message,
   withTransientRetry: async (
     operation: () => Promise<unknown>,
   ) => operation(),
 }));
 
+vi.mock("@/lib/v22/layout", async (orig) => ({
+  ...(await orig<typeof import("@/lib/v22/layout")>()),
+  isWrapperAccount: mocks.isV17Account,
+  parsePortfolio: mocks.parsePortfolioV17,
+}));
 vi.mock("@percolatorct/sdk", () => ({
   AccountKind: {
     LP: "LP",
@@ -91,6 +96,8 @@ import { useTrade } from "@/hooks/useTrade";
 import { useUserAccount } from "@/hooks/useUserAccount";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { useClosePosition } from "@/hooks/useClosePosition";
+import { __setDevnetV22ForTest } from "@/lib/v22/flag";
+import { __setUnknownLotExpForTest } from "@/lib/v22/lot-registry";
 
 describe("useClosePosition — a FULL close moves the freed USDC back to the wallet (Squid 2026-10-01)", () => {
   const slabAddress = "11111111111111111111111111111111";
@@ -101,6 +108,8 @@ describe("useClosePosition — a FULL close moves the freed USDC back to the wal
 
   beforeEach(() => {
     vi.clearAllMocks();
+    __setDevnetV22ForTest(true);
+    __setUnknownLotExpForTest(0);
     mocks.takeFillResult.mockReturnValue(undefined); // a full fill unless a test says otherwise
     closed = false;
     mocks.trade.mockImplementation(async () => { closed = true; return "close-sig"; });
