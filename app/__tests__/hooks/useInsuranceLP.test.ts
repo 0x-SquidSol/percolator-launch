@@ -44,6 +44,9 @@ vi.mock("@/lib/programAllowlist", () => ({
 
 vi.mock("@percolatorct/sdk", async () => {
   const { PublicKey: PK } = await import("@solana/web3.js");
+  // The floored tag-76 request (AUD-S1-18) is encoded by lib/v22/sdk/v22-wire, which builds its
+  // bytes with the SDK's byte helpers: keep those real.
+  const real = await vi.importActual<typeof import("@percolatorct/sdk")>("@percolatorct/sdk");
   // NOTE: vi.mock factories are hoisted — we must use dynamic import for external deps.
   const lpMint = new PK("9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin");
   const vaultAuth = new PK("11111111111111111111111111111111"); // all-zeros via string (valid)
@@ -53,6 +56,12 @@ vi.mock("@percolatorct/sdk", async () => {
   const escrowPda = new PK("4mB4qULhrn1PcDCTVfE3XPfKvGiCTiXhbmzuUwrQZzJj"); // stable 32-byte pubkey
   const progId = new PK("5BZWY6XWPxuWFxs2nPCLLsVaKRWZVnzZh3FkJDLJBkJf");
   return {
+    concatBytes: real.concatBytes,
+    encU8: real.encU8,
+    encU16: real.encU16,
+    encU32: real.encU32,
+    encU64: real.encU64,
+    encU128: real.encU128,
     deriveInsuranceLpMint: vi.fn().mockReturnValue([lpMint, 255]),
     deriveVaultAuthority: vi.fn().mockReturnValue([vaultAuth, 254]),
     deriveLpVaultRegistry: vi.fn().mockReturnValue([registryPda, 253]),
