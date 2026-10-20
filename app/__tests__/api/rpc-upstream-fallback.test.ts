@@ -86,7 +86,8 @@ describe("/api/rpc upstream fallback", () => {
     handler = (u, b) => {
       if (u === PRIMARY) {
         primaryCalls++;
-        return { status: 503, json: async () => ({}) };
+        // A definite refusal (429) cools at once; an ambiguous one (503) needs a second strike (lib/rpc-upstreams.ts, AUD-RAPP #3563).
+        return { status: 429, json: async () => ({}) };
       }
       return b.method === "getGenesisHash" ? ok(CLUSTER_GENESIS.devnet) : ok(9, b.id);
     };
@@ -128,14 +129,22 @@ describe("/api/rpc upstream fallback", () => {
       it(name, async () => {
         handler = h;
         const POST = await route(ENV);
+        // Every usable upstream refused for RATE: the generic body becomes the rate-limit one, with HTTP 429 (AUD-RAPP #3563).
+        const rate = name === "all upstreams answer 429 with a body that echoes the key" || name === "a fallback on the wrong cluster";
         const single = await POST(req({ jsonrpc: "2.0", id: 3, method: "getSlot", params: [] }));
         const st = await single.text();
-        expect(JSON.parse(st)).toEqual({ jsonrpc: "2.0", id: 3, error: { code: -32603, message: "Upstream RPC request failed" } });
+        expect(JSON.parse(st)).toEqual(
+          rate
+            ? { jsonrpc: "2.0", id: 3, error: { code: -32429, message: "Too many requests: the RPC is rate limited. Try again shortly." } }
+            : { jsonrpc: "2.0", id: 3, error: { code: -32603, message: "Upstream RPC request failed" } },
+        );
+        expect(single.status).toBe(rate ? 429 : 200);
         expect(SECRET_RE.test(everything(single, st))).toBe(false);
         const batch = await POST(req([{ jsonrpc: "2.0", id: 1, method: "getBlockHeight", params: [] }, { jsonrpc: "2.0", id: 2, method: "getHealth", params: [] }]));
         const bt = await batch.text();
         expect(SECRET_RE.test(everything(batch, bt))).toBe(false);
-        expect(batch.status).toBe(200);
+        // Wrong cluster: by the batch the primary is cooling and the only ready fallback is unusable, so nothing is attempted: generic.
+        expect(batch.status).toBe(name === "all upstreams answer 429 with a body that echoes the key" ? 429 : 200);
       });
     }
 
@@ -205,5 +214,39 @@ describe("/api/rpc upstream fallback", () => {
     const POST = await route(ENV);
     await POST(req({ jsonrpc: "2.0", id: 1, method: "getSlot", params: [], url: "https://attacker.test", rpcUrl: "https://attacker.test" }));
     expect(urls.some((u) => u.includes("attacker.test"))).toBe(false);
+  });
+});
+
+describe("/api/rpc: every upstream rate-limiting us is an HTTP 429 (AUD-RAPP #3563)", () => {
+  const limited = (u: string, b: { method: string; id: unknown }) =>
+    b.method === "getGenesisHash" && u !== PRIMARY ? ok(CLUSTER_GENESIS.devnet) : { status: 429, json: async () => ({ jsonrpc: "2.0", error: { code: -32429, message: `max usage ${u}` }, id: null }) };
+  it("single request: HTTP 429 with a JSON-RPC -32429 error, no upstream detail", async () => {
+    handler = limited;
+    const POST = await route(ENV);
+    const res = await POST(req({ jsonrpc: "2.0", id: 5, method: "getSlot", params: [] }));
+    expect(res.status).toBe(429);
+    const text = await res.text();
+    expect(JSON.parse(text)).toMatchObject({ id: 5, error: { code: -32429 } });
+    expect(everything(res, text)).not.toMatch(SECRET_RE);
+  });
+  it("batch: 429 only when EVERY item is rate-limited; otherwise 200 with per-item results", async () => {
+    handler = limited;
+    let POST = await route(ENV);
+    let res = await POST(req([{ jsonrpc: "2.0", id: 1, method: "getSlot", params: [] }, { jsonrpc: "2.0", id: 2, method: "getBlockHeight", params: [] }]));
+    expect(res.status).toBe(429);
+    handler = (u, b) => (b.method === "getSlot" ? limited(u, b) : ok(9, b.id));
+    POST = await route(ENV);
+    res = await POST(req([{ jsonrpc: "2.0", id: 1, method: "getSlot", params: [] }, { jsonrpc: "2.0", id: 2, method: "getBlockHeight", params: [] }]));
+    expect(res.status).toBe(200);
+    const items = (await res.json()) as { id: number; error?: { code: number }; result?: unknown }[];
+    expect(items.find((x) => x.id === 1)?.error?.code).toBe(-32429);
+    expect(items.find((x) => x.id === 2)?.result).toBe(9);
+  });
+  it("a non-rate failure (5xx everywhere) stays the generic -32603 with HTTP 200", async () => {
+    handler = (u, b) => (b.method === "getGenesisHash" && u !== PRIMARY ? ok(CLUSTER_GENESIS.devnet) : { status: 503, json: async () => ({}) });
+    const POST = await route(ENV);
+    const res = await POST(req({ jsonrpc: "2.0", id: 5, method: "getSlot", params: [] }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ error: { code: -32603 } });
   });
 });

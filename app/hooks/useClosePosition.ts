@@ -23,7 +23,8 @@ import { getLpInventoryState, getMatcherCaps } from "@/lib/matcherCaps";
 import { lpInventoryRoomQ } from "@/lib/limits/lp-inventory-room";
 import { closeCapacityMessage } from "@/lib/marketCapacity";
 import { chunkCloseSize } from "@/lib/closeChunks";
-import { anySignatureLanded, remainingClose, signatureFromError } from "@/lib/close-resend-guard";
+import { anySignatureLanded, inFlightAttemptOf, remainingClose, type InFlightAttempt } from "@/lib/close-resend-guard";
+import { awaitAmbiguousOutcome } from "@/lib/tx";
 import { isMockMode } from "@/lib/mock-mode";
 import { isMockSlab } from "@/lib/mock-trade-data";
 import { useWalletCompat } from "@/hooks/useWalletCompat";
@@ -527,6 +528,8 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
           // re-size from the LIVE position. A stale -closeSize sent at an already-flat position would OPEN the opposite side (the close ix has
           // no reduce-only flag; see lib/close-resend-guard.ts).
           const failedSigs: string[] = [];
+          /** Attempts whose blockhash is known: they may still be in flight, so a resend waits until each lands or provably expires. */
+          const inFlight: InFlightAttempt[] = [];
           const intendedFinalAbs = freshAbs - (closeSize < 0n ? -closeSize : closeSize);
           const readLiveSigned = async (): Promise<bigint> => {
             try {
@@ -562,6 +565,19 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
               closeState.alreadyClosed = true;
               return landed;
             }
+            // #3565 Low (pending-signature wait): a known signature with no status yet may still land. The live read below would be taken
+            // BEFORE it lands, and the resend would then close the position twice (or open the other side). Wait for each such attempt
+            // to land, fail, or provably expire (its blockhash no longer valid); anything undecidable refuses, nothing more is sent.
+            for (const a of inFlight.splice(0)) {
+              const outcome = a.blockhash ? await awaitAmbiguousOutcome(connection, a.sig, a.blockhash) : "unknown";
+              if (outcome === "landed") {
+                closeState.alreadyClosed = true;
+                return a.sig;
+              }
+              if (outcome === "unknown") {
+                throw new UserFacingError("Could not confirm whether your close went through, so nothing more was sent. Check your position, then retry.");
+              }
+            }
             const r = remainingClose(await readLiveSigned(), closeSize, intendedFinalAbs);
             if (r.kind === "done") {
               closeState.alreadyClosed = true;
@@ -591,8 +607,11 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
               sizes: closeLegs,
               ...(closeLimitPriceE6 !== undefined && { limitPriceE6: closeLimitPriceE6 }),
             }).catch((e: unknown) => {
-              const sg = signatureFromError(errorText(e));
-              if (sg) failedSigs.push(sg);
+              const a = inFlightAttemptOf(e, errorText(e));
+              if (a) {
+                failedSigs.push(a.sig);
+                if (a.blockhash) inFlight.push(a);
+              }
               throw e;
             });
           };

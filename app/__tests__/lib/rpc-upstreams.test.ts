@@ -12,6 +12,9 @@ import {
   DEFAULT_DEVNET_FALLBACK,
   UpstreamPool,
   UpstreamUnavailableError,
+  UpstreamRateLimitedError,
+  HEAVY_RPC_METHODS,
+  STRIKE_WINDOW_MS,
   buildUpstreams,
   fallbackUrlsFor,
   isQuotaBody,
@@ -317,13 +320,65 @@ describe("cooling counts only transport errors, 401/403/408/429/5xx and quota CO
     ["HTTP 429", { status: 429 }],
     ["HTTP 401", { status: 401 }],
     ["HTTP 403", { status: 403 }],
+    ["a quota code -32429", { body: { jsonrpc: "2.0", id: 7, error: { code: -32429, message: "x" } } }],
+  ] as [string, Reply][])("a definite refusal cools at once: %s", async (_n, bad) => {
+    expect(await coolsPrimary(bad)).toBe(true);
+  });
+  // AUD-RAPP #3563 L2: an ambiguous failure is a first strike; a second within the window cools; a heavy read never does.
+  const AMBIGUOUS: [string, Reply][] = [
     ["HTTP 408", { status: 408 }],
     ["HTTP 500", { status: 500 }],
     ["a network error", { throws: "ECONNRESET" }],
     ["a 200 that is not JSON", { status: 200, text: "<html>" }],
-    ["a quota code -32429", { body: { jsonrpc: "2.0", id: 7, error: { code: -32429, message: "x" } } }],
-  ] as [string, Reply][])("does cool on %s", async (_n, bad) => {
-    expect(await coolsPrimary(bad)).toBe(true);
+  ];
+  const strikes = async (bad: Reply, req: unknown, gapMs: number): Promise<boolean[]> => {
+    let t = 1_000_000;
+    const net = fakeNet({ [PRIMARY_URL]: bad }, { [FB1]: G });
+    const pool = new UpstreamPool({ fetchImpl: net.fetchImpl, now: () => t });
+    const ups = mk();
+    await pool.post(ups, req, "devnet").catch(() => undefined);
+    const first = pool.isCooling(ups[0]!);
+    t += gapMs;
+    await pool.post(ups, req, "devnet").catch(() => undefined);
+    return [first, pool.isCooling(ups[0]!)];
+  };
+  it.each(AMBIGUOUS)("an ambiguous failure (%s) cools only on a second strike within the window", async (_n, bad) => {
+    expect(await strikes(bad, REQ, 5_000)).toEqual([false, true]);
+    expect(await strikes(bad, REQ, STRIKE_WINDOW_MS + 1)).toEqual([false, false]);
+  });
+  it.each(AMBIGUOUS)("a heavy read's ambiguous failure (%s) never cools the primary, however often", async (_n, bad) => {
+    for (const method of ["getProgramAccounts", "getSignaturesForAddress"]) {
+      expect(await strikes(bad, { ...REQ, method }, 5_000)).toEqual([false, false]);
+      // a batch with one heavy item counts as heavy
+      expect(await strikes(bad, [REQ, { ...REQ, id: 8, method }], 5_000)).toEqual([false, false]);
+    }
+  });
+  it("a heavy read still FAILS OVER (the caller is served), it just does not demote the primary", async () => {
+    const net = fakeNet({ [PRIMARY_URL]: { status: 504 }, [FB1]: { body: { jsonrpc: "2.0", id: 7, result: "fb" } } }, { [FB1]: G });
+    const pool = new UpstreamPool({ fetchImpl: net.fetchImpl });
+    const ups = mk();
+    expect(await pool.post(ups, { ...REQ, method: "getProgramAccounts" }, "devnet")).toMatchObject({ result: "fb" });
+    expect(pool.isCooling(ups[0]!)).toBe(false);
+    expect(HEAVY_RPC_METHODS.has("getProgramAccounts")).toBe(true);
+  });
+});
+
+describe("all-429 is surfaced as a rate limit (AUD-RAPP #3563)", () => {
+  it("every attempt refused for rate (429 / -32429 / -32005): UpstreamRateLimitedError (still generic, still an UpstreamUnavailableError)", async () => {
+    const net = fakeNet(
+      { [PRIMARY_URL]: { status: 429 }, [FB1]: { body: { jsonrpc: "2.0", id: 7, error: { code: -32005, message: "x" } } }, [FB2]: { status: 429 } },
+      { [FB1]: G, [FB2]: G },
+    );
+    const err = await new UpstreamPool({ fetchImpl: net.fetchImpl }).post(mk(), REQ, "devnet").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UpstreamRateLimitedError);
+    expect(err).toBeInstanceOf(UpstreamUnavailableError);
+    expect(String((err as Error).message)).not.toMatch(/test|key|http/i);
+  });
+  it("any non-rate failure among them: the generic UpstreamUnavailableError, not a rate limit", async () => {
+    const net = fakeNet({ [PRIMARY_URL]: { status: 429 }, [FB1]: { status: 503 }, [FB2]: { status: 429 } }, { [FB1]: G, [FB2]: G });
+    const err = await new UpstreamPool({ fetchImpl: net.fetchImpl }).post(mk(), REQ, "devnet").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UpstreamUnavailableError);
+    expect(err).not.toBeInstanceOf(UpstreamRateLimitedError);
   });
 });
 

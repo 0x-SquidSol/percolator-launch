@@ -47,7 +47,7 @@ const chain = new Map<string, { owner: PublicKey; data: Buffer }>();
 const sent: Array<{ instructions: Array<{ keys: Array<{ pubkey: PublicKey }>; data: Buffer }> }> = [];
 const tradeIxParams: Array<{ accountA: PublicKey; size: bigint }> = [];
 
-const mocks = vi.hoisted(() => ({ withdraw: vi.fn(), sweepReads: vi.fn(), script: [] as Array<() => void>, toast: vi.fn(), statuses: new Map<string, { err: unknown; confirmationStatus: string } | null>() }));
+const mocks = vi.hoisted(() => ({ withdraw: vi.fn(), sweepReads: vi.fn(), script: [] as Array<() => void>, toast: vi.fn(), statuses: new Map<string, { err: unknown; confirmationStatus: string } | null>(), ambiguous: vi.fn(async (): Promise<string> => "not-landed") }));
 
 const getAccountInfo = vi.fn(async (pk: PublicKey) => {
   if (pk.equals(SLAB)) return { data: Buffer.from(MARKET), owner: PROGRAM };
@@ -119,6 +119,7 @@ vi.mock("@/lib/tx", () => ({
     return "SIG-" + sent.length;
   }),
   prewarmTxLanding: vi.fn(),
+  awaitAmbiguousOutcome: (...a: unknown[]) => mocks.ambiguous(...a),
   simulateForGate: vi.fn(),
   SimulationRefusal: class SimulationRefusal extends Error {},
   buildBatchTx: vi.fn(),
@@ -325,5 +326,50 @@ describe("double-close safety: no resend of a close that already landed", () => 
     expect(thrown).not.toBeNull();
     expect(sent).toHaveLength(1);
     expect(error).toMatch(/nothing more was sent/);
+  });
+});
+
+describe("#3565 Low: a known in-flight signature is waited for before any resend", () => {
+  /** An error as sendTx throws it after an ambiguous broadcast: signature + blockhash attached. */
+  const inFlightErr = (sig: string) => Object.assign(new Error(BLOCKHASH), { signature: sig, blockhash: "BH".padEnd(44, "1") });
+  beforeEach(() => {
+    mocks.ambiguous.mockReset();
+  });
+
+  it("the tx lands AFTER the first status check (the live read would still show the position): no resend, closed", async () => {
+    mocks.ambiguous.mockImplementation(async () => {
+      setChain(flatPortfolio()); // it landed while we waited
+      return "landed";
+    });
+    mocks.script.push(() => { throw inFlightErr(SIG1); });
+    const { thrown } = await close(100, { portfolioPk: LONG_PK });
+    expect(thrown).toBeNull();
+    expect(mocks.ambiguous).toHaveBeenCalledWith(expect.anything(), SIG1, "BH".padEnd(44, "1"));
+    expect(sent).toHaveLength(1);
+    expect(mocks.toast).toHaveBeenCalledWith("Position closed.", "success");
+  });
+
+  it("it provably expired without landing: the resend goes ahead, sized from the live position", async () => {
+    mocks.ambiguous.mockResolvedValue("not-landed");
+    mocks.script.push(() => { throw inFlightErr(SIG1); });
+    await close(100, { portfolioPk: LONG_PK });
+    expect(sent).toHaveLength(2);
+    expect(tradeIxParams.map((t) => t.size)).toEqual([-LONG_BASIS, -LONG_BASIS]);
+  });
+
+  it("undecidable (still pending / RPC down): nothing more is sent", async () => {
+    mocks.ambiguous.mockResolvedValue("unknown");
+    mocks.script.push(() => { throw inFlightErr(SIG1); });
+    const { thrown, error } = await close(100, { portfolioPk: LONG_PK });
+    expect(thrown).not.toBeNull();
+    expect(sent).toHaveLength(1);
+    expect(error).toMatch(/nothing more was sent/);
+  });
+
+  it("no blockhash known (a message-only signature): today's path, no wait", async () => {
+    mocks.script.push(() => { throw new Error(BLOCKHASH); });
+    await close(100, { portfolioPk: LONG_PK });
+    expect(mocks.ambiguous).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(2);
   });
 });
