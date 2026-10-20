@@ -22,10 +22,9 @@ import { planResolvedExit, type ExitPortfolio, type ResolvedExitPlan } from "@/l
 import { FINISH_MAX_TXS, buildFinishList, pruneRefusedItems, runFinish, stepNeeded, type FinishItem } from "@/lib/limits/resolved-finish";
 import { sendWithTopup, viewerOwnedKeys, viewerReceiptStatus, viewerTopupSteps } from "@/lib/limits/resolved-topup";
 import { COPY } from "@/lib/limits/copy";
-import { V22_AFTER_LEGS_SHIFT, pinV22, v22BlankMarket, v22BlankPortfolio } from "../../helpers/v22-fixtures";
+import { afterLegsShift, blankMarket, blankPortfolio } from "../../helpers/v22-fixtures";
 import { marketOffsets } from "@/lib/v22/market-offsets";
 
-pinV22();
 
 const VIEWER = Keypair.generate().publicKey;
 const OTHER = Keypair.generate().publicKey;
@@ -43,7 +42,7 @@ interface P {
   gone?: boolean;
 }
 function marketBytes(count: bigint, cTot: bigint): Uint8Array {
-  const d = v22BlankMarket();
+  const d = blankMarket();
   const v = new DataView(d.buffer);
   const M = marketOffsets(d);
   d[M.hdr(C.H_MODE)] = C.MARKET_MODE_RESOLVED;
@@ -53,14 +52,14 @@ function marketBytes(count: bigint, cTot: bigint): Uint8Array {
   return d;
 }
 function portfolio(p: P): ExitPortfolio {
-  const d = new Uint8Array(v22BlankPortfolio());
+  const d = new Uint8Array(blankPortfolio());
   const v = new DataView(d.buffer);
   d[10] = C.KIND_PORTFOLIO;
   d.set(p.owner.toBytes(), C.PF_OWNER);
   if (p.capital > 0n || p.chunks > 0) v.setBigUint64(C.PF_CAPITAL, p.capital > 0n ? p.capital : 1_000n, true);
   if (p.receipt !== "none") {
-    d[C.PF_RESOLVED_PAYOUT_RECEIPT + V22_AFTER_LEGS_SHIFT + C.RECEIPT_PRESENT] = 1;
-    d[C.PF_RESOLVED_PAYOUT_RECEIPT + V22_AFTER_LEGS_SHIFT + C.RECEIPT_FINALIZED] = p.receipt === "final" ? 1 : 0;
+    d[C.PF_RESOLVED_PAYOUT_RECEIPT + afterLegsShift() + C.RECEIPT_PRESENT] = 1;
+    d[C.PF_RESOLVED_PAYOUT_RECEIPT + afterLegsShift() + C.RECEIPT_FINALIZED] = p.receipt === "final" ? 1 : 0;
   }
   return { key: p.key, view: decodeResolvedPortfolio(d)!, isVaultLp: p.vault, escrowed: false };
 }

@@ -14,13 +14,17 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Keypair, PublicKey } from "@solana/web3.js";
-import { v22MarketBytes, v22Portfolio as portfolio, V22_OWNER as OWNER, V22_SLAB as SLAB, V22_PROGRAM as PROGRAM } from "../helpers/v22-fixtures";
-import { __setDevnetV22ForTest } from "@/lib/v22/flag";
+import { modeFixtures, modePortfolio } from "../helpers/v22-fixtures";
 import { __setUnknownLotExpForTest } from "@/lib/v22/lot-registry";
 
-// v2.2 (VERSION 19) captured bytes (helpers/v22-fixtures.ts): the one-slot SOL market and a flat 10,603 B portfolio patched to hold a leg.
-// The flag is pinned ON in beforeEach, so this runs the v2.2 path in every mode.
-const MARKET = v22MarketBytes();
+// Captured bytes of the ACTIVE mode (helpers/v22-fixtures.ts): flag off = the v2.1 ANSEM market and DAC2a44p portfolio, flag on = the captured
+// v2.2 (VERSION 19) one-slot SOL market and a flat 10,603 B portfolio. The leg offsets patched below (356 / 369 / 370) are the same in both.
+const FXM = modeFixtures();
+const MARKET = FXM.market;
+const OWNER = FXM.owner;
+const SLAB = FXM.slab;
+const PROGRAM = FXM.program;
+const portfolio = (o: Parameters<typeof modePortfolio>[1]) => modePortfolio(FXM, o);
 
 // Deterministic, ordered pubkeys: SHORT_PK < LONG_PK < FLAT_PK in base58 order.
 const sortedKeys = Array.from({ length: 3 }, (_, i) => Keypair.fromSeed(new Uint8Array(32).fill(i + 1)).publicKey)
@@ -177,7 +181,6 @@ const tradeKeysOfLastSend = () => {
 };
 
 beforeEach(() => {
-  __setDevnetV22ForTest(true);
   __setUnknownLotExpForTest(0);
   sent.length = 0;
   tradeIxParams.length = 0;

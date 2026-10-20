@@ -115,7 +115,6 @@ function scenario(wrappedCount: 1 | 2) {
 
 describe('usePortfolio: wrapped position on a market where the wallet also owns a portfolio', () => {
   beforeEach(() => {
-    __setDevnetV22ForTest(true);
     __setUnknownLotExpForTest(0);
     vi.clearAllMocks();
     mocks.getNetwork.mockReturnValue('devnet');

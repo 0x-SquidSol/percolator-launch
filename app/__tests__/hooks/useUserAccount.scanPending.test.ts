@@ -46,7 +46,6 @@ describe("useUserAccountScanPending (GH#2707)", () => {
   const raw = new Uint8Array([4, 4, 4]);
 
   beforeEach(() => {
-    __setDevnetV22ForTest(true);
     __setUnknownLotExpForTest(0);
     vi.clearAllMocks();
     wallet = uniquePubkey();

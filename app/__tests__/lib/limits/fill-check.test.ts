@@ -8,12 +8,11 @@ import { describe, it, expect, vi } from "vitest";
 import { Keypair, type Connection } from "@solana/web3.js";
 import { measureFill, recordFillResult, takeFillResult } from "@/lib/limits/fill-check";
 import * as C from "@/lib/limits/constants";
-import { pinV22, v22BlankPortfolio } from "../../helpers/v22-fixtures";
+import { blankPortfolio } from "../../helpers/v22-fixtures";
 
-pinV22();
 
 function portfolioWithPosition(q: bigint, marketId = 1n): Uint8Array {
-  const d = new Uint8Array(v22BlankPortfolio()); // v2.2 (VERSION 19, 10,603 B); the leg fields used here do not move from v2.1
+  const d = new Uint8Array(blankPortfolio()); // v2.2 (VERSION 19, 10,603 B); the leg fields used here do not move from v2.1
   const dv = new DataView(d.buffer);
   const l = C.PF_LEGS;
   if (q !== 0n) {

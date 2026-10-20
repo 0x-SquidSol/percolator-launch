@@ -14,8 +14,8 @@ import { lpEffectiveSignedQ, lpInventoryRoomQ, matcherPricingInventoryQ } from "
 import { SIDE_MODE_RESET_PENDING } from "@/lib/limits/effective-quantity";
 import { UNLIMITED_CAPACITY } from "@/lib/marketCapacity";
 import { maxTradeSizePerSide } from "@/lib/limits/risk-limits";
-import { pinV22, v22BlankPortfolio } from "../../helpers/v22-fixtures";
-import { LAYOUT_V22 } from "@/lib/v22/sdk/layout";
+import { blankPortfolio } from "../../helpers/v22-fixtures";
+import { activeLayout } from "@/lib/v22/layout";
 
 const B = 1_000_000_000n;
 
@@ -66,12 +66,11 @@ describe("lpInventoryRoomQ", () => {
 });
 
 describe("lpEffectiveSignedQ (port of 7a3ac04c raw_and_effective_signed_position_for_asset_view .1)", () => {
-  pinV22();
   const MARKET_ID = 7n;
   const portfolio = (legs: { slot: number; asset: number; marketId: bigint; side: number; basis: bigint; aBasis: bigint; epochSnap: bigint }[]) => {
-    // v2.2: a VERSION-19 portfolio (legs are 217 B apart, epoch_snap at +118; the fields up to a_basis do not move).
-    const P = LAYOUT_V22.portfolio;
-    const d = new Uint8Array(v22BlankPortfolio());
+    // The ACTIVE layout (v2.1: legs 152 B apart, epoch_snap +86; v2.2: 217 B apart, +118; the fields up to a_basis do not move).
+    const P = activeLayout().portfolio;
+    const d = new Uint8Array(blankPortfolio());
     const v = new DataView(d.buffer);
     for (const l of legs) {
       const o = P.legsOff + l.slot * P.legStride;

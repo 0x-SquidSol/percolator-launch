@@ -89,7 +89,6 @@ describe("useUserAccount — shared v17 scan", () => {
   let getProgramAccounts: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    __setDevnetV22ForTest(true);
     __setUnknownLotExpForTest(0);
     vi.clearAllMocks();
     wallet = uniquePubkey();

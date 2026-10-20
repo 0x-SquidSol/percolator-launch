@@ -17,14 +17,13 @@ import { buildLpCrankIx, decideLpLeg } from "@/lib/pre-resolve";
 import { closeLimitNotice } from "@/lib/limits/ticket";
 import { UNLIMITED_CAPACITY } from "@/lib/marketCapacity";
 import { ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from "@solana/spl-token";
-import { V22_AFTER_LEGS_SHIFT, pinV22, v22BlankMarket, v22BlankPortfolio } from "../../helpers/v22-fixtures";
+import { afterLegsShift, blankMarket, blankPortfolio } from "../../helpers/v22-fixtures";
 import { marketOffsets } from "@/lib/v22/market-offsets";
 
-pinV22();
 
 const k = () => Keypair.generate().publicKey;
 function marketBytes(o: { mode: number; cTot?: bigint; count?: bigint; resolvedSlot?: bigint; delay?: bigint }): Uint8Array {
-  const d = v22BlankMarket();
+  const d = blankMarket();
   const v = new DataView(d.buffer);
   const M = marketOffsets(d);
   d[M.hdr(C.H_MODE)] = o.mode;
@@ -35,16 +34,16 @@ function marketBytes(o: { mode: number; cTot?: bigint; count?: bigint; resolvedS
   return d;
 }
 function portfolioBytes(o: { capital?: bigint; bitmap?: bigint; receipt?: [boolean, boolean]; rebalanceLock?: boolean }): Uint8Array {
-  const d = new Uint8Array(v22BlankPortfolio());
+  const d = new Uint8Array(blankPortfolio());
   const v = new DataView(d.buffer);
   d[10] = C.KIND_PORTFOLIO;
   v.setBigUint64(C.PF_CAPITAL, o.capital ?? 0n, true);
   v.setBigUint64(C.PF_ACTIVE_BITMAP, o.bitmap ?? 0n, true);
   if (o.receipt) {
-    d[C.PF_RESOLVED_PAYOUT_RECEIPT + V22_AFTER_LEGS_SHIFT + C.RECEIPT_PRESENT] = o.receipt[0] ? 1 : 0;
-    d[C.PF_RESOLVED_PAYOUT_RECEIPT + V22_AFTER_LEGS_SHIFT + C.RECEIPT_FINALIZED] = o.receipt[1] ? 1 : 0;
+    d[C.PF_RESOLVED_PAYOUT_RECEIPT + afterLegsShift() + C.RECEIPT_PRESENT] = o.receipt[0] ? 1 : 0;
+    d[C.PF_RESOLVED_PAYOUT_RECEIPT + afterLegsShift() + C.RECEIPT_FINALIZED] = o.receipt[1] ? 1 : 0;
   }
-  if (o.rebalanceLock) d[C.PF_REBALANCE_LOCK + V22_AFTER_LEGS_SHIFT] = 1;
+  if (o.rebalanceLock) d[C.PF_REBALANCE_LOCK + afterLegsShift()] = 1;
   return d;
 }
 const pf = (key: string, o: Parameters<typeof portfolioBytes>[0], x: Partial<ExitPortfolio> = {}): ExitPortfolio => {

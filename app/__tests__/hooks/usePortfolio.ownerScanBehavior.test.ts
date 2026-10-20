@@ -157,7 +157,6 @@ function makeOwnerScanFailureScenario() {
 
 describe('usePortfolio v17 owner-scan behavioral regression', () => {
   beforeEach(() => {
-    __setDevnetV22ForTest(true);
     __setUnknownLotExpForTest(0);
     vi.clearAllMocks();
 

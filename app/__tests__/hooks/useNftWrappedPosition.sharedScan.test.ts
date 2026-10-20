@@ -102,7 +102,6 @@ describe("useNftWrappedPosition — v17 shared scan + batching", () => {
   };
 
   beforeEach(() => {
-    __setDevnetV22ForTest(true);
     __setUnknownLotExpForTest(0);
     vi.clearAllMocks();
     wallet = uniquePubkey();

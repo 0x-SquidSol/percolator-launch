@@ -18,14 +18,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { PublicKey } from "@solana/web3.js";
-import { v22MarketBytes } from "../helpers/v22-fixtures";
+import { modeFixtures } from "../helpers/v22-fixtures";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 // M-3: the close sizes from the ADL-effective quantity, which needs a FRESH read of the
 // market (a_side / epoch / mode). A real captured v2.2 market (a = ADL_ONE, epochs 0).
-// Captured v2.2 (VERSION 19) one-slot market, not the v2.1 ANSEM bytes (helpers/v22-fixtures.ts).
-const MARKET_BYTES = Buffer.from(v22MarketBytes());
+// Captured market of the ACTIVE mode: the v2.1 ANSEM bytes flag off, the v2.2 (VERSION 19) one-slot market flag on (helpers/v22-fixtures.ts).
+const MARKET_BYTES = Buffer.from(modeFixtures().market);
 
 const PROGRAM = new PublicKey("69VUZ7a2BeXBTpRRManLamF5UWTaNR9B1hy5Se3cdXy9");
 const SLAB = "7RXTVmGcJMDqqTCFu5ADQRyLDvVZBi3r5U5WXzoULHJV";
@@ -100,13 +100,11 @@ vi.mock("@/components/providers/SlabProvider", () => ({
 }));
 
 import { useClosePosition } from "@/hooks/useClosePosition";
-import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import { __setUnknownLotExpForTest } from "@/lib/v22/lot-registry";
 
 describe("useClosePosition — prewarmed read must be spent on success", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    __setDevnetV22ForTest(true);
     __setUnknownLotExpForTest(0);
     onChainSize = 10_000_000n;
     getProgramAccounts.mockImplementation(async () => [

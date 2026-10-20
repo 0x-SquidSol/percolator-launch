@@ -4,7 +4,11 @@ import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import { __setUnknownLotExpForTest } from "@/lib/v22/lot-registry";
 import { join } from "node:path";
 import { PublicKey } from "@solana/web3.js";
-import { LAYOUT_V22 } from "@/lib/v22/sdk/layout";
+import { LAYOUT_V21, LAYOUT_V22 } from "@/lib/v22/sdk/layout";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
+import { activeLayout } from "@/lib/v22/layout";
+
+const LAYOUT_V21_MAGIC = 0x5045_5243_5631_3600n;
 
 /**
  * v2.2 (wrapper VERSION 19) account fixtures for tests that used to run on v2.1 (VERSION 18) bytes.
@@ -57,6 +61,13 @@ export function v22MatcherPortfolio(enabled: boolean, base: Buffer = v22Portfoli
   return d;
 }
 
+/** As {@link v22MatcherPortfolio} on the ACTIVE mode's layout (v2.1 9,563 B flag off, captured v2.2 10,603 B flag on). */
+export function matcherPortfolio(enabled: boolean): Buffer {
+  const d = isDevnetV22Enabled() ? v22PortfolioBase() : blankPortfolio();
+  d.writeBigUInt64LE(enabled ? 1n : 0n, activePortfolioGeometry().matcherConfigOff + 96);
+  return d;
+}
+
 /**
  * An otherwise-ZERO v2.2 market (one slot, 4,059 B) that keeps only what makes it a market the decoders accept: the wrapper header
  * (magic, VERSION 19, kind 1) and the group config up to the vault field (slot capacity). Callers write the fields they test through
@@ -98,4 +109,65 @@ export function pinV22(): void {
     __setDevnetV22ForTest(null);
     __setUnknownLotExpForTest(null);
   });
+}
+
+// ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+// MODE-AWARE builders. A test converted to these runs the SAME assertions in every mode: flag OFF keeps exercising the v2.1
+// (VERSION 18) bytes that the live v2 playground still uses; the flag ON (v2.2) modes exercise captured / layout-true VERSION-19
+// bytes. Nothing here pins the flag: the mode comes from the environment, exactly as in production.
+// ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** Bytes by which every portfolio field AFTER the legs moved from v2.1 to v2.2 (0 when the flag is off). */
+export const afterLegsShift = (): number => (isDevnetV22Enabled() ? V22_AFTER_LEGS_SHIFT : 0);
+
+/** The portfolio geometry of the ACTIVE layout (v2.1 flag off, v2.2 flag on). */
+export const activePortfolioGeometry = () => activeLayout().portfolio;
+
+/** An otherwise-zero portfolio of the ACTIVE layout: header (magic, VERSION, kind 2) and, on v2.2, the provenance header. */
+export function blankPortfolio(): Buffer {
+  if (isDevnetV22Enabled()) return v22BlankPortfolio();
+  const d = Buffer.alloc(LAYOUT_V21.portfolio.accountLen);
+  d.writeBigUInt64LE(LAYOUT_V21_MAGIC, 0);
+  d.writeUInt16LE(LAYOUT_V21.version, 8);
+  d[10] = 2;
+  return d;
+}
+
+/** An otherwise-zero market of the ACTIVE layout: header (magic, VERSION, kind 1) and, on v2.2, the group config. */
+export function blankMarket(): Uint8Array {
+  if (isDevnetV22Enabled()) return v22BlankMarket();
+  const d = new Uint8Array(LAYOUT_V21.marketGroupOff + LAYOUT_V21.marketGroupLen);
+  const v = new DataView(d.buffer);
+  v.setBigUint64(0, LAYOUT_V21_MAGIC, true);
+  v.setUint16(8, LAYOUT_V21.version, true);
+  d[10] = 1;
+  return d;
+}
+
+/**
+ * The captured one-slot market + flat trader portfolio of the ACTIVE mode: v2.2 captured bytes with the flag on; with the flag off the
+ * v2.1 ANSEM market and DAC2a44p portfolio the v2.1 tests have always used.
+ */
+export function modeFixtures(): { market: Uint8Array; portfolioBase: Buffer; owner: PublicKey; slab: PublicKey; program: PublicKey } {
+  if (isDevnetV22Enabled()) return { market: v22MarketBytes(), portfolioBase: v22PortfolioBase(), owner: V22_OWNER, slab: V22_SLAB, program: V22_PROGRAM };
+  const b64 = (f: string) => Buffer.from(JSON.parse(readFileSync(join(FX, f), "utf8")).dataBase64, "base64");
+  const base = b64("DAC2a44p.portfolio.json");
+  return {
+    market: new Uint8Array(b64("5bVTTMRc.ansem.market.json")),
+    portfolioBase: base,
+    owner: new PublicKey(base.subarray(116, 148)),
+    slab: new PublicKey(base.subarray(16, 48)), // the market this portfolio belongs to
+    program: new PublicKey("GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ"),
+  };
+}
+
+/** `v22Portfolio` on the ACTIVE mode's fixtures (leg offsets 356 / 369 / 370 are the same on v2.1 and v2.2). */
+export function modePortfolio(fx: ReturnType<typeof modeFixtures>, o: { side: 0 | 1; basis: bigint; active?: boolean; owner?: PublicKey; market?: PublicKey }): Buffer {
+  const d = Buffer.from(fx.portfolioBase);
+  (o.market ?? fx.slab).toBuffer().copy(d, 16);
+  if (o.owner) o.owner.toBuffer().copy(d, 116);
+  d[V22_LEG_ACTIVE] = o.active === false ? 0 : 1;
+  d[V22_LEG_SIDE] = o.side;
+  d.writeBigUInt64LE(o.basis, V22_LEG_BASIS);
+  return d;
 }

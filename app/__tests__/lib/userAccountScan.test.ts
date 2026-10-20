@@ -47,7 +47,7 @@ import {
   subscribeHeldNftScan,
   isLpPortfolio,
 } from "@/lib/userAccountScan";
-import { v22MatcherPortfolio } from "../helpers/v22-fixtures";
+import { matcherPortfolio } from "../helpers/v22-fixtures";
 import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import { __setUnknownLotExpForTest } from "@/lib/v22/lot-registry";
 
@@ -73,7 +73,6 @@ let portfolioPubkey: PublicKey;
 let nftProgramId: PublicKey;
 
 beforeEach(() => {
-    __setDevnetV22ForTest(true);
     __setUnknownLotExpForTest(0);
   programId = uniquePubkey();
   wallet = uniquePubkey();
@@ -395,9 +394,9 @@ describe("userAccountScan — isLpPortfolio (GH bug: market creator's LP mistake
    *  offset — mirrors useTrade.v17-portfolio-selection.test.ts's
    *  createLpPortfolioData helper, trimmed to just what isLpPortfolio reads. */
   // F-3: a real portfolio carries the wrapper header (magic, VERSION, kind byte [10] = 2) and the exact length of its own VERSION.
-  // v2.2: a captured 10,603 B VERSION-19 portfolio with the matcher control word patched (helpers/v22-fixtures.ts).
+  // Flag off: the 9,563 B v2.1 shape; flag on: a captured 10,603 B VERSION-19 portfolio. Either way the matcher control word is patched (helpers/v22-fixtures.ts).
   function makePortfolioBuffer(enabled: boolean): Buffer {
-    return v22MatcherPortfolio(enabled);
+    return matcherPortfolio(enabled);
   }
 
   it("returns true when the trailing PortfolioMatcherConfigV16.enabled == 1", () => {

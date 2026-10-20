@@ -1,13 +1,13 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicKey } from "@solana/web3.js";
-import { v22MarketBytes } from "../helpers/v22-fixtures";
+import { modeFixtures } from "../helpers/v22-fixtures";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 // M-3: a v17/v18 close reads the market fresh for the ADL-effective quantity (real v18 bytes).
-// Captured v2.2 (VERSION 19) one-slot market, not the v2.1 ANSEM bytes (helpers/v22-fixtures.ts).
-const MARKET_BYTES = Buffer.from(v22MarketBytes());
+// Captured market of the ACTIVE mode: the v2.1 ANSEM bytes flag off, the v2.2 (VERSION 19) one-slot market flag on (helpers/v22-fixtures.ts).
+const MARKET_BYTES = Buffer.from(modeFixtures().market);
 
 const mocks = vi.hoisted(() => ({
   trade: vi.fn(),
@@ -96,7 +96,6 @@ import { useTrade } from "@/hooks/useTrade";
 import { useUserAccount } from "@/hooks/useUserAccount";
 import { useSlabState } from "@/components/providers/SlabProvider";
 import { useClosePosition } from "@/hooks/useClosePosition";
-import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import { __setUnknownLotExpForTest } from "@/lib/v22/lot-registry";
 
 describe("useClosePosition — a FULL close moves the freed USDC back to the wallet (Squid 2026-10-01)", () => {
@@ -108,7 +107,6 @@ describe("useClosePosition — a FULL close moves the freed USDC back to the wal
 
   beforeEach(() => {
     vi.clearAllMocks();
-    __setDevnetV22ForTest(true);
     __setUnknownLotExpForTest(0);
     mocks.takeFillResult.mockReturnValue(undefined); // a full fill unless a test says otherwise
     closed = false;

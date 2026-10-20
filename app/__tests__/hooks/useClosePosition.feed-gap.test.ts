@@ -121,7 +121,6 @@ import { V17_PORTFOLIO_IDENTITY_TRAILER_LEN } from "@percolatorct/sdk";
 import * as C from "@/lib/limits/constants";
 import { CLOSE_PRICE_UNREADABLE } from "@/lib/close-limit";
 import { useClosePosition } from "@/hooks/useClosePosition";
-import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import { __setUnknownLotExpForTest } from "@/lib/v22/lot-registry";
 
 const key = (n: number) => new PublicKey(new Uint8Array(32).fill(n));
@@ -224,7 +223,6 @@ const FEED_17_LOW = 830_000n; // site feed 17% below (KARDASHEV, live)
 describe("closing while the feed is 17% off the chain", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    __setDevnetV22ForTest(true);
     __setUnknownLotExpForTest(0);
     mocks.isV17Account.mockReturnValue(true);
     mocks.deriveMatcherDelegate.mockReturnValue([key(48), 254]);
