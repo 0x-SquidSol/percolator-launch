@@ -208,3 +208,18 @@ export function marketWithAssetAdmin(admin: PublicKey): Uint8Array {
   d.set(admin.toBytes(), slot0 + 368);
   return d;
 }
+
+/**
+ * A market-account image of exactly `len` bytes for the ACTIVE mode's wrapper header: magic + VERSION (18 / 19) + kind 1 and, on v2.2, the group
+ * config of the captured market, so the VERSION-keyed readers accept the header. Used where a test varies only the account LENGTH (resume paths).
+ */
+export function marketImageOfLen(len: number): Buffer {
+  const d = Buffer.alloc(len);
+  const head = Buffer.from(blankMarket(1)).subarray(0, len);
+  head.copy(d, 0);
+  if (!isDevnetV22Enabled()) {
+    d.writeBigUInt64LE(LAYOUT_V21_MAGIC, 0);
+    d.writeUInt16LE(LAYOUT_V21.version, 8);
+  }
+  return d;
+}
