@@ -44,6 +44,9 @@ vi.mock("@/hooks/useEngineFreshness", () => ({ useEngineFreshness: () => ({ engi
 
 import { LiquidationAlert } from "@/components/layout/LiquidationAlert";
 import { AtRiskBanner } from "@/components/portfolio/AtRiskBanner";
+import { seedLotExp0 } from "../../helpers/v22-fixtures";
+
+seedLotExp0();
 
 const pk = new PublicKey("11111111111111111111111111111111");
 const E6 = 1_000_000n;

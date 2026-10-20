@@ -23,8 +23,8 @@ import {
 } from "@percolatorct/sdk";
 import {
   LAUNCH_ASSET_SLOTS,
-  V17_MAX_PORTFOLIO_ASSETS,
   assetSlotsForSlabLen,
+  maxPortfolioAssets,
   buildV17InitMarketArgs,
   initialAssetGenerationFrontier,
   marketAssetSlotsFor,
@@ -38,7 +38,11 @@ import { computeCreateMarketSolCost } from "@/components/create/CostEstimate";
 import { ONE_SLOT_LEN, marketLen } from "../helpers/v22-account-lens";
 
 const ONE = ONE_SLOT_LEN();
-const FOURTEEN = v17MarketAccountLen(14); // the v2.1 14-slot length; v2.2 caps maxPortfolioAssets at 4, so the 14-slot tests are quarantined flag-on
+const FOURTEEN = v17MarketAccountLen(14); // the v2.1 14-slot length (33,900 B)
+// The largest market the ACTIVE program creates: 14 slots on v2.1; the v2.2 wrapper caps maxPortfolioAssets at 4 (WRAPPER_MAX_PORTFOLIO_ASSETS; InitMarket
+// with 5 is refused 14 on devnet, lib/v22/trade-refusal-9-copy.ts), so a 14-slot v2.2 market cannot exist and these tests use the cap instead.
+const MANY_N = maxPortfolioAssets();
+const MANY = marketLen(MANY_N);
 /** getMinimumBalanceForRentExemption on devnet and mainnet: (bytes + 128) x 5080 lamports. */
 const rent = (bytes: number) => (bytes + 128) * 5080;
 
@@ -83,24 +87,26 @@ describe("what a legacy launch builds", () => {
   it("NEGATIVE CONTROL: a mismatched pair (14-slot account, 1-slot InitMarket) is detectable, never produced", () => {
     const args = buildV17InitMarketArgs({ initialPriceE6: 1n, tradingFeeBps: 30 }, deriveMarketParams(5, 1_000_000_000n, 1_000_000n));
     expect(args.maxPortfolioAssets).toBe(1);
-    expect(marketLen(args.maxPortfolioAssets)).not.toBe(FOURTEEN);
+    expect(marketLen(args.maxPortfolioAssets)).not.toBe(MANY);
     // And the builders cannot be handed a slab size separately any more: size derives from the slot count.
-    expect(slabSizeFor({ assetSlots: 14 })).toBe(FOURTEEN);
-    expect(buildV17InitMarketArgs({ initialPriceE6: 1n, tradingFeeBps: 30, assetSlots: 14 }, deriveMarketParams(5, 1_000_000_000n, 1_000_000n)).maxPortfolioAssets).toBe(14);
+    expect(slabSizeFor({ assetSlots: MANY_N })).toBe(MANY);
+    expect(buildV17InitMarketArgs({ initialPriceE6: 1n, tradingFeeBps: 30, assetSlots: MANY_N }, deriveMarketParams(5, 1_000_000_000n, 1_000_000n)).maxPortfolioAssets).toBe(MANY_N);
+    // The program cap is enforced: one slot over it is refused, never built.
+    expect(() => buildV17InitMarketArgs({ initialPriceE6: 1n, tradingFeeBps: 30, assetSlots: MANY_N + 1 }, deriveMarketParams(5, 1_000_000_000n, 1_000_000n))).toThrow(/exceeds the program cap/);
   });
 });
 
 describe("a market that already exists keeps the slot count it was created with", () => {
   it("the capacity is read off the account length, exactly", () => {
-    for (let n = 1; n <= V17_MAX_PORTFOLIO_ASSETS; n++) expect(assetSlotsForSlabLen(marketLen(n))).toBe(n);
-    for (const bad of [0, 3_674, 3_676, 33_899, 33_901, 65_352, 96_784]) expect(assetSlotsForSlabLen(bad)).toBeNull();
+    for (let n = 1; n <= MANY_N; n++) expect(assetSlotsForSlabLen(marketLen(n))).toBe(n);
+    for (const bad of [0, ONE - 1, ONE + 1, MANY - 1, MANY + 1, 2 * MANY, 3 * MANY, marketLen(MANY_N + 1)]) expect(assetSlotsForSlabLen(bad)).toBeNull();
   });
 
-  it("an in-flight pre-change launch (14 slots) resumes with 14: size, InitMarket and the matcher frontier follow", () => {
-    const params = { assetSlots: assetSlotsForSlabLen(FOURTEEN)! };
-    expect(marketAssetSlotsFor(params)).toBe(14);
-    expect(slabSizeFor(params)).toBe(FOURTEEN);
-    expect(initialAssetGenerationFrontier(marketAssetSlotsFor(params))).toBe(15n);
+  it("an in-flight pre-change launch (the largest market, 14 slots on v2.1) resumes with its slot count: size, InitMarket and the matcher frontier follow", () => {
+    const params = { assetSlots: assetSlotsForSlabLen(MANY)! };
+    expect(marketAssetSlotsFor(params)).toBe(MANY_N);
+    expect(slabSizeFor(params)).toBe(MANY);
+    expect(initialAssetGenerationFrontier(marketAssetSlotsFor(params))).toBe(BigInt(MANY_N) + 1n);
   });
 
   it("a vault-LP market is one slot whatever it is told", () => {

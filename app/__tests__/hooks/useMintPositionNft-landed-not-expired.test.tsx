@@ -41,10 +41,13 @@ vi.mock("@/hooks/useToast", () => ({ useToast: () => ({ toast }) }));
 vi.mock("@/lib/programAllowlist", () => ({ assertKnownProgram: () => undefined }));
 // Targeting is covered by useMintPositionNft-row-target.test; here the row's account always verifies.
 vi.mock("@/lib/portfolio-target", async (orig) => ({ ...(await orig<object>()), verifyPortfolioTarget: () => Buffer.alloc(16) }));
+// The hook reads the market and the portfolio through lib/v22/layout (flag off it delegates to the SDK parsers, flag on it checks the VERSION).
+const PARSED = () => ({ owner: OWNER, legs: [{ active: true, marketId: 0n }] });
+vi.mock("@/lib/v22/layout", async (orig) => ({ ...(await orig<object>()), isWrapperAccount: () => true, parsePortfolio: () => PARSED() }));
 vi.mock("@percolatorct/sdk", async (orig) => ({
   ...(await orig<object>()),
   isV17Account: () => true,
-  parsePortfolioV17: () => ({ owner: OWNER, legs: [{ active: true, marketId: 0n }] }),
+  parsePortfolioV17: () => PARSED(),
   deriveNftPda: PDA,
   deriveMintAuthority: PDA,
   deriveExtraAccountMetas: PDA,

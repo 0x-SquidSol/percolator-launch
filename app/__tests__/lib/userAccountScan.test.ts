@@ -22,6 +22,10 @@ const mocks = vi.hoisted(() => ({
   parsePortfolioV17: vi.fn(),
 }));
 
+vi.mock("@/lib/v22/layout", async (orig) => ({
+  ...(await orig<typeof import("@/lib/v22/layout")>()),
+  parsePortfolio: mocks.parsePortfolioV17,
+}));
 vi.mock("@percolatorct/sdk", async () => {
   const actual = await vi.importActual<typeof import("@percolatorct/sdk")>("@percolatorct/sdk");
   return {
@@ -43,6 +47,9 @@ import {
   subscribeHeldNftScan,
   isLpPortfolio,
 } from "@/lib/userAccountScan";
+import { matcherPortfolio } from "../helpers/v22-fixtures";
+import { __setDevnetV22ForTest } from "@/lib/v22/flag";
+import { __setUnknownLotExpForTest } from "@/lib/v22/lot-registry";
 
 // The scan store is module-level (Map keyed by program/slab/wallet), so its
 // cache persists across tests in this file. Every test below regenerates a
@@ -66,6 +73,7 @@ let portfolioPubkey: PublicKey;
 let nftProgramId: PublicKey;
 
 beforeEach(() => {
+    __setUnknownLotExpForTest(0);
   programId = uniquePubkey();
   wallet = uniquePubkey();
   slabAddress = uniquePubkey().toBase58();
@@ -385,13 +393,10 @@ describe("userAccountScan — isLpPortfolio (GH bug: market creator's LP mistake
    *  PortfolioMatcherConfigV16 has `enabled` set (or not) at the correct
    *  offset — mirrors useTrade.v17-portfolio-selection.test.ts's
    *  createLpPortfolioData helper, trimmed to just what isLpPortfolio reads. */
-  // F-3: a real portfolio is V17_PORTFOLIO_ACCOUNT_LEN bytes with header kind byte [10] = 2.
-  function makePortfolioBuffer(enabled: boolean, totalLen = 9563): Buffer {
-    const buf = Buffer.alloc(totalLen);
-    buf[10] = 2;
-    const matcherConfigOffset = buf.length - 104 - 24; // v18: 24-byte identity trailer
-    buf.writeBigUInt64LE(enabled ? 1n : 0n, matcherConfigOffset + 96);
-    return buf;
+  // F-3: a real portfolio carries the wrapper header (magic, VERSION, kind byte [10] = 2) and the exact length of its own VERSION.
+  // Flag off: the 9,563 B v2.1 shape; flag on: a captured 10,603 B VERSION-19 portfolio. Either way the matcher control word is patched (helpers/v22-fixtures.ts).
+  function makePortfolioBuffer(enabled: boolean): Buffer {
+    return matcherPortfolio(enabled);
   }
 
   it("returns true when the trailing PortfolioMatcherConfigV16.enabled == 1", () => {

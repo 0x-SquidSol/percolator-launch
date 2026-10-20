@@ -68,7 +68,9 @@ vi.mock("@/lib/priceStore/priceStore", async (orig) => ({
 vi.mock("@/lib/mock-trade-data", () => ({ isMockSlab: () => false, getMockUserAccountIdle: () => null, getMockUserAccount: () => null }));
 vi.mock("@/lib/tx", () => ({ prewarmTxLanding: vi.fn() }));
 vi.mock("@/lib/limits/adl-reduce-only", () => ({ isAdlReduceOnly: () => mocks.adl }));
-vi.mock("@/lib/limits/decode", async (orig) => ({ ...(await orig<object>()), decodeMarketEngineView: () => ({}) }));
+// A decoded engine view always carries effectivePriceE6, the OI and the ADL factors (the V21 close-only state reads them): use the shared
+// real-shaped fixture instead of an empty object.
+vi.mock("@/lib/limits/decode", async (orig) => ({ ...(await orig<object>()), decodeMarketEngineView: () => marketLimits().engine }));
 vi.mock("@/hooks/useMarketLimits", () => ({ useMarketLimits: () => mocks.limits }));
 vi.mock("@/lib/position-change", async (orig) => ({ ...(await orig<object>()), takePositionChange: async () => mocks.change }));
 vi.mock("@/lib/limits/fill-check", () => ({ takeFillResult: () => mocks.fill }));

@@ -54,6 +54,11 @@ vi.mock("@/hooks/useUserAccount", () => ({
 vi.mock("@/lib/mock-mode", () => ({ isMockMode: () => false }));
 vi.mock("@/lib/mock-trade-data", () => ({ isMockSlab: () => false }));
 
+vi.mock("@/lib/v22/layout", async (orig) => ({
+  ...(await orig<typeof import("@/lib/v22/layout")>()),
+  isWrapperAccount: mocks.isV17Account,
+  parsePortfolio: mocks.parsePortfolioV17,
+}));
 vi.mock("@percolatorct/sdk", async () => {
   const actual = await vi.importActual<typeof import("@percolatorct/sdk")>("@percolatorct/sdk");
   return {
@@ -87,6 +92,8 @@ vi.mock("@/lib/v22/layout", async () => {
 });
 
 import { usePositionNft } from "@/hooks/usePositionNft";
+import { __setDevnetV22ForTest } from "@/lib/v22/flag";
+import { __setUnknownLotExpForTest } from "@/lib/v22/lot-registry";
 
 // Real, random Keypair-derived pubkeys (not structured fill()-style bytes) —
 // PDA derivation (deriveNftPdaV17, exercised for real in this file) needs an
@@ -128,6 +135,7 @@ describe("usePositionNft — v17 shared scan + batching", () => {
   };
 
   beforeEach(() => {
+    __setUnknownLotExpForTest(0);
     vi.clearAllMocks();
     wallet = uniquePubkey();
     programId = uniquePubkey();

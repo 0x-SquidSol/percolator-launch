@@ -30,6 +30,11 @@ vi.mock("@/components/providers/SlabProvider", () => ({
   useSlabState: mocks.useSlabState,
 }));
 
+vi.mock("@/lib/v22/layout", async (orig) => ({
+  ...(await orig<typeof import("@/lib/v22/layout")>()),
+  isWrapperAccount: mocks.isV17Account,
+  parsePortfolio: mocks.parsePortfolioV17,
+}));
 vi.mock("@percolatorct/sdk", async () => {
   const actual = await vi.importActual<typeof import("@percolatorct/sdk")>("@percolatorct/sdk");
   return {
@@ -51,6 +56,8 @@ vi.mock("@/lib/v22/sdk/nft-v3", async () => {
 });
 
 import { useNftWrappedPosition } from "@/hooks/useNftWrappedPosition";
+import { __setDevnetV22ForTest } from "@/lib/v22/flag";
+import { __setUnknownLotExpForTest } from "@/lib/v22/lot-registry";
 
 
 /** The held-NFT scan runs once per layout (239 = v3, 199 = legacy v2); these fixtures are legacy 199 B records. */
@@ -95,6 +102,7 @@ describe("useNftWrappedPosition — v17 shared scan + batching", () => {
   };
 
   beforeEach(() => {
+    __setUnknownLotExpForTest(0);
     vi.clearAllMocks();
     wallet = uniquePubkey();
     slabAddress = uniquePubkey().toBase58();

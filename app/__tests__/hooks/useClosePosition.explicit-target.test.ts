@@ -13,31 +13,18 @@
  */
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { Keypair, PublicKey } from "@solana/web3.js";
+import { modeFixtures, modePortfolio } from "../helpers/v22-fixtures";
+import { __setUnknownLotExpForTest } from "@/lib/v22/lot-registry";
 
-const FX = join(__dirname, "..", "fixtures");
-const b64 = (f: string) => Buffer.from(JSON.parse(readFileSync(join(FX, f), "utf8")).dataBase64, "base64");
-const MARKET = new Uint8Array(b64("5bVTTMRc.ansem.market.json"));
-const BASE = b64("DAC2a44p.portfolio.json");
-const OWNER = new PublicKey(BASE.subarray(116, 148));
-const SLAB = new PublicKey(BASE.subarray(16, 48)); // the market this portfolio belongs to
-const PROGRAM = new PublicKey("GnwdeQrAh4qzChJeVLrM21CXXWC1akjLH3DiijwzEEYZ");
-
-/** Fixture byte offsets of the first leg (probed against parsePortfolioV17). */
-const LEG_ACTIVE = 356;
-const LEG_SIDE = 369;
-const LEG_BASIS = 370;
-function portfolio(o: { side: 0 | 1; basis: bigint; active?: boolean; owner?: PublicKey; market?: PublicKey }): Buffer {
-  const d = Buffer.from(BASE);
-  d[LEG_ACTIVE] = o.active === false ? 0 : 1;
-  d[LEG_SIDE] = o.side;
-  d.writeBigUInt64LE(o.basis, LEG_BASIS);
-  if (o.owner) o.owner.toBuffer().copy(d, 116);
-  if (o.market) o.market.toBuffer().copy(d, 16);
-  return d;
-}
+// Captured bytes of the ACTIVE mode (helpers/v22-fixtures.ts): flag off = the v2.1 ANSEM market and DAC2a44p portfolio, flag on = the captured
+// v2.2 (VERSION 19) one-slot SOL market and a flat 10,603 B portfolio. The leg offsets patched below (356 / 369 / 370) are the same in both.
+const FXM = modeFixtures();
+const MARKET = FXM.market;
+const OWNER = FXM.owner;
+const SLAB = FXM.slab;
+const PROGRAM = FXM.program;
+const portfolio = (o: Parameters<typeof modePortfolio>[1]) => modePortfolio(FXM, o);
 
 // Deterministic, ordered pubkeys: SHORT_PK < LONG_PK < FLAT_PK in base58 order.
 const sortedKeys = Array.from({ length: 3 }, (_, i) => Keypair.fromSeed(new Uint8Array(32).fill(i + 1)).publicKey)
@@ -162,6 +149,9 @@ vi.mock("@/lib/trade-ix", async (orig) => {
 
 import { useClosePosition } from "@/hooks/useClosePosition";
 import { TARGET_COPY } from "@/lib/portfolio-target";
+import { seedLotExp0 } from "../helpers/v22-fixtures";
+
+seedLotExp0();
 
 function seed(accts: Record<string, { data: Buffer; owner?: PublicKey }>) {
   chain.clear();
@@ -194,6 +184,7 @@ const tradeKeysOfLastSend = () => {
 };
 
 beforeEach(() => {
+  __setUnknownLotExpForTest(0);
   sent.length = 0;
   tradeIxParams.length = 0;
   mocks.withdraw.mockReset();

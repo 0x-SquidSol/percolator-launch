@@ -26,6 +26,11 @@ vi.mock('@/lib/config', () => ({
   getNetwork: mocks.getNetwork,
 }));
 vi.mock('@/lib/v17-engine-config', () => ({ parseV17RiskParams: mocks.parseV17RiskParams }));
+vi.mock("@/lib/v22/layout", async (orig) => ({
+  ...(await orig<typeof import("@/lib/v22/layout")>()),
+  isWrapperAccount: mocks.isV17Account,
+  parsePortfolio: mocks.parsePortfolioV17,
+}));
 vi.mock('@percolatorct/sdk', async () => {
   const actual = await vi.importActual<typeof import('@percolatorct/sdk')>('@percolatorct/sdk');
   return {
@@ -49,6 +54,8 @@ vi.mock('@/lib/v22/sdk/nft-v3', async () => {
 
 import { fetchPortfolioSnapshot, positionRowKeys, type PortfolioPosition } from '@/hooks/usePortfolio';
 import { PERCOLATOR_NFT_PROGRAM_ID } from '@/lib/nft-program';
+import { __setDevnetV22ForTest } from "@/lib/v22/flag";
+import { __setUnknownLotExpForTest } from "@/lib/v22/lot-registry";
 
 let b = 101;
 const pk = () => new PublicKey(new Uint8Array(32).fill(b++));
@@ -108,6 +115,7 @@ function scenario(wrappedCount: 1 | 2) {
 
 describe('usePortfolio: wrapped position on a market where the wallet also owns a portfolio', () => {
   beforeEach(() => {
+    __setUnknownLotExpForTest(0);
     vi.clearAllMocks();
     mocks.getNetwork.mockReturnValue('devnet');
     mocks.isV17Account.mockReturnValue(true);

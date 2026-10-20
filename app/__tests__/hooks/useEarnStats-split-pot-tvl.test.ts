@@ -25,8 +25,10 @@ vi.mock("@/lib/program-upgrade-detect", () => ({
   earnNavFloorLive: async () => (await mocks.upgrade()) === "post",
 }));
 vi.mock("@/lib/rpc-chunk", () => ({ getMultipleAccountsInfoChunked: mocks.chunked }));
-vi.mock("@percolatorct/sdk", async (orig) => ({
-  ...(await orig<typeof import("@percolatorct/sdk")>()),
+// useEarnStats decodes the registry through lib/v22/records (flag off it delegates to the SDK parseLpVaultRegistry, flag on it is the VERSION-keyed port):
+// stub that seam, so the fixtures mean the same thing in every mode.
+vi.mock("@/lib/v22/records", async (orig) => ({
+  ...(await orig<typeof import("@/lib/v22/records")>()),
   parseLpVaultRegistry: () => {
     if (sdk.parseThrows) throw new Error("layout");
     return { totalLpSharesOutstanding: 2_000_000_000n, feeDistributionTotalAtoms: 350_000n, redemptionCooldownSlots: 150n };

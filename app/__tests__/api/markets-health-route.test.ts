@@ -10,6 +10,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PublicKey } from "@solana/web3.js";
 import { DEVNET_PROGRAM_IDS } from "@/lib/program-ids";
+import { MARKET_HEALTH_SLICE_LEN } from "@/lib/market-health";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
+import { v22LapsedMarket, v22MarketBytes } from "../helpers/v22-fixtures";
 
 const WRAPPER = DEVNET_PROGRAM_IDS.wrapper;
 const MURPHY = "7h3wNxjzPo6pTfWQ7uiTjDSsprGEeMNh696efmYrpAX2";
@@ -28,7 +31,12 @@ vi.mock("@/lib/get-client-ip", () => ({ getClientIp: () => `10.0.0.${m.ipCounter
 import { GET } from "../../app/api/markets/health/route";
 
 const req = (qs: string) => new NextRequest(`http://localhost/api/markets/health?${qs}`);
-const acct = (data: Buffer, owner = WRAPPER) => ({ data: data.subarray(0, 3675), owner: new PublicKey(owner), lamports: 1, executable: false });
+// The route asks for the first MARKET_HEALTH_SLICE_LEN bytes (header + asset slot 0): 3,675 flag off, 4,059 flag on (one v2.2 slot).
+const acct = (data: Buffer, owner = WRAPPER) => ({ data: data.subarray(0, MARKET_HEALTH_SLICE_LEN), owner: new PublicKey(owner), lamports: 1, executable: false });
+// Market bytes of the ACTIVE mode: the live v18 captures flag off; flag on, the captured v2.2 market (healthy) and the same market with its backing
+// buckets lapsed (the self-heal "repairable" state Murphy showed on v18).
+const market = (name: "murphy-market-v18-lapsed" | "pengu-market-v18-healthy"): Buffer =>
+  isDevnetV22Enabled() ? Buffer.from(name === "murphy-market-v18-lapsed" ? v22LapsedMarket() : v22MarketBytes()) : fixture(name);
 
 describe("/api/markets/health", () => {
   beforeEach(() => {
@@ -40,7 +48,7 @@ describe("/api/markets/health", () => {
     const sorted = [MURPHY, PENGU].sort();
     m.getMultipleAccountsInfoAndContext.mockResolvedValue({
       context: { slot: 505580400 },
-      value: sorted.map((s) => acct(fixture(s === MURPHY ? "murphy-market-v18-lapsed" : "pengu-market-v18-healthy"))),
+      value: sorted.map((s) => acct(market(s === MURPHY ? "murphy-market-v18-lapsed" : "pengu-market-v18-healthy"))),
     });
     const res = await GET(req(`slabs=${sorted.join(",")}`));
     expect(res.status).toBe(200);
@@ -50,14 +58,15 @@ describe("/api/markets/health", () => {
     expect(body.markets[MURPHY].lockReasons).toContain("repairable");
     expect(body.markets[MURPHY].badges[0].id).toBe("lp-depleted");
     expect(body.markets[PENGU].lpDepleted).toBe(false);
-    // dataSlice requested, not the full 45 KB account
-    expect(m.getMultipleAccountsInfoAndContext.mock.calls[0][1]).toMatchObject({ dataSlice: { offset: 0, length: 3675 } });
+    expect(body.markets[PENGU].lockReasons).not.toContain("repairable"); // control: only the lapsed market is repairable
+    // dataSlice requested, not the full account
+    expect(m.getMultipleAccountsInfoAndContext.mock.calls[0][1]).toMatchObject({ dataSlice: { offset: 0, length: MARKET_HEALTH_SLICE_LEN } });
   });
 
   it("NEGATIVE CONTROL: an account not owned by the wrapper is null, never decoded", async () => {
     m.getMultipleAccountsInfoAndContext.mockResolvedValue({
       context: { slot: 1 },
-      value: [acct(fixture("murphy-market-v18-lapsed"), "11111111111111111111111111111111")],
+      value: [acct(market("murphy-market-v18-lapsed"), "11111111111111111111111111111111")],
     });
     const res = await GET(req(`slabs=${MURPHY}`));
     expect((await res.json()).markets[MURPHY]).toBeNull();
