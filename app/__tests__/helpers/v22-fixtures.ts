@@ -195,3 +195,16 @@ export function v22LapsedMarket(): Uint8Array {
   }
   return d;
 }
+
+/**
+ * A market of the ACTIVE mode whose asset 0 `asset_admin` is `admin`. asset_admin sits at the asset's wrapper-slot prefix + 368
+ * (AssetOracleProfileV16.asset_admin, v22-rust-layout-aca02ba6.json), in both layouts. Flag off: a zero buffer long enough to hold it (the v2.1
+ * reader never looked at more); flag on: an otherwise-zero VERSION-19 one-slot market, because the VERSION-keyed reader needs a real header and
+ * `assetProfileOff` refuses to guess the layout without the bytes.
+ */
+export function marketWithAssetAdmin(admin: PublicKey): Uint8Array {
+  const slot0 = isDevnetV22Enabled() ? LAYOUT_V22.marketGroupOff + LAYOUT_V22.marketGroupLen : LAYOUT_V21.marketGroupOff + LAYOUT_V21.marketGroupLen;
+  const d = isDevnetV22Enabled() ? v22BlankMarket(1) : new Uint8Array(slot0 + 368 + 4096);
+  d.set(admin.toBytes(), slot0 + 368);
+  return d;
+}
