@@ -96,6 +96,11 @@ vi.mock("@/lib/priceStore/priceStore", () => ({
   getLivePriceSnapshot: mocks.getLivePriceSnapshot,
 }));
 
+vi.mock("@/lib/v22/layout", async (orig) => ({
+  ...(await orig<typeof import("@/lib/v22/layout")>()),
+  isWrapperAccount: mocks.isV17Account,
+  parsePortfolio: mocks.parsePortfolioV17,
+}));
 vi.mock("@percolatorct/sdk", async () => {
   const actual =
     await vi.importActual<typeof import("@percolatorct/sdk")>(
@@ -111,6 +116,8 @@ vi.mock("@percolatorct/sdk", async () => {
 });
 
 import { useTrade } from "@/hooks/useTrade";
+import { __setUnknownLotExpForTest } from "@/lib/v22/lot-registry";
+import { activePortfolioGeometry, blankPortfolio } from "../helpers/v22-fixtures";
 
 describe("useTrade v17 portfolio selection", () => {
   const slabAddress = "11111111111111111111111111111111";
@@ -157,15 +164,14 @@ describe("useTrade v17 portfolio selection", () => {
   };
 
   function createLpPortfolioData(): Buffer {
-    // A real v18 portfolio: full length, header kind byte [10] = 2 (F-3), and the 104-byte
-    // PortfolioMatcherConfigV16 sits before the 24-byte identity trailer.
-    const data = Buffer.alloc(9563);
-    data[10] = 2;
+    // A real portfolio of the ACTIVE layout (9,563 B v18 flag off, 10,603 B v19 flag on): wrapper header with kind byte [10] = 2 (F-3), and the
+    // 104-byte PortfolioMatcherConfigV16 sits before the 24-byte identity trailer.
+    const data = blankPortfolio();
 
     // readPortfolioOwner() reads provenance owner at offset 80.
     lpOwner.toBuffer().copy(data, 80);
 
-    const matcherConfigOffset = data.length - 104 - 24;
+    const matcherConfigOffset = activePortfolioGeometry().matcherConfigOff;
 
     matcherProgram
       .toBuffer()
@@ -189,6 +195,7 @@ describe("useTrade v17 portfolio selection", () => {
   }
 
   beforeEach(() => {
+    __setUnknownLotExpForTest(0);
     vi.clearAllMocks();
 
     connection = {

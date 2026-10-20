@@ -7,6 +7,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PublicKey, type TransactionInstruction } from "@solana/web3.js";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { __setDevnetV21ForTest } from "@/lib/v21/flag";
 
 const mocks = vi.hoisted(() => ({
@@ -84,6 +85,11 @@ vi.mock("@/lib/priceStore/priceStore", () => ({
   getLivePriceSnapshot: mocks.getLivePriceSnapshot,
 }));
 
+vi.mock("@/lib/v22/layout", async (orig) => ({
+  ...(await orig<typeof import("@/lib/v22/layout")>()),
+  isWrapperAccount: mocks.isV17Account,
+  parsePortfolio: mocks.parsePortfolioV17,
+}));
 vi.mock("@percolatorct/sdk", async () => {
   const actual =
     await vi.importActual<typeof import("@percolatorct/sdk")>(
@@ -99,6 +105,7 @@ vi.mock("@percolatorct/sdk", async () => {
 });
 
 import { useTrade } from "@/hooks/useTrade";
+import { __setUnknownLotExpForTest } from "@/lib/v22/lot-registry";
 
 const programId = new PublicKey(new Uint8Array(32).fill(12));
 const walletPk = new PublicKey(new Uint8Array(32).fill(11));
@@ -116,6 +123,7 @@ describe("useTrade, Devnet v2.1: the order goes alone; Custom(121) is retried, n
   let slabAddress = "";
 
   beforeEach(() => {
+    __setUnknownLotExpForTest(0);
     vi.clearAllMocks();
     mocks.sendTxWaiting.mockReset();
     __setDevnetV21ForTest(true);
@@ -173,7 +181,9 @@ describe("useTrade, Devnet v2.1: the order goes alone; Custom(121) is retried, n
     unmount();
   });
 
-  it("Custom(121): 'Refreshing positions' on, the SAME single order resent, then off when it lands", async () => {
+  // v2.1 behaviour: with the v2.2 flag on, useTrade runs lib/v22/trade-refresh (peer refresh + multi-asset flow, getMultipleAccountsInfo) instead of
+  // resending the lone order; that path is covered by useTrade.v22-only-121.test.ts and lib/v22/trade-refresh.test.ts.
+  it.skipIf(isDevnetV22Enabled())("Custom(121): 'Refreshing positions' on, the SAME single order resent, then off when it lands", async () => {
     mocks.sendTxWaiting
       .mockRejectedValueOnce(wrapperRefusal(121))
       .mockRejectedValueOnce(wrapperRefusal(121))
@@ -212,7 +222,8 @@ describe("useTrade, Devnet v2.1: the order goes alone; Custom(121) is retried, n
     unmount();
   });
 
-  it("flag off: a 121 is not retried (the live wrapper never raises it)", async () => {
+  // Flag-off contract: it is only meaningful where the flag is off. With the v2.2 flag on, 121 IS handled (useTrade.v22-only-121.test.ts).
+  it.skipIf(isDevnetV22Enabled())("flag off: a 121 is not retried (the live wrapper never raises it)", async () => {
     __setDevnetV21ForTest(false);
     mocks.sendTxWaiting.mockRejectedValue(wrapperRefusal(121));
     const { result, unmount } = renderHook(() => useTrade(slabAddress));
