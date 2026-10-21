@@ -11,10 +11,11 @@ const h = vi.hoisted(() => ({
   linkTwitter: vi.fn(),
   unlink: vi.fn(),
   linkCallbacks: null as null | { onError?: (code: string) => void },
+  getAccessToken: vi.fn(async (): Promise<string | null> => "privy-token"),
 }));
 
 vi.mock("@privy-io/react-auth", () => ({
-  usePrivy: () => ({ user: h.user }),
+  usePrivy: () => ({ user: h.user, getAccessToken: h.getAccessToken }),
   useUnlinkOAuth: () => ({ unlink: h.unlink }),
   useLinkAccount: (cb: { onError?: (code: string) => void }) => {
     h.linkCallbacks = cb;
@@ -33,6 +34,7 @@ beforeEach(() => {
   h.user = { email: { address: "me@x.io" } };
   h.linkTwitter.mockReset();
   h.unlink.mockReset().mockResolvedValue({});
+  h.getAccessToken.mockReset().mockResolvedValue("privy-token");
   localStorage.clear();
 });
 afterEach(() => vi.unstubAllGlobals());
@@ -58,6 +60,23 @@ describe("AccountSecurityModal", () => {
     fireEvent.click(r.getByText("Copy link"));
     expect(writeText).toHaveBeenCalledWith("https://percolator.trade/r/PERC7Q");
     expect(await r.findByText("Copied")).toBeTruthy();
+  });
+
+  it("reads the code with the Privy access token (the route serves it only to the login the gate verified)", async () => {
+    fetchRef("PERC7Q");
+    open();
+    expect(await within(screen.getByTestId("account-referral")).findByText("PERC7Q")).toBeTruthy();
+    const f = fetch as unknown as ReturnType<typeof vi.fn>;
+    expect(f).toHaveBeenCalledWith("/api/playground/me", expect.objectContaining({ headers: { Authorization: "Bearer privy-token" } }));
+  });
+
+  it("no Privy access token: no read, links to the waitlist page", async () => {
+    h.getAccessToken.mockResolvedValue(null);
+    fetchRef("PERC7Q");
+    open();
+    const link = await within(screen.getByTestId("account-referral")).findByRole("link", { name: "waitlist page" });
+    expect(link.getAttribute("href")).toBe("https://percolator.trade/waitlist");
+    expect(fetch as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 
   it.each([

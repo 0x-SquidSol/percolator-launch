@@ -49,6 +49,7 @@ let privyState = {
   logout: mockLogout,
   login: mockLogin,
   exportWallet: mockExportWallet,
+  getAccessToken: async (): Promise<string | null> => null,
 };
 
 vi.mock("@privy-io/react-auth", () => ({
@@ -93,6 +94,7 @@ describe("ConnectButton", () => {
       logout: mockLogout,
       login: mockLogin,
       exportWallet: mockExportWallet,
+      getAccessToken: async (): Promise<string | null> => null,
     };
   });
 

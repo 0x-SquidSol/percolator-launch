@@ -31,7 +31,7 @@ interface AccountSecurityModalProps {
 }
 
 export const AccountSecurityModal: FC<AccountSecurityModalProps> = ({ onClose, walletAddress }) => {
-  const { user } = usePrivy();
+  const { user, getAccessToken } = usePrivy();
   const { unlink } = useUnlinkOAuth();
   const [xError, setXError] = useState<string | null>(null);
   const [xBusy, setXBusy] = useState(false);
@@ -47,8 +47,10 @@ export const AccountSecurityModal: FC<AccountSecurityModalProps> = ({ onClose, w
   const [refCode, setRefCode] = useState<string | null | undefined>(undefined);
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/playground/me", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
+    // /me serves the code only to the Privy login the gate verified, so the access token goes with the read.
+    getAccessToken()
+      .then((token) => (token ? fetch("/api/playground/me", { cache: "no-store", headers: { Authorization: `Bearer ${token}` } }) : null))
+      .then((r) => (r && r.ok ? r.json() : null))
       .then((j: { ref?: unknown } | null) => {
         if (!cancelled) setRefCode(typeof j?.ref === "string" && j.ref ? j.ref : null);
       })
