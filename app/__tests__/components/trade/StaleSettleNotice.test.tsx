@@ -408,6 +408,23 @@ describe("RESOLVED market, S1-6 a/c wait (SEC-RC I-S1)", () => {
     await waitFor(() => expect(screen.getByTestId("stale-settle-waiting")).toHaveTextContent(RESOLVED_CLOSE_WAIT_COPY));
   });
 
+  it("RC2 S1-6 a/c (4fe8fd53, the shipping variant) shows the waiting line", async () => {
+    deployed(s16acElf("rc2-s16ac-4fe8fd53"));
+    h.simErr = { InstructionError: [1, { Custom: 21 }] };
+    render(<StaleSettleNotice slabAddress={SLAB} hasFunds canAct />);
+    await click();
+    await waitFor(() => expect(screen.getByTestId("stale-settle-waiting")).toHaveTextContent(RESOLVED_CLOSE_WAIT_COPY));
+  });
+
+  it("NEGATIVE CONTROL: on plain RC2 (cc720a0e, no S1-6 a/c) the same 21 keeps today's line", async () => {
+    deployed(s16acElf("rc2-cc720a0e"));
+    h.simErr = { InstructionError: [1, { Custom: 21 }] };
+    render(<StaleSettleNotice slabAddress={SLAB} hasFunds canAct />);
+    await click();
+    await waitFor(() => expect(screen.getByTestId("stale-settle-done")).toHaveTextContent(STALE_SETTLE_COPY.settledPayoutSoon));
+    expect(screen.queryByTestId("stale-settle-waiting")).toBeNull();
+  });
+
   it("NEGATIVE CONTROL: on the RC (357fc23f, no S1-6 a/c) the same 21 keeps today's 'payout ready shortly' line", async () => {
     deployed(s16acElf("rc-357fc23f"));
     h.simErr = { InstructionError: [1, { Custom: 21 }] };

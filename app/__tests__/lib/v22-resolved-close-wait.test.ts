@@ -25,6 +25,11 @@ const ELF = {
   s16acRollback: elf("rollback-s16ac-bae71e12"),
   rc: elf("rc-357fc23f"),
   rcRollback: elf("rollback-fac4d19c"),
+  // RC2 (RC2.md §3): the build that will ship.
+  rc2s16ac: elf("rc2-s16ac-4fe8fd53"),
+  rc2s16acRollback: elf("rollback2-s16ac-b6aec357"),
+  rc2: elf("rc2-cc720a0e"),
+  rc2Rollback: elf("rollback2-8b57d488"),
 };
 const W = DEVNET_V22_PROGRAM_IDS.wrapper;
 const PD = new PublicKey("C6yjMetoTgaiUQLPYYJcYwyy7atrBFd7eNkpWbf89obG");
@@ -64,6 +69,14 @@ describe("I-S1 gate: classifyS16acElfPrefix", () => {
   it("NEGATIVE CONTROL: the RC and its rollback (engine 1c96c22f) are not", async () => {
     expect(await classifyS16acElfPrefix(W, ELF.rc)).toBe("other");
     expect(await classifyS16acElfPrefix(W, ELF.rcRollback)).toBe("other");
+  });
+  it("RC2 (the shipping build): rc2-s16ac 4fe8fd53 + rollback2-s16ac b6aec357 are S1-6 a/c", async () => {
+    expect(await classifyS16acElfPrefix(W, ELF.rc2s16ac)).toBe("s16ac");
+    expect(await classifyS16acElfPrefix(W, ELF.rc2s16acRollback)).toBe("s16ac");
+  });
+  it("NEGATIVE CONTROL: plain RC2 cc720a0e and rollback2 8b57d488 (engine 1c96c22f) are not", async () => {
+    expect(await classifyS16acElfPrefix(W, ELF.rc2)).toBe("other");
+    expect(await classifyS16acElfPrefix(W, ELF.rc2Rollback)).toBe("other");
   });
   it("another program id is never S1-6 a/c, even with the variant's bytes; short / zeroed bytes are unknown", async () => {
     expect(await classifyS16acElfPrefix(DEVNET_PROGRAM_IDS.wrapper, ELF.s16ac)).toBe("other");
