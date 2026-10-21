@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import type { EarnStats } from '@/hooks/useEarnStats';
 import { ShimmerSkeleton } from '@/components/ui/ShimmerSkeleton';
 import { FeeBreakdown } from "@/components/FeeBreakdown";
@@ -23,84 +24,91 @@ interface EarnHeaderProps {
 }
 
 export function EarnHeader({ stats, loading }: EarnHeaderProps) {
+  // The full fee split is reference material: one sentence says what Earn pays, and the split
+  // opens on request (UX: the page leads with what it does, the detail is a click away).
+  const [splitOpen, setSplitOpen] = useState(false);
   return (
     <div className="relative">
       {/* Background grid fade */}
       <div className="absolute inset-x-0 top-0 h-48 bg-grid pointer-events-none" />
 
-      <div className="relative mx-auto max-w-6xl px-4 pt-10 pb-6">
-        {/* Section tag */}
-        <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.25em] text-[var(--accent)]/60">
-          // earn
+      {/* Same width and gutters as the vault table below, so the header spans the page with it. */}
+      <div className="relative mx-auto max-w-[1400px] px-4 pt-10 pb-6 lg:px-6">
+        <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,40rem)] xl:items-end xl:gap-10">
+          <div className="min-w-0">
+            {/* Section tag */}
+            <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.25em] text-[var(--accent)]/60">
+              // earn
+            </div>
+
+            {/* Title */}
+            <h1
+              className="text-2xl font-medium tracking-[-0.01em] text-[var(--text)]"
+              style={{ fontFamily: 'var(--font-display)' }}
+            >
+              Earn from{" "}
+              {/* Same gradient as the landing headline's "before anyone else". */}
+              <span
+                className="bg-clip-text text-transparent"
+                style={{ backgroundImage: "linear-gradient(110deg, #B97AFF 0%, #9945FF 35%, #14F195 100%)" }}
+              >
+                trading fees
+              </span>
+            </h1>
+            {/* Corrected 2026-07-28: fees ARE paid into the vault on the deployed program (a
+                500-notional round trip accrued the vault's 48% and moved it in on its own). */}
+            <p className="mt-2 max-w-[68ch] text-[14px] xl:max-w-none leading-relaxed text-[var(--text-secondary)]">
+              Deposit USDC into a market&apos;s vault. {LP_SHARE_PCT}% of every trading fee on that market is
+              added to the vault, so your deposit grows as people trade it.
+            </p>
+            <button
+              type="button"
+              data-testid="earn-fee-split-toggle"
+              aria-expanded={splitOpen}
+              aria-controls="earn-fee-split"
+              onClick={() => setSplitOpen((o) => !o)}
+              className="mt-2 inline-flex min-h-[44px] items-center gap-1.5 text-[12px] text-[var(--accent-text)] underline decoration-dotted underline-offset-4 hover:text-[var(--text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] sm:min-h-0 sm:py-1"
+            >
+              Where does the rest of each fee go?
+              <span aria-hidden="true" className={`transition-transform duration-150 ${splitOpen ? "rotate-180" : ""}`}>▾</span>
+            </button>
+          </div>
+
+          {/* Stats row */}
+          <div className="grid grid-cols-1 gap-px border border-[var(--border)] bg-[var(--border)] sm:grid-cols-3" aria-label="Earn statistics">
+            <StatCell
+              label="Total Value Locked"
+              loading={loading}
+            >
+              <span className={FIGURE}>{usd(stats.tvl)}</span>
+              {stats.unvaluedSymbols.length > 0 && (
+                <p data-testid="earn-tvl-excludes" className="mt-1 text-[11px] text-[var(--text-muted)]">
+                  {excludesNote(stats.unvaluedSymbols)}
+                </p>
+              )}
+            </StatCell>
+            <StatCell
+              label="Daily Fee Revenue"
+              loading={loading}
+            >
+              <span className={FIGURE}>{usd(stats.dailyFeeRevenue)}</span>
+            </StatCell>
+            <StatCell
+              label="Insurance Fund"
+              loading={loading}
+            >
+              {/* Unknown for every market (no stats rows): a dash, not $0. */}
+              <span className={FIGURE}>{stats.totalInsurance == null ? "—" : usd(stats.totalInsurance)}</span>
+            </StatCell>
+          </div>
         </div>
 
-        {/* Title */}
-        <h1
-          className="text-2xl font-medium tracking-[-0.01em] text-[var(--text)]"
-          style={{ fontFamily: 'var(--font-display)' }}
-        >
-          Earn
-        </h1>
-        <p className="mt-2 text-[13px] text-[var(--text-secondary)] max-w-lg">
-          Deposit USDC into a market&apos;s vault and earn a share of its trading fees.
-        </p>
-        {/* Small and muted, not a prominent banner. Corrected 2026-07-28: this
-            used to say yield distribution "isn't active on the deployed program
-            yet", which was false — the program distributes fees fine, nothing
-            was calling the crank. Verified on a fresh market: a 500-notional
-            round trip accrued 1_440_000 atoms (the LP's 48% of the fee) and one
-            LpVaultCrankFees moved all of it into the vault. The keeper now
-            cranks on its own interval. */}
-        {/* UX WP-10 (MB-3, §4.4): on phones the explainer is a collapsed "How Earn works"
-            disclosure so the vault list comes first; from md up it shows as before. */}
-        <details data-testid="earn-how-it-works" className="mt-2 md:hidden">
-          <summary className="cursor-pointer select-none text-[12px] text-[var(--text-secondary)]">How Earn works</summary>
-        <p className="mt-1.5 text-[11px] text-[var(--text-secondary)] max-w-lg">
-          Earn deposits receive a {LP_SHARE_PCT}% share of every trading fee, added to the vault
-          automatically, so the yield follows real trading activity and reads 0% while a market is
-          quiet.
-        </p>
-        <div className="mt-3 max-w-lg border border-[var(--border)] bg-[var(--panel-bg)] p-3">
+        <div id="earn-fee-split" data-testid="earn-fee-split" hidden={!splitOpen} className="mt-4 max-w-3xl border border-[var(--border)] bg-[var(--panel-bg)] p-3">
+          <p className="mb-2 text-[11px] text-[var(--text-secondary)]">
+            Every trade pays a fee, and every market splits it the same way. The vault&apos;s share is
+            added automatically, so the yield follows real trading and reads 0% while a market is quiet.
+          </p>
           <FeeBreakdown highlight="lp" />
-        </div>
-        </details>
-        <div className="hidden md:block">
-        <p className="mt-1.5 text-[11px] text-[var(--text-secondary)] max-w-lg">
-          Earn deposits receive a {LP_SHARE_PCT}% share of every trading fee, added to the vault
-          automatically, so the yield follows real trading activity and reads 0% while a market is
-          quiet.
-        </p>
-        <div className="mt-3 max-w-lg border border-[var(--border)] bg-[var(--panel-bg)] p-3">
-          <FeeBreakdown highlight="lp" />
-        </div>
-        </div>
-
-        {/* Stats row */}
-        <div className="mt-5 grid grid-cols-1 gap-px border border-[var(--border)] bg-[var(--border)] sm:grid-cols-3" aria-label="Earn statistics">
-          <StatCell
-            label="Total Value Locked"
-            loading={loading}
-          >
-            <span className={FIGURE}>{usd(stats.tvl)}</span>
-            {stats.unvaluedSymbols.length > 0 && (
-              <p data-testid="earn-tvl-excludes" className="mt-1 text-[11px] text-[var(--text-muted)]">
-                {excludesNote(stats.unvaluedSymbols)}
-              </p>
-            )}
-          </StatCell>
-          <StatCell
-            label="Daily Fee Revenue"
-            loading={loading}
-          >
-            <span className={FIGURE}>{usd(stats.dailyFeeRevenue)}</span>
-          </StatCell>
-          <StatCell
-            label="Insurance Fund"
-            loading={loading}
-          >
-            {/* Unknown for every market (no stats rows): a dash, not $0. */}
-            <span className={FIGURE}>{stats.totalInsurance == null ? "—" : usd(stats.totalInsurance)}</span>
-          </StatCell>
         </div>
       </div>
     </div>
