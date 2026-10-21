@@ -30,7 +30,7 @@ vi.mock("@/hooks/useInsuranceLP", () => ({
   }),
 }));
 vi.mock("@/hooks/useTokenMeta", () => ({ useTokenMeta: () => null }));
-vi.mock("@/hooks/useWalletCompat", () => ({ useWalletCompat: () => ({ publicKey: h.wallet }) }));
+vi.mock("@/hooks/useWalletCompat", () => ({ useWalletCompat: () => ({ publicKey: h.wallet }), useConnectionCompat: () => ({ connection: {} }) }));
 vi.mock("@/hooks/useMarketLimits", () => ({ useMarketLimits: () => ({ vaultLp: null }) }));
 vi.mock("@/hooks/useMarketHealth", () => ({ useSingleMarketHealth: () => null }));
 vi.mock("@/hooks/useVaultLpValuation", () => ({ useVaultLpValuation: () => ({ value: null, sim: null }) }));
