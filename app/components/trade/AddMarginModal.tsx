@@ -11,6 +11,7 @@ import { Modal } from "@/components/ui/Modal";
 import { checkDepositAmount, depositAmountMessage } from "@/lib/deposit-guard";
 import { formatTokenAmount } from "@/lib/format";
 import { parseHumanAmount } from "@/lib/parseAmount";
+import { useDecimalInput } from "@/hooks/useDecimalInput";
 
 // ─── 5.9: Add Margin modal ────────────────────────────────────────────────────
 
@@ -27,6 +28,7 @@ interface AddMarginModalProps {
 
 export const AddMarginModal: FC<AddMarginModalProps> = ({ slabAddress, userIdx, symbol, decimals, portfolioPk, onClose, onSuccess}) => {
   const [amount, setAmount] = useState("");
+  const amountField = useDecimalInput(amount, setAmount);
   const [lastSig, setLastSig] = useState<string | null>(null);
   const { deposit, loading, error } = useDeposit(slabAddress);
   const { config: marginMktConfig } = useSlabState();
@@ -97,8 +99,7 @@ export const AddMarginModal: FC<AddMarginModalProps> = ({ slabAddress, userIdx, 
           <input
             id="add-margin-amount"
             type="text"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))}
+            {...amountField}
             placeholder={`0.00 ${symbol}`}
             style={{ fontFamily: "var(--font-mono)" }}
             className="w-full rounded-none border border-[var(--border)]/50 bg-[var(--bg)] px-3 py-2 text-sm text-[var(--text)] placeholder-[var(--text-muted)] focus:border-[var(--accent)]/40 focus:outline-none focus:ring-1 focus:ring-[var(--accent)]/20"

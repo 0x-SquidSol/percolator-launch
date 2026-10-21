@@ -31,6 +31,7 @@ const CLAIM_COPY = {
 } as const;
 import { CloseTradingAccountRow } from "./CloseTradingAccountRow";
 import { CLOSE_ACCOUNT_COPY, lamportsToSolText } from "@/lib/close-trading-account";
+import { useDecimalInput } from "@/hooks/useDecimalInput";
 
 interface DepositWithdrawCardProps {
   slabAddress: string;
@@ -42,13 +43,6 @@ interface DepositWithdrawCardProps {
   /** The order ticket's "Get test funds": the wallet holds some collateral but less than the
    *  order needs, so offer the faucet even though the balance is not 0. */
   offerFaucet?: boolean;
-}
-
-function sanitizeDecimalInput(value: string): string {
-  const cleaned = value.replace(/[^0-9.]/g, "");
-  const dotIndex = cleaned.indexOf(".");
-  if (dotIndex === -1) return cleaned;
-  return cleaned.slice(0, dotIndex + 1) + cleaned.slice(dotIndex + 1).replace(/\./g, "");
 }
 
 export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress, isDevnetMirror = false, initialMode = "deposit", offerFaucet = false }) => {
@@ -104,6 +98,12 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
       : null;
 
   const maxRawRef = useRef<bigint | null>(null);
+  const amountField = useDecimalInput(amount, (newValue) => {
+    if (newValue !== amount) {
+      maxRawRef.current = null;
+    }
+    setAmount(newValue);
+  });
 
   // A typed or Max-derived amount belongs to the wallet/mint scope that
   // produced it. Clear both representations immediately after that scope
@@ -469,14 +469,7 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
             type="text"
             data-testid={`${mode}-amount-input`}
             inputMode="decimal"
-            value={amount}
-            onChange={(e) => {
-              const newValue = sanitizeDecimalInput(e.target.value);
-              if (newValue !== amount) {
-                maxRawRef.current = null;
-              }
-              setAmount(newValue);
-            }}
+            {...amountField}
             placeholder={`Amount (${symbol})`}
             style={{ fontFamily: "var(--font-mono)" }}
             className="w-full rounded-none border border-[var(--border)]/50 bg-[var(--bg)] px-3 py-2 pr-14 text-sm text-[var(--text)] placeholder-[var(--text-muted)] focus:border-[var(--accent)]/40 focus:outline-none focus:ring-1 focus:ring-[var(--accent)]/20"

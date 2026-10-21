@@ -144,16 +144,11 @@ import { diagnoseV22TradeCustom9, positionCapBlocksOpen, positionCapCopy } from 
 import { readMaxPortfolioAssets } from "@/lib/v22/market-cap";
 import { growthMaxLeverageForOrder } from "@/lib/v21/growth-market";
 import { getPortfolioRawSnapshot, makePortfolioScanKey } from "@/lib/userAccountScan";
+import { sanitizeDecimalInput } from "@/lib/decimal-input";
+import { useDecimalInput } from "@/hooks/useDecimalInput";
 
 const SIZE_PRESETS = [25, 50, 75, 100];
 const MAX_DISPLAY_LEVERAGE = 200;
-
-function sanitizeDecimalInput(value: string): string {
-  const cleaned = value.replace(/[^0-9.]/g, "");
-  const dotIndex = cleaned.indexOf(".");
-  if (dotIndex === -1) return cleaned;
-  return cleaned.slice(0, dotIndex + 1) + cleaned.slice(dotIndex + 1).replace(/\./g, "");
-}
 
 // Truncate (never round) a number's decimal representation to `decimals`
 // places. Rounding up can produce a native amount slightly larger than the
@@ -284,6 +279,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const loading = tradeLoading || fundLoading;
   /** UX WP-6: the deposit that rides with the first trade (editable; empty = the suggested one). */
   const [fundInput, setFundInput] = useState("");
+  const fundField = useDecimalInput(fundInput, setFundInput);
   /** UX WP-6: the portfolio-id race happened; the second prompt is labelled. */
   const [raceNote, setRaceNote] = useState(false);
   // Multi-asset market: the order needs its refresh cranks as their own transaction first (two approvals possible).
@@ -445,6 +441,10 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // edit wins over the prefill from then on (touched ref).
   const [starterAmountInput, setStarterAmountInput] = useState("");
   const starterTouchedRef = useRef(false);
+  const starterAmountField = useDecimalInput(starterAmountInput, (v) => {
+    starterTouchedRef.current = true;
+    setStarterAmountInput(v);
+  });
   const { networkWarning, reportTxError } = useWalletNetworkGuard();
 
   // Prefill the starter-deposit field once the wallet balance resolves —
@@ -741,6 +741,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     },
     [applySize],
   );
+  // Shows the typed text ("1,", "1,000") while sizeInput holds the dot value (N27 follow-up).
+  const sizeField = useDecimalInput(sizeInput, handleSizeChange);
 
   const toggleSizeUnit = useCallback(() => {
     setSizeUnit((prev) => {
@@ -1973,8 +1975,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             data-testid="trade-size-input"
             type="text"
             inputMode="decimal"
-            value={sizeInput}
-            onChange={(e) => handleSizeChange(e.target.value)}
+            {...sizeField}
             placeholder={sizeUnit === "token" ? "0.0000" : "$0.00"}
             style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}
             className={`flex-1 rounded-none border px-2 py-2 text-right text-sm text-[var(--text)] placeholder-[var(--text-muted)] focus:outline-none focus:ring-1 focus:border-[var(--accent)] focus:ring-[var(--accent)]/20 ${
@@ -2221,9 +2222,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
               data-testid="deposit-amount-input"
               type="text"
               inputMode="decimal"
-              value={fundInput}
+              {...fundField}
               placeholder={formatTokenAmount(fundNeededAtoms, decimals, 2)}
-              onChange={(e) => setFundInput(sanitizeDecimalInput(e.target.value))}
               aria-label={`Deposit amount in ${collateralSymbol} for this trade`}
               className="w-full bg-transparent text-right text-[12px] text-[var(--text)] outline-none placeholder-[var(--text-secondary)]"
               style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}
@@ -2365,11 +2365,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
                       data-testid="deposit-amount-input"
                       type="text"
                       inputMode="decimal"
-                      value={starterAmountInput}
-                      onChange={(e) => {
-                        starterTouchedRef.current = true;
-                        setStarterAmountInput(sanitizeDecimalInput(e.target.value));
-                      }}
+                      {...starterAmountField}
                       disabled={initLoading}
                       className="w-full bg-transparent text-right text-[12px] text-[var(--text)] outline-none placeholder-[var(--text-muted)]"
                       style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}
