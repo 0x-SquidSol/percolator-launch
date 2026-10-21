@@ -178,7 +178,7 @@ export const V22_COPY = {
       firstLoss: "At close, you share everything above the creator's seed in proportion to your stake.",
     },
     /** A closed pool that holds surplus no staker owns (nobody staked): shown, never paid to the creator. */
-    unclaimed: (usd: string) => `Unclaimed: ${usd}`,
+    unclaimed: (usd: string) => `${usd} left in the closed pool, not claimable`,
     /** Page naming: only first-loss pools are insurance staking; fee-only and legacy pools stay "Fee staking". */
     insuranceStaking: "Insurance staking",
     insuranceIntro: "Stake into a market's pool to share its trading fees. Part of the pool backs the market's insurance, so your stake can lose value.",
