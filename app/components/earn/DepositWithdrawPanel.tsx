@@ -28,7 +28,7 @@ import { watchPendingSignature } from '@/lib/pending-signature';
 import { explorerTxUrl } from '@/lib/config';
 import { ConnectButton } from "@/components/wallet/ConnectButtonLazy";
 import { lpShareWalletNote, lpShareWalletNoteV22 } from '@/lib/lp-share-wallet-note';
-import { sanitizeDecimalInput } from '@/lib/decimal-input';
+import { useDecimalInput } from '@/hooks/useDecimalInput';
 
 
 type Tab = 'deposit' | 'withdraw';
@@ -190,6 +190,7 @@ export function DepositWithdrawPanel({
   const { connection } = useConnectionCompat();
   const [tab, setTab] = useState<Tab>('deposit');
   const [amount, setAmount] = useState('');
+  const amountField = useDecimalInput(amount, setAmount);
   const [submitting, setSubmitting] = useState(false);
   const [txError, setTxError] = useState<string | null>(null);
   const [txSuccess, setTxSuccess] = useState<string | null>(null);
@@ -547,11 +548,8 @@ export function DepositWithdrawPanel({
               type="text"
               inputMode="decimal"
               placeholder="0.00"
-              value={amount}
+              {...amountField}
               disabled={loading || !vaultAvailable}
-              onChange={(e) => {
-                setAmount(sanitizeDecimalInput(e.target.value));
-              }}
               className="w-full h-12 px-4 pr-16 text-2xl font-mono tabular-nums bg-[var(--bg)] border border-[var(--border)] rounded-sm text-[var(--text)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]/40 transition-colors"
             />
             {tab === 'deposit' ? (

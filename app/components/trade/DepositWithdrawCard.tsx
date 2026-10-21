@@ -31,7 +31,7 @@ const CLAIM_COPY = {
 } as const;
 import { CloseTradingAccountRow } from "./CloseTradingAccountRow";
 import { CLOSE_ACCOUNT_COPY, lamportsToSolText } from "@/lib/close-trading-account";
-import { sanitizeDecimalInput } from "@/lib/decimal-input";
+import { useDecimalInput } from "@/hooks/useDecimalInput";
 
 interface DepositWithdrawCardProps {
   slabAddress: string;
@@ -98,6 +98,12 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
       : null;
 
   const maxRawRef = useRef<bigint | null>(null);
+  const amountField = useDecimalInput(amount, (newValue) => {
+    if (newValue !== amount) {
+      maxRawRef.current = null;
+    }
+    setAmount(newValue);
+  });
 
   // A typed or Max-derived amount belongs to the wallet/mint scope that
   // produced it. Clear both representations immediately after that scope
@@ -463,14 +469,7 @@ export const DepositWithdrawCard: FC<DepositWithdrawCardProps> = ({ slabAddress,
             type="text"
             data-testid={`${mode}-amount-input`}
             inputMode="decimal"
-            value={amount}
-            onChange={(e) => {
-              const newValue = sanitizeDecimalInput(e.target.value);
-              if (newValue !== amount) {
-                maxRawRef.current = null;
-              }
-              setAmount(newValue);
-            }}
+            {...amountField}
             placeholder={`Amount (${symbol})`}
             style={{ fontFamily: "var(--font-mono)" }}
             className="w-full rounded-none border border-[var(--border)]/50 bg-[var(--bg)] px-3 py-2 pr-14 text-sm text-[var(--text)] placeholder-[var(--text-muted)] focus:border-[var(--accent)]/40 focus:outline-none focus:ring-1 focus:ring-[var(--accent)]/20"

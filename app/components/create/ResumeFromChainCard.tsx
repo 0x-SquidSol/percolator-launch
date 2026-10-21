@@ -14,7 +14,7 @@ import { leverageFromMarginBps } from "@/lib/market-params";
 import { bpsPct } from "@/lib/format";
 import { parseHumanAmount } from "@/lib/parseAmount";
 import { clampLpExposureBps, LP_EXPOSURE_DEFAULT_BPS } from "@/lib/matcher-params";
-import { sanitizeDecimalInput } from "@/lib/decimal-input";
+import { useDecimalInput } from "@/hooks/useDecimalInput";
 import {
   adoptRecoveredLaunch,
   atomsToHuman,
@@ -89,6 +89,7 @@ export const ResumeFromChainCard: FC<{
   const [chain, setChain] = useState<ResumeChainState>({ kind: "loading" });
   const [ca, setCa] = useState("");
   const [lp, setLp] = useState("");
+  const lpField = useDecimalInput(lp, setLp);
   const [exposure, setExposure] = useState(String(LP_EXPOSURE_DEFAULT_BPS));
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -244,8 +245,7 @@ export const ResumeFromChainCard: FC<{
           {!chain.funded && (
             <input
               data-testid="resume-chain-lp"
-              value={lp}
-              onChange={(e) => setLp(sanitizeDecimalInput(e.target.value))}
+              {...lpField}
               placeholder="liquidity you chose (if nothing is deposited yet)"
               inputMode="decimal"
               className="min-w-[16rem] flex-1 border border-[var(--border)]/50 bg-transparent px-3 py-2 text-[11px] text-[var(--text)] outline-none focus:border-[var(--accent)]/40"
