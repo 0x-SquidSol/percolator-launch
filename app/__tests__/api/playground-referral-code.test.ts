@@ -61,6 +61,7 @@ describe("GET /api/playground/me", () => {
     ["no session", async () => undefined],
     ["a session without a code", async () => mintSession("row-1", 1, SECRET, Date.now())],
     ["a team-bypass session", async () => mintSession("team:abc", 1, SECRET, Date.now(), "PERC7Q")],
+    ["a judge-door session", async () => mintSession("judge:abc", 1, SECRET, Date.now(), "PERC7Q")],
     ["a forged session", async () => mintSession("row-1", 1, "f".repeat(40), Date.now(), "PERC7Q")],
   ])("%s: ref null", async (_name, cookie) => {
     vi.stubEnv("PLAYGROUND_ACCESS_SECRET", SECRET);
