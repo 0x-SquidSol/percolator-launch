@@ -50,7 +50,8 @@ function overrideMode(): "pre" | "post" | null {
   return v === "pre" || v === "post" ? v : null;
 }
 
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
+/** sha256 hex of `bytes` (WebCrypto). Also used by lib/v22/resolved-close-wait.ts. */
+export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) throw new Error("WebCrypto unavailable");
   const buf = new Uint8Array(bytes).buffer;
@@ -68,7 +69,8 @@ export async function classifyElfPrefix(programId: string, elfPrefix: Uint8Array
   return (await sha256Hex(elfPrefix)) === pre ? "pre" : "post";
 }
 
-async function readElfPrefix(connection: Connection, programId: PublicKey): Promise<Uint8Array | null> {
+/** The first ELF_FINGERPRINT_LEN bytes of an upgradeable program (null when unreadable). Also used by lib/v22/resolved-close-wait.ts. */
+export async function readElfPrefix(connection: Connection, programId: PublicKey): Promise<Uint8Array | null> {
   const prog = await connection.getAccountInfo(programId, "confirmed");
   if (!prog || prog.data.length < 36) return null;
   const programData = new PublicKey(new Uint8Array(prog.data).subarray(4, 36));

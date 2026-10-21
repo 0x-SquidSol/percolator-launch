@@ -12,6 +12,12 @@
  *
  * Everything is sent only on the click. Tag 39 is simulated first; the first exit tx of each step is simulated before the wallet opens
  * and a refused chain is dropped; refusals 21 / 19 / 27 map to one calm line each.
+ *
+ * SEC-RC I-S1 (S1-6 a/c, engine e59aa6a6): a winner's CloseResolved refused with 21 while the losing side has not settled
+ * is a WAIT, not an error. When the deployed wrapper is a known S1-6 a/c build (lib/v22/resolved-close-wait.ts), that
+ * refusal shows one calm "waiting for the other side" line (`waiting`, not `error`), nothing is signed, and the button
+ * stays so the user can try again later. Nothing retries on its own. On any other build the line is today's
+ * "payout ready shortly".
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PublicKey, type TransactionInstruction } from "@solana/web3.js";
@@ -27,6 +33,7 @@ import { TAG_CLAIM_RESOLVED_PAYOUT_TOPUP, TAG_CLOSE_RESOLVED } from "@/lib/limit
 import { TRADER_ITEM_CU, runTraderExit, traderExitItems, type TraderExitItem } from "@/lib/limits/trader-resolved-exit";
 import { errorText } from "@/lib/error-text";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
+import { RESOLVED_CLOSE_WAIT_COPY, isResolvedCloseWait, resolvedCloseWaitLive } from "@/lib/v22/resolved-close-wait";
 import {
   STALE_SETTLE_COPY,
   buildResolveStalePermissionlessIxV22,
@@ -54,6 +61,8 @@ export interface StaleResolveState {
   error: string | null;
   /** The one line shown after a click that worked. */
   done: string | null;
+  /** S1-6 a/c: the close is waiting for the other side to settle (a calm line, not an error; the button stays). */
+  waiting: string | null;
   settle: () => Promise<void>;
 }
 
@@ -65,6 +74,12 @@ const inFlightSlabs = new Set<string>();
 
 /** Thrown for a refusal that already has its one calm line. */
 class CalmRefusal extends Error {}
+
+/** What the exit ended with: the line, and whether it is the S1-6 a/c wait (shown as `waiting`, not `done`). */
+interface ExitOutcome {
+  line: string;
+  waiting: boolean;
+}
 
 function itemIxs(
   it: TraderExitItem,
@@ -85,6 +100,7 @@ export function useStaleResolve(slabAddress: string | null, hasFunds: boolean): 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  const [waiting, setWaiting] = useState<string | null>(null);
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -111,6 +127,7 @@ export function useStaleResolve(slabAddress: string | null, hasFunds: boolean): 
     setBusy(true);
     setError(null);
     setDone(null);
+    setWaiting(null);
     const payer = wallet.publicKey;
     const market = new PublicKey(slabAddress);
     let marketSettled = false; // tag 39 landed (or someone else's did): from here on 'nothing was sent' is not true
@@ -140,7 +157,9 @@ export function useStaleResolve(slabAddress: string | null, hasFunds: boolean): 
         setDone(STALE_SETTLE_COPY.settledNoFunds);
         return;
       }
-      setDone(await exitFunds());
+      const exit = await exitFunds();
+      if (exit.waiting) setWaiting(exit.line);
+      else setDone(exit.line);
     } catch (e) {
       if (e instanceof CalmRefusal) setError(e.message);
       else {
@@ -155,8 +174,9 @@ export function useStaleResolve(slabAddress: string | null, hasFunds: boolean): 
     }
 
     /** The wallet's own portfolios out of the Resolved market in ONE approval; the line to show. */
-    async function exitFunds(): Promise<string> {
-      if (!programId || !config || !wallet.publicKey) return STALE_SETTLE_COPY.generic;
+    async function exitFunds(): Promise<ExitOutcome> {
+      const doneWith = (line: string): ExitOutcome => ({ line, waiting: false });
+      if (!programId || !config || !wallet.publicKey) return doneWith(STALE_SETTLE_COPY.generic);
       const [vaultAuthority] = deriveVaultAuthority(programId, market);
       const c = {
         programId,
@@ -167,24 +187,34 @@ export function useStaleResolve(slabAddress: string | null, hasFunds: boolean): 
         vaultAuthority,
       };
       const own = await loadOwnPortfolios(connection, programId, market, payer);
-      if (own.length === 0) return STALE_SETTLE_COPY.settled; // nothing of this wallet is left
+      if (own.length === 0) return doneWith(STALE_SETTLE_COPY.settled); // nothing of this wallet is left
       let items = traderExitItems(own);
-      if (items.length === 0) return STALE_SETTLE_COPY.settledPayoutSoon;
+      if (items.length === 0) return doneWith(STALE_SETTLE_COPY.settledPayoutSoon);
       const byKey = new Map(own.map((p) => [p.key.toBase58(), p]));
       // Simulate the FIRST item of each step now: a refused one drops its portfolio's chain BEFORE the wallet opens.
       const sim = connectionSelfHealDeps(connection, market, payer);
       const refused = new Set<string>();
       const tried = new Set<string>();
+      // I-S1: a first CloseResolved refused with 21 by the CloseResolved itself may be the S1-6 a/c wait.
+      let lockRefused = false;
       for (const it of items) {
         const k = `${it.kind}:${it.portfolio}`;
         if (tried.has(k)) continue;
         tried.add(k);
         if (it.kind !== "close-resolved") continue; // the top-up and the close depend on the 30 landing first
-        const err = (await sim.simulate([...computeBudgetPrefix(TRADER_ITEM_CU[it.kind]), ...itemIxs(it, byKey, c)])).err ?? null;
-        if (err) refused.add(it.portfolio);
+        const ixs = [...computeBudgetPrefix(TRADER_ITEM_CU[it.kind]), ...itemIxs(it, byKey, c)];
+        const err = (await sim.simulate(ixs)).err ?? null;
+        if (err) {
+          refused.add(it.portfolio);
+          // The CloseResolved is the last instruction (ownResolvedPayIxs: [create ATA, 30]).
+          if (isResolvedCloseWait(parseCustomInstructionError(err), ixs.length - 1, true)) lockRefused = true;
+        }
       }
+      // Read the deployed build only when it could matter (a 21 was seen); any other build keeps today's line.
+      const waitLive = lockRefused && (await resolvedCloseWaitLive(connection, programId));
+      const pending = (): ExitOutcome => (waitLive ? { line: RESOLVED_CLOSE_WAIT_COPY, waiting: true } : doneWith(STALE_SETTLE_COPY.settledPayoutSoon));
       items = items.filter((it) => !refused.has(it.portfolio));
-      if (items.length === 0) return STALE_SETTLE_COPY.settledPayoutSoon;
+      if (items.length === 0) return pending();
       const [blockhash, fee] = await Promise.all([getFreshBlockhash(connection, true), getPriorityFee(connection)]);
       const txs = items.map((it, i) =>
         buildBatchTx({ instructions: itemIxs(it, byKey, c), computeUnits: TRADER_ITEM_CU[it.kind], priorityFeeMicroLamports: fee + i + 1, blockhash, feePayer: payer }),
@@ -200,9 +230,9 @@ export function useStaleResolve(slabAddress: string | null, hasFunds: boolean): 
           broadcast: (tx) => broadcastSignedTx(connection, tx),
         },
       );
-      return run.remaining.length === 0 ? STALE_SETTLE_COPY.settled : STALE_SETTLE_COPY.settledPayoutSoon;
+      return run.remaining.length === 0 && !waitLive ? doneWith(STALE_SETTLE_COPY.settled) : pending();
     }
   }, [slabAddress, programId, config, wallet, connection, hasFunds, refresh]);
 
-  return { view, resolved, busy, error, done, settle };
+  return { view, resolved, busy, error, done, waiting, settle };
 }

@@ -17,6 +17,8 @@ export interface StaleSettleNoticeViewProps {
   busy: boolean;
   error: string | null;
   done: string | null;
+  /** S1-6 a/c: the close waits for the other side to settle. A calm line, not an error; the button stays (no auto-retry). */
+  waiting?: string | null;
   /** Wallet connected: without one the line is shown and the button is not. */
   canAct: boolean;
   onSettle: () => void;
@@ -24,7 +26,7 @@ export interface StaleSettleNoticeViewProps {
 }
 
 /** Pure renderer (tested without a provider). */
-export const StaleSettleNoticeView: FC<StaleSettleNoticeViewProps> = ({ minutes, kind = "stale", hasFunds, busy, error, done, canAct, onSettle, compact }) => (
+export const StaleSettleNoticeView: FC<StaleSettleNoticeViewProps> = ({ minutes, kind = "stale", hasFunds, busy, error, done, waiting = null, canAct, onSettle, compact }) => (
   <div
     role="status"
     data-testid="stale-settle-notice"
@@ -45,6 +47,7 @@ export const StaleSettleNoticeView: FC<StaleSettleNoticeViewProps> = ({ minutes,
       </button>
     )}
     {done && <p className="mt-2 text-[var(--long)]" data-testid="stale-settle-done">{done}</p>}
+    {waiting && !done && <p className="mt-2 text-[var(--text-secondary)]" data-testid="stale-settle-waiting">{waiting}</p>}
     {error && <p role="alert" className="mt-2 text-[var(--short)]" data-testid="stale-settle-error">{error}</p>}
   </div>
 );
@@ -61,6 +64,7 @@ export const StaleSettleNotice: FC<{ slabAddress: string; hasFunds: boolean; can
       busy={s.busy}
       error={s.error}
       done={s.done}
+      waiting={s.waiting}
       canAct={canAct}
       onSettle={() => void s.settle()}
       compact={compact}
