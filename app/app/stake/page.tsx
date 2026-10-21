@@ -352,6 +352,8 @@ function StakeHeader({
   loading: boolean;
 }) {
   const { connected } = useWalletCompat();
+  // The full fee split is reference material: the intro says what staking does, the split opens on request.
+  const [splitOpen, setSplitOpen] = useState(false);
   const totalStaked = pools.reduce((s, p) => s + p.tvl, 0);
   const activePools = pools.length;
   // Only first-loss pools are insurance staking; any fee-only / legacy pool keeps the "Fee staking" name.
@@ -383,68 +385,92 @@ function StakeHeader({
       {/* Background grid fade — same idiom as EarnHeader */}
       <div className="absolute inset-x-0 top-0 h-48 bg-grid pointer-events-none" />
 
-      <div className="relative mx-auto max-w-6xl px-4 pt-10 pb-6">
-        <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.25em] text-[var(--accent)]/60">
-          // insurance stake
-        </div>
-
-        <h1
-          className="text-2xl font-medium tracking-[-0.01em] text-[var(--text)]"
-          style={{ fontFamily: "var(--font-display)" }}
-        >
-          {insuranceOnly ? (
-            <span data-testid="stake-title-insurance"><span className="font-normal text-[var(--text-secondary)]">Insurance </span>staking</span>
-          ) : (
-            <><span className="font-normal text-[var(--text-secondary)]">Fee </span>staking</>
-          )}
-        </h1>
-        {insuranceOnly ? (
-          <p className="mt-2 max-w-lg text-[13px] text-[var(--text-secondary)]" data-testid="stake-intro-insurance">{V22_COPY.stake.insuranceIntro}</p>
-        ) : v22Pools ? (
-          <p className="mt-2 max-w-lg text-[13px] text-[var(--text-secondary)]" data-testid="stake-intro-feeonly">{V22_COPY.stake.closeOut.feeOnly}</p>
-        ) : (
-        <p className="mt-2 max-w-lg text-[13px] text-[var(--text-secondary)]">
-          Stake into a market&apos;s pool to receive a share of that market&apos;s trading fees —
-          fully on-chain and transparent.
-        </p>
-        )}
-        {/* E2E B4 (2026-09-30): stakers ARE paid. The insurance fee leg accrues to the wrapper's
-            insurance reserve and the keeper (b004a0c) pushes it into the bound stake pool:
-            wrapper tag 87 WithdrawInsuranceReserveToStake -> stake tag 12 AccrueFees, which takes
-            insurance pools (pool_mode 0; see lib/pre-resolve.ts decideStakeLeg). Measured: stakers
-            C3 +5.86 USDC, U3 +7.01 USDC. The old zero-yield caption was false. */}
-        {!insuranceOnly && !v22Pools && (
-        <p className="mt-1.5 max-w-lg text-[11px] text-[var(--text-muted)]">
-          Stakers are paid the insurance share of every trading fee, moved into the stake pool
-          automatically. The pool admin can move staked funds into the market&apos;s insurance
-          fund, where trading losses can use them, so your stake can lose value. This has not
-          happened so far.
-        </p>
-        )}
-        {/* The 0% above reads as an oversight without the other shares beside
-            it — "16% to insurance" is the number it gets mistaken for. #2565. */}
-        <div className="mt-3 max-w-lg border border-[var(--border)] bg-[var(--panel-bg)] p-3">
-          <FeeBreakdown highlight="staker" showStaker />
-        </div>
-
-        {/* Stats strip */}
-        <div
-          className="mt-5 grid grid-cols-2 gap-px border border-[var(--border)] bg-[var(--border)] sm:grid-cols-4"
-          aria-label="Fee staking statistics"
-        >
-          {stats.map((s) => (
-            <div key={s.label} className="min-w-0 bg-[var(--panel-bg)] p-4 sm:p-5">
-              <div className="mb-1 truncate text-[10px] uppercase tracking-[0.2em] text-[var(--text-secondary)]">
-                {s.label}
-              </div>
-              <div
-                className={`truncate text-2xl font-bold tabular-nums ${s.muted ? "text-[var(--text-muted)]" : "text-[var(--text)]"}`}
-                style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}
-              >
-                {s.value}
-              </div>
+      {/* Same width and gutters as the pool table below, so the header spans the page with it. */}
+      <div className="relative mx-auto max-w-[1400px] px-4 pt-10 pb-6 lg:px-6">
+        <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,48rem)] xl:items-end xl:gap-10">
+          <div className="min-w-0">
+            <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.25em] text-[var(--accent)]/60">
+              // insurance stake
             </div>
-          ))}
+
+            {/* First word plain, "staking" in the landing headline's gradient (as Earn's title). */}
+            <h1
+              className="text-2xl font-medium tracking-[-0.01em] text-[var(--text)]"
+              style={{ fontFamily: "var(--font-display)" }}
+            >
+              {insuranceOnly ? (
+                <span data-testid="stake-title-insurance">
+                  Insurance{" "}
+                  <span className="bg-clip-text text-transparent" style={{ backgroundImage: "linear-gradient(110deg, #B97AFF 0%, #9945FF 35%, #14F195 100%)" }}>staking</span>
+                </span>
+              ) : (
+                <>
+                  Fee{" "}
+                  <span className="bg-clip-text text-transparent" style={{ backgroundImage: "linear-gradient(110deg, #B97AFF 0%, #9945FF 35%, #14F195 100%)" }}>staking</span>
+                </>
+              )}
+            </h1>
+            {insuranceOnly ? (
+              <p className="mt-2 max-w-[68ch] text-[14px] leading-relaxed text-[var(--text-secondary)] xl:max-w-none" data-testid="stake-intro-insurance">{V22_COPY.stake.insuranceIntro}</p>
+            ) : v22Pools ? (
+              <p className="mt-2 max-w-[68ch] text-[14px] leading-relaxed text-[var(--text-secondary)] xl:max-w-none" data-testid="stake-intro-feeonly">{V22_COPY.stake.closeOut.feeOnly}</p>
+            ) : (
+              <p className="mt-2 max-w-[68ch] text-[14px] leading-relaxed text-[var(--text-secondary)] xl:max-w-none">
+                Stake into a market&apos;s pool to receive a share of that market&apos;s trading fees —
+                fully on-chain and transparent.
+              </p>
+            )}
+            <button
+              type="button"
+              data-testid="stake-fee-split-toggle"
+              aria-expanded={splitOpen}
+              aria-controls="stake-fee-split"
+              onClick={() => setSplitOpen((o) => !o)}
+              className="mt-2 inline-flex min-h-[44px] items-center gap-1.5 text-[12px] text-[var(--accent-text)] underline decoration-dotted underline-offset-4 hover:text-[var(--text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] sm:min-h-0 sm:py-1"
+            >
+              Where does each trading fee go?
+              <span aria-hidden="true" className={`transition-transform duration-150 ${splitOpen ? "rotate-180" : ""}`}>▾</span>
+            </button>
+          </div>
+
+          {/* Stats strip */}
+          <div
+            className="grid grid-cols-2 gap-px border border-[var(--border)] bg-[var(--border)] sm:grid-cols-4"
+            aria-label="Fee staking statistics"
+          >
+            {stats.map((s) => (
+              <div key={s.label} className="min-w-0 bg-[var(--panel-bg)] p-4 sm:p-5">
+                <div className="mb-1 truncate text-[10px] uppercase tracking-[0.2em] text-[var(--text-secondary)]">
+                  {s.label}
+                </div>
+                <div
+                  className={`truncate text-2xl font-bold tabular-nums ${s.muted ? "text-[var(--text-muted)]" : "text-[var(--text)]"}`}
+                  style={{ fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" }}
+                >
+                  {s.value}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div id="stake-fee-split" data-testid="stake-fee-split" hidden={!splitOpen} className="mt-4 max-w-3xl border border-[var(--border)] bg-[var(--panel-bg)] p-3">
+          {/* E2E B4 (2026-09-30): stakers ARE paid. The insurance fee leg accrues to the wrapper's
+              insurance reserve and the keeper (b004a0c) pushes it into the bound stake pool:
+              wrapper tag 87 WithdrawInsuranceReserveToStake -> stake tag 12 AccrueFees, which takes
+              insurance pools (pool_mode 0; see lib/pre-resolve.ts decideStakeLeg). Measured: stakers
+              C3 +5.86 USDC, U3 +7.01 USDC. The old zero-yield caption was false. */}
+          {!insuranceOnly && !v22Pools && (
+            <p className="mb-2 text-[11px] text-[var(--text-secondary)]">
+              Stakers are paid the insurance share of every trading fee, moved into the stake pool
+              automatically. The pool admin can move staked funds into the market&apos;s insurance
+              fund, where trading losses can use them, so your stake can lose value. This has not
+              happened so far.
+            </p>
+          )}
+          {/* The 0% above reads as an oversight without the other shares beside
+              it — "16% to insurance" is the number it gets mistaken for. #2565. */}
+          <FeeBreakdown highlight="staker" showStaker />
         </div>
       </div>
     </div>
@@ -1516,10 +1542,10 @@ function SidebarStep({ num, title, desc }: { num: number; title: string; desc: s
   );
 }
 
-function CoverageItem({ icon, label, description }: { icon: string; label: string; description: string }) {
+function CoverageItem({ label, description }: { label: string; description: string }) {
   return (
-    <div className="flex items-start gap-2">
-      <span aria-hidden="true" className="mt-0.5 text-xs">{icon}</span>
+    <div className="flex items-start gap-2.5">
+      <span aria-hidden="true" className="mt-[5px] h-1.5 w-1.5 shrink-0 bg-[var(--accent)]" />
       <div>
         <div className="text-[12px] font-medium text-[var(--text)]">{label}</div>
         <div className="text-[11px] text-[var(--text-secondary)]">{description}</div>
@@ -1528,46 +1554,85 @@ function CoverageItem({ icon, label, description }: { icon: string; label: strin
   );
 }
 
-/* Slim secondary strip — explanatory content kept BELOW the functional
-   table+rail, as a row of small cards (mirrors EarnVaultView's info strip). */
-function StakeSidebar() {
-  return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-      {/* What staking backs */}
-      <div className="border border-[var(--border)] bg-[var(--panel-bg)] p-4 hud-corners">
-        <div className="mb-3 flex items-center gap-2">
-          <span aria-hidden="true" className="text-xs">🛡️</span>
-          <h3 className="text-[12px] font-medium text-[var(--text)]" style={{ fontFamily: "var(--font-display)" }}>
-            If the pool admin moves stake into insurance
-          </h3>
-        </div>
-        <div className="space-y-2">
-          <CoverageItem icon="⚡" label="Liquidation Shortfall" description="Moved stake can cover losses when liquidations don't fully cover a position" />
-          <CoverageItem icon="🔄" label="Socialized Loss Buffer" description="Absorbs bad debt before it reaches the market's liquidity and Earn deposits" />
-          <CoverageItem icon="🏗️" label="Protocol Solvency" description="Pre-funds the market's insurance fund via an admin flush" />
-        </div>
-      </div>
+/* Secondary info below the functional table+rail: one row each, closed until asked for, one open at
+   a time (same pattern as the Earn vaults tab). */
+type StakeInfoKey = "how" | "backs" | "risk";
 
-      {/* How staking works */}
-      <div className="border border-[var(--border)] bg-[var(--panel-bg)] p-4 hud-corners">
-        <h3 className="mb-3 text-[12px] font-medium text-[var(--text)]" style={{ fontFamily: "var(--font-display)" }}>
-          How It Works
-        </h3>
-        <div className="space-y-2">
+function StakeSidebar() {
+  const [open, setOpen] = useState<StakeInfoKey | null>(null);
+  const toggle = (key: StakeInfoKey) => setOpen((cur) => (cur === key ? null : key));
+  return (
+    <div data-testid="stake-info" className="divide-y divide-[var(--border)] border border-[var(--border)] bg-[var(--panel-bg)]">
+      <StakeInfoRow id="how" title="How it works" open={open === "how"} onToggle={toggle}>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <SidebarStep num={1} title="Deposit" desc="Stake sim-USDC into a market's insurance pool" />
           <SidebarStep num={2} title="Back the fund" desc={STAKE_COPY.backStep} />
           <SidebarStep num={3} title="Withdraw" desc={STAKE_COPY.sidebar} />
         </div>
-      </div>
+      </StakeInfoRow>
 
-      {/* Risk notice */}
-      <div className="border border-[var(--border)] bg-[var(--panel-bg)] p-4 hud-corners">
-        <div className="mb-2 text-[10px] uppercase tracking-[0.15em] text-[var(--warning)]">⚠ Risk Notice</div>
-        <p className="text-[11px] leading-relaxed text-[var(--text-secondary)]">
+      <StakeInfoRow id="backs" title="If the pool admin moves stake into insurance" open={open === "backs"} onToggle={toggle}>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <CoverageItem label="Liquidation Shortfall" description="Moved stake can cover losses when liquidations don't fully cover a position" />
+          <CoverageItem label="Socialized Loss Buffer" description="Absorbs bad debt before it reaches the market's liquidity and Earn deposits" />
+          <CoverageItem label="Protocol Solvency" description="Pre-funds the market's insurance fund via an admin flush" />
+        </div>
+      </StakeInfoRow>
+
+      <StakeInfoRow id="risk" title="Risk notice" warning open={open === "risk"} onToggle={toggle}>
+        <p className="max-w-[90ch] text-[11px] leading-relaxed text-[var(--text-secondary)]">
           <Tooltip text={STAKE_COPY.risk.leadTip}><span className="underline decoration-dotted underline-offset-2">{STAKE_COPY.risk.lead}</span></Tooltip>{" "}
           <Tooltip text={STAKE_COPY.risk.flushTip}><span className="underline decoration-dotted underline-offset-2">{STAKE_COPY.risk.flush}</span></Tooltip>{" "}
           {STAKE_COPY.risk.tail}
         </p>
+      </StakeInfoRow>
+    </div>
+  );
+}
+
+function StakeInfoRow({
+  id,
+  title,
+  open,
+  onToggle,
+  warning = false,
+  children,
+}: {
+  id: StakeInfoKey;
+  title: string;
+  open: boolean;
+  onToggle: (key: StakeInfoKey) => void;
+  warning?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <h3 className="text-[12px] font-medium" style={{ fontFamily: "var(--font-display)" }}>
+        <button
+          type="button"
+          id={`stake-info-${id}-button`}
+          aria-expanded={open}
+          aria-controls={`stake-info-${id}`}
+          onClick={() => onToggle(id)}
+          className="flex min-h-[44px] w-full items-center gap-3 px-4 py-2.5 text-left transition-colors duration-150 hover:bg-[var(--bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]"
+        >
+          <span className={warning ? "text-[var(--warning)]" : "text-[var(--text)]"}>
+            {warning && <span aria-hidden="true">⚠ </span>}
+            {title}
+          </span>
+          <span aria-hidden="true" className={`ml-auto text-[var(--text-secondary)] transition-transform duration-150 ${open ? "rotate-180" : ""}`}>
+            ▾
+          </span>
+        </button>
+      </h3>
+      <div
+        id={`stake-info-${id}`}
+        role="region"
+        aria-labelledby={`stake-info-${id}-button`}
+        hidden={!open}
+        className="px-4 pb-4 pt-1"
+      >
+        {children}
       </div>
     </div>
   );
