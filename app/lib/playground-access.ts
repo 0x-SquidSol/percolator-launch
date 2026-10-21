@@ -59,12 +59,20 @@ export interface AccessClaims {
   pos: number;
   /** Unix seconds after which this is refused. */
   exp: number;
-  /** The visitor's referral code, when the gate sent one (older handoffs don't). */
+  /** The visitor's referral code, when the gate sent one (older handoffs don't). From #3191. */
   ref?: string;
+  /**
+   * Keyed tag of the Privy user the gate verified (`privyUserTag`), when the gate sent one. Lets the
+   * playground show the referral code only to that same Privy login, not to whoever holds the cookie,
+   * without the Privy id itself ever appearing in the handoff URL.
+   */
+  uid?: string;
 }
 
 /** A referral code as the waitlist issues them: short, URL-safe. Anything else is dropped. */
 const REF_RE = /^[A-Za-z0-9_-]{1,32}$/;
+/** `privyUserTag` output: 22 base64url chars (128 bits). Anything else is dropped. */
+const UID_RE = /^[A-Za-z0-9_-]{22}$/;
 
 const enc = new TextEncoder();
 const dec = new TextDecoder("utf-8", { fatal: true });
@@ -148,8 +156,12 @@ async function open(
   if (typeof claims.exp !== "number" || !Number.isFinite(claims.exp)) return null;
   if (nowSec >= claims.exp) return null;
   // Optional and never a reason to refuse: an odd value is dropped, the token still opens.
-  const { ref, ...rest } = claims;
-  return typeof ref === "string" && REF_RE.test(ref) ? { ...rest, ref } : rest;
+  const { ref, uid, ...rest } = claims;
+  return {
+    ...rest,
+    ...(typeof ref === "string" && REF_RE.test(ref) ? { ref } : {}),
+    ...(typeof uid === "string" && UID_RE.test(uid) ? { uid } : {}),
+  };
 }
 
 // Same derivations as the gate. Changing either string here (or there) breaks
@@ -167,8 +179,32 @@ export function readHandoff(
   return open(token, handoffSecret(secret), toSec(nowMs));
 }
 
-export function mintSession(sub: string, pos: number, secret: string, nowMs = Date.now(), ref?: string): Promise<string> {
-  return mint({ sub, pos, exp: toSec(nowMs) + SESSION_TTL_SECONDS, ...(ref ? { ref } : {}) }, sessionSecret(secret));
+export function mintSession(
+  sub: string,
+  pos: number,
+  secret: string,
+  nowMs = Date.now(),
+  ref?: string,
+  uid?: string,
+): Promise<string> {
+  return mint(
+    { sub, pos, exp: toSec(nowMs) + SESSION_TTL_SECONDS, ...(ref ? { ref } : {}), ...(uid ? { uid } : {}) },
+    sessionSecret(secret),
+  );
+}
+
+/**
+ * Keyed, one-way tag of a Privy user id (`did:privy:…`). The gate on percolator.trade computes the same
+ * value (byte-compatible: HMAC-SHA256, key `${PLAYGROUND_ACCESS_SECRET}:privy-user:v1`, first 16 bytes,
+ * base64url) for the user it verified and signs it into the handoff as `uid`. Comparing tags lets the
+ * playground bind a session to a Privy login without either side putting the id in a URL.
+ */
+export async function privyUserTag(privyUserId: string, secret: string): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", enc.encode(`${secret}:privy-user:v1`), { name: "HMAC", hash: "SHA-256" }, false, [
+    "sign",
+  ]);
+  const mac = await crypto.subtle.sign("HMAC", key, enc.encode(privyUserId));
+  return bytesToB64url(new Uint8Array(mac).slice(0, 16));
 }
 
 export function readSession(
