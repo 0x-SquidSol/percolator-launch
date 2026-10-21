@@ -202,3 +202,21 @@ describe("no identifier is carried in a token", () => {
     expect(JSON.parse(decoded)).toEqual({ sub: "row-abc", pos: 12, exp: expect.any(Number), ref: "PERC7Q" });
   });
 });
+
+// Shared vector, pinned identically in the playground (`playground` branch, __tests__/lib/playground-access-referral-claims.test.ts):
+// if either side changes the tag derivation, both suites break.
+describe("privyUserTag", () => {
+  it("matches the vector the playground pins", async () => {
+    const { privyUserTag } = await import("@/lib/playground-access");
+    expect(privyUserTag("did:privy:cm1owner000000000000", "s".repeat(40))).toBe("S6aKBBv7X44b_af1E6gH5w");
+  });
+
+  it("a handoff carries uid only when given one, and keeps it through readHandoff", async () => {
+    const { mintHandoff, readHandoff, privyUserTag } = await import("@/lib/playground-access");
+    const secret = "s".repeat(40);
+    const now = 1_800_000_000_000;
+    const uid = privyUserTag("did:privy:x", secret);
+    expect(readHandoff(mintHandoff("row", 1, secret, now, "AB", uid), secret, now)).toMatchObject({ ref: "AB", uid });
+    expect(readHandoff(mintHandoff("row", 1, secret, now, "AB"), secret, now)).not.toHaveProperty("uid");
+  });
+});
