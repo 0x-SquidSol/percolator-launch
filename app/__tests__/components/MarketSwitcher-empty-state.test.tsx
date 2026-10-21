@@ -16,6 +16,9 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), prefetch:
 vi.mock("@/hooks/useAllMarketStats", () => ({ useAllMarketStats: () => mocks.stats }));
 vi.mock("@/components/market/MarketLogo", () => ({ MarketLogo: () => null }));
 vi.mock("@/lib/listed-markets", () => ({ isBrowsableMarketRow: () => true }));
+vi.mock("@/hooks/usePortfolio", () => ({ usePortfolio: () => ({ positions: [], loading: false, error: null }), peekPortfolioSnapshot: () => null, portfolioCacheKey: () => "k" }));
+vi.mock("@/hooks/useWalletCompat", () => ({ useWalletCompat: () => ({ connected: false }) }));
+vi.mock("@/lib/mock-mode", () => ({ isMockMode: () => false }));
 
 import { MarketSwitcher } from "@/components/trade/MarketSwitcher";
 

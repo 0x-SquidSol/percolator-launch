@@ -1246,7 +1246,7 @@ const PORTFOLIO_SEED_MAX_AGE_MS = 5 * 60_000;
 const portfolioSnapshotCache = new Map<string, PortfolioCacheEntry>();
 const portfolioInflight = new Map<string, Promise<PortfolioSnapshot>>();
 
-function portfolioCacheKey(walletBase58: string, network: string): string {
+export function portfolioCacheKey(walletBase58: string, network: string): string {
   return `${network}:${walletBase58}`;
 }
 
