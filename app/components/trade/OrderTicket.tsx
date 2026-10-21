@@ -56,6 +56,7 @@ import { PublicKey } from "@solana/web3.js";
 import { diagnoseTradeRejection, isCustom9Error } from "@/lib/tradeRejectDiagnosis";
 import { explorerTxUrl, getNetwork } from "@/lib/config";
 import { useUserAccount, useUserAccountScanPending } from "@/hooks/useUserAccount";
+import { ACCOUNT_LOADING_COPY, useSlowFlag } from "@/hooks/useSlowFlag";
 import { OrderTicketClosePanel } from "@/components/trade/OrderTicketClosePanel";
 import { terminalPositionPnl } from "@/lib/position-pnl";
 import { riskEntryFromSettled, riskLegOf, settledRiskAnchorE6 } from "@/lib/risk-entry";
@@ -274,6 +275,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   // account-dependent action (fund-and-trade, deposit, onboarding) locked.
   const scanPending = useUserAccountScanPending();
   const accountPending = !mockMode && walletConnected && !userAccount && scanPending;
+  const accountScanSlow = useSlowFlag(accountPending);
   const { trade, loading: tradeLoading, error } = useTrade(slabAddress);
   const { fundAndTrade, loading: fundLoading } = useFirstTrade(slabAddress);
   const loading = tradeLoading || fundLoading;
@@ -2510,7 +2512,9 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
               : sameOwnerOpenPending
                 ? "Loading market…"
                 : accountPending
-                ? "Loading account…"
+                ? accountScanSlow
+                  ? ACCOUNT_LOADING_COPY.slow
+                  : ACCOUNT_LOADING_COPY.loading
                 : fundOverWallet && !ticketState.blocks
                 ? "Get test funds"
                 : fundingMode && ticketState.row === "ok" && sizeEntered
