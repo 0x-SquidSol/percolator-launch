@@ -13,15 +13,17 @@ const loadPositions = () => import("@/components/portfolio/PortfolioPositionsVie
 const loadRetired = () => import("@/components/portfolio/RetiredHoldings");
 const loadWallet = () => import("@/app/wallet/page");
 const loadMyMarkets = () => import("@/app/my-markets/page");
+const loadReferrals = () => import("@/components/portfolio/ReferralsTab");
 const tabLoading = () => <div className="min-h-[60vh]" aria-busy="true" />;
 const PortfolioPositionsView = dynamic(() => loadPositions().then((m) => m.PortfolioPositionsView), { ssr: false, loading: tabLoading });
 const RetiredHoldings = dynamic(() => loadRetired().then((m) => m.RetiredHoldings), { ssr: false });
 const WalletPage = dynamic(loadWallet, { ssr: false, loading: tabLoading });
 const MyMarketsPage = dynamic(loadMyMarkets, { ssr: false, loading: tabLoading });
+const ReferralsTab = dynamic(loadReferrals, { ssr: false, loading: tabLoading });
 
 /**
- * Portfolio hub. Consolidates the four account surfaces (Overview / Positions
- * / Wallet / My Markets) behind one tab bar. Each source page is a "use
+ * Portfolio hub. Consolidates the account surfaces (Overview / Positions
+ * / Wallet / My Markets / Referrals) behind one tab bar. Each source page is a "use
  * client" default-export that takes no props, so it renders directly as tab
  * content. Only the ACTIVE tab is mounted — inactive tabs' data hooks never
  * run — and each source page brings its own container, so the tab bar sits
@@ -32,6 +34,7 @@ const TABS = [
   { key: "positions", label: "Positions" },
   { key: "wallet", label: "Wallet" },
   { key: "markets", label: "My Markets" },
+  { key: "referrals", label: "Referrals" },
 ] as const;
 
 type TabKey = (typeof TABS)[number]["key"];
@@ -47,7 +50,13 @@ export default function PortfolioHubPage() {
     document.title = "Portfolio | Percolator";
   }, []);
 
-  useEffect(() => prefetchOnIdle([loadPositions, loadRetired, loadWallet, loadMyMarkets]), []);
+  // The tab bar scrolls sideways on phones with its scrollbar hidden; keep the active tab in view (a deep
+  // link to /portfolio#referrals would otherwise land on a tab the user cannot see).
+  useEffect(() => {
+    document.querySelector<HTMLElement>(`[data-portfolio-tab="${tab}"]`)?.scrollIntoView?.({ inline: "nearest", block: "nearest" });
+  }, [tab]);
+
+  useEffect(() => prefetchOnIdle([loadPositions, loadRetired, loadWallet, loadMyMarkets, loadReferrals]), []);
 
   return (
     <div>
@@ -58,6 +67,7 @@ export default function PortfolioHubPage() {
             return (
               <button
                 key={t.key}
+                data-portfolio-tab={t.key}
                 type="button"
                 onClick={() => selectTab(t.key)}
                 aria-current={on ? "page" : undefined}
@@ -87,6 +97,7 @@ export default function PortfolioHubPage() {
       )}
       {tab === "wallet" && <WalletPage />}
       {tab === "markets" && <MyMarketsPage />}
+      {tab === "referrals" && <ReferralsTab />}
     </div>
   );
 }
