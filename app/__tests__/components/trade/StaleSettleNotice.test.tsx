@@ -23,6 +23,7 @@ const h = vi.hoisted(() => ({
   refresh: vi.fn(),
   getAccountInfo: vi.fn(),
   getSlot: vi.fn(async () => 512_136_545),
+  simCalls: 0,
 }));
 
 const WRAPPER = new PublicKey("6kpg2wi7vwkn7E9rvodXSktYRhna8TWjiZrC1dBek6NM");
@@ -58,13 +59,14 @@ vi.mock("@/lib/limits/own-portfolio-cleanup", () => ({
 vi.mock("@/lib/self-heal", async (orig) => ({
   ...(await orig<typeof import("@/lib/self-heal")>()),
   computeBudgetPrefix: () => [],
-  connectionSelfHealDeps: () => ({ simulate: async () => ({ err: h.simErr }) }),
+  connectionSelfHealDeps: () => ({ simulate: async () => ((h.simCalls += 1), { err: h.simErr }) }),
 }));
 
 import { StaleSettleNotice, StaleSettleNoticeView } from "@/components/trade/StaleSettleNotice";
 import { __setDevnetV22ForTest } from "@/lib/v22/flag";
 import { STALE_SETTLE_COPY, staleResolveStatusV22 } from "@/lib/v22/stale-resolve";
 import { resolveMarketGeometry } from "@/lib/v22/sdk/layout";
+import { RESOLVED_CLOSE_WAIT_COPY, __resetResolvedCloseWaitCache } from "@/lib/v22/resolved-close-wait";
 
 const market = (): Uint8Array =>
   new Uint8Array(Buffer.from((JSON.parse(readFileSync(path.join(__dirname, "../../fixtures/v22-growth/chillhouse-t.market.json"), "utf8")) as { data: string }).data, "base64"));
@@ -334,5 +336,109 @@ describe("RESOLVED market (AUD-FC-A2): the trader's own exit replaces the failin
     await click();
     await waitFor(() => expect(screen.getByTestId("stale-settle-done")).toHaveTextContent(STALE_SETTLE_COPY.settled));
     expect(h.signAll).not.toHaveBeenCalled();
+  });
+});
+
+// ── SEC-RC I-S1 (S1-6 a/c, engine e59aa6a6): a winner's CloseResolved refused with 21 while the losing side has not
+// settled is a WAIT. Gated on the deployed wrapper's ELF (lib/v22/resolved-close-wait.ts); fixtures = the first 4096 ELF
+// bytes of the canonical builds (RC-S16AC.md §2: rc-s16ac ddd5a2fa; RC.md: rc 357fc23f = the negative control).
+const s16acElf = (n: string): Buffer =>
+  Buffer.from(readFileSync(path.join(__dirname, "../../fixtures/v22-s16ac", `wrapper-elf4096-${n}.b64`), "utf8").trim(), "base64");
+const PROGRAMDATA = new PublicKey("C6yjMetoTgaiUQLPYYJcYwyy7atrBFd7eNkpWbf89obG");
+/** The fresh market read returns the Resolved market; the wrapper -> ProgramData -> `elf`. */
+function deployed(elf: Buffer) {
+  h.getAccountInfo.mockImplementation(async (k: PublicKey) => {
+    if (k.equals(WRAPPER)) {
+      const d = Buffer.alloc(36);
+      PROGRAMDATA.toBuffer().copy(d, 4);
+      return { data: d };
+    }
+    if (k.equals(PROGRAMDATA)) return { data: elf };
+    return { data: Buffer.from(resolvedBytes()) };
+  });
+}
+
+describe("RESOLVED market, S1-6 a/c wait (SEC-RC I-S1)", () => {
+  beforeEach(() => {
+    __resetResolvedCloseWaitCache();
+    h.raw = resolvedBytes();
+    h.simCalls = 0;
+    chain(3);
+  });
+
+  it("S1-6 a/c deployed: a CloseResolved refused with 21 shows the calm WAITING line, not an error; nothing is signed; the button stays", async () => {
+    deployed(s16acElf("rc-s16ac-ddd5a2fa"));
+    h.simErr = { InstructionError: [1, { Custom: 21 }] }; // raised by the CloseResolved ([create ATA, 30])
+    render(<StaleSettleNotice slabAddress={SLAB} hasFunds canAct />);
+    await click();
+    await waitFor(() => expect(screen.getByTestId("stale-settle-waiting")).toHaveTextContent(RESOLVED_CLOSE_WAIT_COPY));
+    expect(screen.queryByTestId("stale-settle-error")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByTestId("stale-settle-done")).toBeNull();
+    expect(h.signAll).not.toHaveBeenCalled();
+    expect(h.broadcast).not.toHaveBeenCalled();
+    expect(screen.getByTestId("stale-settle-button")).toHaveTextContent("Close and withdraw");
+  });
+
+  it("no auto-retry: after the waiting line nothing simulates on its own; a later click tries once and goes through when the other side has settled", async () => {
+    deployed(s16acElf("rc-s16ac-ddd5a2fa"));
+    h.simErr = { InstructionError: [1, { Custom: 21 }] };
+    render(<StaleSettleNotice slabAddress={SLAB} hasFunds canAct />);
+    await click();
+    await waitFor(() => expect(screen.getByTestId("stale-settle-waiting")).toBeInTheDocument());
+    const afterFirst = h.simCalls;
+    expect(afterFirst).toBe(1);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 300));
+    });
+    expect(h.simCalls).toBe(afterFirst);
+    // The loss side settled: the same click now closes and withdraws; the waiting line is gone.
+    h.simErr = null;
+    await click();
+    await waitFor(() => expect(screen.getByTestId("stale-settle-done")).toHaveTextContent(STALE_SETTLE_COPY.settled));
+    expect(screen.queryByTestId("stale-settle-waiting")).toBeNull();
+    expect(h.signAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("the same-engine rollback (bae71e12) also shows the waiting line", async () => {
+    deployed(s16acElf("rollback-s16ac-bae71e12"));
+    h.simErr = { InstructionError: [1, { Custom: 21 }] };
+    render(<StaleSettleNotice slabAddress={SLAB} hasFunds canAct />);
+    await click();
+    await waitFor(() => expect(screen.getByTestId("stale-settle-waiting")).toHaveTextContent(RESOLVED_CLOSE_WAIT_COPY));
+  });
+
+  it("NEGATIVE CONTROL: on the RC (357fc23f, no S1-6 a/c) the same 21 keeps today's 'payout ready shortly' line", async () => {
+    deployed(s16acElf("rc-357fc23f"));
+    h.simErr = { InstructionError: [1, { Custom: 21 }] };
+    render(<StaleSettleNotice slabAddress={SLAB} hasFunds canAct />);
+    await click();
+    await waitFor(() => expect(screen.getByTestId("stale-settle-done")).toHaveTextContent(STALE_SETTLE_COPY.settledPayoutSoon));
+    expect(screen.queryByTestId("stale-settle-waiting")).toBeNull();
+  });
+
+  it("NEGATIVE CONTROL: a 21 from the ATA create (index 0) or another code (14) is not the wait, and the program is not even read", async () => {
+    deployed(s16acElf("rc-s16ac-ddd5a2fa"));
+    for (const err of [{ InstructionError: [0, { Custom: 21 }] }, { InstructionError: [1, { Custom: 14 }] }]) {
+      cleanup();
+      h.getAccountInfo.mockClear();
+      h.simErr = err;
+      render(<StaleSettleNotice slabAddress={SLAB} hasFunds canAct />);
+      await click();
+      await waitFor(() => expect(screen.getByTestId("stale-settle-done")).toHaveTextContent(STALE_SETTLE_COPY.settledPayoutSoon));
+      expect(screen.queryByTestId("stale-settle-waiting")).toBeNull();
+      expect(h.getAccountInfo.mock.calls.some(([k]) => (k as PublicKey).equals(WRAPPER))).toBe(false);
+    }
+  });
+
+  it("view: the waiting line is neutral (no role=alert), the button stays; a done line wins over it", () => {
+    const { rerender } = render(
+      <StaleSettleNoticeView minutes={0} kind="settled" hasFunds busy={false} error={null} done={null} waiting={RESOLVED_CLOSE_WAIT_COPY} canAct onSettle={() => undefined} />,
+    );
+    expect(screen.getByTestId("stale-settle-waiting")).toHaveTextContent(RESOLVED_CLOSE_WAIT_COPY);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByTestId("stale-settle-button")).toBeInTheDocument();
+    rerender(<StaleSettleNoticeView minutes={0} kind="settled" hasFunds busy={false} error={null} done={STALE_SETTLE_COPY.settled} waiting={RESOLVED_CLOSE_WAIT_COPY} canAct onSettle={() => undefined} />);
+    expect(screen.queryByTestId("stale-settle-waiting")).toBeNull();
   });
 });
