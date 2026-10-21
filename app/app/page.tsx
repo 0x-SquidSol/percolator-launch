@@ -61,7 +61,7 @@ export default function Home() {
   return (
     <div className="relative">
       {/* ─── Hero ─── (CSS reveal, not ScrollReveal: it paints from the server HTML; see .reveal-up) */}
-      <section className="mx-auto flex min-h-[calc(72dvh-3.5rem)] max-w-[1100px] flex-col justify-center px-6 py-20 sm:px-8">
+      <section className="mx-auto flex min-h-[min(calc(72dvh-3.5rem),32rem)] max-w-[1100px] flex-col justify-center px-6 py-20 sm:px-8">
         <div className="reveal-up">
           <div className="mb-5 text-[11px] font-medium uppercase tracking-[0.25em] text-[var(--accent-text)]">
             // solana devnet
@@ -70,7 +70,7 @@ export default function Home() {
 
         <div className="reveal-up" style={{ animationDelay: "0.06s" }}>
           <h1
-            className="max-w-[16ch] text-balance text-[var(--text)]"
+            className="max-w-[16ch] text-balance text-[var(--text)] sm:max-w-none xl:whitespace-nowrap xl:!text-[3.25rem]"
             style={{
               fontFamily: "var(--font-display)",
               fontSize: "var(--fs-display)",
@@ -80,6 +80,7 @@ export default function Home() {
             }}
           >
             Perps on Solana tokens;{" "}
+            <br className="hidden sm:inline xl:hidden" />
             <span
               className="bg-clip-text text-transparent"
               style={{ backgroundImage: "linear-gradient(110deg, #B97AFF 0%, #9945FF 35%, #14F195 100%)" }}
@@ -91,7 +92,7 @@ export default function Home() {
         </div>
 
         <div className="reveal-up" style={{ animationDelay: "0.12s" }}>
-          <p className="mt-6 max-w-[52ch] text-[15px] leading-relaxed text-[var(--text-secondary)]">
+          <p className="mt-6 max-w-[52ch] text-[15px] sm:max-w-[78ch] leading-relaxed text-[var(--text-secondary)]">
             Any Solana token with an active DEX pool can have a leveraged market in about a minute. Trade it
             long or short, or deposit into its Earn vault for a share of its trading fees. This is devnet:
             everything runs on free test funds.
@@ -117,7 +118,7 @@ export default function Home() {
       </section>
 
       {/* ─── Live market rail ─── */}
-      <section className="relative mx-auto mt-28 max-w-[1100px] px-6 pb-20 sm:mt-40 sm:px-8">
+      <section className="relative mx-auto mt-20 max-w-[1100px] px-6 pb-20 sm:mt-40 sm:px-8">
         {/* Character banner floats above the whole section (heading + table) so it
             never overlaps the links or columns. */}
         {/* next/image + priority: on mobile this is the page's LCP element. A 1626 px source shown at
