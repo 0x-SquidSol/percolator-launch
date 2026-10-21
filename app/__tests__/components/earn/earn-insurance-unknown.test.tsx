@@ -25,8 +25,7 @@ vi.mock("@/lib/limits/earn-positions", () => ({ readEarnPositions: vi.fn(async (
 
 import { EarnVaultView } from "@/components/earn/EarnVaultView";
 
-const insuranceCard = () => screen.getByRole("heading", { name: "Insurance Fund" }).parentElement!.parentElement!;
-const figure = () => insuranceCard().querySelector(".text-lg")!.textContent;
+const figure = () => screen.getByTestId("earn-insurance-figure").textContent;
 
 describe("Earn hub Insurance Fund card (S11)", () => {
   it("cold load: '—', not $0", async () => {

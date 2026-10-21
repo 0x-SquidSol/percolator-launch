@@ -489,7 +489,21 @@ export function DepositWithdrawPanel({
   if (!connected) {
     return (
       <div className="border border-[var(--border)] bg-[var(--panel-bg)] rounded-sm p-8 text-center hud-corners">
-        <div className="text-4xl mb-3">🔐</div>
+        {/* A wallet on a tile in the landing headline's gradient (was a 🔐 emoji). Decorative: the text
+            and the button below say what to do. */}
+        <div
+          aria-hidden="true"
+          data-testid="earn-connect-icon"
+          className="mx-auto mb-4 flex h-[52px] w-[52px] items-center justify-center rounded-[12px] text-white shadow-[0_8px_22px_-8px_rgba(153,69,255,0.65)]"
+          style={{ backgroundImage: "linear-gradient(135deg, #B97AFF 0%, #9945FF 45%, #14F195 100%)" }}
+        >
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M7 7.2V5.6A1.6 1.6 0 0 1 8.6 4h6.8A1.6 1.6 0 0 1 17 5.6v1.6" />
+            <rect x="3.5" y="7.2" width="17" height="12.3" rx="2.2" />
+            <path d="M20.5 10.8h-3.7a2.2 2.2 0 0 0 0 4.4h3.7" />
+            <circle cx="16.9" cy="13" r="0.85" fill="currentColor" stroke="none" />
+          </svg>
+        </div>
         <p className="text-[13px] text-[var(--text-secondary)] mb-4">
           Connect your wallet to deposit or withdraw
         </p>
