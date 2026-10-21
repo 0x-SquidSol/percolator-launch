@@ -611,8 +611,11 @@ export function quoteStakeWithdrawNowV5(
   exitInsurance: bigint,
   vaultBalance: bigint,
   userLp: bigint,
+  liveInsurance?: bigint,
 ): StakeWithdrawQuoteV5 | null {
-  const v = stakePoolValue(pool, insUnits, exitInsurance);
+  // AUD-FC-B3: the units snapshot is stale-high after an insurance loss; never quote above the live free reading (percolator-sdk 1623461 + follow-up).
+  const exit = liveInsurance !== undefined && liveInsurance < exitInsurance ? liveInsurance : exitInsurance;
+  const v = stakePoolValue(pool, insUnits, exit);
   if (!v) return null;
   const redeemable = collateralForLpV5(userLp, pool.totalLpSupply, v.total);
   if (redeemable === null) return null;

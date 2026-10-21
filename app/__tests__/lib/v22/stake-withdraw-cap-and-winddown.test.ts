@@ -4,7 +4,7 @@ import { Keypair, PublicKey } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { LAYOUT_V22, STAKE_POOL_FIELD_OFF_V5, STAKE_POOL_SIZE_V5, STAKE_RISK_MODE, INSURANCE_UNITS_FIELD_OFF_V22, ACCOUNT_KIND, WRAPPER_ACCOUNT_MAGIC, deriveInsuranceUnitsV22 } from "@/lib/v22/sdk";
 import { buildRecoverTerminalInsuranceIx, planStakeWindDown } from "@/lib/v22/sdk/records/stake-wind-down";
-import { stakeWithdrawCapView } from "@/lib/v22/stake-pool-value";
+import { liveFreeInsuranceAtoms, stakeWithdrawCapView } from "@/lib/v22/stake-pool-value";
 import { withdrawAmountError } from "@/lib/stake-position";
 import { V22_COPY } from "@/lib/v22/copy";
 import { syntheticMarket } from "./_stamp";
@@ -85,6 +85,17 @@ describe("stakeWithdrawCapView (stake processor.rs:1626-1631, LiquidityBufferExh
     expect(withdrawAmountError("20", 20_000_000n, 6, cap.maxLpRaw, V22_COPY.stake.withdrawOverCap)).toBe(V22_COPY.stake.withdrawOverCap);
     expect(withdrawAmountError("10", 20_000_000n, 6, cap.maxLpRaw)).toBeNull();
     expect(V22_COPY.stake.withdrawCap("$10.96")).toBe("Part of this pool is deployed as insurance; up to $10.96 can be withdrawn now, the rest returns if and when it's recovered.");
+  });
+  it("AUD-FC-B3: a stale-high units snapshot is clamped to the live free reading (never quotes above it); live above the snapshot changes nothing", () => {
+    const stale = unitsBytes(10_960_000n, 65_280_000n, 65_280_000n); // snapshot says insurance is still full
+    const old = stakeWithdrawCapView(poolBytes(), stale, 10_960_000n, 20_000_000n)!;
+    const live = stakeWithdrawCapView(poolBytes(), stale, 10_960_000n, 20_000_000n, 32_640_000n)!;
+    expect(live.deferredAtoms).toBeLessThan(old.deferredAtoms); // the stale snapshot overstated what the deployed part is worth
+    expect(live.maxAtoms).toBeLessThanOrEqual(old.maxAtoms);
+    const above = stakeWithdrawCapView(poolBytes(), units, 10_960_000n, 20_000_000n, 999_000_000n)!;
+    expect(above).toEqual(stakeWithdrawCapView(poolBytes(), units, 10_960_000n, 20_000_000n)!);
+    expect(liveFreeInsuranceAtoms(null)).toBeNull();
+    expect(liveFreeInsuranceAtoms(new Uint8Array(10))).toBeNull();
   });
   it("no cap known (units unreadable, vault unread, fee-only) -> null, balance rules apply", () => {
     expect(stakeWithdrawCapView(poolBytes(), null, 10_960_000n, 1n)).toBeNull();

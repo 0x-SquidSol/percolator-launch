@@ -23,7 +23,7 @@ import { FirstLossDeposit } from "@/components/stake/FirstLossDeposit";
 import { V22_COPY } from "@/lib/v22/copy";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { decodeStakePoolV5, deriveInsuranceUnitsV22 } from "@/lib/v22/sdk";
-import { isInsuranceOnly, stakePoolValueView, stakeWithdrawCapView } from "@/lib/v22/stake-pool-value";
+import { isInsuranceOnly, liveFreeInsuranceAtoms, stakePoolValueView, stakeWithdrawCapView } from "@/lib/v22/stake-pool-value";
 import type { StakeWithdrawCapView } from "@/lib/v22/stake-pool-value";
 import { useStakeWithdrawByPool } from "@/hooks/useStakeWithdrawByPool";
 import { parseHumanAmount, formatHumanAmount } from "@/lib/parseAmount";
@@ -268,9 +268,12 @@ async function fetchPoolPosition(
       const [unitsKey] = deriveInsuranceUnitsV22(decodeStakePoolV5(poolInfo.data).percolatorProgram, slabPk);
       const unitsInfo = await connection.getAccountInfo(unitsKey);
       const unitsBytes = unitsInfo ? new Uint8Array(unitsInfo.data) : null;
-      chainVaultAtoms = stakePoolValueView(poolInfo.data, unitsBytes)?.totalAtoms ?? null;
+      // The units snapshot is stale-high after a loss: clamp to the live free reading read from the market (AUD-FC-B3).
+      const marketInfo = await connection.getAccountInfo(slabPk);
+      const liveFree = liveFreeInsuranceAtoms(marketInfo ? new Uint8Array(marketInfo.data) : null);
+      chainVaultAtoms = stakePoolValueView(poolInfo.data, unitsBytes, liveFree)?.totalAtoms ?? null;
       // After an insurance loss a payout must fit the pool's liquid value (stake processor.rs:1626-1631); quote what can go out now.
-      withdrawCap = stakeWithdrawCapView(poolInfo.data, unitsBytes, vaultTokenAtoms, lpAccount.amount);
+      withdrawCap = stakeWithdrawCapView(poolInfo.data, unitsBytes, vaultTokenAtoms, lpAccount.amount, liveFree);
     } catch {
       chainVaultAtoms = null;
       withdrawCap = null;

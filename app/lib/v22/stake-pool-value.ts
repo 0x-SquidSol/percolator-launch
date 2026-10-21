@@ -7,7 +7,24 @@
  * (`snapInsuranceFreeAtoms`) is used, because this is what a leaving staker is paid. A first-loss pool whose insurance units
  * cannot be read gets NO number (the page shows a dash), never a guess.
  */
+import { decodeTerminalInsuranceCapacity } from "./records";
 import { decodeInsuranceUnitsV20, decodeStakePoolV5, quoteStakeWithdrawNowV5, stakePoolValue, STAKE_RISK_MODE } from "./sdk";
+
+/**
+ * The wrapper's live exit reading for asset 0 (`ins_units_readings_view`): min(sum of the domains' withdraw capacity, insurance), from the raw market
+ * account. `InsuranceUnitsV20.snapInsuranceFreeAtoms` is only refreshed when the units account is touched, so after an insurance loss it is stale-high
+ * (devnet FGSFL 2026-10-20: 60M snapshot vs 30M live). Null when the market cannot be decoded: callers then keep the snapshot.
+ */
+export function liveFreeInsuranceAtoms(marketData: Uint8Array | null | undefined): bigint | null {
+  if (!marketData) return null;
+  try {
+    const c = decodeTerminalInsuranceCapacity(marketData, 0);
+    const cap = c.domains.reduce((a, d) => a + d.withdrawCapacity, 0n);
+    return cap < c.insurance ? cap : c.insurance;
+  } catch {
+    return null;
+  }
+}
 
 export type StakePoolKind = "first-loss" | "fee-only" | "legacy";
 
@@ -24,7 +41,7 @@ export interface StakePoolValueView {
 }
 
 /** Null when the account is not a v5 pool (then the caller keeps its legacy math untouched). */
-export function stakePoolValueView(poolData: Uint8Array, unitsData: Uint8Array | null | undefined): StakePoolValueView | null {
+export function stakePoolValueView(poolData: Uint8Array, unitsData: Uint8Array | null | undefined, liveFree?: bigint | null): StakePoolValueView | null {
   let pool;
   try {
     pool = decodeStakePoolV5(poolData);
@@ -40,7 +57,8 @@ export function stakePoolValueView(poolData: Uint8Array, unitsData: Uint8Array |
   if (unitsData) {
     try {
       const u = decodeInsuranceUnitsV20(unitsData);
-      v = stakePoolValue(pool, { unitsStake: u.unitsStake, unitsTotal: u.unitsTotal }, u.snapInsuranceFreeAtoms);
+      const exit = liveFree != null && liveFree < u.snapInsuranceFreeAtoms ? liveFree : u.snapInsuranceFreeAtoms;
+      v = stakePoolValue(pool, { unitsStake: u.unitsStake, unitsTotal: u.unitsTotal }, exit);
     } catch {
       v = null;
     }
@@ -83,13 +101,13 @@ export interface StakeWithdrawCapView {
  * if (cap?.capBinds) setMax(cap.maxLpRaw);
  * ```
  */
-export function stakeWithdrawCapView(poolData: Uint8Array, unitsData: Uint8Array | null | undefined, vaultAtoms: bigint | null, userLpRaw: bigint): StakeWithdrawCapView | null {
+export function stakeWithdrawCapView(poolData: Uint8Array, unitsData: Uint8Array | null | undefined, vaultAtoms: bigint | null, userLpRaw: bigint, liveFree?: bigint | null): StakeWithdrawCapView | null {
   if (vaultAtoms === null || !unitsData) return null;
   try {
     const pool = decodeStakePoolV5(poolData);
     if (pool.riskMode !== STAKE_RISK_MODE.FirstLoss) return null;
     const u = decodeInsuranceUnitsV20(unitsData);
-    const q = quoteStakeWithdrawNowV5(pool, { unitsStake: u.unitsStake, unitsTotal: u.unitsTotal }, u.snapInsuranceFreeAtoms, vaultAtoms, userLpRaw);
+    const q = quoteStakeWithdrawNowV5(pool, { unitsStake: u.unitsStake, unitsTotal: u.unitsTotal }, u.snapInsuranceFreeAtoms, vaultAtoms, userLpRaw, liveFree ?? undefined);
     if (!q) return null;
     // A burn that pays 0 atoms is not a withdrawal: with nothing liquid the largest "fitting" burn can be a dust LP amount worth 0.
     return { capBinds: q.capBinds, maxLpRaw: q.maxCollateralNow === 0n ? 0n : q.maxLpNow, maxAtoms: q.maxCollateralNow, deferredAtoms: q.deferred };
