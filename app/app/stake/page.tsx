@@ -41,6 +41,7 @@ import Link from "next/link";
 import { FeeBreakdown } from "@/components/FeeBreakdown";
 import { ConnectWalletCta } from "@/components/wallet/ConnectWalletCta";
 import { stakeErrorMessage } from "@/lib/earnErrors";
+import { useWalletBalanceRefreshKey } from "@/lib/wallet-balance-invalidation";
 
 /* ── Types ── */
 
@@ -769,7 +770,9 @@ function DepositWidget({
     setWithdrawTxStatus(null);
   }, [selectedPool, mode]);
 
-  // Fetch real SPL token balance for the selected pool's collateral mint
+  // Fetch real SPL token balance for the selected pool's collateral mint, again after any stake
+  // deposit or withdraw (here or PositionCard's Withdraw All), which changes it.
+  const walletBalanceKey = useWalletBalanceRefreshKey();
   useEffect(() => {
     if (!publicKey || !pool?.collateralMint) { setWalletBalanceRaw(null); return; }
     let cancelled = false;
@@ -785,7 +788,7 @@ function DepositWidget({
       } catch { if (!cancelled) setWalletBalanceRaw(null); }
     })();
     return () => { cancelled = true; };
-  }, [publicKey, pool?.collateralMint, connection]);
+  }, [publicKey, pool?.collateralMint, connection, walletBalanceKey]);
 
   // Fetch the selected pool's staked-LP position for the Withdraw tab. Reuses
   // fetchPoolPosition — the exact same on-chain detection the multi-pool scan

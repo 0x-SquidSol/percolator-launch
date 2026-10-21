@@ -212,6 +212,13 @@ export function useClosePosition(slabAddress: string): UseClosePositionReturn {
         setError(COPY.closeNotLoaded);
         throw new Error("No user account");
       }
+      // N6: a named account still needs the market itself. Before the first slab read lands (a fresh
+      // SlabProvider), `raw` is null and the market isn't known to be v17 yet: that is "not loaded",
+      // not the "couldn't match" a loaded legacy market gets below.
+      if (targetPk && !mockMode && raw == null) {
+        setError(COPY.closeNotLoaded);
+        throw new Error("Market not loaded");
+      }
       if (closePercent < 1 || closePercent > 100) throw new Error("Close percent must be 1-100");
       // v2.2 (N2): a market with lots is not traded (closes included) until every surface is lot-aware.
       {
