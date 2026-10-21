@@ -2705,11 +2705,15 @@ export function useCreateMarket() {
               // The old 9-account array (vault ATA, token program, clock, rent, vault
               // PDA, system program) tripped the "Account count mismatch: expected 3,
               // got 9" guard on this resume-Step-0/retry path.
+              // AUD-S1-30: the slab keypair signs this resumed InitMarket too (as it does the fresh
+              // createAccount + InitMarket tx), so the market account is a signer of the init, the
+              // same as on every other path. The program can then require it, and an uninitialised slab
+              // left by a failed launch cannot be initialised by anyone else.
               const initMarketKeys = buildAccountMetas(ACCOUNTS_INIT_MARKET, {
                 admin: wallet.publicKey,
                 slab: slabPk,
                 mint: params.mint,
-              });
+              }).map((k) => (k.pubkey.equals(slabPk) ? { ...k, isSigner: true } : k));
               const initMarketIx = buildIx({ programId, keys: initMarketKeys, data: initMarketData });
 
               const sig = await sendTx({
@@ -2719,6 +2723,7 @@ export function useCreateMarket() {
                 // UX WP-7: the keeper-registration memo rides in the InitMarket tx.
                 instructions: [createAtaIx, initMarketIx, ...(await seqKeeperMemo(wallet.publicKey, slabPk)), ...staleResolveLaunchIxs(programId, wallet.publicKey, slabPk, Number(v17InitArgs.maxPortfolioAssets))],
                 computeUnits: 250_000,
+                signers: [slabKp],
               });
               if (isKeeperOracle && params.dexPoolAddress) saveProofTx(slabPk.toBase58(), sig);
               setState((s) => ({
