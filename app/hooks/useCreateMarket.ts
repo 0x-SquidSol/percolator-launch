@@ -410,6 +410,12 @@ export interface CreateMarketState {
    * construction has to decide.
    */
   batchFallbackReason: string | null;
+  /**
+   * The one-transaction launch was broadcast but never confirmed: it may have landed in full. Set only by the
+   * single-tx "unknown" branch and cleared on every new attempt and on reset. While true the wizard offers no
+   * Continue / fresh relaunch, because a fresh launch makes a new slab keypair and could create a second market.
+   */
+  outcomeUnknown?: boolean;
   step: number;
   stepLabel: string;
   txSigs: string[];
@@ -1498,7 +1504,7 @@ export async function attemptFreshBatchedLaunch(ctx: FreshBatchContext): Promise
               ? "You declined the launch transaction. Nothing was created."
               : `The launch was refused before anything was created: ${single.reason}`;
         console.warn(`[useCreateMarket] SINGLE-TX launch ${single.status}: ${single.status === "unknown" ? single.reason : `${single.stage}: ${single.reason}`}`);
-        setState((s) => ({ ...s, loading: false, phase: "idle", error: msg, step: 0, stepLabel: STEP_LABELS[0] ?? s.stepLabel }));
+        setState((s) => ({ ...s, loading: false, phase: "idle", error: msg, step: 0, stepLabel: STEP_LABELS[0] ?? s.stepLabel, outcomeUnknown: single.status === "unknown" }));
         return { status: "aborted" };
       }
       // v2.2: a launch with a bond is never split (Wave C N-2: a minimum-size Earn deposit between the steps
@@ -2376,6 +2382,7 @@ export function useCreateMarket() {
         // retry that never attempted the batch at all — and be rendered under
         // it, explaining a decision this attempt never made.
         batchFallbackReason: null,
+        outcomeUnknown: false,
         ...(startStep === 0 ? { txSigs: [], slabAddress: null } : {}),
       }));
 
@@ -4330,6 +4337,7 @@ export function useCreateMarket() {
       error: null,
       loading: false,
       batchFallbackReason: null,
+      outcomeUnknown: false,
       devnetMint: null,
       insuranceMintFailed: false,
       backingSeedFailed: false,
