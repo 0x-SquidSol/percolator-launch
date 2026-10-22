@@ -121,10 +121,23 @@ export function bandMinLeg(view: BandRentView | null): { lots: bigint; minQ: big
   // There the smallest order is the program's exact minimum.
   if (view.lotExp === 0) {
     const minQ = bandMinLegExactQ(view)!;
-    return { lots: 0n, minQ, notionalAtoms: (minQ * view.price.markE6) / 1_000_000n, wholeLots: false };
+    // The figure the user is told to type, so ROUNDED UP: a typed notional N becomes Q = floor(N * POS_SCALE / mark),
+    // which reaches minQ only when N >= minQ * mark / POS_SCALE exactly. The floored notional can sit on a whole cent
+    // while the product is a fraction of an atom above it ($10.003001: minQ 9,997,000, product 100.0000000003 USDC,
+    // floor "100"; typing 100 gives Q 9,996,999 and is refused again).
+    return { lots: 0n, minQ, notionalAtoms: (minQ * view.price.markE6 + 999_999n) / 1_000_000n, wholeLots: false };
   }
   const lots = (view.band.minLegNotionalAtoms + view.price.markE6 - 1n) / view.price.markE6; // mark is per lot, atoms
   return { lots, minQ: lots * 1_000_000n, notionalAtoms: lots * view.price.markE6, wholeLots: true };
+}
+
+/**
+ * A minimum notional (collateral atoms) as a figure in whole collateral units, rounded UP to the cent (integer maths, any
+ * decimals): a minimum shown rounded down or to the nearest cent ("100" for 100.000004) is refused again when typed.
+ */
+export function minNotionalUnitsUp(atoms: bigint, decimals: number): number {
+  const unit = 10n ** BigInt(decimals);
+  return Number((atoms * 100n + unit - 1n) / unit) / 100;
 }
 
 /**

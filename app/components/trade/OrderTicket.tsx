@@ -126,7 +126,7 @@ import { V22_COPY } from "@/lib/v22/copy";
 import { parseHumanAmount } from "@/lib/parseAmount";
 import { recordCloseTx } from "@/lib/last-close-tx";
 import { LastCloseTxLink } from "@/components/trade/LastCloseTxLink";
-import { bandCatchUpMs, bandMinLeg, closeBlockedByBand, bandMinLegExactQ, legBelowBandMin } from "@/lib/v22/band-rent-state";
+import { bandCatchUpMs, bandMinLeg, closeBlockedByBand, bandMinLegExactQ, legBelowBandMin, minNotionalUnitsUp } from "@/lib/v22/band-rent-state";
 import { POS_SCALE_V22, formatLotPriceE6, lotExpOf, lotOrderQ, tokenUsdOfLotUsd } from "@/lib/v22/lot";
 import { BandMarketNotice } from "@/components/v22/BandMarketNotice";
 import { OpenModeMarketNotes } from "@/components/v22/OpenModeMarketNotes";
@@ -1179,7 +1179,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const ticketLocked = needsWallet || accountPending || ((needsAccount || needsDeposit) && !walletHasTokens) || lotGuard !== null;
 
   // Rounded UP to the cent: a minimum shown rounded down (100.0012 as "100") is refused again when typed (#3604).
-  const fmtUsdMin = (atoms: bigint, dec: number): string => (Math.ceil(Number(atoms) / 10 ** (dec - 2)) / 100).toLocaleString("en-US", { maximumFractionDigits: 2 });
+  const fmtUsdMin = (atoms: bigint, dec: number): string => minNotionalUnitsUp(atoms, dec).toLocaleString("en-US", { maximumFractionDigits: 2 });
   async function handleTrade(
     snapshotSize?: bigint,
     snapshotLimitPriceE6?: bigint,

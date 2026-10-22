@@ -4,7 +4,7 @@
  * USDC)" and refused every order under one token, though the program takes any leg worth 100 USDC.
  */
 import { describe, expect, it } from "vitest";
-import { bandMinLeg, bandMinLegExactQ, legBelowBandMin, type BandRentView } from "@/lib/v22/band-rent-state";
+import { bandMinLeg, bandMinLegExactQ, legBelowBandMin, minNotionalUnitsUp, type BandRentView } from "@/lib/v22/band-rent-state";
 
 const view = (lotExp: number, markE6: bigint, minLegNotionalAtoms = 100_000_000n): BandRentView =>
   ({
@@ -42,5 +42,36 @@ describe("#3604: the band minimum on a market without lots", () => {
     const m = bandMinLeg(view(1, 32_116_513n))!;
     expect(m.lots).toBe(4n);
     expect(m.minQ).toBe(4_000_000n);
+  });
+});
+
+describe("#3604 follow-up: the shown minimum is one the program accepts when typed", () => {
+  // The ticket turns a typed notional N (atoms) into Q = floor(N * 1e6 / mark).
+  const typedQ = (shownUnits: number, markE6: bigint): bigint => (BigInt(Math.round(shownUnits * 100)) * 10_000n * 1_000_000n) / markE6;
+
+  it("$10.003001: the floored notional is exactly 100.000000 but the product is above it, so the figure is 100.01, not 100", () => {
+    const v = view(0, 10_003_001n);
+    const m = bandMinLeg(v)!;
+    expect(m.minQ).toBe(9_997_000n);
+    const shown = minNotionalUnitsUp(m.notionalAtoms, 6);
+    expect(shown).toBe(100.01);
+    expect(typedQ(shown, 10_003_001n)).toBeGreaterThanOrEqual(m.minQ);
+    expect(legBelowBandMin(v, 0n, typedQ(shown, 10_003_001n))).toBe(false);
+  });
+
+  it("over 20,000 marks from $10 to $10.02, typing the shown minimum is never refused", () => {
+    for (let markE6 = 10_000_000n; markE6 < 10_020_000n; markE6 += 1n) {
+      const v = view(0, markE6);
+      const shown = minNotionalUnitsUp(bandMinLeg(v)!.notionalAtoms, 6);
+      if (legBelowBandMin(v, 0n, typedQ(shown, markE6))) throw new Error(`mark ${markE6}: shown ${shown} is refused`);
+    }
+  });
+
+  it("rounds up to the cent in integer maths, at any decimals", () => {
+    expect(minNotionalUnitsUp(100_000_000n, 6)).toBe(100);
+    expect(minNotionalUnitsUp(100_000_004n, 6)).toBe(100.01);
+    expect(minNotionalUnitsUp(128_466_052n, 6)).toBe(128.47);
+    expect(minNotionalUnitsUp(3n, 1)).toBe(0.3); // float 3 / 0.1 = 30.000000000000004 would show 0.31
+    expect(minNotionalUnitsUp(100n, 0)).toBe(100);
   });
 });

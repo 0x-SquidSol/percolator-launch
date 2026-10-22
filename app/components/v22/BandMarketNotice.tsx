@@ -7,7 +7,7 @@
 import type { FC } from "react";
 import { displayPriceV22 } from "@/lib/v22/sdk";
 import { V22_COPY, fmtTokens } from "@/lib/v22/copy";
-import { bandMinLeg, type BandRentView } from "@/lib/v22/band-rent-state";
+import { bandMinLeg, minNotionalUnitsUp, type BandRentView } from "@/lib/v22/band-rent-state";
 
 export interface BandMarketNoticeProps {
   view: BandRentView | null;
@@ -21,7 +21,8 @@ export const BandMarketNotice: FC<BandMarketNoticeProps> = ({ view, collateralDe
   if (!view || !view.band.enabled) return null;
   // MIN-1: the real minimum is whole lots (bandMinLeg), not the bare configured notional.
   const real = bandMinLeg(view);
-  const min = Number(real ? real.notionalAtoms : view.band.minLegNotionalAtoms) / 10 ** collateralDecimals;
+  // #3604: rounded UP to the cent, as in the ticket, so the figure shown here is one the program accepts.
+  const min = minNotionalUnitsUp(real ? real.notionalAtoms : view.band.minLegNotionalAtoms, collateralDecimals);
   const lotsNote = real && view.lotExp > 0 ? ` (${real.lots} lots)` : "";
   return (
     <div data-testid="band-market-notice" className="mb-2 space-y-0.5 text-[10px] text-[var(--text-secondary)]">

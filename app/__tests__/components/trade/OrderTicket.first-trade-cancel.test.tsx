@@ -306,6 +306,18 @@ describe("#3604: a band market without lots (lotExp 0, a $10+ token) uses the ex
   });
 });
 
+describe("#3604 follow-up: the named minimum is the exact product rounded up, not the floored notional", () => {
+  it("$10.003001 token: floor(minQ x mark) is exactly 100 USDC but 100 typed is refused, so the refusal names 100.01", async () => {
+    mocks.bandView = { assetIndex: 0, lotExp: 0, band: { enabled: true, bandBps: 130, epochSlots: 600n, pinSlots: 9000n, maxPositionsPerSide: 256n, minLegNotionalAtoms: 100_000_000n, recoveryMinutes: 64 }, price: { markE6: 10_003_001n, targetE6: 10_003_001n, lagging: false, floorStuck: false, favourableCloseSide: null }, rent: { enabled: false, maxE9PerSlot: 0n, kinkBps: 0, rateLongE9: 0n, rateShortE9: 0n } };
+    render(<OrderTicket slabAddress={SLAB} />);
+    await waitFor(() => expect(screen.queryByTestId("trade-submit")).not.toBeNull());
+    size("0.01");
+    await place();
+    await waitFor(() => expect(document.body.textContent).toContain("Below the minimum position size here: 100.01 USDC or more"));
+    expect(mocks.fund).not.toHaveBeenCalled();
+  });
+});
+
 describe("SILENT-1: a confirmed order that cannot reach the wallet always says why", () => {
   it("account scan still pending when the order is confirmed: a visible line, no wallet, no silent return", async () => {
     render(<OrderTicket slabAddress={SLAB} />);

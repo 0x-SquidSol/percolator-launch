@@ -23,6 +23,10 @@ describe("BandMarketNotice", () => {
     render(<BandMarketNotice view={view({ price: { markE6: 60_000_000n, targetE6: 50_000_000n, lagging: true, floorStuck: false, favourableCloseSide: "long" } })} collateralDecimals={6} collateralSymbol="USDC" />);
     expect(screen.getByTestId("band-mark-vs-target").textContent).toBe("Mark 0.06 · catching up to 0.05");
   });
+  it("#3604: on a market without lots the minimum is rounded UP to the cent (100.000004 at $13 reads 100.01, not 100)", () => {
+    render(<BandMarketNotice view={view({ lotExp: 0, price: { markE6: 13_000_000n, targetE6: 13_000_000n, lagging: false, floorStuck: false, favourableCloseSide: null } })} collateralDecimals={6} collateralSymbol="USDC" />);
+    expect(screen.getByTestId("band-min-position").textContent).toBe("Minimum position 100.01 USDC");
+  });
   it("renders nothing for a market without a band, and for null", () => {
     const a = render(<BandMarketNotice view={null} collateralDecimals={6} collateralSymbol="USDC" />);
     expect(a.container.innerHTML).toBe("");
