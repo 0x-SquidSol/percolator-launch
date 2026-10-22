@@ -10,7 +10,10 @@ import { deriveDepositPda } from '@percolatorct/sdk';
 import { getConfig } from '@/lib/config';
 import { pollWhenVisible } from '@/lib/pollWhenVisible';
 import { getMultipleAccountsInfoChunked } from '@/lib/rpc-chunk';
-import { readPoolTotalLpSupply, stakeValueAtoms } from '@/lib/stake-position';
+import { readPoolTotalLpSupply, stakeValueAtoms, valueStakePosition, STAKE_COLLATERAL_DECIMALS } from '@/lib/stake-position';
+import { isDevnetV22Enabled } from '@/lib/v22/flag';
+import { decodeStakePoolV5, deriveInsuranceUnitsV22, STAKE_RISK_MODE } from '@/lib/v22/sdk';
+import { liveFreeInsuranceAtoms, stakePoolValueView } from '@/lib/v22/stake-pool-value';
 import { readEarnPositions } from '@/lib/limits/earn-positions';
 import { isBlockedSlab } from '@/lib/blocklist';
 import { CURATED_COLLATERAL_DECIMALS } from '@/hooks/useEarnStats';
@@ -39,6 +42,8 @@ interface ApiPool {
   /** null = not tracked (GET /api/stake/pools has no fee history). */
   apr: number | null;
   poolMode: number;
+  /** v2.2 only (absent flag off). Only "first-loss" deploys insurance into the market. */
+  stakeKind?: 'first-loss' | 'fee-only' | 'legacy';
 }
 
 export interface LpPosition {
@@ -60,10 +65,10 @@ export interface LpPosition {
   lpBalanceRaw: bigint;
   /** User's LP token balance as a formatted float */
   lpBalance: number;
-  /** User's estimated redeemable value in collateral tokens (raw) */
-  redeemableRaw: bigint;
-  /** User's estimated redeemable value as float (USDC, 6 dec assumed) */
-  redeemable: number;
+  /** User's estimated redeemable value in collateral tokens (raw); null = unknown (v2.2 first-loss value unreadable). */
+  redeemableRaw: bigint | null;
+  /** User's estimated redeemable value as float (USDC, 6 dec assumed); null = unknown, shown as a dash. */
+  redeemable: number | null;
   /** Pool-wide LP supply (raw) */
   totalLpSupply: number;
   /** Pool vault balance / TVL in USDC; null = unknown (#3611), shown as a dash. */
@@ -87,7 +92,8 @@ export interface LpPosition {
 
 export interface LpPositionsState {
   positions: LpPosition[];
-  totalRedeemable: number;
+  /** Sum of the positions' values; null when any position's value is unknown (a dash, never a partial sum). */
+  totalRedeemable: number | null;
   loading: boolean;
   /** True only during background refreshes (not initial load) */
   isRefreshing: boolean;
@@ -144,6 +150,84 @@ async function readEarnRows(connection: Connection, wallet: PublicKey): Promise<
   });
 }
 
+/** Total of the positions' values; null when any is unknown (the same rule as the /stake page's total, #3611). */
+function sumRedeemable(rows: LpPosition[]): number | null {
+  let total = 0;
+  for (const p of rows) {
+    if (p.redeemable === null) return null;
+    total += p.redeemable;
+  }
+  return total;
+}
+
+type AccountInfos = Awaited<ReturnType<typeof getMultipleAccountsInfoChunked>>;
+
+/**
+ * v2.2: the full value (vault + deployed insurance) of each FIRST-LOSS pool this wallet holds LP in, keyed by pool
+ * index. A pool is first-loss when the API marks it so or its fresh account decodes as one. Its value is null when the
+ * units can't be read (the row then falls back to the API's first-loss TVL, or shows a dash). One batched read for all
+ * of them (units ledger + market, for the live-free clamp); a failed read leaves every value null, never vault-only.
+ */
+async function readFirstLossValues(
+  connection: Connection,
+  pools: ApiPool[],
+  poolInfos: AccountInfos,
+  ataInfos: AccountInfos,
+  userLpAtas: (PublicKey | null)[],
+): Promise<Map<number, { totalAtoms: bigint | null; supplyRaw: bigint | null }>> {
+  const held: Array<{ i: number; data: Uint8Array | null; units: PublicKey | null; market: PublicKey | null }> = [];
+  for (let i = 0; i < pools.length; i++) {
+    const ata = ataInfos[i];
+    if (!userLpAtas[i] || !ata || ata.data.length < 72) continue;
+    const lp = new DataView(ata.data.buffer, ata.data.byteOffset, ata.data.byteLength).getBigUint64(64, true);
+    if (lp === 0n) continue;
+    const info = poolInfos[i];
+    const data = info ? new Uint8Array(info.data) : null;
+    let decoded: ReturnType<typeof decodeStakePoolV5> | null = null;
+    try {
+      decoded = data ? decodeStakePoolV5(data) : null;
+    } catch {
+      decoded = null;
+    }
+    const isFirstLoss = pools[i].stakeKind === 'first-loss' || decoded?.riskMode === STAKE_RISK_MODE.FirstLoss;
+    if (!isFirstLoss) continue;
+    let units: PublicKey | null = null;
+    let market: PublicKey | null = null;
+    try {
+      if (decoded) {
+        market = decoded.slab;
+        units = deriveInsuranceUnitsV22(decoded.percolatorProgram, decoded.slab)[0];
+      }
+    } catch {
+      units = null;
+    }
+    held.push({ i, data, units, market });
+  }
+  const out = new Map<number, { totalAtoms: bigint | null; supplyRaw: bigint | null }>();
+  if (held.length === 0) return out;
+  const readable = held.filter((h) => h.units !== null && h.market !== null);
+  let infos: AccountInfos = [];
+  if (readable.length > 0) {
+    try {
+      infos = await getMultipleAccountsInfoChunked(connection, readable.flatMap((h) => [h.units!, h.market!]));
+    } catch {
+      infos = [];
+    }
+  }
+  for (const h of held) {
+    const k = readable.indexOf(h);
+    const unitsInfo = k >= 0 ? infos[2 * k] : null;
+    const marketInfo = k >= 0 ? infos[2 * k + 1] : null;
+    const liveFree = liveFreeInsuranceAtoms(marketInfo ? new Uint8Array(marketInfo.data) : null);
+    const view = h.data && unitsInfo ? stakePoolValueView(h.data, new Uint8Array(unitsInfo.data), liveFree) : null;
+    out.set(h.i, {
+      totalAtoms: view?.kind === 'first-loss' ? view.totalAtoms : null,
+      supplyRaw: h.data ? readPoolTotalLpSupply(h.data) : null,
+    });
+  }
+  return out;
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Hook
 // ═══════════════════════════════════════════════════════════════
@@ -159,7 +243,7 @@ export function useLpPositions(): LpPositionsState & { refresh: () => void } {
   const wallet = useWalletCompat();
 
   const [positions, setPositions] = useState<LpPosition[]>([]);
-  const [totalRedeemable, setTotalRedeemable] = useState(0);
+  const [totalRedeemable, setTotalRedeemable] = useState<number | null>(0);
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const hasLoadedOnce = useRef(false);
@@ -215,7 +299,7 @@ export function useLpPositions(): LpPositionsState & { refresh: () => void } {
         const earn = await earnRows;
         if (stale()) return;
         setPositions(earn);
-        setTotalRedeemable(earn.reduce((s, p) => s + p.redeemable, 0));
+        setTotalRedeemable(sumRedeemable(earn));
         return;
       }
 
@@ -279,6 +363,15 @@ export function useLpPositions(): LpPositionsState & { refresh: () => void } {
       const depositInfos = combinedAccountInfos.slice(pools.length, 2 * pools.length);
       const poolInfos = combinedAccountInfos.slice(2 * pools.length, 3 * pools.length);
       const vaultInfos = combinedAccountInfos.slice(3 * pools.length);
+
+      // v2.2 first-loss pools: the stake is worth its share of vault + the insurance deployed into the market, the /stake
+      // page's value (stakePoolValueView with the units ledger, clamped to the market's live free insurance). The units
+      // and market accounts are read in ONE extra batched call, only for first-loss pools this wallet holds; flag off,
+      // nothing here runs.
+      const firstLoss = isDevnetV22Enabled()
+        ? await readFirstLossValues(connection, pools, poolInfos, ataInfos, userLpAtas)
+        : null;
+      if (stale()) return;
 
       const lpDecimalsByMint: Record<string, number> = {};
       for (let i = 0; i < pools.length; i++) {
@@ -351,13 +444,31 @@ export function useLpPositions(): LpPositionsState & { refresh: () => void } {
           // keep the API snapshot
         }
 
-        const redeemableRaw: bigint = totalLpSupply > 0
-          ? stakeValueAtoms(lpBalanceRaw, BigInt(Math.round(totalLpSupply)), tvlRaw) ?? 0n
-          : 0n;
         // Redeemable value is in the pool's collateral token — look up actual decimals.
         const collateralDecimals = collateralDecimalsByMint[pool.collateralMint] ?? 6;
-        // #2324: same guard as the balance above.
-        const redeemable = bigintToFloat(redeemableRaw, collateralDecimals) ?? 0;
+        let redeemableRaw: bigint | null;
+        let redeemable: number | null;
+        const fl = firstLoss?.get(i);
+        if (fl) {
+          // As the /stake page (valueStakePosition): fresh pool supply + fresh first-loss total first, then the API
+          // snapshot, whose first-loss TVL already includes deployed insurance or is null; never the vault alone.
+          const chainSupply = fl.supplyRaw;
+          const freshAtoms = chainSupply !== null && fl.totalAtoms !== null ? stakeValueAtoms(lpBalanceRaw, chainSupply, fl.totalAtoms) : null;
+          redeemableRaw = freshAtoms;
+          redeemable = freshAtoms !== null
+            ? bigintToFloat(freshAtoms, STAKE_COLLATERAL_DECIMALS)
+            : valueStakePosition({
+                lpRaw: lpBalanceRaw, chainTotalLpSupplyRaw: null, chainVaultAtoms: null,
+                apiTotalLpSupply: pool.totalLpSupply, apiTvlUsd: pool.tvl, lpDecimals: lpMintDecimals,
+              });
+          if (redeemableRaw === null && redeemable !== null) redeemableRaw = BigInt(Math.round(redeemable * 10 ** STAKE_COLLATERAL_DECIMALS));
+        } else {
+          redeemableRaw = totalLpSupply > 0
+            ? stakeValueAtoms(lpBalanceRaw, BigInt(Math.round(totalLpSupply)), tvlRaw) ?? 0n
+            : 0n;
+          // #2324: same guard as the balance above.
+          redeemable = bigintToFloat(redeemableRaw, collateralDecimals) ?? 0;
+        }
         // `totalLpSupply` is a number here, so this is a bigint/number mix. Guard
         // the bigint side — the divisor cannot overflow, only the dividend can.
         const lpBalanceForPct = bigintToFloat(lpBalanceRaw, 0);
@@ -413,7 +524,7 @@ export function useLpPositions(): LpPositionsState & { refresh: () => void } {
 
       resolved.push(...(await earnRows));
       if (stale()) return;
-      const total = resolved.reduce((s, p) => s + p.redeemable, 0);
+      const total = sumRedeemable(resolved);
       setPositions(resolved);
       setTotalRedeemable(total);
     } catch (err: any) {

@@ -8,7 +8,7 @@ import "@testing-library/jest-dom";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { PublicKey } from "@solana/web3.js";
 
-const state = vi.hoisted(() => ({ portfolio: {} as any, lpError: null as string | null }));
+const state = vi.hoisted(() => ({ portfolio: {} as any, lpError: null as string | null, lpTotal: 0 as number | null }));
 
 vi.mock("next/link", () => ({ default: ({ children, href }: any) => <a href={href}>{children}</a> }));
 vi.mock("next/dynamic", () => ({ default: () => () => <button>ConnectButton</button> }));
@@ -21,7 +21,7 @@ vi.mock("@/hooks/usePortfolio", async (importOriginal) => ({
 }));
 vi.mock("@/hooks/useMultiTokenMeta", () => ({ useMultiTokenMeta: () => new Map() }));
 vi.mock("@/hooks/useLpPositions", () => ({
-  useLpPositions: () => ({ positions: [], totalRedeemable: 0, loading: false, isRefreshing: false, error: state.lpError, refresh: vi.fn() }),
+  useLpPositions: () => ({ positions: [], totalRedeemable: state.lpTotal, loading: false, isRefreshing: false, error: state.lpError, refresh: vi.fn() }),
 }));
 vi.mock("@/components/portfolio/LpPositionsPanel", () => ({ LpPositionsPanel: () => <div /> }));
 vi.mock("@/hooks/useTraderStats", () => ({ useTraderStats: () => ({ stats: null, loading: false, error: null, refresh: vi.fn() }) }));
@@ -105,10 +105,17 @@ describe("LP Value tile after a failed Earn read", () => {
       atRiskCount: 0, loading: false, isRefreshing: false, error: undefined, refresh: vi.fn(),
     };
   });
-  afterEach(() => { state.lpError = null; });
+  afterEach(() => { state.lpError = null; state.lpTotal = 0; });
 
   it("reads '—', not $0.00", () => {
     state.lpError = "Failed to load LP positions";
+    render(<PortfolioPositionsView />);
+    expect(screen.getByText("LP Value").nextElementSibling?.textContent).toBe("—");
+  });
+
+  // v2.2: a held first-loss stake whose value can't be read makes the LP total unknown (null): a dash, not a partial sum.
+  it("reads '—' when the LP total is unknown (a stake value could not be read)", () => {
+    state.lpTotal = null;
     render(<PortfolioPositionsView />);
     expect(screen.getByText("LP Value").nextElementSibling?.textContent).toBe("—");
   });
