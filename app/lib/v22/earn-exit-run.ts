@@ -49,6 +49,10 @@ export interface ExitRunDeps {
   readStale: () => Promise<RefreshCandidateV22[]>;
   /** One fresh scan, called once per 118 retry round so a portfolio that went stale after the quote is included (N3). Falls back to readStale. */
   rescanStale?: () => Promise<RefreshCandidateV22[]>;
+  /**
+   * The redeemer destination's balance BEFORE the exit (the payout is the change). A missing account resolves 0n; a read
+   * that failed must REJECT (#3612): counted as 0 it would make the wallet's whole balance part of the quote and floor.
+   */
   readDestBalance: () => Promise<bigint>;
   /** Simulate [computeBudgetPrelude(units), ...ixs] as the redeemer (use {@link withExitBudget}). Never throws for a program error: returns it in `err`. */
   simulate: (ixs: TransactionInstruction[], computeUnits: number) => Promise<SimResult>;
@@ -123,6 +127,14 @@ function unpricedRefusal(code: number | undefined, logs: readonly string[]): Err
   return Object.assign(new Error(EXIT_LINES.unpriced), { name: "SimulationRefusal", code: code ?? null, logs: [...logs] });
 }
 
+/** #3612: the "before" balance could not be read; the quote fails with {@link EXIT_LINES.balanceUnread}. */
+class BalanceUnreadError extends Error {
+  constructor() {
+    super(EXIT_LINES.balanceUnread);
+    this.name = "BalanceUnreadError";
+  }
+}
+
 async function simulateOnce(
   input: ExitRunInput,
   deps: ExitRunDeps,
@@ -131,7 +143,13 @@ async function simulateOnce(
   prefix: readonly TransactionInstruction[] = [],
 ): Promise<{ outcome: ReturnType<typeof classifyRedemptionSimulationV22>; payout: bigint | null; logs?: readonly string[] }> {
   const { ctx, mode } = input;
-  const before = await deps.readDestBalance();
+  let before: bigint;
+  try {
+    before = await deps.readDestBalance();
+  } catch {
+    // Never the RPC text (an RPC URL can carry an API key) and never 0 (#3612).
+    throw new BalanceUnreadError();
+  }
   const req = mode === "pair" ? [buildRequestRedeemLpSharesIxV22(ctx.market, ctx.redeemer, ctx.redeemerLpAta, ctx.shares, 1n, ctx.keeperOk === true)] : [];
   const sim = await deps.simulate([...prefix, ...req, plan.simulationIx], units);
   const outcome = classifyRedemptionSimulationV22({ err: sim.err, logs: sim.logs });
@@ -229,6 +247,9 @@ export async function quoteExit(input: ExitRunInput, deps: ExitRunDeps): Promise
       }
       return { status: "failed", error: step.action === "fail" ? step.error : undefined };
     }
+  } catch (e) {
+    if (e instanceof BalanceUnreadError) return { status: "failed", error: new Error(EXIT_LINES.balanceUnread) };
+    throw e;
   } finally {
     setRefreshing(false);
   }

@@ -5,6 +5,7 @@ import { resolveDevnetProgramIds } from "@/lib/program-ids";
 import { parseFailure } from "@/lib/limits/user-message";
 import { quoteExit, sendExit, withExitBudget, type ExitRunDeps, type ExitRunInput, type SimResult } from "@/lib/v22/earn-exit-run";
 import type { ExitContext } from "@/lib/v22/earn-exit";
+import { EXIT_LINES } from "@/lib/v22/exit-retry";
 
 const k = () => Keypair.generate().publicKey;
 const ctx = (): ExitContext => ({
@@ -232,5 +233,36 @@ describe("N3: one fresh scan per 118 retry round", () => {
     expect(q.status).toBe("quoted");
     expect((d.readStale as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
     expect((d.rescanStale as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2);
+  });
+});
+
+// #3612: the payout is the balance change, so an unread "before" balance must fail the quote, never count as 0.
+describe("#3612: a failed balance read fails the quote", () => {
+  const rpcFail = () => new Error("failed to get token account balance: fetch failed https://devnet.helius-rpc.com/?api-key=SECRET");
+  it.each(["pair", "execute"] as const)("%s: the balance read fails -> no quote, one calm line, no RPC text, nothing sent", async (mode) => {
+    const { d } = deps({ sims: [ok(5_100_000_000n)], readDestBalance: async () => { throw rpcFail(); } });
+    const r = await quoteExit(input(mode), d);
+    expect(r.status).toBe("failed");
+    if (r.status === "failed") {
+      expect((r.error as Error).message).toBe(EXIT_LINES.balanceUnread);
+      expect((r.error as Error).message).not.toMatch(/api-key|helius|fetch/i);
+    }
+    expect(d.send).not.toHaveBeenCalled();
+  });
+  it("117 at send time and the re-quote's balance read fails: no new floor is handed back to sign", async () => {
+    let reads = 0;
+    const { d } = deps({ sims: [ok(1_000_000n), ok(900_000n)], sendErrors: [err(117)], readDestBalance: async () => { if (reads++ > 0) throw rpcFail(); return 0n; } });
+    const q = await quoteExit(input(), d);
+    if (q.status !== "quoted") throw new Error("quote");
+    const r = await sendExit(input(), q.quote, d);
+    expect(r.status).toBe("failed");
+    if (r.status === "failed") expect((r.error as Error).message).toBe(EXIT_LINES.balanceUnread);
+    expect(d.send).toHaveBeenCalledTimes(1);
+  });
+  it("CONTROL: a read balance (an empty or missing account reads 0) still prices the change", async () => {
+    const { d } = deps({ sims: [ok(5_100_000_000n)], readDestBalance: async () => 5_000_000_000n });
+    const r = await quoteExit(input("pair"), d);
+    expect(r.status).toBe("quoted");
+    if (r.status === "quoted") expect(r.quote.quote).toBe(100_000_000n);
   });
 });

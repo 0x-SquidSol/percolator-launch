@@ -18,6 +18,7 @@ vi.mock("@/lib/tx-v1/user-bundle", () => ({ sendUserBundle: vi.fn() }));
 
 import { useEarnExitV22 } from "@/hooks/useEarnExitV22";
 import { V22_COPY } from "@/lib/v22/copy";
+import { EXIT_LINES } from "@/lib/v22/exit-retry";
 
 const base = { market: pk(1), programId: pk(2), collateralMint: pk(3), sourceDomain: 0, mode: "execute" as const, estimateAtoms: 0n, shares: 100n };
 
@@ -30,6 +31,14 @@ describe("#3605: Earn exit failure messages", () => {
     await act(async () => void (await result.current.getQuote()));
     expect(result.current.state.phase).toBe("error");
     expect(result.current.state.message).toBe(V22_COPY.earnExit.floorStuck);
+  });
+
+  it("#3612: an unread balance shows the calm balance line", async () => {
+    quoteExit.mockResolvedValue({ status: "failed", error: new Error(EXIT_LINES.balanceUnread) });
+    const { result } = renderHook(() => useEarnExitV22(base));
+    await act(async () => void (await result.current.getQuote()));
+    expect(result.current.state.phase).toBe("error");
+    expect(result.current.state.message).toBe(EXIT_LINES.balanceUnread);
   });
 
   it("CONTROL: raw chain text is still replaced by the generic line", async () => {
