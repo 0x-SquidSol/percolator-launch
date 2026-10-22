@@ -126,7 +126,7 @@ import { V22_COPY } from "@/lib/v22/copy";
 import { parseHumanAmount } from "@/lib/parseAmount";
 import { recordCloseTx } from "@/lib/last-close-tx";
 import { LastCloseTxLink } from "@/components/trade/LastCloseTxLink";
-import { bandCatchUpMs, bandMinLeg, closeBlockedByBand, bandMinLegExactQ, legBelowBandMin, minNotionalUnitsUp } from "@/lib/v22/band-rent-state";
+import { bandCatchUpMs, bandMinLeg, closeBlockedByBand, bandMinLegExactQ, legBelowBandMin, minNotionalUnitsUp, orderBlockedByBand } from "@/lib/v22/band-rent-state";
 import { POS_SCALE_V22, formatLotPriceE6, lotExpOf, lotOrderQ, tokenUsdOfLotUsd } from "@/lib/v22/lot";
 import { BandMarketNotice } from "@/components/v22/BandMarketNotice";
 import { OpenModeMarketNotes } from "@/components/v22/OpenModeMarketNotes";
@@ -134,7 +134,7 @@ import { useBandRentView } from "@/hooks/useBandRentView";
 import { useLotTradingGuard } from "@/hooks/useLotTradingGuard";
 import { FixPricingAction } from "@/components/trade/FixPricingAction";
 import { waitPolicy } from "@/lib/limits/price-stall";
-import { CATCHUP_COPY, bandWalkEstimate, catchUpBudgetMs, catchUpLine, measureSlotMs, retryOnceAfterShortLag, SLOT_MS_DEFAULT } from "@/lib/limits/catchup-estimate";
+import { CATCHUP_COPY, bandWalkEstimate, catchUpAvailableLine, catchUpBudgetMs, catchUpLine, measureSlotMs, retryOnceAfterShortLag, SLOT_MS_DEFAULT } from "@/lib/limits/catchup-estimate";
 import { resolveUserMessage, type UserMessage, type UserMessageAction } from "@/lib/limits/user-message";
 import { PRICES_OUT_OF_SYNC_COPY, TICKET_COPY } from "@/lib/limits/copy";
 import { decodeMarketEngineView } from "@/lib/limits/decode";
@@ -1211,6 +1211,11 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
         return;
       }
     }
+    // #3609: the band refuses (104) a reduce, close or flip on the side the lagging price favours; the dock's reason, before the wallet.
+    if (orderBlockedByBand(bandView, existingPositionSize, direction === "long" ? effectiveSize : -effectiveSize)) {
+      setHumanError(`${catchUpAvailableLine(bandCatchUpMs(bandView, slotMs), "close")} Nothing was sent.`);
+      return;
+    }
 
     if (mockMode) {
       setTradePhase("submitting");
@@ -1586,6 +1591,11 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     }
   }
 
+  // #3609: while the band price lags, the wrapper refuses (104) any order that reduces or flips a position on the side the
+  // stale price favours (the dock's Close is held by the same rule). An order that grows the position is not held here.
+  const bandReduceHold = orderBlockedByBand(bandView, existingPositionSize, direction === "long" ? positionSize : -positionSize);
+  const bandReduceHoldLine = bandReduceHold ? catchUpAvailableLine(bandCatchUpMs(bandView, slotMs), "close") : null;
+
   // #2976: while the post-burn LP owner is first being resolved (bounded), hold only an
   // order that would OPEN / grow / flip this wallet. A close (within the reducing room) is
   // never held; an unresolved owner never blocks (on-chain 67 + pre-sign simulation refuse).
@@ -1608,6 +1618,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     : false;
 
   const submitDisabled =
+    bandReduceHold ||
     positionCapReached ||
     v1Blocked ||
     accountPending ||
@@ -1667,6 +1678,13 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
       return (
         <div data-testid="trade-position-cap">
           <StatusLine message={{ kind: "position-cap", variant: "error", title: "Position limit reached", body: positionCapCopy(maxPositions) }} />
+        </div>
+      );
+    }
+    if (bandReduceHoldLine) {
+      return (
+        <div data-testid="trade-band-close-hold">
+          <StatusLine message={{ kind: "band-close-hold", variant: "wait", title: CATCHUP_COPY.title, body: bandReduceHoldLine }} />
         </div>
       );
     }

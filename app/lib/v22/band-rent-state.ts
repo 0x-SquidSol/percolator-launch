@@ -98,6 +98,20 @@ export function closeBlockedByBand(view: BandRentView | null, positionSide: "lon
 }
 
 /**
+ * #3609: is an order of signed size `orderQ` on top of `existingQ` refused by the band (104)? The wrapper
+ * (`band_favourable_close_refused_view`) checks only the REDUCING part of a fill: a partial close, a full close, or a
+ * flip. A flip's refusal fails the whole instruction, so its opening part never lands either. An order that only grows
+ * the position, or opens from flat, is not refused by this rule. The side rule itself is `closeBlockedByBand`.
+ */
+export function orderBlockedByBand(view: BandRentView | null, existingQ: bigint, orderQ: bigint): boolean {
+  if (existingQ === 0n) return false;
+  const after = existingQ + orderQ;
+  const abs = (x: bigint) => (x < 0n ? -x : x);
+  const reduces = after === 0n || after > 0n !== existingQ > 0n || abs(after) < abs(existingQ);
+  return reduces && closeBlockedByBand(view, existingQ > 0n ? "long" : "short");
+}
+
+/**
  * A leg whose notional is below HALF the market minimum can be closed by anyone (tag 118 sweep). `absQ` is the
  * position in engine Q (POS_SCALE per lot), `markE6` the per-lot mark; the engine compares q*price/POS_SCALE raw.
  */
