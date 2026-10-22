@@ -36,6 +36,14 @@ describe("Earn header", () => {
     expect(screen.getByText(/48% of every trading fee on that market is\s+added to the vault/)).toBeTruthy();
   });
 
+  it("states the downside without any click (the Risk notice row starts closed)", async () => {
+    await header();
+    const line = screen.getByTestId("earn-loss-line");
+    expect(line.closest("[hidden]")).toBeNull();
+    expect(line.textContent).toMatch(/fall when traders win/);
+    expect(line.textContent).toMatch(/only deposit what you can afford to lose/i);
+  });
+
   it("keeps the full fee split closed until asked for, then opens and closes it", async () => {
     await header();
     const toggle = screen.getByTestId("earn-fee-split-toggle");
@@ -75,7 +83,7 @@ describe("Earn info rows", () => {
     expect(panel("risk").hidden).toBe(false);
     expect(panel("how").hidden).toBe(true);
     expect(button(/How it works/).getAttribute("aria-expanded")).toBe("false");
-    expect(panel("risk").textContent).toMatch(/Only deposit what you can afford to lose/);
+    expect(panel("risk").textContent).toMatch(/only deposit what you can afford to lose/i);
 
     fireEvent.click(button(/Insurance fund/));
     expect(panel("insurance").hidden).toBe(false);

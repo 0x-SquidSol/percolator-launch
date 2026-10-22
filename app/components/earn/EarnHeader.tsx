@@ -59,7 +59,9 @@ export function EarnHeader({ stats, loading }: EarnHeaderProps) {
                 500-notional round trip accrued the vault's 48% and moved it in on its own). */}
             <p className="mt-2 max-w-[68ch] text-[14px] xl:max-w-none leading-relaxed text-[var(--text-secondary)]">
               Deposit USDC into a market&apos;s vault. {LP_SHARE_PCT}% of every trading fee on that market is
-              added to the vault, so your deposit grows as people trade it.
+              added to the vault, so your deposit grows as people trade it.{" "}
+              {/* Always visible: the detailed Risk notice row below starts closed, so the downside is stated here too. */}
+              <span data-testid="earn-loss-line">It can also fall when traders win, so only deposit what you can afford to lose.</span>
             </p>
             <button
               type="button"
