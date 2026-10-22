@@ -501,11 +501,11 @@ export function commitSlotForPendingTargetV5(pool: Pick<StakePoolV5, "pendingTar
 }
 
 // ============================================================================
-// Errors 33..45, plus 28 (stable names from percolator-stake src/error.rs, one calm line each)
+// Errors 33..48, plus 28 / 29 (stable names from percolator-stake src/error.rs, one calm line each)
 // ============================================================================
 
 /**
- * StakeError codes 33 to 45 (v5), with the stable Rust variant name and a calm one-line user message.
+ * StakeError codes 33 to 48 (v5), with the stable Rust variant name and a calm one-line user message.
  * Codes 0 to 32 are the v2.1 table (`STAKE_ERRORS`); {@link decodeStakeErrorV5} covers all of them. Note
  * `STAKE_ERRORS[32]` still says "VERSION 18": on a v2.2 stake it pins VERSION 19 (see the PR notes).
  */
@@ -528,10 +528,17 @@ export const STAKE_ERRORS_V5: Readonly<Record<number, ErrorInfo>> = Object.freez
   43: { name: "NothingToSync", hint: "Nothing to sync: the pool is already close to its target." },
   44: { name: "InsuranceReadingsDiverged", hint: "The market's insurance is lent out right now; deposits and syncs wait until it is repaid." },
   45: { name: "InsuranceUnitsMismatch", hint: "The market's insurance record did not update as expected; nothing was changed." },
+  // percolator-stake fix/v22-stake-310-313-combined (security review 2026-10-14):
+  // 46: RecoverTerminalInsurance's close-out owes the creator (pool.admin) part of the vault surplus and no creator token account was passed.
+  46: { name: "CreatorAccountRequired", hint: "This pool's creator is owed part of what's left, so their account must be included to finish the close-out. Nothing was changed." },
+  // 47: BurnAssetAdmin before asset 0's insurance authority AND operator are both the pool's vault_auth.
+  47: { name: "InsuranceCustodyNotBound", hint: "Hand this market's insurance to the stake pool first; the admin key can be burned after that. Nothing was changed." },
+  // 48: InitPool / BindInsuranceAuthority on a multi-asset market, or (InitPool) one whose permissionless market-init fee is not 0.
+  48: { name: "MultiAssetMarketNotSupported", hint: "Stake pools need a single-asset market with the fee for adding markets set to 0. Nothing was changed." },
 }) as Readonly<Record<number, ErrorInfo>>;
 
 /**
- * Decode a stake error code (0..45) for a v5 program. Codes 33..45 come from {@link STAKE_ERRORS_V5}; the
+ * Decode a stake error code (0..48) for a v5 program. Codes 33..48 come from {@link STAKE_ERRORS_V5}; the
  * rest are looked up by the caller in `STAKE_ERRORS` (returned as `undefined` here).
  *
  * @param code  Custom program error code.

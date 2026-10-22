@@ -104,7 +104,7 @@ export function v22WrapperMessage(code: number, ctx: MessageContext & { minPosit
   }
 }
 
-/** Stake v5 codes 33..=45, plus 28 (first deposit too small). Only call for an error attributed to the stake program. */
+/** Stake v5 codes 33..=48, plus 28 (first deposit too small). Only call for an error attributed to the stake program. */
 export function v22StakeMessage(code: number, m: Build): UserMessage | null {
   // v2.2 QA copy round: two pre-v5 stake codes (percolator-stake src/error.rs) that showed "Something went wrong".
   if (code === STAKE_ERR_TRANCHE_NOT_ENABLED) {

@@ -444,7 +444,7 @@ function resolveUserMessageInner(err: unknown, ctx: MessageContext): UserMessage
     return m("market-unavailable", "paused", "Temporarily unavailable", "This market is temporarily unavailable. We've been notified.");
   }
 
-  // ── Devnet v2.2 (flag-gated): stake v5 33..45, wrapper 104..119 / 123 / 124 ─────────────
+  // ── Devnet v2.2 (flag-gated): stake v5 33..48, wrapper 104..119 / 123 / 124 ─────────────
   if (p.code !== null && isDevnetV22Enabled()) {
     if (origin === "stake") {
       const sv = v22StakeMessage(p.code, m);

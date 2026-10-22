@@ -1,6 +1,6 @@
 import { V22_COPY } from "@/lib/v22/copy";
 /**
- * v2.2 error copy: wrapper 104..124 and stake 33..45 map to calm one-line messages ONLY with the flag on.
+ * v2.2 error copy: wrapper 104..124 and stake 33..48 map to calm one-line messages ONLY with the flag on.
  * Special handling: 104 is not red, 117/124 re-quote, 118 retries by itself, 121 keeps the v2.1 line.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -13,6 +13,7 @@ import { V22_COUNTERPARTY_CAP_COPY, V22_CUSTOM9_COPY, V22_CUSTOM9_GENERIC, V22_P
 import { V22_DEPTH_INPUT_COPY, V22_DEPTH_SOURCE_COPY, V22_TIER_CONFIG_COPY } from "@/lib/v22/copy";
 import { V22_ERROR_CODE_MAP, V22_STAKE_ERROR_CODE_MAP } from "@/lib/v22/error-copy";
 import { WRAPPER_ERR_V22, STAKE_ERR_V5, STAKE_ERR_DEPOSIT_BELOW_MIN_LIQUIDITY } from "@/lib/v22/wrapper-errors";
+import { STAKE_ERRORS_V5 } from "@/lib/v22/sdk";
 
 const ids = resolveDevnetProgramIds();
 const fail = (code: number, programId: string | null = ids.wrapper): Error & { programId: string | null } => {
@@ -49,13 +50,42 @@ describe("every new code has a calm one-line message", () => {
     expect(humanizeError(raw(code))).toBe(V22_ERROR_CODE_MAP[code]);
   });
   const stakeCodes = Object.values(STAKE_ERR_V5);
-  it("covers stake 33..45", () => expect(stakeCodes).toEqual([33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45]));
+  it("covers stake 33..48", () => expect(stakeCodes).toEqual([33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48]));
   it.each(stakeCodes)("stake %i is attributed to the stake program, not the wrapper", (code) => {
     const m = resolveUserMessage(fail(code, ids.stake), { surface: "stake" });
     expect(m.body).toBe(V22_STAKE_ERROR_CODE_MAP[code]);
     expect(m.body).not.toMatch(/\n/);
     // The same number from the wrapper keeps its own meaning (33..45 are wrapper codes too).
     expect(resolveUserMessage(fail(code, ids.wrapper), { surface: "stake" }).body).not.toBe(V22_STAKE_ERROR_CODE_MAP[code]);
+  });
+});
+
+// percolator-stake fix/v22-stake-310-313-combined src/error.rs: 46 CreatorAccountRequired (RecoverTerminalInsurance close-out
+// owes the creator part of the surplus and no creator token account was passed), 47 InsuranceCustodyNotBound (BurnAssetAdmin
+// before asset 0's insurance authority AND operator are the pool's vault_auth), 48 MultiAssetMarketNotSupported (InitPool /
+// BindInsuranceAuthority on a multi-asset market, or one whose permissionless market-init fee is not 0).
+describe("stake errors 46..48 (security review 2026-10-14)", () => {
+  const COPY: Record<number, [string, string]> = {
+    46: ["CreatorAccountRequired", "This pool's creator is owed part of what's left, so their account must be included to finish the close-out. Nothing was changed."],
+    47: ["InsuranceCustodyNotBound", "Hand this market's insurance to the stake pool first; the admin key can be burned after that. Nothing was changed."],
+    48: ["MultiAssetMarketNotSupported", "Stake pools need a single-asset market with the fee for adding markets set to 0. Nothing was changed."],
+  };
+  it.each([46, 47, 48])("stake %i: stable name, its calm line, structured and plain resolvers agree", (code) => {
+    const [name, body] = COPY[code];
+    expect(STAKE_ERR_V5[name as keyof typeof STAKE_ERR_V5]).toBe(code);
+    expect(STAKE_ERRORS_V5[code]).toEqual({ name, hint: body });
+    expect(V22_STAKE_ERROR_CODE_MAP[code]).toBe(body);
+    expect(body).not.toMatch(JARGON);
+    const m = resolveUserMessage(fail(code, ids.stake), { surface: "stake" });
+    expect(m).toMatchObject({ kind: `stake-${name}`, variant: "info", body });
+    expect(humanizeError(raw(code, ids.stake))).toBe(body);
+  });
+  it("flag off: not attributed", () => {
+    __setDevnetV22ForTest(false);
+    for (const code of [46, 47, 48]) {
+      expect(resolveUserMessage(fail(code, ids.stake), { surface: "stake" }).body).not.toBe(COPY[code][1]);
+      expect(humanizeError(raw(code, ids.stake))).not.toBe(COPY[code][1]);
+    }
   });
 });
 

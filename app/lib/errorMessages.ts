@@ -538,8 +538,8 @@ export function humanizeError(rawMsg: string, context?: "trade"): string {
     }
     // error-codes-4b1a5d30.md: a Custom(n) is the WRAPPER's code only when the wrapper raised
     // it. An unattributed code (no "Program X failed" line) or another program's is not guessed.
-    // Devnet v2.2 (flag-gated): wrapper 104..119 / 123..127 (+ plain 28 / 29 / 93), stake v5 33..45. Checked before v2.1 / the
-    // legacy table because the stake program reuses low numbers (33..45) that the wrapper table also owns, and so v2.2's plain
+    // Devnet v2.2 (flag-gated): wrapper 104..119 / 123..127 (+ plain 28 / 29 / 93), stake v5 33..48. Checked before v2.1 / the
+    // legacy table because the stake program reuses low numbers (33..48) that the wrapper table also owns, and so v2.2's plain
     // 28 / 29 win over the legacy lines for the same codes.
     if (isDevnetV22Enabled()) {
       if (origin !== null && origin === stakeProgramIdOrNull() && V22_STAKE_ERROR_CODE_MAP[code]) return V22_STAKE_ERROR_CODE_MAP[code];
