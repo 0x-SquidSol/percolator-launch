@@ -65,7 +65,8 @@ export function useBondV22(ctx: EarnV22Context | null) {
   };
 
   const run = useCallback(
-    async (build: () => { ix: ReturnType<typeof buildBondDepositIxV22>; units: number }) => {
+    // #3613: the caller names its surface, so a refused withdraw request / execute reads as a withdrawal, not a deposit.
+    async (surface: 'earn-deposit' | 'earn-withdraw', build: () => { ix: ReturnType<typeof buildBondDepositIxV22>; units: number }) => {
       if (!ctx || !wallet.publicKey || inflight.current) return;
       inflight.current = true;
       setBusy(true);
@@ -76,7 +77,7 @@ export function useBondV22(ctx: EarnV22Context | null) {
         await refresh();
         ctx.onDone?.();
       } catch (e) {
-        const m = resolveUserMessage(e, { surface: 'earn-deposit', symbol: ctx.symbol });
+        const m = resolveUserMessage(e, { surface, symbol: ctx.symbol });
         if (!m.quiet) setMessage(m);
         // 124: the price moved past the floor; re-read so the next quote (and floor) is fresh.
         if (m.requote) await refresh();
@@ -90,7 +91,7 @@ export function useBondV22(ctx: EarnV22Context | null) {
 
   const deposit = useCallback(
     (amount: bigint) =>
-      run(() => {
+      run('earn-deposit', () => {
         if (!bond || !readings || !wallet.publicKey || !ctx) throw new Error('Not ready');
         const q = bondDepositQuote(bond.tranche, amount, readings, SLIPPAGE_BPS);
         if (!q || q.refusal || q.minShares === null) throw wrapperRefusal(q?.refusal?.code ?? 107);
@@ -104,7 +105,7 @@ export function useBondV22(ctx: EarnV22Context | null) {
 
   const requestWithdraw = useCallback(
     (shares: bigint) =>
-      run(() => {
+      run('earn-withdraw', () => {
         if (!wallet.publicKey || !ctx) throw new Error('Not ready');
         return { ix: buildBondRequestWithdrawIxV22(market(), wallet.publicKey, shares), units: COMPUTE_PRESETS_V22.bondRequestWithdraw.units };
       }),
@@ -114,7 +115,7 @@ export function useBondV22(ctx: EarnV22Context | null) {
 
   const executeWithdraw = useCallback(
     () =>
-      run(() => {
+      run('earn-withdraw', () => {
         if (!bond?.position || !readings || !wallet.publicKey || !ctx) throw new Error('Not ready');
         const q = bondWithdrawQuote(bond.tranche, bond.position, readings, SLIPPAGE_BPS);
         if (!q || q.refusal || q.minOut === null) throw wrapperRefusal(q?.refusal?.code ?? 110);
