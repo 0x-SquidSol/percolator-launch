@@ -1122,10 +1122,17 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
     bondChoiceUsedRef.current = false;
   }, [createState.error]);
   // One fresh launch per error (lib/v22/bond-relaunch): a launch that stopped before create() re-arms the guard.
-  const handleBondTryAgain = () => freshLaunchOnce(bondChoiceUsedRef, () => launch(false));
+  // Never a silent no-op: a fresh launch that cannot run (no wallet, invalid form) says why, as Retry does.
+  const freshFromPanel = (run: () => boolean) => {
+    const blocked = retryBlockedReason({ hasWallet: !!publicKey, configValid, step: 0, hasSlab: false });
+    setRetryNote(blocked);
+    if (blocked) return;
+    freshLaunchOnce(bondChoiceUsedRef, run);
+  };
+  const handleBondTryAgain = () => freshFromPanel(() => launch(false));
   // The form is unticked only once the launch has started, so what the user sees matches what launches.
   const handleLaunchWithoutBond = () =>
-    freshLaunchOnce(bondChoiceUsedRef, () => {
+    freshFromPanel(() => {
       const started = launch(true);
       if (started) setWizard((prev) => ({ ...prev, v22: { ...(prev.v22 ?? {}), bond: false } }));
       return started;
@@ -1140,7 +1147,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
     // one transaction: Continue is a fresh launch, not the step-by-step path (which refuses a bond).
     if (bondRetry === "hidden") return;
     if (bondRetry === "fresh") {
-      freshLaunchOnce(bondChoiceUsedRef, () => launch(false));
+      freshFromPanel(() => launch(false));
       return;
     }
     // Never a silent no-op: a Retry that does nothing reads as a hung launch. Say why.

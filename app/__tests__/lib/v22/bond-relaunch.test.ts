@@ -51,7 +51,9 @@ describe("the wizard routes its error panel through these", () => {
     expect(src).toMatch(/onRetry=\{bondRetry === "hidden" \? undefined : handleRetry\}/);
     expect(src).toMatch(/if \(bondRetry === "hidden"\) return;/);
     expect(src).toMatch(/outcomeUnknown: !!createState\.outcomeUnknown/);
-    // Every fresh launch from the panel goes through the one-shot guard.
-    expect(src.match(/freshLaunchOnce\(bondChoiceUsedRef/g)?.length).toBe(3);
+    // Every fresh launch from the panel goes through one path: the blocked-reason note, then the one-shot guard.
+    expect(src).toMatch(/const freshFromPanel = [\s\S]{0,300}retryBlockedReason\([\s\S]{0,200}setRetryNote\(blocked\);\n\s+if \(blocked\) return;\n\s+freshLaunchOnce\(bondChoiceUsedRef, run\);/);
+    expect(src.match(/freshFromPanel\(/g)?.length).toBe(3);
+    expect(src.match(/freshLaunchOnce\(/g)?.length).toBe(1);
   });
 });
