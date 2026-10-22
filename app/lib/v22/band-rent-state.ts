@@ -7,7 +7,7 @@
  *  - rent rate:         `rentRateE9FailClosedV22`.
  * The app-facing names (`readBandRentView`, `closeBlockedByBand`, ...) are kept so the surfaces do not change.
  */
-import { catchUpEstimate } from "@/lib/limits/catchup-estimate";
+import { bandWalkEstimate } from "@/lib/limits/catchup-estimate";
 import {
   rentPercentPerDayV22,
   rentRateE9FailClosedV22,
@@ -85,10 +85,10 @@ export function readBandRentView(data: Uint8Array | null | undefined, assetIndex
   };
 }
 
-/** How long the price catch-up is estimated to last on a band market (ms; the gap between target and effective price over the per-slot cap); null = no estimate. */
+/** How long the price catch-up is estimated to last on a band market (ms): the gap between target and effective price over the per-sweep walk min(cap x sweep, band); null = no estimate. */
 export function bandCatchUpMs(view: BandRentView | null, slotMs?: number): number | null {
   if (!view || !view.band.enabled || !view.price.lagging) return null;
-  const e = catchUpEstimate({ effectiveE6: view.price.markE6, targetE6: view.price.targetE6, capBpsPerSlot: view.price.capBpsPerSlot, slotMs });
+  const e = bandWalkEstimate({ effectiveE6: view.price.markE6, targetE6: view.price.targetE6, capBpsPerSlot: view.price.capBpsPerSlot, bandBps: view.band.bandBps, slotMs });
   return e && e.ms > 0 ? e.ms : null;
 }
 

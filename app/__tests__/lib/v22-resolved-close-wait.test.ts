@@ -29,6 +29,11 @@ const ELF = {
   rc2s16ac: elf("rc2-s16ac-4fe8fd53"),
   rc2s16acRollback: elf("rollback2-s16ac-b6aec357"),
   rc2: elf("rc2-cc720a0e"),
+  // RC2.2 (decision Option B, 2026-10-22): canonical = the S1-6 a/c twin; the plain twins are the negative controls.
+  rc22s16ac: elf("rc22-s16ac-776d2491"),
+  rollback4bS16ac: elf("rollback4b-s16ac-3958c36b"),
+  rc22: elf("rc22-9b630735"),
+  rollback4b: elf("rollback4b-71a891b9"),
   rc2Rollback: elf("rollback2-8b57d488"),
 };
 const W = DEVNET_V22_PROGRAM_IDS.wrapper;
@@ -77,6 +82,21 @@ describe("I-S1 gate: classifyS16acElfPrefix", () => {
   it("NEGATIVE CONTROL: plain RC2 cc720a0e and rollback2 8b57d488 (engine 1c96c22f) are not", async () => {
     expect(await classifyS16acElfPrefix(W, ELF.rc2)).toBe("other");
     expect(await classifyS16acElfPrefix(W, ELF.rc2Rollback)).toBe("other");
+  });
+  it("RC2.2 canonical (Option B): rc22-s16ac 776d2491 + rollback4b-s16ac 3958c36b are S1-6 a/c", async () => {
+    expect(await classifyS16acElfPrefix(W, ELF.rc22s16ac)).toBe("s16ac");
+    expect(await classifyS16acElfPrefix(W, ELF.rollback4bS16ac)).toBe("s16ac");
+  });
+  it("NEGATIVE CONTROL: plain rc22 9b630735 and rollback4b 71a891b9 (engine 1c96c22f) must read OFF", async () => {
+    expect(await classifyS16acElfPrefix(W, ELF.rc22)).toBe("other");
+    expect(await classifyS16acElfPrefix(W, ELF.rollback4b)).toBe("other");
+  });
+  it("RC2.2 fixtures are the canonical artifacts' first 4096 bytes (sha256 prefixes)", async () => {
+    const { sha256Hex } = await import("@/lib/program-upgrade-detect");
+    expect(await sha256Hex(ELF.rc22s16ac)).toMatch(/^29c9f50049d60617/);
+    expect(await sha256Hex(ELF.rollback4bS16ac)).toMatch(/^5f364f924c39e2f1/);
+    expect(await sha256Hex(ELF.rc22)).toMatch(/^02e3d1b7/);
+    expect(await sha256Hex(ELF.rollback4b)).toMatch(/^c66cc394/);
   });
   it("another program id is never S1-6 a/c, even with the variant's bytes; short / zeroed bytes are unknown", async () => {
     expect(await classifyS16acElfPrefix(DEVNET_PROGRAM_IDS.wrapper, ELF.s16ac)).toBe("other");

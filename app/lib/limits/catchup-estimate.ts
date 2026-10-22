@@ -36,6 +36,39 @@ export function catchUpEstimate(p: { effectiveE6: bigint; targetE6: bigint; capB
   return { gapBps: Number(gapBps), slots: Number(slots), ms: Math.round(Number(slots) * slotMs) + KEEPER_SWEEP_MS };
 }
 
+/** The keeper sweeps (observe crank + certify every leg) about every 26 slots; the effective price steps once per sweep (L7, 2026-10-22). */
+export const BAND_SWEEP_SLOTS = 26;
+
+/**
+ * Band-market catch-up (GAP-12). The effective price does not glide every slot: each keeper sweep (about every
+ * {@link BAND_SWEEP_SLOTS} slots) steps it toward the target by at most `min(cap x sweepSlots, band)` bps. A gap of J bps
+ * therefore takes ceil(J / step) sweeps, i.e. `lag / (min(cap x S, band) / S)` slots. When the band is the tighter limit
+ * the walk is slower than the cap alone says, which the plain {@link catchUpEstimate} cannot see.
+ * null when the numbers do not allow an estimate (no cap / no price).
+ */
+export function bandWalkEstimate(p: {
+  effectiveE6: bigint;
+  targetE6: bigint;
+  capBpsPerSlot: bigint | number;
+  /** `band_bps` of the market; absent / 0 = no band limit on the step. */
+  bandBps?: number | bigint | null;
+  sweepSlots?: number;
+  slotMs?: number;
+}): CatchUpEstimate | null {
+  const cap = p.capBpsPerSlot === undefined || p.capBpsPerSlot === null ? 0n : BigInt(p.capBpsPerSlot);
+  if (cap <= 0n || p.effectiveE6 <= 0n || p.targetE6 <= 0n) return null;
+  const diff = p.effectiveE6 > p.targetE6 ? p.effectiveE6 - p.targetE6 : p.targetE6 - p.effectiveE6;
+  if (diff === 0n) return { gapBps: 0, slots: 0, ms: 0 };
+  const sweep = BigInt(p.sweepSlots && p.sweepSlots > 0 ? Math.floor(p.sweepSlots) : BAND_SWEEP_SLOTS);
+  const band = p.bandBps === undefined || p.bandBps === null ? 0n : BigInt(p.bandBps);
+  const stepPerSweep = band > 0n && band < cap * sweep ? band : cap * sweep;
+  const gapBps = (diff * 10_000n + p.effectiveE6 - 1n) / p.effectiveE6; // ceil
+  const sweeps = (gapBps + stepPerSweep - 1n) / stepPerSweep; // ceil
+  const slots = sweeps * sweep;
+  const slotMs = p.slotMs && p.slotMs > 0 ? p.slotMs : SLOT_MS_DEFAULT;
+  return { gapBps: Number(gapBps), slots: Number(slots), ms: Math.round(Number(slots) * slotMs) };
+}
+
 /** Wait budget: max(2 min, estimate x 1.5), at most 10 min. No estimate = the old 2 minutes. */
 export function catchUpBudgetMs(estimateMs: number | null | undefined): number {
   if (estimateMs === null || estimateMs === undefined || !Number.isFinite(estimateMs) || estimateMs <= 0) return MIN_WAIT_BUDGET_MS;

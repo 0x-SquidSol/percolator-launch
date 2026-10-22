@@ -38,6 +38,10 @@ export interface OrderTicketClosePanelProps {
   lpUnderfunded: boolean;
   /** Engine lag beyond the app's own catch-up (UX WP-2 SH-3; mirrors PositionsDock); clears itself. */
   engineStale: boolean;
+  /** v2.2 band: the close the stale price would favour is refused (104) while the price walks to its target (mirrors PositionsDock). */
+  bandCloseHold?: boolean;
+  /** Estimated catch-up wait (ms) for the band market; null/absent = "usually a few minutes". */
+  catchUpMs?: number | null;
   /** Oracle unavailable/stale (already mock-mode aware) — blocks the close. */
   oracleBlocked: boolean;
   /** Price older than 60 s but the chain would still accept the close: show a calm note, do not block. */
@@ -83,7 +87,9 @@ export const OrderTicketClosePanel: FC<OrderTicketClosePanelProps> = ({
   tradingFeeBps,
   maxFillAbs,
   lpUnderfunded,
-  engineStale,
+  engineStale: engineStaleProp,
+  bandCloseHold = false,
+  catchUpMs = null,
   oracleBlocked,
   oraclePriceBehind = false,
   priceAgeSecs = 0,
@@ -191,6 +197,8 @@ export const OrderTicketClosePanel: FC<OrderTicketClosePanelProps> = ({
     );
   }
 
+  // The engine lag or the band hold: either way the close waits on the price catching up.
+  const engineStale = engineStaleProp || bandCloseHold;
   // Gates that block the close beyond the form's own loading/oracleStale: no
   // live mark (can't preview or fill), engine catching up past the app's own repair, or an LP with no
   // capital. Mirrors the labels/tooltips the old button used.
@@ -199,7 +207,7 @@ export const OrderTicketClosePanel: FC<OrderTicketClosePanelProps> = ({
   const submitTitle = !hasValidMark
     ? "Waiting for price data…"
     : engineStale
-      ? catchUpAvailableLine(null, "close")
+      ? catchUpAvailableLine(catchUpMs, "close")
       : lpUnderfunded
         ? "The LP has no capital, so a close cannot fill."
         : undefined;
@@ -222,6 +230,8 @@ export const OrderTicketClosePanel: FC<OrderTicketClosePanelProps> = ({
         tradingFeeBps={tradingFeeBps}
         oracleStale={oracleBlocked}
         oraclePriceBehind={oraclePriceBehind}
+        engineCatchingUp={engineStale}
+        catchUpMs={catchUpMs}
         priceAgeSecs={priceAgeSecs}
         settleMarkE6={settleMarkE6}
         error={error}
