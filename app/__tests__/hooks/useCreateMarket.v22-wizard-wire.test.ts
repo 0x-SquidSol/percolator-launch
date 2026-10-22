@@ -99,7 +99,7 @@ import { __setLotMarketsEnabledForTest } from "@/lib/v22/lot";
 import { buildV17InitMarketArgs, slabSizeFor } from "@/lib/create-market-args";
 import { deriveLaunchMarketParams } from "@/lib/market-params";
 import { defaultGrowthLaunch, type GrowthLaunch } from "@/lib/v21/growth-launch";
-import { planLaunchV22, toLaunchParams } from "@/lib/v22/launch-plan";
+import { launchInitialPriceE6, planLaunchV22, toLaunchParams } from "@/lib/v22/launch-plan";
 import { encodeConfigurePermissionlessResolveV22, staleWindowRepair } from "@/lib/v22/launch-wire";
 import { canonicalVaultLpMatcher, wizardP3Params } from "@/lib/limits/p3-wizard";
 import { encodeInitMarket } from "@percolatorct/sdk";
@@ -132,7 +132,7 @@ function wizardParams(opts: { p3: boolean; tokenPriceE6: bigint }): CreateMarket
     : undefined;
   const plan = growthLaunch ? planLaunchV22({ tokenPriceE6: opts.tokenPriceE6, collateralDecimals: 6, collateralSymbol: "TST", oracleMode: "keeper", growthOn: true }) : null;
   const v22 = plan ? toLaunchParams(plan) : undefined;
-  const launchPrice = v22 ? opts.tokenPriceE6 * 10n ** BigInt(v22.lotExp) : opts.tokenPriceE6;
+  const launchPrice = launchInitialPriceE6(plan, v22, opts.tokenPriceE6); // the wizard's launchPriceE6 (#3610)
   return {
     mint: MINT,
     initialPriceE6: launchPrice,

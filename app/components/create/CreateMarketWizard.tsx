@@ -44,8 +44,7 @@ import { EMPTY_TIER_EDIT, collateralDecimalsIssue, isUsdLikeCollateral, validate
 import { V22LaunchOptions, type V22OptionsState } from "./V22LaunchOptions";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { lotMarketsEnabled } from "@/lib/v22/lot";
-import { lotExpForTokenPriceV22 } from "@/lib/v22/sdk/v22-math";
-import { planLaunchV22, toLaunchParams } from "@/lib/v22/launch-plan";
+import { launchInitialPriceE6, lotLaunchPrice, planLaunchV22, toLaunchParams } from "@/lib/v22/launch-plan";
 import { ResumeFromChainCard } from "./ResumeFromChainCard";
 import { ChainResumeNotice } from "./ChainResumeNotice";
 import { dropChainResume, useChainResumeWalletGuard } from "@/hooks/useChainResumeWalletGuard";
@@ -563,16 +562,18 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
   // Build oracle feed for create — also used below to gate launch on a real price
   // being available (no on-chain InitMarket call should ever ship a priceE6 of 0).
   // Devnet v2.2: a market for a token under $10 prices a LOT of 10^k tokens (the same k planLaunchV22 picks below, from
-  // the raw per-token price), and InitMarket gets the per-lot price, so the trackable floor applies per lot. Without
-  // this, a sub-$0.0025 token was zeroed here before the plan ever saw it, and could not be launched at all.
-  const rawTokenPriceE6 = (() => {
-    if (wizard.oracleType === "pyth") return 0n;
-    const r = toInitialPriceE6(wizard.oracleType === "hyperp_ema" ? (wizard.dexPool?.priceUsd != null ? String(wizard.dexPool.priceUsd) : null) : wizard.adminPrice);
-    return r.ok ? r.e6 : 0n;
-  })();
+  // the unrounded per-token price, #3610), and InitMarket gets the per-lot price, so the trackable floor applies per lot.
+  // Without this, a sub-$0.0025 token was zeroed here before the plan ever saw it, and could not be launched at all.
+  // The per-token price as the active branch's source gave it (decimal string, unrounded).
+  const tokenPriceText: string | null =
+    wizard.oracleType === "pyth"
+      ? null
+      : wizard.oracleType === "hyperp_ema"
+        ? (wizard.dexPool?.priceUsd != null ? String(wizard.dexPool.priceUsd) : null)
+        : (wizard.adminPrice ?? null);
   const floorLotExp =
     isDevnetV22Enabled() && growthLaunch && (wizard.oracleType === "keeper" || wizard.oracleType === "admin") && lotMarketsEnabled()
-      ? (lotExpForTokenPriceV22(rawTokenPriceE6) ?? 0)
+      ? (lotLaunchPrice(tokenPriceText)?.lotExp ?? 0)
       : 0;
   const getOracleFeedAndPrice = (): { oracleFeed: string; priceE6: bigint } => {
     if (wizard.oracleType === "pyth") {
@@ -773,6 +774,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
     isDevnetV22Enabled() && growthLaunch
       ? planLaunchV22({
           tokenPriceE6: currentPriceE6,
+          tokenPrice: tokenPriceText,
           collateralDecimals: decimals,
           collateralSymbol,
           oracleMode: wizard.oracleType === "hyperp_ema" ? "hyperp" : wizard.oracleType,
@@ -793,8 +795,11 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
     ? { ...growthLaunch, collateralDecimals: decimals, ...(tierResult?.config && tierBounds ? { tiers: tierResult.config, lTierX100: tierBounds.lTierX100 } : {}) }
     : undefined;
   const v22Issue = v22Plan?.issues[0] ?? null;
-  /** The launch price: per LOT when a v2.2 lot applies, else the per-token price as before. */
-  const launchPriceE6 = (tokenE6: bigint): bigint => (v22Params ? tokenE6 * 10n ** BigInt(v22Params.lotExp) : tokenE6);
+  /**
+   * The launch price: per LOT when a v2.2 lot applies (the plan's per-lot price, rounded once from the unrounded token
+   * price, #3610), else the per-token price as before. Both InitMarket paths (launch, retry) take it from here.
+   */
+  const launchPriceE6 = (tokenE6: bigint): bigint => launchInitialPriceE6(v22Plan, v22Params, tokenE6);
   // #3320: a wallet already at its per-creator live-price ceiling would launch a market keeper-register
   // refuses for good: it would list and sit with no live price (the outcome the unsupported-pool gate
   // above prevents), after spending its rent, LP and insurance. Block it before anything is built or

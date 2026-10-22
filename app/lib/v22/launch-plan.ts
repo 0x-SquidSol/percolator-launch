@@ -10,6 +10,7 @@
  * (`growth(4) [lot(1)] [rent(6) [band(18)]]`), so they exist only on a growth (P3, single-asset)
  * market priced by an AUTH_MARK oracle (a lot on Hybrid / EWMA is refused with 119).
  */
+import { decimalPriceToScaled, toInitialPriceE6 } from "../initial-price";
 import { lotMarketsEnabled } from "./lot";
 import {
   BAND_MIN_LEG_NOTIONAL_TOKENS_V22,
@@ -68,6 +69,12 @@ export interface LaunchIssue {
 export interface LaunchPlanInput {
   /** USD price of ONE token, e6 (what the wizard already holds as `priceE6`). 0n = unknown. */
   tokenPriceE6: bigint;
+  /**
+   * The same price as the decimal string it came from (unrounded; #3610). When given (and it is the price `tokenPriceE6`
+   * was rounded from), the lot size and the per-lot price come from it, rounded once at the per-lot e6. Omitted => from
+   * `tokenPriceE6`, as before.
+   */
+  tokenPrice?: string | null;
   /** Collateral mint decimals (the band's minimum position is in whole collateral tokens). */
   collateralDecimals: number;
   /** Collateral symbol for the minimum-position line; omitted => "$". */
@@ -93,7 +100,10 @@ export interface LaunchPlanV22 {
   bond: boolean;
   /** 0 = whole tokens are the unit (the no-lot form). Internal: never shown. */
   lotExp: number;
-  /** Per-lot launch price, e6: what InitMarket and the mark use. Equals `tokenPriceE6 * 10^lotExp`. */
+  /**
+   * Per-lot launch price, e6: what InitMarket and the mark use. `round(tokenPrice * 10^(6 + lotExp))` from the unrounded
+   * decimal price when the plan was given one (#3610), else `tokenPriceE6 * 10^lotExp`. At lotExp 0 it is `tokenPriceE6`.
+   */
   perLotPriceE6: bigint;
   rent?: RentBlockV22;
   band?: BandBlockV22;
@@ -140,7 +150,9 @@ export function planLaunchV22(i: LaunchPlanInput): LaunchPlanV22 {
     issues.push({ code: "price-unknown", message: V22_COPY.wizard.priceUnknown });
     return { ...none, available: true, protection, holdingFee, bond, issues };
   }
-  const k = lotExpForTokenPriceV22(i.tokenPriceE6);
+  // #3610: from the unrounded price when we have it (and it is this price), so the rounding happens once, per lot.
+  const exact = i.tokenPrice != null && sameE6(i.tokenPrice, i.tokenPriceE6) ? lotLaunchPrice(i.tokenPrice) : null;
+  const k = exact ? exact.lotExp : lotExpForTokenPriceV22(i.tokenPriceE6);
   if (k === null) {
     issues.push({ code: "price-floor", message: V22_COPY.wizard.priceFloor(usd(LOT_PRICE_FLOOR_E6_V22)) });
     return { ...none, available: true, protection, holdingFee, bond, issues };
@@ -151,7 +163,7 @@ export function planLaunchV22(i: LaunchPlanInput): LaunchPlanV22 {
     issues.push({ code: "price-floor", message: V22_COPY.wizard.lotsNotReady });
     return { ...none, available: true, protection, holdingFee, bond, issues };
   }
-  const perLot = i.tokenPriceE6 * 10n ** BigInt(k);
+  const perLot = exact ? exact.perLotPriceE6 : i.tokenPriceE6 * 10n ** BigInt(k);
   if (perLot > LOT_PRICE_CEILING_E6) {
     issues.push({ code: "price-ceiling", message: V22_COPY.wizard.priceCeiling(usd(LOT_PRICE_CEILING_E6)) });
   }
@@ -204,6 +216,45 @@ export function planLaunchV22(i: LaunchPlanInput): LaunchPlanV22 {
     }
   }
   return out;
+}
+
+const sameE6 = (price: string, e6: bigint): boolean => {
+  const r = toInitialPriceE6(price);
+  return r.ok && r.e6 === e6;
+};
+
+/**
+ * The lot size and the per-lot InitMarket price for a per-token price given as a decimal string (#3610).
+ *
+ * The wrapper's `initial_price` is the per-LOT mark and a growth market refuses one under `LOT_PRICE_FLOOR_E6` (10^7,
+ * $10; Custom 119), so the lot is the smallest `k` whose per-lot price, rounded ONCE at the per-lot e6, clears that
+ * floor, and that rounded value is the price sent. Picking `k` from the per-token price rounded to a whole e6 instead
+ * both mis-priced the lot (0.0000015 -> 2 e6 -> $20 per lot, true $15) and could pick a lot one size too small: 0.0000096
+ * rounds to 10 e6 -> 10^6, whose real per-lot price is $9.60, under the floor.
+ *
+ * A price whose whole-e6 value already clears the floor (>= $10) keeps lot 0 and exactly the `toInitialPriceE6` value,
+ * so those launches are byte-identical to before. Null when the price is unusable (see `toInitialPriceE6`) or no lot up
+ * to 10^15 reaches the floor.
+ */
+export function lotLaunchPrice(tokenPrice: string | null | undefined): { lotExp: number; perLotPriceE6: bigint } | null {
+  const r = toInitialPriceE6(tokenPrice);
+  if (!r.ok) return null;
+  if (r.e6 >= LOT_PRICE_FLOOR_E6_V22) return { lotExp: 0, perLotPriceE6: r.e6 };
+  for (let k = 1; k <= LOT_EXP_MAX_V22; k++) {
+    const perLot = decimalPriceToScaled(tokenPrice, 6 + k);
+    if (perLot === null) return null;
+    if (perLot >= LOT_PRICE_FLOOR_E6_V22) return { lotExp: k, perLotPriceE6: perLot };
+  }
+  return null;
+}
+
+/**
+ * The InitMarket `initial_price` for a launch: the plan's per-lot price when a v2.2 block is sent, else the per-token
+ * price unchanged. The one place the wizard's launch and retry paths take it from, so they cannot disagree with the plan.
+ */
+export function launchInitialPriceE6(plan: LaunchPlanV22 | null | undefined, params: V22LaunchParams | undefined, tokenPriceE6: bigint): bigint {
+  if (!plan || !params || params.lotExp === 0) return tokenPriceE6;
+  return plan.perLotPriceE6;
 }
 
 function BAND_DEFAULT_MIN_TOKENS(b: BandBlockV22, decimals: number): number {
