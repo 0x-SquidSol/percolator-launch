@@ -534,7 +534,7 @@ export const STAKE_ERRORS_V5: Readonly<Record<number, ErrorInfo>> = Object.freez
   // 47: BurnAssetAdmin before asset 0's insurance authority AND operator are both the pool's vault_auth.
   47: { name: "InsuranceCustodyNotBound", hint: "Hand this market's insurance to the stake pool first; the admin key can be burned after that. Nothing was changed." },
   // 48: InitPool / BindInsuranceAuthority on a multi-asset market, or (InitPool) one whose permissionless market-init fee is not 0.
-  48: { name: "MultiAssetMarketNotSupported", hint: "Stake pools need a single-asset market with the fee for adding markets set to 0. Nothing was changed." },
+  48: { name: "MultiAssetMarketNotSupported", hint: "Stake pools need a single-asset market (and, for a new pool, the fee for adding assets set to 0). Nothing was changed." },
 }) as Readonly<Record<number, ErrorInfo>>;
 
 /**

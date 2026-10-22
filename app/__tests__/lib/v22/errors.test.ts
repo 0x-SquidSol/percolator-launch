@@ -68,7 +68,7 @@ describe("stake errors 46..48 (security review 2026-10-14)", () => {
   const COPY: Record<number, [string, string]> = {
     46: ["CreatorAccountRequired", "This pool's creator is owed part of what's left, so their account must be included to finish the close-out. Nothing was changed."],
     47: ["InsuranceCustodyNotBound", "Hand this market's insurance to the stake pool first; the admin key can be burned after that. Nothing was changed."],
-    48: ["MultiAssetMarketNotSupported", "Stake pools need a single-asset market with the fee for adding markets set to 0. Nothing was changed."],
+    48: ["MultiAssetMarketNotSupported", "Stake pools need a single-asset market (and, for a new pool, the fee for adding assets set to 0). Nothing was changed."],
   };
   it.each([46, 47, 48])("stake %i: stable name, its calm line, structured and plain resolvers agree", (code) => {
     const [name, body] = COPY[code];
