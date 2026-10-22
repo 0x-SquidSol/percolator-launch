@@ -205,14 +205,38 @@ export function orderStakeTailInstructions<T>(
   updateFeeSplitIx: T | null,
   initPoolIx: T,
   bindInsuranceIx: T,
+  burnAssetAdminIx: T | null = null,
 ): T[] {
   return [
     ...preInitPool,
     ...(updateFeeSplitIx ? [updateFeeSplitIx] : []),
     initPoolIx,
     bindInsuranceIx,
+    // Stake tag 21 BurnAssetAdmin (IRREVERSIBLE) is LAST: it ends the creator's asset-admin authority, so nothing
+    // that needs it may follow. Only a FIRST_LOSS pool takes it (see `assetAdminBurnForCreate`); null otherwise.
+    ...(burnAssetAdminIx ? [burnAssetAdminIx] : []),
   ];
 }
+
+/**
+ * Whether the create bundle carries the asset-admin burn (decision 2026-10-22, L5; code only, NOT wired to the wizard UI:
+ * the wizard creates legacy / FEE_ONLY pools today and a FIRST_LOSS wizard flow does not exist yet, STAKE.md row 9).
+ *
+ * The burn is required for a FIRST_LOSS pool to deploy (stake sync refuses 42 AssetAdminNotBurned until it) and is IRREVERSIBLE, so
+ * it is included only when BOTH the pool is first-loss AND the creator has acknowledged `FIRST_LOSS_BURN_CONSENT_COPY` in this
+ * session. Never on a FEE_ONLY / legacy pool (the creator would lose the authority for nothing).
+ */
+export function assetAdminBurnForCreate(riskMode: "first-loss" | "fee-only" | "legacy", consentAcknowledged: boolean): boolean {
+  return riskMode === "first-loss" && consentAcknowledged === true;
+}
+
+/** Must be shown, and acknowledged, before the wallet is asked to sign a bundle that burns the asset admin. */
+export const FIRST_LOSS_BURN_CONSENT_COPY = [
+  "First-loss markets burn the asset admin when they are created. This cannot be undone.",
+  "The creator fee on a first-loss market goes to the protocol, not to you.",
+  "If this market's oracle ever enters Recovery it cannot be restarted: it can only be resolved.",
+  "The asset admin can no longer be rotated.",
+] as const;
 
 // BACKING-BUCKET SEEDING: both domains of asset 0 (long=2*assetIndex,
 // short=2*assetIndex+1) are funded by DepositToLpVault in the Earn-vault step
