@@ -415,9 +415,14 @@ function StakeHeader({
             ) : v22Pools ? (
               <p className="mt-2 max-w-[68ch] text-[14px] leading-relaxed text-[var(--text-secondary)] xl:max-w-none" data-testid="stake-intro-feeonly">{V22_COPY.stake.closeOut.feeOnly}</p>
             ) : (
-              <p className="mt-2 max-w-[68ch] text-[14px] leading-relaxed text-[var(--text-secondary)] xl:max-w-none">
+              <p className="mt-2 max-w-[68ch] text-[14px] leading-relaxed text-[var(--text-secondary)] xl:max-w-none" data-testid="stake-intro-legacy">
                 Stake into a market&apos;s pool to receive a share of that market&apos;s trading fees —
-                fully on-chain and transparent.
+                fully on-chain and transparent.{" "}
+                {/* Always visible (the fee split and Risk notice start closed): staked funds can cover losses. */}
+                <span data-testid="stake-loss-line">
+                  The pool admin can move staked funds into the market&apos;s insurance fund, where trading losses
+                  can use them, so your stake can lose value. This has not happened so far.
+                </span>
               </p>
             )}
             <button
@@ -463,9 +468,7 @@ function StakeHeader({
           {!insuranceOnly && !v22Pools && (
             <p className="mb-2 text-[11px] text-[var(--text-secondary)]">
               Stakers are paid the insurance share of every trading fee, moved into the stake pool
-              automatically. The pool admin can move staked funds into the market&apos;s insurance
-              fund, where trading losses can use them, so your stake can lose value. This has not
-              happened so far.
+              automatically.
             </p>
           )}
           {/* The 0% above reads as an oversight without the other shares beside

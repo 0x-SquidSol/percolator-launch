@@ -44,6 +44,15 @@ const panel = (id: string) => document.getElementById(`stake-info-${id}`)!;
 const row = (name: RegExp) => screen.getByRole("button", { name });
 
 describe("Stake header", () => {
+  it("states the downside without any click, whichever intro shows (fee split and Risk notice start closed)", async () => {
+    render(<StakePage />);
+    await screen.findByTestId("stake-fee-split-toggle");
+    // Some "lose value" sentence must be on screen with nothing opened: not inside a hidden panel or a closed row.
+    const visible = Array.from(document.querySelectorAll("p, span"))
+      .filter((el) => /lose value/.test(el.textContent ?? "") && !el.closest("[hidden]"));
+    expect(visible.length).toBeGreaterThan(0);
+  });
+
   it("keeps the full fee split closed until asked for, then opens and closes it", async () => {
     render(<StakePage />);
     const toggle = await screen.findByTestId("stake-fee-split-toggle");
@@ -54,7 +63,7 @@ describe("Stake header", () => {
     fireEvent.click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     expect(split.hidden).toBe(false);
-    // The staker row (0%, easy to mistake for the insurance share) still renders beside the others.
+    // The staker row (easy to mistake for the insurance share) still renders beside the others.
     expect(split.textContent).toContain("Stakers");
     expect(split.textContent).toContain("Insurance fund");
     fireEvent.click(toggle);
