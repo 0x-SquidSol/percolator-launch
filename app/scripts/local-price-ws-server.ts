@@ -47,11 +47,13 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import { detectDexType } from "@percolatorct/sdk";
 import { createServer, type IncomingMessage } from "node:http";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { WebSocketServer, WebSocket } from "ws";
 import { readPoolPriceE6, type DecimalsCache, type PoolReadEntry } from "../lib/priceStore/dexPoolReader";
 import { createBatchPoolReader } from "../lib/priceStore/dexPoolBatchReader";
 import { fetchJupiterSolUsdE6 } from "../lib/jupiter-price";
 import { pickSolUsdE6 } from "../lib/priceStore/solUsd";
+import { parseMarketsFile } from "../lib/priceStore/marketsFile";
 import { isBlockedSlab } from "../lib/blocklist";
 import { createTickService, MAX_BODY_BYTES } from "../lib/chart/tick-service";
 import { bearerMatches } from "../lib/chart/tick-ingest";
@@ -113,7 +115,20 @@ interface DexMarketEntry extends PoolReadEntry {
 // GnwdeQr… wrapper, so polling them cost two mainnet pool reads (three RPC calls each)
 // every cycle for markets no client can list. Relaunch markets come from the database
 // (refreshDbMarkets) as soon as they register.
-const SEED_DEX_MARKETS: DexMarketEntry[] = [];
+//
+// PRICE_WS_MARKETS_FILE (v22price 2026-10-22, opt-in): seed the list from an oracle-keeper registry file
+// (`{ markets: [{ marketAddress, poolAddress, dexType, label }] }`), e.g. the v2.2 devnet keeper's
+// registry.v22fresh.json, so a deployment for markets that are NOT in the database (the v2.2 preview) streams
+// exactly the keeper's markets. Only single-pool entries with a known dexType are taken (multi-asset rows have
+// no single pool and are skipped, never guessed). Unset = the empty seed above, behaviour unchanged.
+const SEED_DEX_MARKETS: DexMarketEntry[] = loadMarketsFile(process.env.PRICE_WS_MARKETS_FILE);
+
+function loadMarketsFile(path: string | undefined): DexMarketEntry[] {
+  if (!path) return [];
+  const out = parseMarketsFile(readFileSync(path, "utf8"));
+  if (out.length === 0) throw new Error(`PRICE_WS_MARKETS_FILE ${path}: no single-pool market with a supported dexType`);
+  return out;
+}
 
 /**
  * Live DEX market list = the seed above plus every `keeper_status='active'`
@@ -250,7 +265,7 @@ const TICK_FLUSH_MS = Number(process.env.TICK_FLUSH_MS ?? 10_000);
 const tickStore = getPgCandleStore(process.env, 2);
 /** The market set: database-registered active markets (dexMarkets) plus any TICK_EXTRA_SLABS. Until the first
  *  successful database read the set is "not loaded" and only the address format is enforced. */
-let marketsLoaded = (process.env.TICK_EXTRA_SLABS ?? "").trim().length > 0 && !SUPABASE_URL;
+let marketsLoaded = ((process.env.TICK_EXTRA_SLABS ?? "").trim().length > 0 || SEED_DEX_MARKETS.length > 0) && !SUPABASE_URL;
 const knownSlabs = (): ReadonlySet<string> => {
   const set = new Set(dexMarkets.map((m) => m.slab));
   for (const x of (process.env.TICK_EXTRA_SLABS ?? "").split(",").map((v) => v.trim()).filter(Boolean)) set.add(x);
