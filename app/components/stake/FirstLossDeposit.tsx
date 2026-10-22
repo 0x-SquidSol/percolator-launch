@@ -6,7 +6,7 @@
  * `expected` (the API already marks it first-loss): then, until the pool's own read succeeds, a reading line or a
  * "couldn't read" line with Retry, never nothing and never the plain form (#3607).
  */
-import { errorText } from "@/lib/error-text";
+import { firstLossStakeErrorMessage } from "@/lib/earnErrors";
 import { useEffect, useState } from 'react';
 import { useStakeFirstLoss } from '@/hooks/useStakeFirstLoss';
 import { ConsentChangedError, consentKey, consentTextMatches, consentViewOf, pctOfBps } from '@/lib/v22/stake-v5';
@@ -71,7 +71,7 @@ export function FirstLossDeposit({ slabAddress, collateralMint, decimals = 6, de
       onDone?.();
     } catch (e) {
       if (e instanceof ConsentChangedError) { setAccepted(null); setNote(e.message); }
-      else setNote(errorText(e));
+      else setNote(firstLossStakeErrorMessage(e)); // #3608: never raw simulation, log or RPC text
     }
   };
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { errorText } from "@/lib/error-text";
+import { firstLossStakeErrorMessage } from "@/lib/earnErrors";
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { PublicKey, type TransactionInstruction } from '@solana/web3.js';
 import { createAssociatedTokenAccountInstruction, getAssociatedTokenAddress } from '@solana/spl-token';
@@ -121,7 +121,7 @@ export function useStakeFirstLoss(slabAddress: string, collateralMint: string) {
         ixs.push(buildStakeDepositV5Ix({ stakeProgramId: programId, pool: poolKey, poolState: fresh, user: wallet.publicKey, userCollateral, userLp, vaultAuthority: vaultAuth, depositPda, amount }));
         return await sendTx({ connection, wallet, instructions: ixs, simulateBeforeSign: true });
       } catch (e) {
-        setError(errorText(e));
+        setError(firstLossStakeErrorMessage(e)); // #3608: never raw simulation, log or RPC text
         throw e;
       } finally {
         inflight.current = false;
