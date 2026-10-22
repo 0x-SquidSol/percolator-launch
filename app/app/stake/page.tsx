@@ -55,7 +55,8 @@ interface StakePool {
   mainnetCa?: string;
   /** SPL mint for pool collateral (USDC). Used to query wallet ATA balance. */
   collateralMint?: string;
-  tvl: number;
+  /** null = unknown (#3611: a first-loss pool whose insurance units could not be read); shown as a dash. */
+  tvl: number | null;
   /** null = not tracked (the API has no fee history), never a real 0%. */
   apr: number | null;
   capUsed: number;
@@ -81,7 +82,8 @@ interface UserPosition {
   lpBalanceRaw: bigint;
   /** Decimals of the LP mint — needed to parse partial withdraw amounts */
   lpDecimals: number;
-  estimatedValue: number;
+  /** null = unknown (#3611): neither the chain read nor the API could value the pool; shown as a dash. */
+  estimatedValue: number | null;
   cooldownRemaining: number;
   cooldownTotal: number;
   cooldownElapsed: boolean;
@@ -99,7 +101,8 @@ interface ApiPool {
   name: string;
   symbol: string;
   logoUrl: string | null;
-  tvl: number;
+  /** null for a first-loss pool whose value could not be read (#3611). */
+  tvl: number | null;
   tvlRaw: string;
   poolValue: number;
   apr: number | null;
@@ -142,6 +145,11 @@ function apiPoolToStakePool(p: ApiPool): StakePool {
 }
 
 /* ── Helpers ── */
+
+/** #3611: an unknown value is a dash, never a number. */
+function formatUsdOrDash(n: number | null): string {
+  return n === null ? "—" : formatUsd(n);
+}
 
 function formatUsd(n: number): string {
   if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(1)}B`;
@@ -260,7 +268,8 @@ async function fetchPoolPosition(
     // fall back to the API snapshot below
   }
   // v2.2 first-loss pool: the stake is worth its share of vault + deployed insurance, read fresh. Unreadable units
-  // leave the base null so the valuation falls back to the API snapshot (whose TVL already includes deployed).
+  // leave the base null so the valuation falls back to the API snapshot, whose first-loss TVL includes deployed or is
+  // null when the API could not read it either (#3611); then the value is unknown (a dash), never vault-only.
   let withdrawCap: StakeWithdrawCapView | null = null;
   if (isDevnetV22Enabled() && pool.stakeKind === "first-loss") {
     const vaultTokenAtoms = chainVaultAtoms;
@@ -345,16 +354,20 @@ const withdrawCapLine = (cap: StakeWithdrawCapView): string => V22_COPY.stake.wi
 function StakeHeader({
   pools,
   totalUserDeposited,
+  depositsUnknown = false,
   loading,
 }: {
   pools: StakePool[];
   totalUserDeposited: number | null;
+  /** #3611: a position's value can't be read (its pool has no TVL and its own units read failed): a dash, not "…". */
+  depositsUnknown?: boolean;
   loading: boolean;
 }) {
   const { connected } = useWalletCompat();
   // The full fee split is reference material: the intro says what staking does, the split opens on request.
   const [splitOpen, setSplitOpen] = useState(false);
-  const totalStaked = pools.reduce((s, p) => s + p.tvl, 0);
+  // #3611: one pool the API could not value makes the total unknown (a dash), not an under-count.
+  const totalStaked = pools.some((p) => p.tvl === null) ? null : pools.reduce((s, p) => s + (p.tvl ?? 0), 0);
   const activePools = pools.length;
   // Only first-loss pools are insurance staking; any fee-only / legacy pool keeps the "Fee staking" name.
   const insuranceOnly = isInsuranceOnly(pools);
@@ -368,13 +381,13 @@ function StakeHeader({
     !connected
       ? "—"
       : totalUserDeposited === null
-        ? "…"
+        ? depositsUnknown ? "—" : "…"
         : totalUserDeposited > 0
           ? formatUsd(totalUserDeposited)
           : "$—";
 
   const stats: { label: string; value: string; muted?: boolean }[] = [
-    { label: "Total Staked", value: loading ? "…" : formatUsd(totalStaked) },
+    { label: "Total Staked", value: loading ? "…" : formatUsdOrDash(totalStaked), muted: !loading && totalStaked === null },
     { label: "Your Deposits", value: yourDeposits, muted: !connected || totalUserDeposited === null || (totalUserDeposited ?? 0) <= 0 },
     { label: "Active Pools", value: loading ? "…" : String(activePools) },
     { label: "Avg APR", value: avgApr === null ? "—" : `${avgApr.toFixed(1)}%`, muted: avgApr === null || avgApr <= 0 },
@@ -544,7 +557,7 @@ function PositionCard({
           <div>
             <div className="text-[9px] uppercase tracking-[0.15em] text-[var(--text-secondary)]">Est. Value</div>
             <div className="text-sm font-mono tabular-nums text-[var(--text)]">
-              {formatUsd(position.estimatedValue)}
+              {formatUsdOrDash(position.estimatedValue)}
             </div>
           </div>
         </div>
@@ -1309,7 +1322,7 @@ function PoolRow({
   positionsPending?: boolean;
 }) {
   const yourStake = position
-    ? formatUsd(position.estimatedValue)
+    ? formatUsdOrDash(position.estimatedValue)
     : connected
       ? positionsPending ? "…" : "$—"
       : "—";
@@ -1350,7 +1363,7 @@ function PoolRow({
 
         {/* TVL */}
         <span className="text-right text-[12px] tabular-nums text-[var(--text)]" style={{ fontFamily: "var(--font-mono)" }}>
-          {formatUsd(pool.tvl)}
+          {formatUsdOrDash(pool.tvl)}
         </span>
 
         {/* Cooldown */}
@@ -1781,11 +1794,13 @@ export default function StakePage() {
   // S-M1 fix: sum across ALL positions, not just a single (possibly-missing) one.
   // #2706: if any pool could not be read (or the pool list failed), the total
   // is unknown — show it as unknown rather than an under-count or "$—".
+  // #3611: a position whose value is unknown makes the total unknown (a dash), never a partial sum.
+  const depositsUnknown = connected && !positionsPending && positions.some((p) => p.estimatedValue === null);
   const totalUserDeposited =
-    connected && (positionsPending || positionsUnreadable > 0 || (poolsError && pools.length === 0))
+    connected && (positionsPending || positionsUnreadable > 0 || (poolsError && pools.length === 0) || depositsUnknown)
       ? null
       : positions.length > 0
-        ? positions.reduce((sum, p) => sum + p.estimatedValue, 0)
+        ? positions.reduce((sum, p) => sum + (p.estimatedValue ?? 0), 0)
         : connected ? 0 : null;
 
   const retryPools = useCallback(() => {
@@ -1815,7 +1830,7 @@ export default function StakePage() {
       {/* Compact header + stats strip (mirrors EarnHeader) */}
       <ErrorBoundary label="Stake Header">
         {/* A failed pools fetch must not read as "0 pools / $0 staked" (#2706). */}
-        <StakeHeader pools={pools} totalUserDeposited={totalUserDeposited} loading={poolsLoading || (poolsError && pools.length === 0)} />
+        <StakeHeader pools={pools} totalUserDeposited={totalUserDeposited} depositsUnknown={depositsUnknown} loading={poolsLoading || (poolsError && pools.length === 0)} />
       </ErrorBoundary>
 
       {/* Main content */}

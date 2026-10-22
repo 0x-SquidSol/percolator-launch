@@ -31,7 +31,8 @@ interface ApiPool {
   name: string;
   symbol: string;
   logoUrl: string | null;
-  tvl: number;
+  /** null for a v2.2 first-loss pool whose value could not be read (#3611). */
+  tvl: number | null;
   tvlRaw: string;
   totalLpSupply: number;
   cooldownSlots: number;
@@ -65,8 +66,8 @@ export interface LpPosition {
   redeemable: number;
   /** Pool-wide LP supply (raw) */
   totalLpSupply: number;
-  /** Pool vault balance / TVL in USDC */
-  tvl: number;
+  /** Pool vault balance / TVL in USDC; null = unknown (#3611), shown as a dash. */
+  tvl: number | null;
   /** User's share of the pool as a percent (0-100) */
   userSharePct: number;
   /** Cooldown in slots */
