@@ -19,6 +19,7 @@
 // the rate-limiting, blocklist, redirect, and CSP-nonce guarantees are intact.
 // NOTE: `proxy.ts` must export a `proxy` (or default) function; a route-segment
 // `export const runtime = ...` is NOT allowed (proxy is always Node.js).
+import { priceWsConnectSrc } from "@/lib/price-ws-csp";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { Redis } from "@upstash/redis";
@@ -615,6 +616,8 @@ function addSecurityHeaders(response: NextResponse, nonce?: string) {
   // on-chain seed only, with no other visible symptom). Dev-only, gated the
   // same way as devEval above — never present in a production CSP.
   const devLocalWs = isDev ? "ws://localhost:* http://localhost:* " : "";
+  // The configured price-WS origin itself (exact host only; lib/price-ws-csp.ts). Empty unless NEXT_PUBLIC_WS_URL is a wss:// URL.
+  const priceWs = priceWsConnectSrc(process.env.NEXT_PUBLIC_WS_URL);
   const csp = [
     "default-src 'self'",
     // challenges.cloudflare.com: Turnstile widget script (api.js). Loaded
@@ -636,7 +639,7 @@ function addSecurityHeaders(response: NextResponse, nonce?: string) {
     // challenges.cloudflare.com is appended for the Turnstile widget's
     // XHR back-channel (telemetry + challenge-state checks). Same
     // origin as the script load.
-    `connect-src 'self' https://privy.percolator.trade wss://privy.percolator.trade ${devLocalWs}https://*.solana.com wss://*.solana.com https://*.supabase.co wss://*.supabase.co https://*.vercel-insights.com https://api.coingecko.com https://api.geckoterminal.com https://*.helius-rpc.com wss://*.helius-rpc.com https://api.dexscreener.com https://*.up.railway.app wss://*.up.railway.app https://lite.jup.ag https://token.jup.ag https://tokens.jup.ag https://auth.privy.io https://embedded-wallets.privy.io https://*.privy.systems https://*.rpc.privy.systems https://explorer-api.walletconnect.com wss://relay.walletconnect.com wss://relay.walletconnect.org wss://www.walletlink.org https://challenges.cloudflare.com https://www.googletagmanager.com https://*.google-analytics.com https://*.analytics.google.com https://cloudflareinsights.com blob:`,
+    `connect-src 'self' https://privy.percolator.trade wss://privy.percolator.trade ${devLocalWs}${priceWs}https://*.solana.com wss://*.solana.com https://*.supabase.co wss://*.supabase.co https://*.vercel-insights.com https://api.coingecko.com https://api.geckoterminal.com https://*.helius-rpc.com wss://*.helius-rpc.com https://api.dexscreener.com https://*.up.railway.app wss://*.up.railway.app https://lite.jup.ag https://token.jup.ag https://tokens.jup.ag https://auth.privy.io https://embedded-wallets.privy.io https://*.privy.systems https://*.rpc.privy.systems https://explorer-api.walletconnect.com wss://relay.walletconnect.com wss://relay.walletconnect.org wss://www.walletlink.org https://challenges.cloudflare.com https://www.googletagmanager.com https://*.google-analytics.com https://*.analytics.google.com https://cloudflareinsights.com blob:`,
     // Removed https://*.vercel.app wildcard (issue #635) — no legitimate use case for embedding
     // arbitrary Vercel-hosted content in iframes. frame-src controls outbound iframe embedding.
     // challenges.cloudflare.com is the iframe origin the Turnstile widget
