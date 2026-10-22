@@ -38,6 +38,8 @@ export interface OrderTicketClosePanelProps {
   lpUnderfunded: boolean;
   /** Engine lag beyond the app's own catch-up (UX WP-2 SH-3; mirrors PositionsDock); clears itself. */
   engineStale: boolean;
+  /** Estimated catch-up wait (ms) for the band market; null/absent = "usually a few minutes". */
+  catchUpMs?: number | null;
   /** Oracle unavailable/stale (already mock-mode aware) — blocks the close. */
   oracleBlocked: boolean;
   /** Price older than 60 s but the chain would still accept the close: show a calm note, do not block. */
@@ -84,6 +86,7 @@ export const OrderTicketClosePanel: FC<OrderTicketClosePanelProps> = ({
   maxFillAbs,
   lpUnderfunded,
   engineStale,
+  catchUpMs = null,
   oracleBlocked,
   oraclePriceBehind = false,
   priceAgeSecs = 0,
@@ -199,7 +202,7 @@ export const OrderTicketClosePanel: FC<OrderTicketClosePanelProps> = ({
   const submitTitle = !hasValidMark
     ? "Waiting for price data…"
     : engineStale
-      ? catchUpAvailableLine(null, "close")
+      ? catchUpAvailableLine(catchUpMs, "close")
       : lpUnderfunded
         ? "The LP has no capital, so a close cannot fill."
         : undefined;
@@ -222,6 +225,8 @@ export const OrderTicketClosePanel: FC<OrderTicketClosePanelProps> = ({
         tradingFeeBps={tradingFeeBps}
         oracleStale={oracleBlocked}
         oraclePriceBehind={oraclePriceBehind}
+        engineCatchingUp={engineStale}
+        catchUpMs={catchUpMs}
         priceAgeSecs={priceAgeSecs}
         settleMarkE6={settleMarkE6}
         error={error}

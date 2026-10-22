@@ -12,6 +12,7 @@
 import { WRAPPER_ERR } from "../wrapper-errors";
 import { NETWORK_BUSY_MESSAGE, PRICES_OUT_OF_SYNC_COPY, TICKET_FUNDS_LINE } from "./copy";
 import { V21_COPY } from "../v21/copy";
+import { V22_COPY } from "../v22/copy";
 import { isDevnetV21Enabled } from "../v21/flag";
 import { WRAPPER_ERR_V21 } from "../v21/wrapper-errors";
 import { isDevnetV22Enabled } from "../v22/flag";
@@ -254,7 +255,8 @@ function v21WrapperMessage(
     case V.VaultLpSeniorCapitalHalt:
       return m("growth-senior-halt", "paused", "Paused while it rebuilds", "This side is paused while the market's first-loss capital is rebuilt. Closing is always allowed.");
     case V.EngineAdlReduceOnly:
-      return m("adl-reduce-only", "paused", "Close-only for now", `${V21_COPY.lock.closeOnly} ${V21_COPY.lock.closeOnlySub}`);
+      // v2.2 band markets: a partial band liquidation is the usual cause (L7 D1); say what happens next and roughly when.
+      return m("adl-reduce-only", "paused", "Close-only for now", isDevnetV22Enabled() ? V22_COPY.band.closeOnlyAfterLiquidation : `${V21_COPY.lock.closeOnly} ${V21_COPY.lock.closeOnlySub}`);
     case V.EngineLossStale:
       return m("loss-stale", "wait", "Refreshing positions", "Positions are being refreshed after a price move. Opening is paused for a moment; closing still works. Try again shortly.", { autoRetry: ctx.surface === "trade" });
     case V.EarnExitWouldUnderBackClaims:

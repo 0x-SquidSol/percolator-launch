@@ -126,7 +126,7 @@ import { V22_COPY } from "@/lib/v22/copy";
 import { parseHumanAmount } from "@/lib/parseAmount";
 import { recordCloseTx } from "@/lib/last-close-tx";
 import { LastCloseTxLink } from "@/components/trade/LastCloseTxLink";
-import { bandCatchUpMs, bandMinLeg, bandMinLegExactQ, legBelowBandMin } from "@/lib/v22/band-rent-state";
+import { bandCatchUpMs, bandMinLeg, closeBlockedByBand, bandMinLegExactQ, legBelowBandMin } from "@/lib/v22/band-rent-state";
 import { POS_SCALE_V22, formatLotPriceE6, lotExpOf, lotOrderQ, tokenUsdOfLotUsd } from "@/lib/v22/lot";
 import { BandMarketNotice } from "@/components/v22/BandMarketNotice";
 import { OpenModeMarketNotes } from "@/components/v22/OpenModeMarketNotes";
@@ -134,7 +134,7 @@ import { useBandRentView } from "@/hooks/useBandRentView";
 import { useLotTradingGuard } from "@/hooks/useLotTradingGuard";
 import { FixPricingAction } from "@/components/trade/FixPricingAction";
 import { waitPolicy } from "@/lib/limits/price-stall";
-import { CATCHUP_COPY, catchUpBudgetMs, catchUpEstimate, catchUpLine, measureSlotMs, retryOnceAfterShortLag, SLOT_MS_DEFAULT } from "@/lib/limits/catchup-estimate";
+import { CATCHUP_COPY, bandWalkEstimate, catchUpBudgetMs, catchUpLine, measureSlotMs, retryOnceAfterShortLag, SLOT_MS_DEFAULT } from "@/lib/limits/catchup-estimate";
 import { resolveUserMessage, type UserMessage, type UserMessageAction } from "@/lib/limits/user-message";
 import { PRICES_OUT_OF_SYNC_COPY, TICKET_COPY } from "@/lib/limits/copy";
 import { decodeMarketEngineView } from "@/lib/limits/decode";
@@ -321,7 +321,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
   const bandView = useBandRentView();
   // Round i: how long the price catch-up will take, from the market account (cap, effective, target); null without a gap source.
   const [slotMs, setSlotMs] = useState(SLOT_MS_DEFAULT);
-  const catchUp = bandView?.band.enabled ? catchUpEstimate({ effectiveE6: bandView.price.markE6, targetE6: bandView.price.targetE6, capBpsPerSlot: bandView.price.capBpsPerSlot, slotMs }) : null;
+  const catchUp = bandView?.band.enabled ? bandWalkEstimate({ effectiveE6: bandView.price.markE6, targetE6: bandView.price.targetE6, capBpsPerSlot: bandView.price.capBpsPerSlot, bandBps: bandView.band.bandBps, slotMs }) : null;
   const catchUpMsRef = useRef<number | null>(null);
   catchUpMsRef.current = catchUp ? catchUp.ms : null;
   // v2.2 (N2): a market with lots is not traded until every surface is lot-aware (null with the flag off).
@@ -1238,7 +1238,7 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
     const measuredSlotMs = isDevnetV22Enabled() ? await measureSlotMs(connection).catch(() => SLOT_MS_DEFAULT) : SLOT_MS_DEFAULT;
     setSlotMs(measuredSlotMs);
     const submitEstimate = bandView?.band.enabled
-      ? catchUpEstimate({ effectiveE6: bandView.price.markE6, targetE6: bandView.price.targetE6, capBpsPerSlot: bandView.price.capBpsPerSlot, slotMs: measuredSlotMs })
+      ? bandWalkEstimate({ effectiveE6: bandView.price.markE6, targetE6: bandView.price.targetE6, capBpsPerSlot: bandView.price.capBpsPerSlot, bandBps: bandView.band.bandBps, slotMs: measuredSlotMs })
       : null;
     const waitBudgetMs = catchUpBudgetMs(submitEstimate ? submitEstimate.ms : null);
     const lagRetry = <T,>(run: () => Promise<T>): Promise<T> =>
@@ -1860,7 +1860,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             tradingFeeBps={params?.tradingFeeBps}
             maxFillAbs={fillCaps?.maxFillAbs ?? null}
             lpUnderfunded={lpUnderfunded}
-            engineStale={engineStale}
+            engineStale={engineStale || (existingPositionSize !== 0n && closeBlockedByBand(bandView, existingPositionSize > 0n ? "long" : "short"))}
+            catchUpMs={bandCatchUpMs(bandView, slotMs)}
             oracleBlocked={!mockMode && closeGate.blocked}
             oraclePriceBehind={!mockMode && closeGate.behind}
             priceAgeSecs={oracleAgeSecs(oracleLastMs, oracleElapsed)}
