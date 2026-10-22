@@ -1860,7 +1860,8 @@ const OrderTicketInner: FC<{ slabAddress: string }> = ({ slabAddress }) => {
             tradingFeeBps={params?.tradingFeeBps}
             maxFillAbs={fillCaps?.maxFillAbs ?? null}
             lpUnderfunded={lpUnderfunded}
-            engineStale={engineStale || (existingPositionSize !== 0n && closeBlockedByBand(bandView, existingPositionSize > 0n ? "long" : "short"))}
+            engineStale={engineStale}
+            bandCloseHold={existingPositionSize !== 0n && closeBlockedByBand(bandView, existingPositionSize > 0n ? "long" : "short")}
             catchUpMs={bandCatchUpMs(bandView, slotMs)}
             oracleBlocked={!mockMode && closeGate.blocked}
             oraclePriceBehind={!mockMode && closeGate.behind}
