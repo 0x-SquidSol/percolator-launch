@@ -193,6 +193,13 @@ export const V22_COPY = {
       firstLoss: "First-loss: the creator share goes to the protocol, because first-loss locks the creator key after launch.",
       compare: "So a first-loss creator can earn less than a fee-only creator, for more risk.",
     },
+    /**
+     * The fee split's Stakers row on a fee-only page (agrees with closeOut.feeOnly): a FEE_ONLY pool is paid nothing
+     * while the market runs and never deploys into insurance.
+     */
+    feeOnlyStakersRow: "nothing while the market runs. At close, fee-only stakers share what is above the creator's seed.",
+    /** The insurance fee leg on a fee-only page: it does not go to fee-only stakers. */
+    feeOnlyInsuranceLeg: "Backs losses a liquidation cannot cover.",
     /** A closed pool that holds surplus no staker owns (nobody staked): shown, never paid to the creator. */
     unclaimed: (usd: string) => `${usd} left in the closed pool, not claimable`,
     /** Page naming: only first-loss pools are insurance staking; fee-only and legacy pools stay "Fee staking". */
@@ -215,6 +222,17 @@ export const V22_COPY = {
     /** Shown only when the liquid cap binds (after an insurance loss): one calm line, no error. */
     withdrawCap: (usd: string) => `Part of this pool is deployed as insurance; up to ${usd} can be withdrawn now, the rest returns if and when it's recovered.`,
     withdrawOverCap: "That is more than can be withdrawn now.",
+  },
+  // ── Earn page (v2.2) ─────────────────────────────────────────────────────
+  earnPage: {
+    /** v2.2 vaults can hold other collateral than USDC; each vault's own token is named in its deposit rail. */
+    depositLead: "Deposit into a market's vault.",
+    howDeposit: "Provide the market's deposit token as trading backing",
+    /**
+     * The P3 loss order (decision 2026-09-30; wrapper tag 111 InsuranceBackstopDraw draws insurance only for a deficit
+     * left after the creator's stake and every Earn pot): insurance is NOT ahead of Earn for a trading loss.
+     */
+    insuranceOrder: "A trading loss reaches the creator's stake and Earn deposits first; insurance steps in only once they're used up",
   },
   // ── Unsupported layout ───────────────────────────────────────────────────
   layout: {

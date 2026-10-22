@@ -11,6 +11,8 @@ import { useWalletCompat } from '@/hooks/useWalletCompat';
 import { formatCompact } from '@/lib/formatters';
 import { limitsFlags } from '@/lib/limits/flags';
 import { COPY } from '@/lib/limits/copy';
+import { isDevnetV22Enabled } from '@/lib/v22/flag';
+import { V22_COPY } from '@/lib/v22/copy';
 
 const EarnHeader = dynamic(
   () => import('@/components/earn/EarnHeader').then((m) => m.EarnHeader),
@@ -188,7 +190,7 @@ function EarnInfoStrip({ totalInsurance }: { totalInsurance: number | null }) {
     <div data-testid="earn-info" className="mt-8 divide-y divide-[var(--border)] border border-[var(--border)] bg-[var(--panel-bg)]">
       <InfoRow id="how" title="How it works" open={open === 'how'} onToggle={toggle}>
         <ol className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <MiniStep num={1} title="Deposit" desc="Provide sim-USDC as counterparty backing" />
+          <MiniStep num={1} title="Deposit" desc={isDevnetV22Enabled() ? V22_COPY.earnPage.howDeposit : "Provide sim-USDC as counterparty backing"} />
           <MiniStep num={2} title="Earn fees" desc="Every trade on that market pays a fee share into the vault" />
           <MiniStep num={3} title="Withdraw" desc="Request a withdrawal; it pays out after a short wait" />
         </ol>
@@ -207,7 +209,7 @@ function EarnInfoStrip({ totalInsurance }: { totalInsurance: number | null }) {
       >
         <ul className="space-y-1 text-[11px] text-[var(--text-secondary)]">
           <li>· Absorbs liquidation shortfalls</li>
-          <li>· Covers losses before they reach Earn deposits</li>
+          <li>· {isDevnetV22Enabled() ? V22_COPY.earnPage.insuranceOrder : "Covers losses before they reach Earn deposits"}</li>
           <li>· Backstops protocol solvency</li>
         </ul>
       </InfoRow>

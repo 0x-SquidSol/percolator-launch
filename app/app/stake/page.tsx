@@ -486,7 +486,8 @@ function StakeHeader({
           )}
           {/* The 0% above reads as an oversight without the other shares beside
               it — "16% to insurance" is the number it gets mistaken for. #2565. */}
-          <FeeBreakdown highlight="staker" showStaker />
+          {/* Same condition as the fee-only intro above: its Stakers row must not contradict it. */}
+          <FeeBreakdown highlight="staker" showStaker stakersFeeOnly={!insuranceOnly && v22Pools} />
         </div>
       </div>
     </div>
