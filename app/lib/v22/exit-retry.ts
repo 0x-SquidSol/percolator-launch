@@ -23,6 +23,8 @@ export const EXIT_LINES = {
   unpriced: "The exit could not be priced right now. Try again shortly.",
   moving: "The exit price keeps moving. Try again shortly.",
   compute: "The exit needs more compute than one transaction allows. Try a smaller amount.",
+  /** #3612: the wallet's balance before the exit could not be read, so the payout (a balance change) can't be priced. */
+  balanceUnread: "We couldn't read your balance. Try again in a moment.",
 } as const;
 
 export type ExitAttemptOutcome =

@@ -75,6 +75,19 @@ function tokenAmountOf(data: Uint8Array | Buffer | null | undefined): bigint | n
   return new DataView(data.buffer, data.byteOffset, data.byteLength).getBigUint64(64, true);
 }
 
+/**
+ * #3612: the exit's "before" balance. A token account that does not exist yet holds 0 (getAccountInfo answers null);
+ * a failed read (429, timeout) or data that is not a token account REJECTS, so the quote fails instead of counting
+ * the wallet's existing balance as payout.
+ */
+export async function readDestBalanceV22(connection: Pick<Connection, 'getAccountInfo'>, dest: PublicKey): Promise<bigint> {
+  const info = await connection.getAccountInfo(dest, 'confirmed');
+  if (info === null) return 0n;
+  const amount = tokenAmountOf(info.data);
+  if (amount === null) throw new Error('the destination is not a token account');
+  return amount;
+}
+
 /** Simulate `[budget, ...ixs]` and return the redeemer destination balance of the post-state. */
 export async function simulateExitTx(connection: Connection, payer: PublicKey, dest: PublicKey, ixs: TransactionInstruction[], units: number): Promise<SimResult> {
   const tx = new Transaction();
@@ -175,13 +188,7 @@ export function useEarnExitV22(p: EarnExitParams) {
     const deps: ExitRunDeps = {
       readStale: () => staleReader.current.read(),
       rescanStale: () => staleReader.current.rescan(),
-      readDestBalance: async () => {
-        try {
-          return BigInt((await connection.getTokenAccountBalance(redeemerDest, 'confirmed')).value.amount);
-        } catch {
-          return 0n;
-        }
-      },
+      readDestBalance: () => readDestBalanceV22(connection, redeemerDest),
       simulate: (ixs, units) => simulateExitTx(connection, payer, redeemerDest, ixs, units),
       send: async (ixs, units) => {
         const r = await sendUserBundle({ connection, wallet, groups: [{ instructions: ixs, computeUnits: units }], simulate: 'all' });
