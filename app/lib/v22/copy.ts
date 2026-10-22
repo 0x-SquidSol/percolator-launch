@@ -232,7 +232,7 @@ export const V22_COPY = {
      * The P3 loss order (decision 2026-09-30; wrapper tag 111 InsuranceBackstopDraw draws insurance only for a deficit
      * left after the creator's stake and every Earn pot): insurance is NOT ahead of Earn for a trading loss.
      */
-    insuranceOrder: "A trading loss reaches the creator's stake and Earn deposits first; insurance steps in only once they're used up",
+    insuranceOrder: "A trading loss reaches the creator's stake and Earn deposits first; insurance can step in only once they're used up",
   },
   // ── Unsupported layout ───────────────────────────────────────────────────
   layout: {

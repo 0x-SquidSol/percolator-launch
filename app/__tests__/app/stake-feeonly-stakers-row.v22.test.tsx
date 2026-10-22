@@ -65,6 +65,13 @@ describe("fee-only Stakers row agrees with the close-out rule", () => {
     expect(split).not.toMatch(/Stakers provide this fund and receive this share/);
   });
 
+  it("a mixed page (fee-only + first-loss) keeps the paid-insurance-share row: first-loss stakers are paid", async () => {
+    __setDevnetV22ForTest(true);
+    const { row } = await stakersRow([pool("fee-only"), { ...pool("first-loss"), poolAddress: "pool-BBB" }]);
+    expect(row).not.toContain(V22_COPY.stake.feeOnlyStakersRow);
+    expect(row).not.toMatch(/0%$/);
+  });
+
   it("CONTROL: legacy pools (no kind) keep the paid-insurance-share row", async () => {
     __setDevnetV22ForTest(true);
     const { row } = await stakersRow([pool()]);

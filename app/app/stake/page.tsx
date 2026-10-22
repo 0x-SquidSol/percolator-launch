@@ -373,6 +373,9 @@ function StakeHeader({
   const insuranceOnly = isInsuranceOnly(pools);
   // v2.2 pools carry a kind: the close-out rule (not "fees while the market runs") is what a fee-only staker is told.
   const v22Pools = pools.some((p) => p.stakeKind !== undefined);
+  // The fee split's "Stakers earn nothing while the market runs" row is true only when EVERY listed pool is fee-only: a
+  // first-loss pool beside them is paid the insurance leg (tag 87), so a mixed page keeps the paid-share row.
+  const allFeeOnly = pools.length > 0 && pools.every((p) => p.stakeKind === "fee-only");
   // Over the pools that report one; null when none does (not tracked), shown as "—", not "0%".
   const aprs = pools.map((p) => p.apr).filter((a): a is number => a !== null);
   const avgApr = aprs.length > 0 ? aprs.reduce((s, a) => s + a, 0) / aprs.length : null;
@@ -487,7 +490,7 @@ function StakeHeader({
           {/* The 0% above reads as an oversight without the other shares beside
               it — "16% to insurance" is the number it gets mistaken for. #2565. */}
           {/* Same condition as the fee-only intro above: its Stakers row must not contradict it. */}
-          <FeeBreakdown highlight="staker" showStaker stakersFeeOnly={!insuranceOnly && v22Pools} />
+          <FeeBreakdown highlight="staker" showStaker stakersFeeOnly={allFeeOnly} />
         </div>
       </div>
     </div>
