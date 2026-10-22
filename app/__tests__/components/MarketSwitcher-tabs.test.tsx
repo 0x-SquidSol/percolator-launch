@@ -162,6 +162,19 @@ describe("My trades reads the shared positions snapshot", () => {
     expect(m.fallbackEnabled.every((e) => e === false)).toBe(true);
   });
 
+  it("reopened on My trades (the remembered tab) with a warm snapshot, it never starts its own scan, not even on the first render", () => {
+    m.snapshot = { positions: [pos(JUP, "JUP", 1n)] };
+    openSwitcher();
+    fireEvent.click(tab(/my trades/i));
+    cleanup();
+    m.fallbackEnabled = [];
+    openSwitcher();
+    expect(tab(/my trades/i)).toHaveAttribute("aria-selected", "true");
+    expect(rows()).toHaveLength(1);
+    expect(m.fallbackEnabled.length).toBeGreaterThan(0);
+    expect(m.fallbackEnabled.every((e) => e === false)).toBe(true);
+  });
+
   it("with no snapshot it scans only while My trades is open", () => {
     m.snapshot = null;
     openSwitcher();

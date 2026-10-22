@@ -95,19 +95,21 @@ const MarketSwitcherInner: FC<MarketSwitcherProps> = ({ slabAddress, symbol, log
   // My trades reads the positions snapshot the site-wide scan (the header positions strip and the
   // liquidation alert, both mounted for any connected wallet) already keeps warm — a cache read, no RPC.
   // Only when there is no snapshot at all and the user is looking at My trades does this instance scan.
-  const [snapshot, setSnapshot] = useState<PortfolioPosition[] | null>(null);
+  // The snapshot is read DURING render, not in an effect: an effect left it null on the first open render, so a
+  // switcher reopened on My trades started its own full scan even with a warm snapshot in the cache.
   const walletKey = publicKey?.toBase58() ?? null;
+  const [snapshotTick, setSnapshotTick] = useState(0);
   useEffect(() => {
-    if (!open || !connected || !walletKey) {
-      setSnapshot(null);
-      return;
-    }
-    const key = portfolioCacheKey(walletKey, getNetwork());
-    const read = () => setSnapshot(peekPortfolioSnapshot(key)?.positions ?? null);
-    read();
-    const timer = setInterval(read, SNAPSHOT_POLL_MS);
+    if (!open || !connected || !walletKey) return;
+    const timer = setInterval(() => setSnapshotTick((n) => n + 1), SNAPSHOT_POLL_MS);
     return () => clearInterval(timer);
   }, [open, connected, walletKey]);
+  const snapshot = useMemo<PortfolioPosition[] | null>(
+    () => (open && connected && walletKey ? (peekPortfolioSnapshot(portfolioCacheKey(walletKey, getNetwork()))?.positions ?? null) : null),
+    // snapshotTick re-reads the cache every SNAPSHOT_POLL_MS while open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [open, connected, walletKey, snapshotTick],
+  );
   const fallback = usePortfolio(open && connected && tab === "mine" && snapshot === null);
   // Mock book only when DISCONNECTED (same gate as the positions dock): a connected wallet in ?mock=1 never
   // sees synthetic positions.

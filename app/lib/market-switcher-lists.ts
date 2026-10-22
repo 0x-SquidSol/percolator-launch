@@ -100,12 +100,15 @@ export function myTradeRows(positions: readonly OpenPositionLike[], statsMap: Re
 /**
  * Watched markets in the watchlist's own order: newest first (lib/watchlist.ts `addSlab` prepends), the
  * same order the portfolio watchlist panel shows. A watched market missing from the stats map is left out
- * rather than shown without a name or price.
+ * rather than shown without a name or price, and so is one hidden from browsing (the same filter as Top).
  */
 export function watchlistRows(watchlist: readonly string[], statsMap: ReadonlyMap<string, StatsRow>): SwitcherRow[] {
   const rows: SwitcherRow[] = [];
   for (const slab of watchlist) {
-    const row = toRow(slab, statsMap.get(slab));
+    const m = statsMap.get(slab);
+    // A starred market that is hidden from browsing now (SI, a half-made launch, ...) is left out like on Top and search.
+    if (!m?.symbol || !isBrowsableMarketRow(slab, m as never)) continue;
+    const row = toRow(slab, m);
     if (row) rows.push(row);
   }
   return rows;

@@ -71,6 +71,10 @@ describe("watchlistRows", () => {
     expect(rows.map((r) => r.symbol)).toEqual(["WIF", "SOL"]);
   });
 
+  it("leaves out a starred market that is hidden from browsing, like Top and search do", () => {
+    expect(watchlistRows(["HIDDEN", "SOLslab"], stats).map((r) => r.symbol)).toEqual(["SOL"]);
+  });
+
   it("an empty watchlist is an empty list", () => {
     expect(watchlistRows([], stats)).toEqual([]);
   });
