@@ -177,6 +177,16 @@ export const V22_COPY = {
       feeOnly: "Fee-only stakers earn nothing while the market runs. When it closes, you share everything above the creator's seed, in proportion to your stake.",
       firstLoss: "At close, you share everything above the creator's seed in proportion to your stake.",
     },
+    /**
+     * Creator share disclosure (decision 2026-10-22, L5 FC-B2). The creator fee leg is 16%. A first-loss pool only deploys after the
+     * market's asset-admin key is burned, and nobody can claim the creator leg after that, so it goes to the protocol. Shown wherever
+     * a creator picks how the market's stake pool works, before anything is signed. Calm and short; no authority names.
+     */
+    creatorShare: {
+      feeOnly: "Fee-only: the creator share (16% of fees) is yours.",
+      firstLoss: "First-loss: the creator share goes to the protocol, because first-loss locks the creator key after launch.",
+      compare: "So a first-loss creator can earn less than a fee-only creator, for more risk.",
+    },
     /** A closed pool that holds surplus no staker owns (nobody staked): shown, never paid to the creator. */
     unclaimed: (usd: string) => `${usd} left in the closed pool, not claimable`,
     /** Page naming: only first-loss pools are insurance staking; fee-only and legacy pools stay "Fee staking". */
