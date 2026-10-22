@@ -185,6 +185,17 @@ export function isUnknownWrapperVersion(data: Uint8Array): boolean {
   return h.magic === WRAPPER_ACCOUNT_MAGIC && !LAYOUTS_BY_VERSION.has(h.version);
 }
 
+/**
+ * Flag on only: for an {@link isUnknownWrapperVersion} account, whether its VERSION is older or newer than every
+ * layout this build decodes; null when it is not an unknown wrapper version. An older one will never become
+ * readable here (retrying or an app update won't help), so callers word it differently.
+ */
+export function unknownWrapperVersionAge(data: Uint8Array): "older" | "newer" | null {
+  if (!isUnknownWrapperVersion(data)) return null;
+  const v = readWrapperHeader(data).version;
+  return v < Math.min(...LAYOUTS_BY_VERSION.keys()) ? "older" : "newer";
+}
+
 /** Portfolio leg geometry resolved from an account's VERSION (or the v2.1 constants when the flag is off). */
 export interface PortfolioLegGeometry {
   legsOff: number;

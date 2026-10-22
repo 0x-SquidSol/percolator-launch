@@ -220,5 +220,7 @@ export const V22_COPY = {
   layout: {
     title: "This market uses a newer version",
     body: "This page can't read it yet. Nothing was changed. Try again after the app updates.",
+    /** /create?resume= on a launch made with an OLDER wrapper version: no retry or app update will make it continuable. */
+    olderResume: "This launch was made with an older version of Percolator, so it can't be continued here. Nothing was changed.",
   },
 } as const;
