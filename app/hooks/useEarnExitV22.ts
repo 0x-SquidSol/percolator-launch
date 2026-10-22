@@ -248,7 +248,8 @@ export function useEarnExitV22(p: EarnExitParams) {
       if (r.status === 'sent') setState({ phase: 'sent', quote: r.quote, requoted: false, message: null, signature: r.signature });
       else if (r.status === 'requoted') setState({ phase: 'quoted', quote: r.quote, requoted: true, message: V22_COPY.earnExit.requote, signature: null, bound: { key: keyAtStart, at: __clock.now() } });
       else if (r.status === 'wait-for-sweep') setState({ ...IDLE, phase: 'wait', message: V22_COPY.earnExit.wait });
-      else setState({ ...IDLE, phase: 'error', message: failMessage(r.error) });
+      // #3615: a collect whose send-time re-quote hits the stored floor is just as stuck as one refused at quote time.
+      else setState({ ...IDLE, phase: 'error', message: failMessage(r.error), floorStuck: isFloorStuck(r.error) });
     } catch (e) {
       if (id === runId.current) setState({ ...IDLE, phase: 'error', message: failMessage(e) });
     }
