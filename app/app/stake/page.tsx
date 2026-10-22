@@ -771,6 +771,9 @@ function DepositWidget({
   // Devnet v2.2 (flag-gated): a stake-v5 first-loss pool gets the consent deposit instead of the plain form.
   // `firstLoss.pool` is null with the flag off and for every other pool, so nothing changes there.
   const firstLoss = useStakeFirstLoss(pool?.slabAddress ?? "", pool?.collateralMint ?? "");
+  // #3607: the API already knows the pool's kind. A first-loss pool never gets the plain form (its 9-byte deposit is
+  // refused with 33 ConsentRequired), even while its own account is still being read or that read failed.
+  const apiFirstLoss = isDevnetV22Enabled() && pool?.stakeKind === "first-loss";
 
   // Withdraw for the currently SELECTED pool — same tx builder YourPositionPanel
   // uses, just parameterized by whichever pool is picked in the dropdown here
@@ -878,6 +881,8 @@ function DepositWidget({
 
   const handleDeposit = useCallback(async () => {
     if (!pool || depositLoading) return;
+    // #3607: never the 9-byte deposit to a pool the API marks first-loss (the plain form is not rendered for it either).
+    if (apiFirstLoss) return;
     setTxStatus(null);
     try {
       // Use string-based BigInt parsing to avoid float precision loss at large amounts.
@@ -900,7 +905,7 @@ function DepositWidget({
       const msg = stakeErrorMessage(e); // #26: never raw chain text
       setTxStatus({ type: "error", msg });
     }
-  }, [pool, amount, balanceDecimals, walletBalanceRaw, deposit, depositLoading, onTxSuccess]);
+  }, [pool, apiFirstLoss, amount, balanceDecimals, walletBalanceRaw, deposit, depositLoading, onTxSuccess]);
 
   const handleWithdraw = useCallback(async () => {
     if (!pool || !withdrawPosition || withdrawLoading) return;
@@ -981,11 +986,13 @@ function DepositWidget({
           )}
         </div>
 
-        {mode === "deposit" && firstLoss.pool ? (
+        {mode === "deposit" && (firstLoss.pool || apiFirstLoss) ? (
           <FirstLossDeposit
             slabAddress={pool?.slabAddress ?? ""}
             collateralMint={pool?.collateralMint ?? ""}
             decimals={balanceDecimals}
+            state={firstLoss}
+            expected={apiFirstLoss}
             deployedUsd={pool?.deployedValue}
             onDone={() => { setWithdrawRefreshKey((k) => k + 1); onTxSuccess?.(); }}
           />

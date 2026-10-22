@@ -203,6 +203,11 @@ export const V22_COPY = {
     /** One plain paragraph above the program's own consent text (phase4 §6.1 item 5 wording). */
     consentSummary: "Staking insures this market's backstop: you can lose part of your stake if losses exceed the creator's tranche, bonds and Earn.",
     consentUnavailable: "First-loss deposits aren't available for this pool right now.",
+    /** #3607: a first-loss pool whose own account is still being read; the deposit form waits for it. */
+    poolReading: "Reading this pool…",
+    /** #3607: that read failed (or came back empty); nothing was sent, and Retry reads it again. */
+    poolReadFailed: "Couldn't read this pool just now. Nothing was sent.",
+    retry: "Retry",
     consentLabel: "I have read and accept this risk text.",
     consentVersion: (v: number) => `Risk text version ${v}`,
     withdraw: "Withdrawals are paid only from the liquid part of the pool. The rest returns over time while the market is healthy.",

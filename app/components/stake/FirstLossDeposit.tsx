@@ -2,7 +2,9 @@
 
 /**
  * Deposit into a first-loss (stake v5) pool: the pool's target, liquid buffer and rebalance band, the consent
- * text v2 verbatim, a required checkbox, then Deposit. Renders nothing unless the pool is a v5 first-loss pool.
+ * text v2 verbatim, a required checkbox, then Deposit. Renders nothing unless the pool is a v5 first-loss pool, or
+ * `expected` (the API already marks it first-loss): then, until the pool's own read succeeds, a reading line or a
+ * "couldn't read" line with Retry, never nothing and never the plain form (#3607).
  */
 import { errorText } from "@/lib/error-text";
 import { useEffect, useState } from 'react';
@@ -11,8 +13,23 @@ import { ConsentChangedError, consentKey, consentTextMatches, consentViewOf, pct
 import { STAKE_CONSENT_TEXT_V2, V22_COPY, consentDisplay } from '@/lib/v22/copy';
 import { parseHumanAmount } from '@/lib/parseAmount';
 
-export function FirstLossDeposit({ slabAddress, collateralMint, decimals = 6, deployedUsd, onDone }: { slabAddress: string; collateralMint: string; decimals?: number; /** Insurance deployed for this pool, USD; null = unreadable; undefined = not shown. */ deployedUsd?: number | null; onDone?: () => void }) {
-  const { pool, deposit, loading } = useStakeFirstLoss(slabAddress, collateralMint);
+type FirstLossState = ReturnType<typeof useStakeFirstLoss>;
+
+export function FirstLossDeposit({ slabAddress, collateralMint, decimals = 6, deployedUsd, onDone, state, expected = false }: {
+  slabAddress: string;
+  collateralMint: string;
+  decimals?: number;
+  /** Insurance deployed for this pool, USD; null = unreadable; undefined = not shown. */
+  deployedUsd?: number | null;
+  onDone?: () => void;
+  /** The caller's own `useStakeFirstLoss` for this pool, so the pool is read once and both agree on its state. */
+  state?: FirstLossState;
+  /** The API marks this pool first-loss: show a reading / couldn't-read state instead of nothing while `pool` is null. */
+  expected?: boolean;
+}) {
+  // With `state` passed, the local hook gets no market and stays idle (no RPC).
+  const own = useStakeFirstLoss(state ? '' : slabAddress, state ? '' : collateralMint);
+  const { pool, deposit, loading, status, retry } = state ?? own;
   const [amount, setAmount] = useState('');
   const [accepted, setAccepted] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -24,7 +41,21 @@ export function FirstLossDeposit({ slabAddress, collateralMint, decimals = 6, de
     setAccepted((prev) => (prev !== null && prev !== key ? null : prev));
   }, [key]);
 
-  if (!view) return null;
+  if (!view) {
+    if (!expected) return null;
+    if (status === 'loading' || status === 'idle') {
+      return <p data-testid="first-loss-reading" role="status" className="text-[11px] text-[var(--text-secondary)]">{V22_COPY.stake.poolReading}</p>;
+    }
+    return (
+      <div data-testid="first-loss-read-failed" className="flex items-center justify-between gap-3 text-[11px] text-[var(--text-secondary)]">
+        <p role="status">{V22_COPY.stake.poolReadFailed}</p>
+        <button type="button" data-testid="first-loss-retry" onClick={() => retry()}
+          className="shrink-0 border border-[var(--border)] px-2 py-1 text-[10px] font-medium uppercase tracking-[0.1em] text-[var(--text)] hover:border-[var(--accent)]/40">
+          {V22_COPY.stake.retry}
+        </button>
+      </div>
+    );
+  }
   // F11: the text below is consent text v2; a pool on another consent version gets no deposit UI at all.
   if (!consentTextMatches(view)) return <p data-testid="first-loss-unavailable" className="text-[11px] text-[var(--text-secondary)]">{V22_COPY.stake.consentUnavailable}</p>;
   let atoms: bigint | null = null;
