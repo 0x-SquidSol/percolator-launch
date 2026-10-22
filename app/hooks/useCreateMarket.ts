@@ -124,7 +124,7 @@ import {
 } from "@/lib/create-market-v18";
 import { buildInitMatcherCtxArgs } from "@/lib/matcher-params";
 import { validateGrowthLaunch, type GrowthLaunch } from "@/lib/v21/growth-launch";
-import { staleResolveLaunchIxs, staleWindowRepair, buildConfigurePermissionlessResolveIxV22, buildLaunchBondIx, bondBundleTooLargeMessage, bondNeedsSingleTxMessage, encodeInitMarketDataWithV22, placeBondTranche } from "@/lib/v22/launch-wire";
+import { staleResolveLaunchIxs, staleWindowRepair, buildConfigurePermissionlessResolveIxV22, buildLaunchBondIx, bondBundleTooLargeMessage, bondNeedsSingleTxMessage, bondResumeMessage, encodeInitMarketDataWithV22, placeBondTranche } from "@/lib/v22/launch-wire";
 import type { V22LaunchParams } from "@/lib/v22/launch-plan";
 import { V21_COPY } from "@/lib/v21/copy";
 import { buildP3BindIxs, canonicalVaultLpMatcher, p3BindProgress, validateP3Wizard } from "@/lib/limits/p3-wizard";
@@ -2253,6 +2253,14 @@ export function useCreateMarket() {
         return;
       }
 
+      // I-1 (#3634 review): a resume past step 0 can't take a bond. The step-by-step path never reads it, and the
+      // wrapper couldn't add one there anyway: tag 107 needs the vault LP bound (step 5's tag 94) AND no Earn shares,
+      // and step 4's Earn seed mints shares first. Refuse before any read or send rather than finish without it.
+      if (params.v22?.bond && retryFromStep !== undefined && retryFromStep > 0) {
+        setState((s) => ({ ...s, loading: false, phase: "idle", error: bondResumeMessage, step: retryFromStep, stepLabel: STEP_LABELS[retryFromStep] ?? s.stepLabel, batchFallbackReason: null }));
+        return;
+      }
+
       // Every risk parameter for this market, derived from the creator's
       // leverage and LP seed (see lib/market-params.ts). Shared by the
       // sequential path's InitMarket + InitMatcherCtx sites below, exactly as
@@ -2572,7 +2580,7 @@ export function useCreateMarket() {
       // #3601: a bond launch exists only as ONE transaction (Wave C N-2: the Earn seed between the
       // steps disables bonds for good). The step-by-step path below never reads the bond, so a
       // fresh launch or a step-0 retry that reaches here would go live without it. Refuse instead;
-      // nothing is on chain yet. (A resume past step 0 was never a bond launch.)
+      // nothing is on chain yet. (A resume past step 0 with a bond was refused above.)
       if (params.v22?.bond && startStep <= 0) {
         // batchFallbackReason cleared: "your wallet signs each step separately" would contradict this refusal.
         setState((s) => ({ ...s, loading: false, phase: "idle", error: bondNeedsSingleTxMessage, step: 0, stepLabel: STEP_LABELS[0] ?? s.stepLabel, batchFallbackReason: null }));
