@@ -56,9 +56,13 @@ describe("half-made launches are hidden by rule", () => {
     for (const slab of HALF_MADE) expect(HARDCODED_BLOCKED_SLABS).not.toContain(slab);
   });
   it("the three browse surfaces use the shared predicate", () => {
-    for (const f of ["app/trade/page.tsx", "components/trade/MarketSelector.tsx", "components/trade/MarketSwitcher.tsx"]) {
+    for (const f of ["app/trade/page.tsx", "components/trade/MarketSelector.tsx"]) {
       expect(readFileSync(join(__dirname, "../..", f), "utf8")).toMatch(/isBrowsableMarketRow\(/);
     }
+    // The switcher builds its lists in lib/market-switcher-lists.ts: it must take its markets from
+    // browsableRows(), and browsableRows() must apply the predicate.
+    expect(readFileSync(join(__dirname, "../..", "components/trade/MarketSwitcher.tsx"), "utf8")).toMatch(/browsableRows\(statsMap\)/);
+    expect(readFileSync(join(__dirname, "../..", "lib/market-switcher-lists.ts"), "utf8")).toMatch(/isBrowsableMarketRow\(/);
   });
   it("creator recovery is not routed through the browse predicate", () => {
     for (const f of ["hooks/useCreatedMarkets.ts", "hooks/useStuckSlabs.ts", "components/create/RecoverSolBanner.tsx"]) {
