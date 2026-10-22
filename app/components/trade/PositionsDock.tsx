@@ -442,6 +442,12 @@ const PositionRow: FC<{ slabAddress: string; wrappedRow?: boolean }> = memo(func
           <span className="text-[9px] font-medium uppercase tracking-[0.12em] text-[var(--text-secondary)]">Catching up with the latest prices</span>
         </div>
       )}
+      {/* GAP-12: the close the stale price would favour is refused (104) while the price walks to its target: say when it reopens. */}
+      {!wrappedRow && bandCloseBlocked && !engineStale && !oracleStale && !marketIsResolved && (
+        <div data-testid="band-close-on-hold" className="border-b border-[var(--warning)]/20 bg-[var(--warning)]/5 px-4 py-1.5 text-center">
+          <span className="text-[9px] font-medium tracking-[0.04em] text-[var(--text-secondary)]">{catchUpAvailableLine(bandCatchUpMs(bandView), "close")}</span>
+        </div>
+      )}
       {isNftWrapped && (
         <div className="border-b border-[var(--accent)]/20 bg-[var(--accent)]/5 px-4 py-1.5 text-center">
           <span className="text-[9px] font-medium uppercase tracking-[0.12em] text-[var(--accent)]">
@@ -625,7 +631,7 @@ const PositionRow: FC<{ slabAddress: string; wrappedRow?: boolean }> = memo(func
                     onClick={() => { resetPhase(); prewarmClose(closeTarget); setShowCloseModal(true); }}
                     data-testid="position-close"
                     disabled={closeLoading || lpUnderfunded || !hasValidMark || engineStale || bandCloseBlocked || lotGuard !== null || marketIsResolved}
-                    title={!hasValidMark ? "Waiting for price data…" : engineStale ? catchUpAvailableLine(bandCatchUpMs(bandView), "close") : bandCloseBlocked ? V22_COPY.band.catchingUp : lotGuard ?? undefined}
+                    title={!hasValidMark ? "Waiting for price data…" : engineStale || bandCloseBlocked ? catchUpAvailableLine(bandCatchUpMs(bandView), "close") : lotGuard ?? undefined}
                     className="rounded-none border border-[var(--short)]/30 px-3 py-1 text-[9px] font-medium uppercase tracking-[0.1em] text-[var(--short)] transition-colors duration-150 hover:bg-[var(--short)]/8 hover:border-[var(--short)]/50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     Close

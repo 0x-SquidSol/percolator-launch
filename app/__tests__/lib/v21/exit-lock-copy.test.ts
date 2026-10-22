@@ -168,8 +168,12 @@ describe("copy for 120/121/122, 92-99, 100-103", () => {
   const raised = (code: number) => `Program ${W} failed: custom program error: 0x${code.toString(16)}`;
   const ctx = { surface: "trade" as const };
   it("120/121/122 resolve (not 'Something went wrong') and 120-122 count as engine locks", () => {
+    // The v2.1 wording is pinned with v2.2 off; a v2.2 build says the band-liquidation version (catchup-gap12-honest-copy.test.tsx).
+    __setDevnetV22ForTest(false);
     expect(resolveUserMessage(new Error(raised(120)), ctx).title).toBe("Close-only for now");
     expect(resolveUserMessage(new Error(raised(120)), ctx).body).toMatch(/close-only while it rebalances/);
+    __setDevnetV22ForTest(null);
+    expect(resolveUserMessage(new Error(raised(120)), ctx).title).toBe("Close-only for now");
     expect(resolveUserMessage(new Error(raised(121)), ctx).kind).toBe("loss-stale");
     expect(resolveUserMessage(new Error(raised(122)), { surface: "earn-withdraw" }).body).toMatch(/under-backed/);
     for (const c of [120, 121, 122]) expect(isEngineLockError(raised(c))).toBe(true);

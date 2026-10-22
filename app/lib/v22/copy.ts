@@ -45,6 +45,12 @@ export const V22_COPY = {
     /** No estimate available: honest and calm, never a seconds promise. With an estimate see catchUpAvailableLine. */
     catchingUp: "The price is still catching up after a big move. Closing reopens when it has; this usually takes a few minutes.",
     catchingUpWhy: "After a sharp move the market price walks toward the new price in small steps. That usually takes a few minutes and can take up to about an hour. Closing opens again as soon as it has caught up.",
+    /**
+     * Error 120 (close-only after a partial band liquidation, L7 D1): a liquidation scales the other side's factor, and the market
+     * refuses new risk until that side resets; positions still open after about an hour are closed at the market price.
+     */
+    closeOnlyAfterLiquidation:
+      "This market is close-only after a liquidation. You can still reduce or close your position. New positions reopen within about an hour; any still open then may be closed at the market price.",
     /** Mark versus the oracle target, shown only when they differ. */
     markVsTarget: (mark: string, target: string) => `Mark ${mark} · catching up to ${target}`,
     minPosition: (min: string, sym: string) => `Minimum position ${min} ${sym}`,
