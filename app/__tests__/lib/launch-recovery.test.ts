@@ -300,7 +300,8 @@ describe("a chain-recovered resume pins the launch's parameters", () => {
     // security review C: the resume belongs to one slab and one wallet, and is gated before every launch/retry
     expect(src).toContain("chainResumeRefusal(r, resumeSlab, walletB58)");
     expect(src).toContain("useChainResumeWalletGuard(walletB58, !!chainResume");
-    expect(src.match(/const gate = gateChainResume\(\);\n\s+if \(!gate\.ok\) return;/g)?.length).toBe(2);
+    // (`return false;` in launch(), which reports whether it started: #3623 follow-up)
+    expect(src.match(/const gate = gateChainResume\(\);\n\s+if \(!gate\.ok\) return( false)?;/g)?.length).toBe(2);
     // a local resume replaces any chain resume
     expect(src).toMatch(/setChainResume\(null\);\n\s+setChainResumeError\(null\);\n\s+\/\/ Set resumeFromStep so handleLaunch/);
   });

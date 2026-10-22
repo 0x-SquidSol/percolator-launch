@@ -60,6 +60,8 @@ import { isValidBase58Pubkey } from "@/lib/createWizardUtils";
 import { isMockMode } from "@/lib/mock-mode";
 import { lowestLeverageTrackablePriceUsd } from "@/lib/launch-price-floor";
 import { pickInitialPrice, toInitialPriceE6, withTrackableFloor } from "@/lib/initial-price";
+import { bondBundleTooLargeMessage, bondNeedsSingleTxMessage } from "@/lib/v22/launch-wire";
+import { bondRetryAction, freshLaunchOnce } from "@/lib/v22/bond-relaunch";
 
 type WizardStep = 1 | 2;
 
@@ -1011,22 +1013,25 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
   }, []);
 
   // Launch market (or resume from a stuck slab when resumeFromStep is set)
-  const handleLaunch = () => {
-    if (!allValid || !oracleSettled || !publicKey) return;
+  // #3601: `withoutBond` launches the same market with the v2.2 capacity bond left out (the user's explicit choice
+  // after the bond refusal); otherwise the launch is exactly what the wizard shows.
+  // Returns false when it stopped before calling create() (nothing started), so a caller holding a one-shot guard can re-arm it.
+  const launch = (withoutBond: boolean): boolean => {
+    if (!allValid || !oracleSettled || !publicKey) return false;
     // #3320: the button is disabled at a known limit; this keeps any other caller of handleLaunch
     // from building a transaction for a market that would be refused a live price.
-    if (atLivePriceLimit) return;
+    if (atLivePriceLimit) return false;
     const { oracleFeed, priceE6 } = getOracleFeedAndPrice();
     // PERC-470 security: block hyperp launch without valid DEX price
     if (wizard.oracleType === "hyperp_ema" && priceE6 === 0n) {
       alert("Cannot create market: no DEX price available for this token. Try again or switch to Admin oracle.");
-      return;
+      return false;
     }
     // C-10: block admin/keeper launch if initial oracle price is 0 or unset.
     // InitMarket rejects priceE6=0 on-chain; guard here for a cleaner error.
     if ((wizard.oracleType === "admin" || wizard.oracleType === "keeper") && priceE6 === 0n) {
       alert("Cannot create market: enter a valid initial oracle price greater than 0.");
-      return;
+      return false;
     }
 
     // PERC-470: Map wizard oracle type to CreateMarketParams oracleMode
@@ -1066,7 +1071,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
       // InvalidSlabLen. v17 has no slab tiers; maxAccounts is deliberately omitted too.
       // P3: vault-owned LP + the creator's junior tranche (= the Liquidity amount).
       ...(growthWithTiers ? { growth: growthWithTiers } : {}),
-      ...(v22Params ? { v22: v22Params } : {}),
+      ...(v22Params ? { v22: withoutBond ? { ...v22Params, bond: undefined } : v22Params } : {}),
       p3: wizardP3Params(
         p3WizardEnabled(),
         parseHumanAmount(wizard.lpCollateral || "0", decimals),
@@ -1101,12 +1106,50 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
     // PERC-513: If resuming from a stuck slab, skip slab creation (step 0).
     // The existing slab keypair is already in slabKpRef (loaded from localStorage).
     const gate = gateChainResume();
-    if (!gate.ok) return;
+    if (!gate.ok) return false;
     create(applySameBrowserPin(applyRecoveredLaunch(params, gate.resume), activeSameBrowserPin), resumeFromStep ?? undefined);
+    return true;
   };
+  const handleLaunch = () => launch(false);
+  // #3601: after the bond refusal nothing is on chain, so both choices are a fresh launch: the same one again (the
+  // single-transaction path can fail on a passing RPC blip), or the same market without the bond, unticked in the
+  // form too so what the user sees matches what launches.
+  const bondRefusal = createState.error === bondNeedsSingleTxMessage || createState.error === bondBundleTooLargeMessage;
+  // One fresh launch per refusal: each click makes a new slab keypair, so a double click would start two launches.
+  // Re-armed when the error changes (the next attempt clears it, a new refusal sets it again).
+  const bondChoiceUsedRef = useRef(false);
+  useEffect(() => {
+    bondChoiceUsedRef.current = false;
+  }, [createState.error]);
+  // One fresh launch per error (lib/v22/bond-relaunch): a launch that stopped before create() re-arms the guard.
+  // Never a silent no-op: a fresh launch that cannot run (no wallet, invalid form) says why, as Retry does.
+  const freshFromPanel = (run: () => boolean) => {
+    const blocked = retryBlockedReason({ hasWallet: !!publicKey, configValid, step: 0, hasSlab: false });
+    setRetryNote(blocked);
+    if (blocked) return;
+    freshLaunchOnce(bondChoiceUsedRef, run);
+  };
+  const handleBondTryAgain = () => freshFromPanel(() => launch(false));
+  // The form is unticked only once the launch has started, so what the user sees matches what launches.
+  const handleLaunchWithoutBond = () =>
+    freshFromPanel(() => {
+      const started = launch(true);
+      if (started) setWizard((prev) => ({ ...prev, v22: { ...(prev.v22 ?? {}), bond: false } }));
+      return started;
+    });
+  // A bond launch that was sent but never confirmed may have landed in full: no Continue then (a fresh launch could
+  // create a second market).
+  const bondRetry = bondRetryAction({ bond: !!v22Params?.bond, step: createState.step, resumeFromStep, outcomeUnknown: !!createState.outcomeUnknown });
 
   // Retry from failed step
   const handleRetry = () => {
+    // #3601: a bond launch that failed at step 0 (declined prompt, simulation) left nothing on chain and can only go as
+    // one transaction: Continue is a fresh launch, not the step-by-step path (which refuses a bond).
+    if (bondRetry === "hidden") return;
+    if (bondRetry === "fresh") {
+      freshFromPanel(() => launch(false));
+      return;
+    }
     // Never a silent no-op: a Retry that does nothing reads as a hung launch. Say why.
     const blocked = retryBlockedReason({ hasWallet: !!publicKey, configValid, step: createState.step, hasSlab: !!createState.slabAddress });
     setRetryNote(blocked);
@@ -1277,7 +1320,12 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
         <LaunchProgress
           state={createState}
           onReset={handleReset}
-          onRetry={handleRetry}
+          onRetry={bondRetry === "hidden" ? undefined : handleRetry}
+          bondChoice={bondRefusal ? {
+            // Too large is not a passing failure: the same launch would be refused the same way.
+            onTryAgain: createState.error === bondNeedsSingleTxMessage ? handleBondTryAgain : undefined,
+            onLaunchWithoutBond: handleLaunchWithoutBond,
+          } : undefined}
         />
       </>
     );

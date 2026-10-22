@@ -441,6 +441,8 @@ describe("failure paths", () => {
     expect(walletPrompts).toBe(1);
     expect(S.signAllCompat).not.toHaveBeenCalled();
     expect(stateBox.error).toMatch(/declined/);
+    // #3601 follow-up: nothing was created, so the wizard may offer a fresh relaunch.
+    expect(stateBox.outcomeUnknown).toBe(false);
   });
 
   it("keeper route refusal => fallback to the batch before any wallet prompt", async () => {
@@ -522,6 +524,9 @@ describe("unknown send outcome => never a blind re-launch", () => {
     expect(outcome).toEqual({ status: "aborted" });
     expect(S.signAllCompat).not.toHaveBeenCalled();
     expect(stateBox.error).toMatch(/Do not launch again/);
+    // #3601 follow-up: it may have landed in full, so the wizard must not offer Continue or a fresh relaunch
+    // (a fresh launch makes a new slab keypair and could create a second market).
+    expect(stateBox.outcomeUnknown).toBe(true);
   });
 
   it("pending until the blockhash expires, still not found, NO slab => exactly one fallback", async () => {
