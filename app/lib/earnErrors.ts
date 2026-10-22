@@ -65,3 +65,18 @@ export function stakeErrorMessage(err: unknown): string {
   if (resolveUserMessage(err, { surface: "stake" }).kind === "still-confirming") return STAKE_STILL_CONFIRMING;
   return plainMessage(err, { surface: "stake" }, keepAppMessage);
 }
+
+/** Text {@link keepAppMessage} lets through that must not reach the user: an RPC URL (its query can carry an API key), JSON, a multi-line dump. */
+const RPC_OR_JSON_TEXT = /https?:\/\/|api[-_]?key|[{}[\]]|\n/i;
+
+/**
+ * #3608: the one line for a failed v2.2 first-loss (stake v5) deposit. The same mapping as {@link stakeErrorMessage}, so a
+ * stake-program refusal reaches v22StakeMessage (33 ConsentRequired, 28 DepositBelowMinimumLiquidity, 44
+ * InsuranceReadingsDiverged read as plain copy); an unmapped message is kept only when it is plain and carries no RPC URL,
+ * JSON or log dump.
+ */
+export function firstLossStakeErrorMessage(err: unknown): string {
+  if (resolveUserMessage(err, { surface: "stake" }).kind === "still-confirming") return STAKE_STILL_CONFIRMING;
+  // keepAppMessage("") is the resolver's generic "nothing was sent" line.
+  return plainMessage(err, { surface: "stake" }, (raw) => keepAppMessage(RPC_OR_JSON_TEXT.test(raw) ? "" : raw));
+}

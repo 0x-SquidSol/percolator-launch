@@ -399,8 +399,11 @@ export async function GET() {
           registeredBySlab.get(pool.slab)?.symbol ??
           pool.slab.slice(0, 8),
         logoUrl: market?.logo_url ?? null,
-        /** TVL = vault balance in USDC */
-        tvl: valueView?.kind === "first-loss" && valueView.totalAtoms !== null ? atomsToUsd(valueView.totalAtoms) : toUsdcFloat(vaultBalRaw),
+        /**
+         * TVL in USDC: the vault balance; for a v2.2 first-loss pool, its full value (vault + deployed insurance). #3611: a
+         * first-loss pool whose insurance units could not be read is null (the page shows a dash), never the vault alone.
+         */
+        tvl: valueView?.kind === "first-loss" ? atomsToUsd(valueView.totalAtoms) : toUsdcFloat(vaultBalRaw),
         /** TVL in raw token units (6 dec for USDC) */
         tvlRaw: vaultBalRaw.toString(),
         /** Pool value (deposited - withdrawn - flushed + returned) */

@@ -40,16 +40,21 @@ export interface StakeValuationInput {
   chainVaultAtoms: bigint | null;
   /** Cached /api/stake/pools snapshot, used only when the chain read is unavailable. */
   apiTotalLpSupply: number;
-  apiTvlUsd: number;
+  /** null = the API could not value the pool (#3611: a first-loss pool whose insurance units were unreadable). */
+  apiTvlUsd: number | null;
   lpDecimals: number;
 }
 
-/** USD value of the position: fresh chain numbers first, API snapshot as the fallback. */
-export function valueStakePosition(i: StakeValuationInput): number {
+/**
+ * USD value of the position: fresh chain numbers first, API snapshot as the fallback. Null when neither can value it
+ * (#3611): the page shows a dash, never a figure from a partial TVL.
+ */
+export function valueStakePosition(i: StakeValuationInput): number | null {
   if (i.chainTotalLpSupplyRaw !== null && i.chainVaultAtoms !== null) {
     const atoms = stakeValueAtoms(i.lpRaw, i.chainTotalLpSupplyRaw, i.chainVaultAtoms);
     if (atoms !== null) return Number(atoms) / 10 ** STAKE_COLLATERAL_DECIMALS;
   }
+  if (i.apiTvlUsd === null) return null;
   const lpHuman = Number(i.lpRaw) / 10 ** i.lpDecimals;
   const supplyHuman = i.apiTotalLpSupply / 10 ** i.lpDecimals;
   return supplyHuman > 0 ? (lpHuman / supplyHuman) * i.apiTvlUsd : 0;

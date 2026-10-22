@@ -192,7 +192,7 @@ function LpPositionCard({ position: pos, kind }: { position: LpPosition; kind: P
               className="text-[12px] text-[var(--text-secondary)]"
               style={{ fontFamily: "var(--font-jetbrains-mono)", fontVariantNumeric: "tabular-nums" }}
             >
-              {formatUsd(pos.tvl)}
+              {pos.tvl === null ? "—" : formatUsd(pos.tvl)}
             </p>
           </div>
 
