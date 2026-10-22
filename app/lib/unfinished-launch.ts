@@ -8,7 +8,9 @@
  * its panel compose them, so the wording and the removable/committed decision are testable without a
  * wallet.
  */
-import { parseBackingBucketsV17 } from "@percolatorct/sdk";
+// Flag-aware (#3606): the installed SDK 8.0.0 parser accepts VERSION 18 only and threw on every v2.2 (VERSION 19) market, so
+// every unfinished v2.2 launch read as "unknown". Flag off this is the installed parser, unchanged.
+import { parseBackingBucketsV17 } from "@/lib/v22/records";
 import { readMarketGroupHeader } from "@/lib/v18-wire";
 
 /** What the indexer writes for a market whose real symbol nothing on chain can supply. */
