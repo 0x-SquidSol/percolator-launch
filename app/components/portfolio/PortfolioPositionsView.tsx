@@ -624,7 +624,8 @@ export function PortfolioPositionsView() {
 
   // Earn deposits and stake positions (neither adds to the insurance balance)
   const lpPositions = useLpPositions();
-  const lpUnread = lpPositions.error != null && lpPositions.positions.length === 0;
+  // A held stake whose value can't be read (v2.2 first-loss, units unreadable) makes the total unknown too: a dash.
+  const lpUnread = (lpPositions.error != null && lpPositions.positions.length === 0) || lpPositions.totalRedeemable === null;
   const isRefreshing = portfolio.isRefreshing || lpPositions.isRefreshing;
 
   // PERC-481: Aggregate trade statistics
@@ -893,8 +894,8 @@ export function PortfolioPositionsView() {
               {
                 label: "LP Value",
                 // A failed read with nothing read is unknown, not $0 (as loadError on the tiles beside it).
-                value: !walletConnected ? "\u2014" : lpPositions.loading ? "\u2026" : lpUnread ? "\u2014" : `$${lpPositions.totalRedeemable.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-                color: !walletConnected || lpUnread ? "text-[var(--text-dim)]" : lpPositions.totalRedeemable > 0 ? "text-[var(--cyan)]" : "text-[var(--text-secondary)]",
+                value: !walletConnected ? "\u2014" : lpPositions.loading ? "\u2026" : lpUnread || lpPositions.totalRedeemable === null ? "\u2014" : `$${lpPositions.totalRedeemable.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+                color: !walletConnected || lpUnread ? "text-[var(--text-dim)]" : (lpPositions.totalRedeemable ?? 0) > 0 ? "text-[var(--cyan)]" : "text-[var(--text-secondary)]",
                 sub: walletConnected && lpPositions.positions.length > 0
                   ? `${lpPositions.positions.length} pool${lpPositions.positions.length > 1 ? "s" : ""}`
                   : undefined,

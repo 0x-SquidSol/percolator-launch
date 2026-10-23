@@ -22,7 +22,7 @@ import * as Sentry from "@sentry/nextjs";
 import { isListableStakePool, stakePoolScanSize } from "@/lib/v22/stake-pool-scan";
 import { isDevnetV22Enabled } from "@/lib/v22/flag";
 import { deriveInsuranceUnitsV22 } from "@/lib/v22/sdk";
-import { atomsToUsd, stakePoolValueView, type StakePoolValueView } from "@/lib/v22/stake-pool-value";
+import { atomsToUsd, liveFreeInsuranceAtoms, stakePoolValueView, type StakePoolValueView } from "@/lib/v22/stake-pool-value";
 import { isMissingColumnError } from "@/lib/supabase-missing-column";
 
 export const dynamic = "force-dynamic";
@@ -246,9 +246,14 @@ export async function GET() {
     // stay under the 100-key getMultipleAccountsInfo cap (see lib/rpc-chunk.ts).
     const slabKeys = curatedFiltered.map(p => new PublicKey(p.pool.slab));
     const slabInfos = await getMultipleAccountsInfoChunked(connection, slabKeys);
-    const parsed = curatedFiltered.filter(
-      (p, i) => slabInfos[i] !== null && !isBlockedSlab(p.pool.slab),
-    );
+    // The market (slab) bytes are kept for the v2.2 live free-insurance clamp below (no second read).
+    const slabDataByPool = new Map<string, Uint8Array>();
+    const parsed = curatedFiltered.filter((p, i) => {
+      const info = slabInfos[i];
+      if (info === null || isBlockedSlab(p.pool.slab)) return false;
+      slabDataByPool.set(p.pubkey, new Uint8Array(info.data));
+      return true;
+    });
 
     // 3. Fetch vault token balances (SPL token amount in each vault)
     const vaultAddresses = parsed.map((p) => p.pool.vault);
@@ -298,7 +303,9 @@ export async function GET() {
         if (info) unitsByPool.set(u.pubkey, new Uint8Array(info.data));
       });
       for (const [pubkey, data] of kinds) {
-        const v = stakePoolValueView(data, unitsByPool.get(pubkey));
+        // The units snapshot is stale-high after an insurance loss: clamp it to the market's live free reading, exactly as
+        // /stake does (AUD-FC-B3), from the slab bytes read above. A market that can't be decoded keeps the snapshot (as the page).
+        const v = stakePoolValueView(data, unitsByPool.get(pubkey), liveFreeInsuranceAtoms(slabDataByPool.get(pubkey)));
         if (v) valueViews.set(pubkey, v);
       }
     }

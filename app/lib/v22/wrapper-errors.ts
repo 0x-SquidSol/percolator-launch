@@ -37,7 +37,7 @@ export const V22_NAME_BY_CODE: Readonly<Record<number, string>> = Object.freeze(
   Object.fromEntries(Object.entries(WRAPPER_ERR_V22).map(([k, v]) => [v, k])),
 );
 
-/** Stake program v5 error codes 33..=45 (percolator-stake src/error.rs), stable Rust names. */
+/** Stake program v5 error codes 33..=48 (percolator-stake src/error.rs, fix/v22-stake-310-313-combined), stable Rust names. */
 export const STAKE_ERR_V5 = {
   ConsentRequired: 33,
   DeprecatedV5: 34,
@@ -52,12 +52,15 @@ export const STAKE_ERR_V5 = {
   NothingToSync: 43,
   InsuranceReadingsDiverged: 44,
   InsuranceUnitsMismatch: 45,
+  CreatorAccountRequired: 46,
+  InsuranceCustodyNotBound: 47,
+  MultiAssetMarketNotSupported: 48,
 } as const;
 
 /**
  * Stake error 28 (`DepositBelowMinimumLiquidity`): a first deposit of 1,000 atoms or less into an EMPTY pool, senior tranche or
  * junior tranche. Since percolator-stake R-1 each sub-pool locks its own 1,000 dead shares, so this is no longer only the pool's
- * first-ever deposit. Kept apart from {@link STAKE_ERR_V5} (the v5-only 33..=45 block).
+ * first-ever deposit. Kept apart from {@link STAKE_ERR_V5} (the v5-only 33..=48 block).
  */
 export const STAKE_ERR_DEPOSIT_BELOW_MIN_LIQUIDITY = 28;
 
