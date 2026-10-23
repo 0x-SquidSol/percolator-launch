@@ -81,6 +81,12 @@ export function placeBondTranche(instructions: readonly TransactionInstruction[]
 export const bondNeedsSingleTxMessage =
   "A launch with a bond has to go in a single approval, and this wallet or network can't do that right now. Launch without the bond, or try a wallet that supports it.";
 
+/**
+ * I-1 (#3634 review): a resume past the first step can't take a bond. Tag 107 needs the vault LP bound (the last
+ * step's tag 94) and no Earn shares yet, and the step before it seeds Earn, so a split launch can never add one.
+ */
+export const bondResumeMessage = "A bond can only be added when a market is first created, and this launch is already under way. Continue without the bond.";
+
 /** What the wizard says when the bundle is too big to stay one transaction. */
 export const bondBundleTooLargeMessage = "A bond doesn't fit in the launch transaction for this market. Launch without the bond.";
 

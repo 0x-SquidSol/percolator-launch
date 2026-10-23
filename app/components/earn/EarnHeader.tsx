@@ -5,6 +5,8 @@ import type { EarnStats } from '@/hooks/useEarnStats';
 import { ShimmerSkeleton } from '@/components/ui/ShimmerSkeleton';
 import { FeeBreakdown } from "@/components/FeeBreakdown";
 import { FEE_LEGS, legPercent } from "@/lib/fee-breakdown";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
+import { V22_COPY } from "@/lib/v22/copy";
 
 /**
  * The figures as plain text, formatted as AnimatedNumber's final frame. Not animated: a count-up
@@ -58,7 +60,8 @@ export function EarnHeader({ stats, loading }: EarnHeaderProps) {
             {/* Corrected 2026-07-28: fees ARE paid into the vault on the deployed program (a
                 500-notional round trip accrued the vault's 48% and moved it in on its own). */}
             <p className="mt-2 max-w-[68ch] text-[14px] xl:max-w-none leading-relaxed text-[var(--text-secondary)]">
-              Deposit USDC into a market&apos;s vault. {LP_SHARE_PCT}% of every trading fee on that market is
+              {/* v2.2 vaults can hold other collateral: each vault's own token is named in its deposit rail. */}
+              {isDevnetV22Enabled() ? V22_COPY.earnPage.depositLead : "Deposit USDC into a market's vault."} {LP_SHARE_PCT}% of every trading fee on that market is
               added to the vault, so your deposit grows as people trade it.{" "}
               {/* Always visible: the detailed Risk notice row below starts closed, so the downside is stated here too. */}
               <span data-testid="earn-loss-line">It can also fall when traders win, so only deposit what you can afford to lose.</span>

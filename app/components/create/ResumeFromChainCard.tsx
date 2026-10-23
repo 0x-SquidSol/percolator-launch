@@ -4,7 +4,8 @@ import { FC, useEffect, useState } from "react";
 import Link from "next/link";
 import { PublicKey } from "@solana/web3.js";
 import { parseWrapperConfigV17, V17_HEADER_LEN } from "@percolatorct/sdk";
-import { isUnknownWrapperVersion, isWrapperMarketAccount, parseMarketOI } from "@/lib/v22/layout";
+import { isWrapperMarketAccount, parseMarketOI, unknownWrapperVersionAge, unsupportedLayoutMessage } from "@/lib/v22/layout";
+import { V22_COPY } from "@/lib/v22/copy";
 import { useConnectionCompat, useWalletCompat } from "@/hooks/useWalletCompat";
 import { searchVerifiedPools } from "@/hooks/useDexPoolSearch";
 import { fetchTokenMeta } from "@/lib/tokenMeta";
@@ -32,6 +33,8 @@ import {
 export type ResumeChainState =
   | { kind: "loading" }
   | { kind: "unreadable" }
+  /** A wrapper VERSION this build can't decode: re-reading never changes it, so it is not "unreadable". */
+  | { kind: "unsupported"; newer: boolean }
   | { kind: "not-a-market" }
   | { kind: "not-yours" }
   | { kind: "finished" }
@@ -47,8 +50,9 @@ export function classifyResumeSlab(
   if (!data) return { kind: "not-a-market" };
   // #3603: by the account's VERSION (lib/v22/layout): the installed SDK's isV17Account accepts VERSION 18 only, so a
   // v2.2 launch (VERSION 19) read as "not an initialised market". A wrapper VERSION this build can't decode is
-  // "couldn't read", never "nothing to continue".
-  if (isUnknownWrapperVersion(data)) return { kind: "unreadable" };
+  // "unsupported", never "nothing to continue", and not "couldn't read… try again" (re-reading can't change it).
+  const age = unknownWrapperVersionAge(data);
+  if (age) return { kind: "unsupported", newer: age === "newer" };
   try {
     if (!isWrapperMarketAccount(data)) return { kind: "not-a-market" };
     const cfg = parseWrapperConfigV17(data, V17_HEADER_LEN);
@@ -198,7 +202,11 @@ export const ResumeFromChainCard: FC<{
           ? "This launch wasn't made by the connected wallet, so it can't be continued from here."
           : chain.kind === "not-a-market"
             ? `${short} isn't an initialised market, so there is nothing on chain to continue. ${CANNOT_RESUME_COPY.step0}`
-            : "Couldn't read this launch from the chain just now. Try again in a moment.";
+            : chain.kind === "unsupported"
+              ? chain.newer
+                ? `${unsupportedLayoutMessage().title}. ${unsupportedLayoutMessage().body}`
+                : V22_COPY.layout.olderResume
+              : "Couldn't read this launch from the chain just now. Try again in a moment.";
     return (
       <div data-testid="resume-chain-card" data-state={chain.kind} className={box}>
         <p className="text-[11px] text-[var(--text-secondary)]">{msg}</p>

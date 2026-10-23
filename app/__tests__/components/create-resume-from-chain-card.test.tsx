@@ -15,7 +15,7 @@ const OTHER = new PublicKey("DrrDGxiojUPHnLZaNw7DN6JYoEKKqu3bG4PmNjv8P1yG");
 const SLAB = new PublicKey("GrKZUtyeaqbg1Q1J1kPWznui92sbLpX5F62LrBVGkifL");
 vi.mock("@percolatorct/sdk", async (orig) => ({ ...(await orig<object>()), parseWrapperConfigV17: () => ({ marketauth: h.marketauth }), V17_HEADER_LEN: 0 }));
 // #3603: the market check and OI read go through the layout-aware helpers.
-vi.mock("@/lib/v22/layout", async (orig) => ({ ...(await orig<object>()), isWrapperMarketAccount: () => h.isV17, isUnknownWrapperVersion: () => h.unknownVersion, parseMarketOI: () => h.oi }));
+vi.mock("@/lib/v22/layout", async (orig) => ({ ...(await orig<object>()), isWrapperMarketAccount: () => h.isV17, unknownWrapperVersionAge: () => (h.unknownVersion ? "newer" : null), parseMarketOI: () => h.oi }));
 vi.mock("@/lib/v18-wire", () => ({ readMarketGroupHeader: () => h.header }));
 vi.mock("@/lib/market-completeness", () => ({ isMarketauthComplete: () => h.complete }));
 vi.mock("@/hooks/useWalletCompat", () => ({ useWalletCompat: () => h.wallet, useConnectionCompat: () => h.conn }));

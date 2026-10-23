@@ -49,11 +49,13 @@ describe("the wizard routes its error panel through these", () => {
     const path = await import("node:path");
     const src = fs.readFileSync(path.resolve(__dirname, "../../../components/create/CreateMarketWizard.tsx"), "utf8");
     expect(src).toMatch(/onRetry=\{bondRetry === "hidden" \? undefined : handleRetry\}/);
-    expect(src).toMatch(/if \(bondRetry === "hidden"\) return;/);
+    expect(src).toMatch(/if \(bondRetry === "hidden"\) return false;/);
     expect(src).toMatch(/outcomeUnknown: !!createState\.outcomeUnknown/);
     // Every fresh launch from the panel goes through one path: the blocked-reason note, then the one-shot guard.
     expect(src).toMatch(/const freshFromPanel = [\s\S]{0,300}retryBlockedReason\([\s\S]{0,200}setRetryNote\(blocked\);\n\s+if \(blocked\) return;\n\s+freshLaunchOnce\(bondChoiceUsedRef, run\);/);
     expect(src.match(/freshFromPanel\(/g)?.length).toBe(3);
-    expect(src.match(/freshLaunchOnce\(/g)?.length).toBe(1);
+    // The second is I-1's "Continue without the bond": one resume per refusal, not a fresh launch.
+    expect(src.match(/freshLaunchOnce\(/g)?.length).toBe(2);
+    expect(src).toMatch(/const handleContinueWithoutBond = \(\) =>\n\s+freshLaunchOnce\(bondChoiceUsedRef,/);
   });
 });

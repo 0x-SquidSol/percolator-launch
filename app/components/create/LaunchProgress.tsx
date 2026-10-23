@@ -38,7 +38,7 @@ interface LaunchProgressProps {
    * step-by-step path, which has no bond, so the error offers these instead: the same launch again (absent when
    * it would be refused the same way) or the launch without the bond.
    */
-  bondChoice?: { onTryAgain?: () => void; onLaunchWithoutBond: () => void };
+  bondChoice?: { onTryAgain?: () => void; onLaunchWithoutBond: () => void; /** Default "Launch without the bond". */ withoutBondLabel?: string };
 }
 
 /**
@@ -350,7 +350,7 @@ export const LaunchProgress: FC<LaunchProgressProps> = ({ state, onReset, onRetr
                   data-testid="wizard-bond-launch-without"
                   className="border border-[var(--short)]/30 bg-[var(--short)]/[0.08] px-4 py-2.5 text-[11px] font-medium uppercase tracking-[0.1em] text-[var(--short)] hover:bg-[var(--short)]/[0.15] transition-colors min-h-[44px]"
                 >
-                  Launch without the bond
+                  {bondChoice.withoutBondLabel ?? "Launch without the bond"}
                 </button>
               </>
             ) : onRetry && (

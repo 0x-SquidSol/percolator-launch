@@ -59,7 +59,7 @@ import { isValidBase58Pubkey } from "@/lib/createWizardUtils";
 import { isMockMode } from "@/lib/mock-mode";
 import { lowestLeverageTrackablePriceUsd } from "@/lib/launch-price-floor";
 import { pickInitialPrice, toInitialPriceE6, withTrackableFloor } from "@/lib/initial-price";
-import { bondBundleTooLargeMessage, bondNeedsSingleTxMessage } from "@/lib/v22/launch-wire";
+import { bondBundleTooLargeMessage, bondNeedsSingleTxMessage, bondResumeMessage } from "@/lib/v22/launch-wire";
 import { bondRetryAction, freshLaunchOnce } from "@/lib/v22/bond-relaunch";
 
 type WizardStep = 1 | 2;
@@ -1120,6 +1120,8 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
   // single-transaction path can fail on a passing RPC blip), or the same market without the bond, unticked in the
   // form too so what the user sees matches what launches.
   const bondRefusal = createState.error === bondNeedsSingleTxMessage || createState.error === bondBundleTooLargeMessage;
+  // I-1: a resume past step 0 refused the bond (it can't be added once a launch is under way); nothing was sent.
+  const bondResumeRefusal = createState.error === bondResumeMessage;
   // One fresh launch per refusal: each click makes a new slab keypair, so a double click would start two launches.
   // Re-armed when the error changes (the next attempt clears it, a new refusal sets it again).
   const bondChoiceUsedRef = useRef(false);
@@ -1146,19 +1148,22 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
   // create a second market).
   const bondRetry = bondRetryAction({ bond: !!v22Params?.bond, step: createState.step, resumeFromStep, outcomeUnknown: !!createState.outcomeUnknown });
 
-  // Retry from failed step
-  const handleRetry = () => {
+  // Retry from failed step. `withoutBond` (I-1): the same retry with the bond left out, after the resume refused it.
+  // Returns false when it stopped before calling create().
+  const retry = (withoutBond: boolean): boolean => {
     // #3601: a bond launch that failed at step 0 (declined prompt, simulation) left nothing on chain and can only go as
     // one transaction: Continue is a fresh launch, not the step-by-step path (which refuses a bond).
-    if (bondRetry === "hidden") return;
-    if (bondRetry === "fresh") {
-      freshFromPanel(() => launch(false));
-      return;
+    if (!withoutBond) {
+      if (bondRetry === "hidden") return false;
+      if (bondRetry === "fresh") {
+        freshFromPanel(() => launch(false));
+        return false;
+      }
     }
     // Never a silent no-op: a Retry that does nothing reads as a hung launch. Say why.
     const blocked = retryBlockedReason({ hasWallet: !!publicKey, configValid, step: createState.step, hasSlab: !!createState.slabAddress });
     setRetryNote(blocked);
-    if (blocked) return;
+    if (blocked) return false;
     const { oracleFeed, priceE6 } = getOracleFeedAndPrice();
 
     // PERC-470: Include oracleMode + dexPoolAddress in retry params (fixes #810)
@@ -1189,7 +1194,7 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
       // Slab size and slot count derive from marketAssetSlotsFor, as in handleLaunch above.
       // P3: vault-owned LP + the creator's junior tranche (= the Liquidity amount).
       ...(growthWithTiers ? { growth: growthWithTiers } : {}),
-      ...(v22Params ? { v22: v22Params } : {}),
+      ...(v22Params ? { v22: withoutBond ? { ...v22Params, bond: undefined } : v22Params } : {}),
       p3: wizardP3Params(
         p3WizardEnabled(),
         parseHumanAmount(wizard.lpCollateral || "0", decimals),
@@ -1215,9 +1220,22 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
       } : {}),
     };
     const gate = gateChainResume();
-    if (!gate.ok) return;
+    if (!gate.ok) return false;
     create(applySameBrowserPin(applyRecoveredLaunch(params, gate.resume), activeSameBrowserPin), createState.step);
+    return true;
   };
+  const handleRetry = () => {
+    retry(false);
+  };
+  // I-1: continue the refused resume without the bond, the way it was started (a resume from the banner or the
+  // chain re-runs launch at resumeFromStep; an in-session retry re-runs at the failed step). The form is unticked
+  // once it has started, so what the user sees matches what is sent. One click per refusal.
+  const handleContinueWithoutBond = () =>
+    freshLaunchOnce(bondChoiceUsedRef, () => {
+      const started = resumeFromStep !== null ? launch(true) : retry(true);
+      if (started) setWizard((prev) => ({ ...prev, v22: { ...(prev.v22 ?? {}), bond: false } }));
+      return started;
+    });
 
   // Retry ONLY the keeper-register step for an already-live market (LaunchSuccess's
   // "Retry registration" action — see useCreateMarket.ts's retryKeeperRegistration
@@ -1330,6 +1348,10 @@ export const CreateMarketWizard: FC<{ initialMint?: string; /** /create?resume=<
             // Too large is not a passing failure: the same launch would be refused the same way.
             onTryAgain: createState.error === bondNeedsSingleTxMessage ? handleBondTryAgain : undefined,
             onLaunchWithoutBond: handleLaunchWithoutBond,
+          } : bondResumeRefusal ? {
+            // Retrying with the bond would be refused the same way: the only way on is without it.
+            onLaunchWithoutBond: handleContinueWithoutBond,
+            withoutBondLabel: "Continue without the bond",
           } : undefined}
         />
       </>

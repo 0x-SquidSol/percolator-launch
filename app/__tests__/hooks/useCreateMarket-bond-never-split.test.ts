@@ -24,7 +24,11 @@ vi.mock("@solana/spl-token", async () => ({ ...(await vi.importActual<object>("@
 vi.mock("@percolatorct/sdk", async () => ({ ...(await vi.importActual<object>("@percolatorct/sdk")), deriveVaultAuthority: mocks.deriveVaultAuthority, deriveMatcherDelegate: () => [new PublicKey(new Uint8Array(32).fill(29)), 254] }));
 
 import { useCreateMarket, type CreateMarketParams } from "@/hooks/useCreateMarket";
+import * as launchWire from "@/lib/v22/launch-wire";
 import { bondNeedsSingleTxMessage } from "@/lib/v22/launch-wire";
+
+// I-1 (#3634 review): read from the module object so this file still loads where the message is absent.
+const bondResumeMessage = (launchWire as Record<string, unknown>).bondResumeMessage;
 
 const base = { mint: Keypair.generate().publicKey, initialPriceE6: 100_000_000n, lpCollateral: 1_000_000n, insuranceAmount: 100_000n, oracleFeed: "0".repeat(64), invert: false, tradingFeeBps: 10, initialMarginBps: 1_500, maxAccounts: 4_096, decimals: 6, symbol: "TEST", name: "Test Market", oracleMode: "admin" as const };
 const withBond = { ...base, v22: { lotExp: 0, bond: { stub: true } } } as unknown as CreateMarketParams;
@@ -80,5 +84,42 @@ describe("#3601: a bond launch is never sent step by step", () => {
   it("CONTROL: the same retry without a bond goes on to send step 0", async () => {
     await retryStep0(base as CreateMarketParams);
     expect(mocks.sendTx).toHaveBeenCalled();
+  });
+});
+
+/**
+ * I-1 (#3634 review): a resume past step 0 (RecoverSolBanner / /create?resume=) with the bond ticked used to run the
+ * step-by-step path, which never reads the bond: the market finished without it while the form said it had one. On
+ * the v2.2 wrapper a bond can't be added there at all: tag 107 needs the vault LP bound (step 5's tag 94) AND no Earn
+ * shares yet, and step 4's Earn seed mints shares before step 5 binds. So the resume refuses before anything is read
+ * or sent, and says the bond can't be added; the wizard offers to continue without it.
+ */
+describe("I-1: a resume past step 0 with the bond ticked refuses before sending anything", () => {
+  async function resumeAt(params: CreateMarketParams, step: number) {
+    const { result } = renderHook(() => useCreateMarket());
+    const slab = Keypair.generate();
+    act(() => result.current.restoreSlabKeypair(slab, slab.publicKey.toBase58()));
+    mocks.getAccountInfo.mockClear();
+    await act(async () => {
+      const p = result.current.create(params, step) as unknown as Promise<void>;
+      await vi.advanceTimersByTimeAsync(10_000);
+      await p;
+    });
+    return result;
+  }
+
+  it.each([1, 3, 5])("resume at step %i: no read, no send, the resume message, the step kept", async (step) => {
+    const result = await resumeAt(withBond, step);
+    expect(mocks.getAccountInfo).not.toHaveBeenCalled();
+    expect(mocks.sendTx).not.toHaveBeenCalled();
+    expect(typeof bondResumeMessage).toBe("string");
+    expect(result.current.state.error).toBe(bondResumeMessage);
+    expect(result.current.state.loading).toBe(false);
+    expect(result.current.state.step).toBe(step);
+  });
+
+  it("CONTROL: the same resume without the bond goes on to the chain", async () => {
+    await resumeAt(base as CreateMarketParams, 3);
+    expect(mocks.getAccountInfo).toHaveBeenCalled();
   });
 });
