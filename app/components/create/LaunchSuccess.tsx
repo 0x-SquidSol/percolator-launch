@@ -54,6 +54,8 @@ interface LaunchSuccessProps {
   priceFeedRequired?: boolean;
   /** UX WP-7: the background registration loop's phase (connecting / slow / ready / failed). */
   keeperPhase?: "connecting" | "slow" | "ready" | "failed" | null;
+  /** #3637: the server refused the registration for good, so a retry cannot help (no Retry; a next step instead). */
+  keeperFinal?: boolean;
 }
 
 /**
@@ -66,9 +68,12 @@ interface LaunchSuccessProps {
 export const LAUNCH_PRICE_WAIT_MS = 90_000;
 export const LAUNCH_PRICE_COPY = {
   pendingTitle: "Market created",
+  failedTitle: "Market created, but its live price can't connect",
+  failedSub: "is on Percolator devnet without a live price",
+  supportLink: "Open the Percolator Discord",
   readyTitle: "Ready to trade",
   connecting: "Live price connecting… usually under a minute.",
-  timedOut: "Live price is still connecting; your market is live and tradable once it arrives.",
+  timedOut: "Live price still isn't connected. Keep this page open while we keep trying; we can't say when, or whether, it will connect.",
   failed: KEEPER_REGISTER_COPY.serverTrouble,
   ready: KEEPER_REGISTER_COPY.ready,
   retry: "Retry",
@@ -96,6 +101,7 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
   onRetryKeeperRegistration,
   priceFeedRequired = false,
   keeperPhase = null,
+  keeperFinal = false,
 }) => {
   const feed = launchPriceFeedStatus({ priceFeedRequired, keeperDelegated: !!keeperDelegated });
   // v2.2 (flag on; off = no request): what the chain says about this market's share token (decimals, name) gates the wallet note below.
@@ -142,8 +148,10 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
             : null;
   // Without the creation tx on this device a retry can only repeat the same message, so none is offered.
   const noProofHere = keeperMessage === KEEPER_REGISTER_COPY.noProof;
+  // A final refusal cannot be cleared by clicking again, so no Retry for it.
+  const finalRefusal = priceStatus === "failed" && keeperFinal;
   const showPriceRetry =
-    !!onRetryKeeperRegistration && !noProofHere && (priceStatus === "failed" || priceStatus === "timed-out");
+    !!onRetryKeeperRegistration && !noProofHere && !finalRefusal && (priceStatus === "failed" || priceStatus === "timed-out");
 
   /**
    * PERC-475: Claim ~$500 of Sim-USDC collateral, then navigate to the trade page.
@@ -227,19 +235,23 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
   };
 
   return (
-    <div data-testid="launch-success" className="border border-[var(--long)]/30 bg-[var(--long)]/[0.06] p-6 text-center">
-      {/* Success icon */}
+    <div
+      data-testid="launch-success"
+      data-final-failure={finalRefusal ? "true" : undefined}
+      className={`border p-6 text-center ${finalRefusal ? "border-[var(--warning)]/40 bg-[var(--warning)]/[0.06]" : "border-[var(--long)]/30 bg-[var(--long)]/[0.06]"}`}
+    >
+      {/* Success icon (a warning mark when the live price can never connect) */}
       <div className="mb-4">
-        <div className="inline-flex h-12 w-12 items-center justify-center border-2 border-[var(--long)]/40 bg-[var(--long)]/[0.1] text-[24px] text-[var(--long)]">
-          ✓
+        <div className={`inline-flex h-12 w-12 items-center justify-center border-2 text-[24px] ${finalRefusal ? "border-[var(--warning)]/50 bg-[var(--warning)]/[0.1] text-[var(--warning)]" : "border-[var(--long)]/40 bg-[var(--long)]/[0.1] text-[var(--long)]"}`}>
+          {finalRefusal ? "!" : "✓"}
         </div>
       </div>
 
-      <h2 className="text-[18px] font-bold text-[var(--long)] mb-2">
-        {pricePending ? LAUNCH_PRICE_COPY.pendingTitle : LAUNCH_PRICE_COPY.readyTitle}
+      <h2 className={`text-[18px] font-bold mb-2 ${finalRefusal ? "text-[var(--warning)]" : "text-[var(--long)]"}`}>
+        {finalRefusal ? LAUNCH_PRICE_COPY.failedTitle : pricePending ? LAUNCH_PRICE_COPY.pendingTitle : LAUNCH_PRICE_COPY.readyTitle}
       </h2>
       <p className="text-[13px] text-[var(--text-secondary)] mb-4">
-        {tokenSymbol} is live on Percolator devnet
+        {tokenSymbol} {finalRefusal ? LAUNCH_PRICE_COPY.failedSub : "is live on Percolator devnet"}
       </p>
 
       {/* Market address */}
@@ -292,7 +304,7 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
       {backingSeedFailed && (
         <div className="border border-[var(--warning)]/20 bg-[var(--warning)]/[0.04] px-4 py-2 mb-4 text-left w-full max-w-sm mx-auto">
           <p className="text-[11px] text-[var(--text-secondary)]">
-            Market is <strong className="text-[var(--text)]">live and tradeable</strong>, but its trader payout reserve was <strong className="text-[var(--text)]">not seeded</strong> — the deposit for both sides did not land. Retry it from market settings before the market takes size.
+            {finalRefusal ? "Also, the" : <>Market is <strong className="text-[var(--text)]">live and tradeable</strong>, but its</>} trader payout reserve was <strong className="text-[var(--text)]">not seeded</strong> — the deposit for both sides did not land. Retry it from market settings{finalRefusal ? "." : " before the market takes size."}
           </p>
         </div>
       )}
@@ -301,7 +313,7 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
       {insuranceMintFailed && (
         <div className="border border-[var(--warning)]/20 bg-[var(--warning)]/[0.04] px-4 py-2 mb-4 text-left w-full max-w-sm mx-auto">
           <p className="text-[11px] text-[var(--text-secondary)]">
-            Market is <strong className="text-[var(--text)]">live and tradeable</strong>. Earn deposits aren't open yet (the setup step timed out). Retry later from My Markets.
+            {finalRefusal ? "Also, Earn" : <>Market is <strong className="text-[var(--text)]">live and tradeable</strong>. Earn</>} deposits aren't open yet (the setup step timed out). Retry later from My Markets.
           </p>
         </div>
       )}
@@ -324,7 +336,8 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
         Reframed below to describe what's actually happening: a Sim-USDC
         collateral top-up, plus a note on how the market gets its price.
       */}
-      {isDevnet && devnetMint && (
+      {/* #3637: not shown on a final failure: it describes trading and pricing this market cannot have. */}
+      {isDevnet && devnetMint && !finalRefusal && (
         <div className="mb-5 w-full max-w-sm mx-auto text-left">
           {/* GH#2608/#2610: this used to reflect an automatic background claim
               that fired the instant the market landed (see useCreateMarket.ts).
@@ -427,7 +440,7 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
       {/* CTAs */}
       <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
         {/* PERC-475: Claim Sim-USDC collateral + trade on devnet when a collateral mint is available */}
-        {isDevnet && devnetMint && publicKey && (
+        {isDevnet && devnetMint && publicKey && !finalRefusal && (
           <button
             type="button"
             onClick={handleMintAndTrade}
@@ -446,13 +459,24 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
         )}
         {/* Always present, from the moment the market's creation lands — even while the live price
             is still connecting, and alongside the Sim-USDC claim when that is offered. */}
-        <Link
-          href={`/trade/${marketAddress}`}
-          data-testid="launch-go-to-market"
-          className="w-full sm:w-auto border border-[var(--accent)]/50 bg-[var(--accent)]/[0.08] px-8 py-3 text-center text-[13px] font-bold uppercase tracking-[0.1em] text-[var(--accent)] transition-all hud-btn-corners hover:bg-[var(--accent)]/[0.15]"
-        >
-          TRADE THIS MARKET →
-        </Link>
+        {finalRefusal ? (
+          // No live price, so trading is not offered as the next step: a plain secondary link only.
+          <Link
+            href={`/trade/${marketAddress}`}
+            data-testid="launch-go-to-market"
+            className="w-full sm:w-auto border border-[var(--border)] bg-transparent px-8 py-3 text-center text-[12px] font-medium uppercase tracking-[0.1em] text-[var(--text-secondary)] transition-all hud-btn-corners hover:border-[var(--accent)]/30 hover:text-[var(--text)]"
+          >
+            VIEW MARKET
+          </Link>
+        ) : (
+          <Link
+            href={`/trade/${marketAddress}`}
+            data-testid="launch-go-to-market"
+            className="w-full sm:w-auto border border-[var(--accent)]/50 bg-[var(--accent)]/[0.08] px-8 py-3 text-center text-[13px] font-bold uppercase tracking-[0.1em] text-[var(--accent)] transition-all hud-btn-corners hover:bg-[var(--accent)]/[0.15]"
+          >
+            TRADE THIS MARKET →
+          </Link>
+        )}
         {/* /my-markets had zero navigational entry point — link to it here, at
             the moment a creator has just proven they own a market, so they can
             find their creator dashboard again later. */}
@@ -480,6 +504,17 @@ export const LaunchSuccess: FC<LaunchSuccessProps> = ({
             <span aria-hidden="true" className="inline-block h-[6px] w-[6px] animate-pulse rounded-full bg-[var(--text-muted)]" />
           )}
           <span data-testid="launch-price-status-line">{priceLine}</span>
+          {finalRefusal && (
+            <a
+              href="https://discord.gg/fJa4BDBxPN"
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid="launch-price-support"
+              className="text-[var(--accent)] underline underline-offset-2 hover:text-[var(--text)]"
+            >
+              {LAUNCH_PRICE_COPY.supportLink}
+            </a>
+          )}
           {showPriceRetry && (
             <button
               type="button"

@@ -25,11 +25,12 @@ const WALLET = new PublicKey("11111111111111111111111111111112");
 vi.mock("@/hooks/useWalletCompat", () => ({ useWalletCompat: () => ({ publicKey: WALLET, connected: true }), useConnectionCompat: () => ({ connection: {} }) }));
 vi.mock("@/components/create/LogoUpload", () => ({ LogoUpload: () => null }));
 
-import { LaunchSuccess, LAUNCH_PRICE_WAIT_MS } from "@/components/create/LaunchSuccess";
+import { LaunchSuccess, LAUNCH_PRICE_COPY, LAUNCH_PRICE_WAIT_MS } from "@/components/create/LaunchSuccess";
 import { PRICE_SOURCE_LOCKED } from "@/lib/market-registration";
 import { TICKET_COPY } from "@/lib/limits/copy";
 import {
   KEEPER_REGISTER_COPY,
+  KEEPER_NO_PROOF_STATE,
   postKeeperRegistration,
   runKeeperRegistration,
   type KeeperRegisterPhase,
@@ -106,9 +107,11 @@ describe("launch success: actions while the live price is still connecting", () 
       vi.advanceTimersByTime(1);
     });
     expect(screen.getByTestId("launch-price-status").getAttribute("data-status")).toBe("timed-out");
-    expect(screen.getByTestId("launch-price-status-line").textContent).toBe(
-      "Live price is still connecting; your market is live and tradable once it arrives.",
-    );
+    const line = screen.getByTestId("launch-price-status-line").textContent ?? "";
+    expect(line).toBe(LAUNCH_PRICE_COPY.timedOut);
+    // #3637: no promise that the price will arrive, no "connecting", and the page-open caveat is stated.
+    expect(line).not.toMatch(/once it arrives|will arrive|is connecting/i);
+    expect(line).toMatch(/keep this page open/i);
     expect(screen.getByTestId("launch-price-retry")).toBeTruthy();
     // The actions are still there.
     expect(screen.getByTestId("launch-go-to-market").getAttribute("href")).toBe(`/trade/${SLAB}`);
@@ -127,6 +130,7 @@ const REG_REQ = { slabAddress: SLAB, dexPoolAddress: "P", proofTx: "2U4TFzSboHom
 function Harness({ fetchImpl, onRetry }: { fetchImpl: typeof fetch; onRetry?: () => void }) {
   const [phase, setPhase] = useState<KeeperRegisterPhase>("connecting");
   const [message, setMessage] = useState<string>(KEEPER_REGISTER_COPY.connecting);
+  const [isFinal, setIsFinal] = useState(false);
   useEffect(() => {
     const ac = new AbortController();
     void runKeeperRegistration({
@@ -135,6 +139,7 @@ function Harness({ fetchImpl, onRetry }: { fetchImpl: typeof fetch; onRetry?: ()
       onStatus: (s) => {
         setPhase(s.phase);
         setMessage(s.message);
+        setIsFinal(s.final === true);
       },
     });
     return () => ac.abort();
@@ -144,6 +149,7 @@ function Harness({ fetchImpl, onRetry }: { fetchImpl: typeof fetch; onRetry?: ()
       {...base({
         keeperPhase: phase,
         keeperMessage: message,
+        keeperFinal: isFinal,
         keeperDelegated: phase === "ready",
         // Default Retry = the same POST the wizard's retry makes.
         onRetryKeeperRegistration: onRetry ?? (() => void postKeeperRegistration(REG_REQ, fetchImpl)),
@@ -151,6 +157,79 @@ function Harness({ fetchImpl, onRetry }: { fetchImpl: typeof fetch; onRetry?: ()
     />
   );
 }
+
+describe("#3637: the final-failure screen is not a success screen", () => {
+  const finalProps = (over: Partial<Props> = {}) =>
+    base({ keeperPhase: "failed", keeperMessage: KEEPER_REGISTER_COPY.oracleNotKeeper, keeperFinal: true, ...over });
+
+  it("no Sim-USDC & Trade, no 'Trade this market'; a plain View market link; warning styling, not the green check", () => {
+    render(<LaunchSuccess {...finalProps()} />);
+    expect(screen.queryByTestId("launch-claim-sim-usdc")).toBeNull();
+    const link = screen.getByTestId("launch-go-to-market");
+    expect(link.textContent).toBe("VIEW MARKET");
+    expect(link.getAttribute("href")).toBe(`/trade/${SLAB}`);
+    expect(screen.getByTestId("launch-success").textContent).not.toMatch(/TRADE THIS MARKET|GET SIM-USDC & TRADE|✓/);
+    const root = screen.getByTestId("launch-success");
+    expect(root.getAttribute("data-final-failure")).toBe("true");
+    expect(root.className).toContain("--warning");
+    expect(root.className).not.toContain("--long");
+  });
+
+  it("leftover 'live and tradeable' / 'priced off its live pool' / faucet copy is gone on a final failure, kept otherwise", () => {
+    const extra = { backingSeedFailed: true, insuranceMintFailed: true, mainnetCA: "CA1" };
+    const { unmount } = render(<LaunchSuccess {...finalProps(extra)} />);
+    const text = screen.getByTestId("launch-success").textContent ?? "";
+    expect(text).not.toMatch(/live and tradeable|priced off its live mainnet DEX pool|Sim-USDC mint/i);
+    expect(text).toMatch(/not seeded/);
+    expect(text).toMatch(/Earn deposits aren't open yet/);
+    unmount();
+    render(<LaunchSuccess {...base({ ...extra, keeperPhase: "ready", keeperMessage: KEEPER_REGISTER_COPY.ready, keeperDelegated: true })} />);
+    expect(screen.getByTestId("launch-success").textContent).toMatch(/live and tradeable/);
+  });
+
+  it("the normal and retryable states keep the trade actions and the success look", () => {
+    render(<LaunchSuccess {...base({ keeperPhase: "failed", keeperMessage: KEEPER_REGISTER_COPY.serverTrouble })} />);
+    expect(screen.getByTestId("launch-go-to-market").textContent).toMatch(/TRADE THIS MARKET/);
+    expect(screen.getByTestId("launch-success").getAttribute("data-final-failure")).toBeNull();
+    expect(screen.getByTestId("launch-success").className).toContain("--long");
+  });
+
+  it("no creation tx saved at launch: failure headline, the noProof reason, Discord next step, no Retry", () => {
+    render(<LaunchSuccess {...finalProps({ keeperMessage: KEEPER_NO_PROOF_STATE.keeperMessage })} />);
+    expect(screen.getByTestId("launch-success").textContent).toContain(LAUNCH_PRICE_COPY.failedTitle);
+    expect(screen.getByTestId("launch-price-status-line").textContent).toBe(KEEPER_REGISTER_COPY.noProof);
+    expect(screen.getByTestId("launch-price-support").getAttribute("href")).toBe("https://discord.gg/fJa4BDBxPN");
+    expect(screen.queryByTestId("launch-price-retry")).toBeNull();
+  });
+});
+
+describe("#3637: a retryable failure keeps its Retry and the success headline", () => {
+  it("5xx -> Retry shown, no support link, no failure headline", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(async () => ({ ok: false, status: 502, json: async () => ({}) }) as unknown as Response);
+    render(<Harness fetchImpl={fetchImpl as unknown as typeof fetch} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(40_000);
+    });
+    expect(screen.getByTestId("launch-price-status").getAttribute("data-status")).toBe("failed");
+    expect(screen.getByTestId("launch-price-retry")).toBeTruthy();
+    expect(screen.queryByTestId("launch-price-support")).toBeNull();
+    expect(screen.getByTestId("launch-success").textContent).not.toContain(LAUNCH_PRICE_COPY.failedTitle);
+  });
+
+  it("timed out, then the price connects later: the screen flips to ready", () => {
+    vi.useFakeTimers();
+    const { rerender } = render(<LaunchSuccess {...base({ keeperPhase: "slow", keeperMessage: KEEPER_REGISTER_COPY.slow })} />);
+    act(() => {
+      vi.advanceTimersByTime(LAUNCH_PRICE_WAIT_MS + 1);
+    });
+    expect(screen.getByTestId("launch-price-status").getAttribute("data-status")).toBe("timed-out");
+    rerender(<LaunchSuccess {...base({ keeperPhase: "ready", keeperMessage: KEEPER_REGISTER_COPY.ready, keeperDelegated: true })} />);
+    expect(screen.getByTestId("launch-price-status").getAttribute("data-status")).toBe("ready");
+    expect(screen.getByTestId("launch-price-status-line").textContent).toBe(KEEPER_REGISTER_COPY.ready);
+    expect(screen.getByTestId("launch-success").textContent).toContain(LAUNCH_PRICE_COPY.readyTitle);
+  });
+});
 
 describe("keeper-register 5xx: retried with backoff, then Retry", () => {
   it("a 502 is retried a few times, then a calm line with Retry (no status code shown)", async () => {
@@ -195,21 +274,59 @@ describe("a final refusal shows only reasons written for creators", () => {
   it.each([
     "Slab account does not exist on-chain",
     "Slab account is not a market of this deployment's program",
-    "Registration proof refused: memo signer is not the market creator",
+    "Registration proof refused: no matching registration memo signed in the proof transaction",
     "Invalid dexType",
-  ])("jargon 400 %j -> the generic calm line", async (jargon) => {
-    const fetchImpl = refuse(400, jargon);
+  ])("#3637 B1: unlisted 4xx %j -> retried, then a non-final failure with Retry and no jargon", async (jargon) => {
+    vi.useFakeTimers();
+    const fetchImpl = refuse(jargon.startsWith("Registration") ? 403 : 400, jargon);
     render(<Harness fetchImpl={fetchImpl as unknown as typeof fetch} />);
     await act(async () => {
-      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(40_000);
     });
-    await vi.waitFor(() => expect(screen.getByTestId("launch-price-status").getAttribute("data-status")).toBe("failed"));
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId("launch-price-status-line").textContent).toBe(
-      "Live price couldn't connect for this market. Your market is live; try again in a moment.",
-    );
+    expect(screen.getByTestId("launch-price-status").getAttribute("data-status")).toBe("failed");
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(screen.getByTestId("launch-price-status-line").textContent).toBe(KEEPER_REGISTER_COPY.generic);
     expect(screen.getByTestId("launch-success").textContent).not.toContain(jargon);
     expect(screen.getByTestId("launch-price-retry")).toBeTruthy();
+    expect(screen.queryByTestId("launch-price-support")).toBeNull();
+    expect(screen.getByTestId("launch-success").textContent).not.toContain(LAUNCH_PRICE_COPY.failedTitle);
+  });
+
+  it("a permanent proof refusal is final: the final line, no Retry", async () => {
+    const fetchImpl = refuse(403, "Registration proof refused: the memo's signer is not this market's creator");
+    render(<Harness fetchImpl={fetchImpl as unknown as typeof fetch} />);
+    await vi.waitFor(() => expect(screen.getByTestId("launch-price-status").getAttribute("data-status")).toBe("failed"));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("launch-price-status-line").textContent).toBe(KEEPER_REGISTER_COPY.refused);
+    expect(screen.queryByTestId("launch-price-retry")).toBeNull();
+  });
+
+  it("#3637: 403 oracle-not-keeper -> a failure with a human reason and next step, no Retry, never 'connecting'", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: false, status: 403, json: async () => ({ error: "Market is not ready for the live price: oracle-not-keeper", code: "oracle-not-keeper" }) }) as unknown as Response);
+    render(<Harness fetchImpl={fetchImpl as unknown as typeof fetch} />);
+    await vi.waitFor(() => expect(screen.getByTestId("launch-price-status").getAttribute("data-status")).toBe("failed"));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const line = screen.getByTestId("launch-price-status-line").textContent ?? "";
+    expect(line).toBe(KEEPER_REGISTER_COPY.oracleNotKeeper);
+    expect(line).not.toMatch(/connecting|oracle-not-keeper|contact the team|refund|recover/i);
+    expect(line).toMatch(/trying again won't change that/i);
+    expect(screen.queryByTestId("launch-price-retry")).toBeNull();
+    // A concrete next step: the same Discord the header and footer link to.
+    expect(screen.getByTestId("launch-price-support").getAttribute("href")).toBe("https://discord.gg/fJa4BDBxPN");
+    // It is a failure, not a success: the headline says so.
+    expect(screen.getByTestId("launch-success").textContent).toContain(LAUNCH_PRICE_COPY.failedTitle);
+    expect(screen.getByTestId("launch-success").textContent).not.toMatch(/is live on Percolator devnet/);
+  });
+
+  it("#3637: after the wait bound a final refusal stays a failure (does not decay into the timed-out line)", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(async () => ({ ok: false, status: 403, json: async () => ({ error: "x", code: "oracle-not-keeper" }) }) as unknown as Response);
+    render(<Harness fetchImpl={fetchImpl as unknown as typeof fetch} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LAUNCH_PRICE_WAIT_MS + 1_000);
+    });
+    expect(screen.getByTestId("launch-price-status").getAttribute("data-status")).toBe("failed");
+    expect(screen.getByTestId("launch-price-status-line").textContent).toBe(KEEPER_REGISTER_COPY.oracleNotKeeper);
   });
 
   it("an allow-listed reason (422 price source locked) passes through", async () => {

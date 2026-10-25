@@ -74,7 +74,7 @@ import { preflightRegistration, resolveMarketMetadata } from "@/lib/market-metad
 import { buildM1Instructions } from "@/lib/create-market-m1";
 import { WIZARD_STEP_COPY } from "@/lib/wizard-copy";
 import { withRateLimitRetry } from "@/lib/rpc-rate-limit";
-import { KEEPER_REGISTER_COPY, loadProofPayload, loadProofTx, markRegistered, postKeeperRegistration, runKeeperRegistration, saveProofPayload, saveProofTx, saveRegisterRequest, type KeeperRegisterPhase } from "@/lib/keeper-register-client";
+import { KEEPER_NO_PROOF_STATE, KEEPER_REGISTER_COPY, loadProofPayload, loadProofTx, markRegistered, postKeeperRegistration, runKeeperRegistration, saveProofPayload, saveProofTx, saveRegisterRequest, userFacingRegistrationReason, type KeeperRegisterPhase } from "@/lib/keeper-register-client";
 import { deriveLaunchMarketParams, backingSeedPerDomain } from "@/lib/market-params";
 import { buildMarketRegistrationPayload, flooredInitialMarginBps } from "@/lib/market-registration-payload";
 // GH#2592: the step-4 predicate and /api/devnet-pre-fund's funding target must be
@@ -484,6 +484,8 @@ export interface CreateMarketState {
   keeperProofTx?: string | null;
   /** UX WP-7: the background registration loop's phase. */
   keeperPhase?: KeeperRegisterPhase | null;
+  /** The server refused the live-price registration for good (#3637): retrying cannot help. */
+  keeperFinal?: boolean;
   /**
    * E2E B21: this market's price comes from a keeper-read DEX pool, so it is NOT launched
    * until keeper-register succeeds (`keeperDelegated`). LaunchSuccess shows "launched" only
@@ -2190,12 +2192,14 @@ export function useCreateMarket() {
   useEffect(() => () => keeperLoopRef.current?.abort(), []);
   const startKeeperLoop = useCallback((params: CreateMarketParams, slab: string) => {
     if (!params.dexPoolAddress) return;
+    // A previous launch's loop must never write into this launch's state, whatever happens next.
+    keeperLoopRef.current?.abort();
     const proofTx = loadProofTx(slab);
     if (!proofTx) {
-      setState((s) => ({ ...s, keeperPhase: "failed", keeperMessage: KEEPER_REGISTER_COPY.noProof }));
+      // Nothing can ever be sent from this device: a final failure, not "connecting" (#3637).
+      setState((s) => ({ ...s, ...KEEPER_NO_PROOF_STATE }));
       return;
     }
-    keeperLoopRef.current?.abort();
     const ac = new AbortController();
     keeperLoopRef.current = ac;
     const request = {
@@ -2214,9 +2218,9 @@ export function useCreateMarket() {
     void runKeeperRegistration({
       attempt: () => postKeeperRegistration(request),
       signal: ac.signal,
-      onStatus: ({ phase, message }) => {
+      onStatus: ({ phase, message, final }) => {
         if (phase === "ready") markRegistered(slab);
-        setState((s) => ({ ...s, keeperPhase: phase, keeperMessage: message, keeperDelegated: phase === "ready" || s.keeperDelegated }));
+        setState((s) => ({ ...s, keeperPhase: phase, keeperMessage: message, keeperFinal: final === true, keeperDelegated: phase === "ready" || s.keeperDelegated }));
       },
     });
   }, []);
@@ -4354,6 +4358,8 @@ export function useCreateMarket() {
   );
 
   const reset = useCallback(() => {
+    // The previous launch's registration loop must not write into the next launch's state.
+    keeperLoopRef.current?.abort();
     slabKpRef.current = null;
     chainResumeSlabRef.current = null;
     // PERC-8329: Clear any stale key that may have been stored by old code (defensive cleanup).
@@ -4395,8 +4401,8 @@ export function useCreateMarket() {
     async (params: KeeperRegisterRetryParams) => {
       const proofTx = loadProofTx(params.slabAddress);
       if (!proofTx) {
-        const outcome = { registered: false, message: KEEPER_REGISTER_COPY.noProof };
-        setState((s) => ({ ...s, keeperMessage: outcome.message, keeperPhase: "failed" }));
+        const outcome: { registered: boolean; retryable: boolean; message: string; code?: string } = { registered: false, retryable: false, message: KEEPER_REGISTER_COPY.noProof };
+        setState((s) => ({ ...s, ...KEEPER_NO_PROOF_STATE }));
         return outcome;
       }
       setState((s) => ({ ...s, keeperRegistering: true }));
@@ -4410,17 +4416,23 @@ export function useCreateMarket() {
         ...s,
         keeperRegistering: false,
         keeperDelegated: r.registered || s.keeperDelegated,
-        keeperMessage: r.registered ? KEEPER_REGISTER_COPY.ready : s.keeperMessage,
-        keeperPhase: r.registered ? "ready" : s.keeperPhase,
+        // A final refusal replaces the stale "connecting" line with its reason (#3637).
+        keeperMessage: r.registered ? KEEPER_REGISTER_COPY.ready : !r.retryable ? userFacingRegistrationReason(r.message, r.code, false) : s.keeperFinal ? userFacingRegistrationReason(r.message, r.code, true) : s.keeperMessage,
+        // Recomputed on every attempt: only THIS answer being an allowlisted permanent refusal makes it final.
+        // A later non-final answer (a different candidate, a blip) clears a stale final state and its line.
+        keeperPhase: r.registered ? "ready" : !r.retryable ? "failed" : s.keeperFinal ? "failed" : s.keeperPhase,
+        keeperFinal: !r.registered && !r.retryable,
       }));
-      if (r.registered) {
-        markRegistered(params.slabAddress);
+      // A registered market or a final refusal ends the background loop: a later retryable blip
+      // in the loop must not turn the failure back into "still connecting" (#3637).
+      if (r.registered || !r.retryable) {
+        if (r.registered) markRegistered(params.slabAddress);
         keeperLoopRef.current?.abort();
       }
-      return { registered: r.registered, message: r.message, ...(r.code ? { code: r.code } : {}) };
+      return { registered: r.registered, retryable: r.retryable, message: r.message, ...(r.code ? { code: r.code } : {}) };
     },
     [],
   );
 
-  return { state, create, reset, restoreSlabKeypair, restoreSlabAddress, clearChainResume, retryKeeperRegistration, cancelInFlightLaunch };
+  return { state, create, reset, restoreSlabKeypair, restoreSlabAddress, clearChainResume, retryKeeperRegistration, startKeeperLoop, cancelInFlightLaunch };
 }
