@@ -6,7 +6,7 @@
 // test-environment artifact __tests__/setup.ts documents for tweetnacl.
 // Nothing in this file touches the DOM.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { Keypair, Transaction } from "@solana/web3.js";
+import { Keypair, SendTransactionError, Transaction } from "@solana/web3.js";
 import bs58 from "bs58";
 
 // The network sendTx sees via getNetwork(). Defaults to "mainnet" so every
@@ -21,8 +21,10 @@ vi.mock("@/lib/config", () => ({
 }));
 
 import { TransactionExpiredBlockheightExceededError } from "@solana/web3.js";
-import { sendTx, AMBIGUOUS_OUTCOME_WAIT, awaitAmbiguousOutcome, estimateFees, getClockDriftWarning, isBlockhashExpiredError, isConfirmationTimeoutError, checkSignatureLanded, extractTxErrorMessage, TxCancelledError, isTxCancelledError } from "@/lib/tx";
+import { sendTx, broadcastSignedTx, sendMayHaveBroadcast, timedOutSignature, CONFIRMATION_POLL, AMBIGUOUS_OUTCOME_WAIT, awaitAmbiguousOutcome, estimateFees, getClockDriftWarning, isBlockhashExpiredError, isConfirmationTimeoutError, checkSignatureLanded, extractTxErrorMessage, TxCancelledError, isTxCancelledError } from "@/lib/tx";
 import type { SendTxParams, FeeEstimate } from "@/lib/tx";
+import { resolveUserMessage } from "@/lib/limits/user-message";
+import { isTransientError } from "@/lib/errorMessages";
 
 describe("sendTx", () => {
   afterEach(() => {
@@ -328,6 +330,99 @@ describe("sendTx atomic signAndSendTransaction path — error detail preservatio
     expect(err.message).toContain("custom program error: 0x13");
     // Original wallet error preserved for debugging.
     expect(err.cause).toBe(privyErr);
+  });
+
+  describe("ambiguous atomic send (no signature to confirm): never 'nothing was sent'", () => {
+    const run = async (sendErr: unknown) => {
+      const wallet = makeWallet(sendErr);
+      const err = (await sendTx({ connection: makeConn(), wallet, instructions: [] }).catch((e: unknown) => e)) as Error;
+      return { err, wallet };
+    };
+    it.each([
+      ["opaque Privy 'Unexpected error'", new Error("Unexpected error")],
+      ["network drop", new TypeError("Failed to fetch")],
+      ["timeout", new Error("Request timed out")],
+      ["proxy upstream failure", new Error("Upstream RPC request failed")],
+      ["blockhash expiry after the wallet may have sent", new Error("Blockhash not found")],
+      ["5xx", new Error("504 Gateway Timeout: upstream")],
+      ["SendTransactionError wrapping the proxy -32603", new Error("Simulation failed. Message: Upstream RPC request failed")],
+    ])("%s: the 'may still land' class, one send, no rebuild", async (_n, e) => {
+      const { err, wallet } = await run(e);
+      expect(isConfirmationTimeoutError(err)).toBe(true);
+      expect(err.message).toMatch(/may still land/);
+      expect(err.cause).toBe(e);
+      expect(wallet.signAndSendTransaction).toHaveBeenCalledTimes(1);
+    });
+    it.each([
+      ["EIP-1193 4001 with no wording", Object.assign(new Error("Unexpected error"), { code: 4001 })],
+      ["Privy exited_* code with no wording", Object.assign(new Error("Unexpected error"), { privyErrorCode: "exited_auth_flow" })],
+      ["decline wrapped in cause", new Error("Unexpected error", { cause: Object.assign(new Error("x"), { code: 4001 }) })],
+    ])("control: %s is a user decline, keeps its own message (not 'may still land')", async (_n, e) => {
+      const { err } = await run(e);
+      expect(isConfirmationTimeoutError(err)).toBe(false);
+      expect(err.message).toMatch(/^Unexpected error/);
+      expect(err.message).not.toMatch(/may still land/);
+    });
+    it.each([
+      ["fetch AbortError wording", new Error("The user aborted a request.")],
+      ["abort wording", new Error("This operation was aborted")],
+      ["rejected by the RPC after a timeout", new Error("Transaction was rejected by the RPC: timeout")],
+      ["cancelled by a socket hang-up", new Error("Request cancelled: socket hang up")],
+    ])("%s is NOT a proven refusal: the 'may still land' class, one send", async (_n, e) => {
+      const { err, wallet } = await run(e);
+      expect(isConfirmationTimeoutError(err)).toBe(true);
+      expect(err.message).toMatch(/may still land/);
+      expect(wallet.signAndSendTransaction).toHaveBeenCalledTimes(1);
+    });
+    // Real Privy 3.41 shapes (StandardSignAndSendTransactionScreen / useWallets in node_modules): a closed modal is
+    // Error("User exited the modal before submitting the transaction"), the CAUSE of
+    // PrivyClientError("Failed to connect to wallet", cause, "transaction_failure"). Solflare: { message: "Transaction cancelled" }.
+    const privyClosed = () => Object.assign(new Error("Failed to connect to wallet", { cause: new Error("User exited the modal before submitting the transaction") }), { name: "PrivyClientError", privyErrorCode: "transaction_failure" });
+    it.each([
+      ["Privy modal closed (PrivyClientError with cause chain)", privyClosed()],
+      ["Privy modal closed, bare", new Error("User exited the modal before submitting the transaction")],
+      ["Solflare 'Transaction cancelled' (no code)", Object.assign(new Error("Transaction cancelled"), {})],
+      ["Solflare 'Transaction cancelled' code -32603", Object.assign(new Error("Transaction cancelled"), { code: -32603 })],
+    ])("control: %s is a decline, never 'may still land'", async (_n, e) => {
+      const { err } = await run(e);
+      expect(isConfirmationTimeoutError(err)).toBe(false);
+      expect(err.message).not.toMatch(/may still land/);
+    });
+    it("a Privy wrapper whose cause is NOT the modal exit stays 'may still land'", async () => {
+      const e = Object.assign(new Error("Failed to connect to wallet", { cause: new Error("socket hang up") }), { name: "PrivyClientError", privyErrorCode: "transaction_failure" });
+      const { err } = await run(e);
+      expect(isConfirmationTimeoutError(err)).toBe(true);
+    });
+    it("the no-signature 'may still land' is honest: no 'we'll update you', no auto retry", async () => {
+      const { err } = await run(new Error("Unexpected error"));
+      const u = resolveUserMessage(err, { surface: "trade" } as never);
+      expect(u.kind).toBe("still-confirming");
+      expect(u.autoRetry).toBeFalsy();
+      expect(u.variant).not.toBe("wait"); // nothing is in progress: no pulsing StatusLine
+      expect(u.body).toMatch(/may still have gone through/i);
+      expect(u.body).toMatch(/check your wallet activity or positions before trying again/i);
+      expect(u.body).not.toMatch(/update this|when it lands/i);
+    });
+    it("a signature-bearing timeout keeps the watching copy", () => {
+      const u = resolveUserMessage(new Error("Confirmation timeout (90s) — tx may still land. Check explorer: 5abc"), { surface: "trade" } as never);
+      expect(u.body).toMatch(/update this when it lands/i);
+    });
+    it("is read by the ticket as still-confirming, never transient (no auto resend)", async () => {
+      const { err } = await run(new Error("Unexpected error"));
+      expect(resolveUserMessage(err, { surface: "trade" } as never).kind).toBe("still-confirming");
+      expect(isTransientError(err.message)).toBe(false);
+    });
+    it.each([
+      ["user declined", new Error("User rejected the request")],
+      ["popup closed", new Error("User closed the wallet popup")],
+      ["wallet pre-broadcast simulation refusal", new Error("Transaction simulation failed: Error processing Instruction 1: custom program error: 0x13")],
+      ["4xx refusal", new Error("400 Bad Request: invalid params")],
+      ["insufficient funds", new Error("Attempt to debit an account but found no record of a prior credit")],
+    ])("control: %s is a provable refusal and keeps its own message", async (_n, e) => {
+      const { err } = await run(e);
+      expect(isConfirmationTimeoutError(err)).toBe(false);
+      expect(err.message).toBe(e.message);
+    });
   });
 
   it("does NOT show the wallet-security message for a PASSING Lighthouse assertion + unrelated 0x31 failure", async () => {
@@ -659,12 +754,15 @@ describe("sendTx — R2-S7 landed check works when sendRawTransaction throws", (
 describe("sendTx — #3565 Low: the internal re-sign never follows an AMBIGUOUS outcome", () => {
   const SENT2 = bs58.encode(new Uint8Array(64).fill(4));
   const prev = { ...AMBIGUOUS_OUTCOME_WAIT };
+  const prevPoll = { ...CONFIRMATION_POLL };
   beforeEach(() => {
     AMBIGUOUS_OUTCOME_WAIT.intervalMs = 1;
     AMBIGUOUS_OUTCOME_WAIT.maxMs = 200;
+    CONFIRMATION_POLL.maxMs = 200;
   });
   afterEach(() => {
     Object.assign(AMBIGUOUS_OUTCOME_WAIT, prev);
+    Object.assign(CONFIRMATION_POLL, prevPoll);
   });
   const base = () => ({
     rpcEndpoint: "https://api.devnet.solana.com",
@@ -679,7 +777,7 @@ describe("sendTx — #3565 Low: the internal re-sign never follows an AMBIGUOUS 
     return { publicKey: kp.publicKey, signTransaction: vi.fn(async (tx: Transaction) => (tx.partialSign(kp), tx)) };
   };
 
-  it("skipPreflight (the RPC never checked the blockhash): status RPC error -> throws with the signature, never re-signs", async () => {
+  it("skipPreflight (the RPC never checked the blockhash): status RPC error -> confirmed like a sent tx, times out \"may still land\" with the signature, never re-signs", async () => {
     netState.network = "devnet";
     const conn = { ...base(), sendRawTransaction: vi.fn().mockRejectedValue(new Error("Blockhash not found")), getSignatureStatuses: vi.fn().mockRejectedValue(new Error("429 Too Many Requests")), isBlockhashValid: vi.fn() } as any;
     const wallet = kpWallet();
@@ -687,7 +785,8 @@ describe("sendTx — #3565 Low: the internal re-sign never follows an AMBIGUOUS 
     expect(err).toBeInstanceOf(Error);
     expect(wallet.signTransaction).toHaveBeenCalledTimes(1);
     expect(conn.sendRawTransaction).toHaveBeenCalledTimes(1);
-    expect(typeof err.signature).toBe("string");
+    expect(err.message).toMatch(/Confirmation timeout/);
+    expect(typeof timedOutSignature(err)).toBe("string");
   });
 
   it("skipPreflight: no status while the blockhash is still valid -> waits; once it has expired with still no status -> re-signs", async () => {
@@ -706,7 +805,7 @@ describe("sendTx — #3565 Low: the internal re-sign never follows an AMBIGUOUS 
     expect(sig).toBe(SENT2);
   });
 
-  it("skipPreflight: pending (processed) for the whole wait -> unknown -> throws, no re-sign", async () => {
+  it("skipPreflight: pending (processed) for the whole wait -> unknown -> confirmed like a sent tx: \"may still land\", not \"nothing was sent\", no re-sign", async () => {
     netState.network = "devnet";
     const conn = {
       ...base(),
@@ -715,7 +814,7 @@ describe("sendTx — #3565 Low: the internal re-sign never follows an AMBIGUOUS 
       isBlockhashValid: vi.fn(async () => ({ value: true })),
     } as any;
     const wallet = kpWallet();
-    await expect(sendTx({ connection: conn, wallet, instructions: [], skipPreflight: true })).rejects.toThrow(/Blockhash not found/);
+    await expect(sendTx({ connection: conn, wallet, instructions: [], skipPreflight: true })).rejects.toThrow(/Confirmation timeout/);
     expect(wallet.signTransaction).toHaveBeenCalledTimes(1);
   });
 
@@ -739,5 +838,181 @@ describe("sendTx — #3565 Low: the internal re-sign never follows an AMBIGUOUS 
     expect(await awaitAmbiguousOutcome(c({ confirmationStatus: "confirmed", err: { InstructionError: [0, "x"] } }), "s", "b")).toBe("failed");
     expect(await awaitAmbiguousOutcome(c(null), "s", "b")).toBe("unknown");
     expect(await awaitAmbiguousOutcome(c(null, { isBlockhashValid: vi.fn(async () => ({ value: false })) }), "s", "b")).toBe("not-landed");
+  });
+});
+
+describe("sendTx: a send whose outcome is unknown is confirmed, never reported as not sent", () => {
+  const prevPoll = { ...CONFIRMATION_POLL };
+  beforeEach(() => {
+    netState.network = "devnet"; // the legacy sign + sendRawTransaction path
+    CONFIRMATION_POLL.maxMs = 1_500; // the poll reads at 0, 350, 700 ms ...
+  });
+  afterEach(() => {
+    Object.assign(CONFIRMATION_POLL, prevPoll);
+    netState.network = "mainnet";
+  });
+  const confirmed = { confirmationStatus: "confirmed", err: null };
+  const conn = (sendErr: unknown, statuses: unknown[] | (() => Promise<unknown>)) => {
+    const queue = Array.isArray(statuses) ? [...statuses] : null;
+    return {
+      rpcEndpoint: "https://api.devnet.solana.com",
+      getRecentPrioritizationFees: vi.fn().mockResolvedValue([]),
+      getBalance: vi.fn().mockResolvedValue(1_000_000_000),
+      getLatestBlockhash: vi.fn().mockResolvedValue({ blockhash: "11111111111111111111111111111111", lastValidBlockHeight: 10_000_000 }),
+      getBlockHeight: vi.fn().mockResolvedValue(1),
+      simulateTransaction: vi.fn().mockResolvedValue({ value: { err: null, logs: [] } }),
+      sendRawTransaction: vi.fn().mockRejectedValue(sendErr),
+      getSignatureStatuses: vi.fn(async () => {
+        if (!queue) return { value: [await (statuses as () => Promise<unknown>)()] };
+        return { value: [queue.length > 1 ? queue.shift() : queue[0]] };
+      }),
+      isBlockhashValid: vi.fn(async () => ({ value: true })),
+    } as any;
+  };
+  const kpWallet = () => {
+    const kp = Keypair.generate();
+    return { publicKey: kp.publicKey, signTransaction: vi.fn(async (tx: Transaction) => (tx.partialSign(kp), tx)) };
+  };
+  // web3.js turns a JSON-RPC error at HTTP 200 into this (the code is dropped; the node's text is the message).
+  const rpcError = (message: string) => new SendTransactionError({ action: "simulate", signature: "", transactionMessage: message });
+
+  it.each([
+    ["the proxy's 'Upstream RPC request failed' (it forwarded, then the upstream failed)", rpcError("Upstream RPC request failed")],
+    ["a dropped fetch", new TypeError("Failed to fetch")],
+    ["a platform 504", new Error("504 Gateway Timeout: FUNCTION_INVOCATION_TIMEOUT")],
+    ["a proxy 500", new Error("500 Internal Server Error: Internal RPC proxy error")],
+    ["'already been processed' (it was sent)", rpcError("Transaction simulation failed: This transaction has already been processed")],
+  ])("%s, and the tx landed: returns its signature, signed and sent once", async (_n, sendErr) => {
+    const c = conn(sendErr, [confirmed]);
+    const wallet = kpWallet();
+    const sig = await sendTx({ connection: c, wallet, instructions: [] });
+    expect(wallet.signTransaction).toHaveBeenCalledTimes(1);
+    expect(c.sendRawTransaction).toHaveBeenCalledTimes(1);
+    expect(sig).toBe(c.getSignatureStatuses.mock.calls[0][0][0]);
+  });
+
+  it("a lagging node (no status at first) or one failed status read still ends in the landed signature", async () => {
+    let reads = 0;
+    const c = conn(rpcError("Upstream RPC request failed"), async () => {
+      reads += 1;
+      if (reads === 1) throw new Error("503 Service Unavailable");
+      return reads === 2 ? null : confirmed;
+    });
+    const wallet = kpWallet();
+    await expect(sendTx({ connection: c, wallet, instructions: [] })).resolves.toEqual(expect.any(String));
+    expect(wallet.signTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("never lands: 'may still land' with its signature after the poll, not 'nothing was sent'; one signature", async () => {
+    const c = conn(new TypeError("Failed to fetch"), [null]);
+    const wallet = kpWallet();
+    const t0 = Date.now();
+    const err = (await sendTx({ connection: c, wallet, instructions: [] }).catch((e: unknown) => e)) as Error;
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(CONFIRMATION_POLL.maxMs);
+    expect(isConfirmationTimeoutError(err)).toBe(true);
+    expect(timedOutSignature(err)).toBe(c.getSignatureStatuses.mock.calls[0][0][0]);
+    expect(wallet.signTransaction).toHaveBeenCalledTimes(1);
+    expect(c.sendRawTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("landed but failed on chain: the program's failure, decoded as usual", async () => {
+    const c = conn(rpcError("Upstream RPC request failed"), [{ confirmationStatus: "confirmed", err: { InstructionError: [0, { Custom: 21 }] } }]);
+    await expect(sendTx({ connection: c, wallet: kpWallet(), instructions: [] })).rejects.toThrow(/Transaction failed: .*Custom/);
+  });
+
+  it.each([
+    ["a preflight refusal with a program error", rpcError("Transaction simulation failed: Error processing Instruction 0: custom program error: 0x15")],
+    ["a rate limit", new Error('429 Too Many Requests: {"jsonrpc":"2.0","error":{"code":-32005}}')],
+    ["a proxy 400", new Error("400 Bad Request: Invalid request")],
+    ["a signature verification failure", rpcError("Transaction signature verification failure")],
+  ])("CONTROL: %s proves nothing was sent: thrown at once, no status read", async (_n, sendErr) => {
+    const c = conn(sendErr, [confirmed]);
+    const wallet = kpWallet();
+    await expect(sendTx({ connection: c, wallet, instructions: [] })).rejects.toThrow();
+    expect(c.getSignatureStatuses).not.toHaveBeenCalled();
+    expect(wallet.signTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("CONTROL: a tx that cannot be serialized (unsigned) never reaches the RPC", async () => {
+    const c = conn(new Error("unused"), [confirmed]);
+    const wallet = { publicKey: Keypair.generate().publicKey, signTransaction: vi.fn(async (tx: Transaction) => tx) };
+    await expect(sendTx({ connection: c, wallet, instructions: [] })).rejects.toThrow();
+    expect(c.sendRawTransaction).not.toHaveBeenCalled();
+    expect(c.getSignatureStatuses).not.toHaveBeenCalled();
+  });
+});
+
+describe("broadcastSignedTx: the same rule for pre-signed transactions", () => {
+  const prevPoll = { ...CONFIRMATION_POLL };
+  beforeEach(() => {
+    CONFIRMATION_POLL.maxMs = 400;
+  });
+  afterEach(() => Object.assign(CONFIRMATION_POLL, prevPoll));
+  const signedTx = () => {
+    const kp = Keypair.generate();
+    const tx = new Transaction({ feePayer: kp.publicKey, recentBlockhash: "11111111111111111111111111111111" });
+    tx.add({ keys: [], programId: Keypair.generate().publicKey, data: Buffer.alloc(0) });
+    tx.sign(kp);
+    return tx;
+  };
+
+  it("a send that may be on the wire is confirmed: returns the landed signature", async () => {
+    const tx = signedTx();
+    const c = {
+      sendRawTransaction: vi.fn().mockRejectedValue(new SendTransactionError({ action: "simulate", signature: "", transactionMessage: "Upstream RPC request failed" })),
+      getSignatureStatuses: vi.fn(async () => ({ value: [{ confirmationStatus: "confirmed", err: null }] })),
+    } as any;
+    expect(await broadcastSignedTx(c, tx)).toBe(bs58.encode(tx.signature!));
+  });
+
+  it("CONTROL: a plain 'Blockhash not found' (a definite refusal callers rebuild on) still throws at once", async () => {
+    const c = { sendRawTransaction: vi.fn().mockRejectedValue(new Error("Blockhash not found")), getSignatureStatuses: vi.fn() } as any;
+    await expect(broadcastSignedTx(c, signedTx())).rejects.toThrow(/Blockhash not found/);
+    expect(c.getSignatureStatuses).not.toHaveBeenCalled();
+  });
+});
+
+describe("sendMayHaveBroadcast", () => {
+  const rpc = (m: string) => new SendTransactionError({ action: "simulate", signature: "", transactionMessage: m });
+  it.each([
+    ["proxy upstream failure", rpc("Upstream RPC request failed"), true],
+    ["already processed", rpc("Transaction simulation failed: This transaction has already been processed"), true],
+    ["dropped fetch", new TypeError("Failed to fetch"), true],
+    ["502", new Error("502 Bad Gateway: <html>"), true],
+    ["408", new Error("408 Request Timeout"), true],
+    ["unknown proxy text", new Error("context deadline exceeded"), true],
+    ["preflight program error", rpc("Transaction simulation failed: Error processing Instruction 0: custom program error: 0x13"), false],
+    ["preflight blockhash", rpc("Transaction simulation failed: Blockhash not found"), false],
+    ["node behind", rpc("Node is behind by 42 slots"), false],
+    ["sanitize", rpc("invalid transaction: Transaction failed to sanitize accounts offsets correctly"), false],
+    ["429", new Error("429 Too Many Requests"), false],
+    ["400", new Error("400 Bad Request"), false],
+    ["plain blockhash", new Error("Blockhash not found"), false],
+  ])("%s -> %s", (_n, err, expected) => {
+    expect(sendMayHaveBroadcast(err)).toBe(expected);
+  });
+});
+
+describe("#3570 ambiguity branch also runs on the LAST attempt", () => {
+  it("a skipPreflight send that hit expiry text on the final attempt still confirms by signature, never raw 'nothing was sent'", async () => {
+    const kp = Keypair.generate();
+    const conn = {
+      rpcEndpoint: "https://api.devnet.solana.com",
+      getRecentPrioritizationFees: vi.fn().mockResolvedValue([]),
+      getBalance: vi.fn().mockResolvedValue(1_000_000_000),
+      getLatestBlockhash: vi.fn().mockResolvedValue({ blockhash: "11111111111111111111111111111111", lastValidBlockHeight: 123 }),
+      simulateTransaction: vi.fn().mockResolvedValue({ value: { err: null, logs: [] } }),
+      sendRawTransaction: vi.fn().mockRejectedValue(new Error("Blockhash not found")),
+      getSignatureStatuses: vi.fn().mockResolvedValue({ value: [{ err: null, confirmationStatus: "confirmed" }] }),
+    } as any;
+    const wallet = { publicKey: kp.publicKey, signTransaction: vi.fn(async (t: Transaction) => { t.partialSign(kp); return t; }) };
+    netState.network = "devnet";
+    try {
+      const sig = await sendTx({ connection: conn, wallet, instructions: [], skipPreflight: true, maxRetries: 0 } as never);
+      expect(typeof sig).toBe("string");
+      expect(conn.sendRawTransaction).toHaveBeenCalledTimes(1);
+    } finally {
+      netState.network = "mainnet";
+    }
   });
 });

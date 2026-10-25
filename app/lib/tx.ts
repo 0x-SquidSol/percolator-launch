@@ -27,6 +27,7 @@ import { withMarketTailsV22 } from "@/lib/v22/market-tails";
 import type { SelfHealResult } from "@/lib/self-heal";
 import { getMaintenanceConfig, MaintenanceError } from "@/lib/maintenance";
 import { readU64LE } from "@/lib/u64le";
+import { isUserDeclineByCode } from "@/lib/tx-v1/wallet-raw-signer";
 
 /**
  * PERC-8388: Lighthouse v2 program ID — Blowfish/Phantom wallet middleware injects
@@ -254,7 +255,8 @@ export async function presimulateOrThrow(
 }
 
 const POLL_INTERVAL_MS = 2000;
-const MAX_POLL_TIME_MS = 90_000;
+/** How long pollConfirmation waits before "may still land" (a test seam, like AMBIGUOUS_OUTCOME_WAIT). */
+export const CONFIRMATION_POLL = { maxMs: 90_000 };
 /**
  * Hard ceiling on the client priority price, micro-lamports per CU (A-1, security review 2026-10-05).
  * `NEXT_PUBLIC_PRIORITY_FEE` is client-visible config and was the only bound (the 10x spike cap scaled with
@@ -672,7 +674,7 @@ export async function pollConfirmation(
   const start = Date.now();
   let pollCount = 0;
 
-  while (Date.now() - start < MAX_POLL_TIME_MS) {
+  while (Date.now() - start < CONFIRMATION_POLL.maxMs) {
     // Check if aborted
     if (abortSignal?.aborted) {
       throw new Error("Transaction confirmation cancelled by user. Note: transaction may still land on-chain.");
@@ -724,7 +726,7 @@ export async function pollConfirmation(
   }
 
   throw new Error(
-    `Confirmation timeout (${MAX_POLL_TIME_MS / 1000}s) — tx may still land. Check explorer: ${signature}`
+    `Confirmation timeout (${CONFIRMATION_POLL.maxMs / 1000}s) — tx may still land. Check explorer: ${signature}`
   );
 }
 
@@ -1086,6 +1088,16 @@ export async function sendTx({
               { cause: sendErr }
             );
           }
+          // The wallet signs AND broadcasts, and gives no signature on error (Privy's error carries none), so this cannot
+          // be confirmed by signature. An error that does not prove the tx never left (a timeout, a network drop, an
+          // opaque "Unexpected error", a blockhash expiry) must not read "nothing was sent": a retry would send it
+          // twice. Surface the "may still land" class every caller already guards its retry with.
+          if (!isNotBroadcast(sendErr) && atomicSendMayHaveBroadcast(sendErr, sendMsg)) {
+            throw new Error(
+              "Confirmation timeout: your wallet did not say whether this transaction was sent, so it may still land. Check your wallet activity or balance before trying again.",
+              { cause: sendErr },
+            );
+          }
           // Throw the EXTRACTED message: wallets (notably Privy) wrap program
           // failures in a generic "Unexpected error" whose real detail lives
           // in nested cause/logs — rethrowing sendErr verbatim discarded it.
@@ -1126,32 +1138,41 @@ export async function sendTx({
         if (signed.signature) {
           preSendSignature = bs58.encode(signed.signature);
         }
+        // Serialized before "attempted": a size or missing-signature error never left the browser.
+        const wire = signed.serialize();
         try {
           broadcast = "attempted";
           sentBlockhash = signed.recentBlockhash ?? undefined;
-          lastSignature = await connection.sendRawTransaction(signed.serialize(), {
+          lastSignature = await connection.sendRawTransaction(wire, {
             skipPreflight: skipPreflight ?? false,
             maxRetries: 5,
           });
         } catch (sendErr) {
           // The RPC's preflight refused an expired / unknown blockhash: it never forwards such a tx, so a re-sign is safe.
           if (!skipPreflight && isBlockhashExpiredError(sendErr)) broadcast = "rejected-preflight";
-          const sendMsg = extractTxErrorMessage(sendErr);
-          const isBatchError =
-            sendMsg.includes("Missing response from batch") ||
-            sendMsg.includes("failed to get recent blockhash") ||
-            sendMsg.includes("RPC response error");
+          // The bytes may be on the wire (the proxy forwarded them and then failed, a dropped fetch, a 5xx): confirm the
+          // tx like any sent one. The poll below returns it landed, reports its on-chain failure, or times out "may still
+          // land" with its signature. Never "nothing was sent", never a re-sign (#3570).
+          if (preSendSignature && broadcast === "attempted" && sendMayHaveBroadcast(sendErr)) {
+            lastSignature = preSendSignature;
+          } else {
+            const sendMsg = extractTxErrorMessage(sendErr);
+            const isBatchError =
+              sendMsg.includes("Missing response from batch") ||
+              sendMsg.includes("failed to get recent blockhash") ||
+              sendMsg.includes("RPC response error");
 
-          if (isBatchError) {
-            console.warn(
-              `[sendTx] Batch RPC error (attempt ${attempt + 1}); will retry.`
-            );
-            throw sendErr;
+            if (isBatchError) {
+              console.warn(
+                `[sendTx] Batch RPC error (attempt ${attempt + 1}); will retry.`
+              );
+              throw sendErr;
+            }
+            // One source of log lines: the filtered extract (+ getLogs() lines
+            // it couldn't see), deduped — see buildSendErrorMessage. Original
+            // error preserved as `cause`.
+            throw new Error(await buildSendErrorMessage(connection, sendErr), { cause: sendErr });
           }
-          // One source of log lines: the filtered extract (+ getLogs() lines
-          // it couldn't see), deduped — see buildSendErrorMessage. Original
-          // error preserved as `cause`.
-          throw new Error(await buildSendErrorMessage(connection, sendErr), { cause: sendErr });
         }
       } else {
         throw new Error("Wallet not connected — no sign method available");
@@ -1183,7 +1204,7 @@ export async function sendTx({
         );
       }
 
-      if (isBlockhashExpired && attempt < maxRetries) {
+      if (isBlockhashExpired) {
         // R2-S7: Before retrying, check if the original tx actually landed
         const landedCheckSig = preSendSignature ?? lastSignature;
         if (landedCheckSig) {
@@ -1207,22 +1228,24 @@ export async function sendTx({
 
         // #3565 Low: never re-sign after an AMBIGUOUS outcome. If the tx may be on the wire, wait until it either lands
         // (return it), fails on chain, or provably cannot land any more (its blockhash expired with no status). Anything
-        // that cannot be decided throws, with the signature attached, so the caller's own landed / live-position checks run.
+        // else is confirmed like a sent tx (below).
         if (broadcast === "attempted") {
           const sig = preSendSignature ?? lastSignature;
           const outcome = sig && sentBlockhash ? await awaitAmbiguousOutcome(connection, sig, sentBlockhash) : "unknown";
           if (outcome === "landed" && sig) return sig;
-          if (outcome !== "not-landed") {
-            if (sig && lastError && (lastError as { signature?: unknown }).signature === undefined) {
-              (lastError as Error & { signature?: string }).signature = sig;
-            }
-            // The blockhash it was signed with, so a caller can wait for the tx to land or provably expire (awaitAmbiguousOutcome).
-            if (sentBlockhash && lastError && (lastError as { blockhash?: unknown }).blockhash === undefined) {
-              (lastError as Error & { blockhash?: string }).blockhash = sentBlockhash;
-            }
-            throw lastError;
+          // Not proven gone: confirm it like any sent tx. Thrown straight away, the blockhash text read "nothing was
+          // sent" and was retried as transient, and a fast "unknown" (one failed status read) reached the 30 s
+          // watchers while the tx could still land. pollConfirmation lands it, reports its on-chain failure, or
+          // times out "may still land" with its signature.
+          if (outcome !== "not-landed" && sig) {
+            await pollConfirmation(connection, sig, onProgress);
+            return sig;
           }
+          if (outcome !== "not-landed") throw lastError; // no signature to confirm
         }
+
+        // The landed / ambiguous-outcome checks above also run on the last attempt; only a re-sign needs one left.
+        if (attempt >= maxRetries) throw lastError;
 
         // SAFETY: If the wallet used signAndSendTransaction (atomic sign+broadcast),
         // do NOT rebuild and re-send — the first tx may still land on-chain, and
@@ -1261,6 +1284,66 @@ export async function sendTx({
   }
 
   throw lastError ?? new Error("Transaction failed after retries");
+}
+
+/**
+ * False only when the send error PROVES the tx never left: a refusal the RPC node returns itself, before it forwards
+ * (preflight, signature, size, version, node health, malformed request), the node's own expiry refusal, or a 4xx (the
+ * proxy refusing before it forwards; 429 = every upstream refused for rate). Anything else may have been broadcast:
+ * the proxy's "Upstream RPC request failed" after forwarding, a 5xx / 408, a dropped fetch, a timeout, an unknown shape.
+ * "Already been processed" means it was. web3.js drops the JSON-RPC code, so the node's text is matched.
+ */
+const NODE_REFUSAL =
+  /^(transaction simulation failed|transaction signature verification failure|transaction precompile verification failure|transaction signature length mismatch|transaction version|invalid transaction|base64 encoded .* too large|failed to deserialize|invalid base64|invalid params|invalid request|method not found|parse error|minimum context slot has not been reached|node is (behind|unhealthy))/i;
+export function sendMayHaveBroadcast(err: unknown): boolean {
+  const msg = (err instanceof SendTransactionError ? String(err.transactionError?.message ?? "") : errorText(err)).trim();
+  if (/already been processed/i.test(msg)) return true;
+  if (isBlockhashExpiredError(err)) return false; // sendTx's #3570 branch owns the skipPreflight case
+  if (err instanceof SendTransactionError) return !NODE_REFUSAL.test(msg);
+  return !/^4(?!08)\d\d\b/.test(msg); // web3.js's non-2xx text is "<status> <statusText>: <body>"
+}
+
+const NOT_BROADCAST = Symbol.for("percolator.notBroadcast");
+/**
+ * Marks a wallet-bridge failure as provably BEFORE the broadcast (signing stage, serialize, a definite refusal), so
+ * sendTx reports the original message ("nothing was sent") instead of running the ambiguity classifier on it.
+ * Returns the same Error object (a non-Error is wrapped), so the message and type are unchanged.
+ */
+export function markNotBroadcast(e: unknown): Error {
+  const err = e instanceof Error ? e : new Error(typeof e === "string" ? e : errorText(e));
+  Object.defineProperty(err, NOT_BROADCAST, { value: true, enumerable: false });
+  return err;
+}
+export function isNotBroadcast(e: unknown): boolean {
+  for (let cur: unknown = e, depth = 0; cur instanceof Error && depth < 4; cur = (cur as { cause?: unknown }).cause, depth++) {
+    if ((cur as unknown as Record<symbol, unknown>)[NOT_BROADCAST] === true) return true;
+  }
+  return false;
+}
+
+/**
+ * The wallet-atomic send (signAndSendTransaction) failed: false only when the error proves nothing was broadcast.
+ * That is a user decline, the wallet's own pre-broadcast simulation / program refusal, a node refusal text, or a 4xx.
+ * Anything else, including a blockhash expiry (the wallet may have sent it first), counts as maybe sent.
+ */
+const ATOMIC_REFUSAL =
+  /transaction simulation failed|custom program error|instructionerror|insufficient (funds|lamports)|attempt to debit|signature verification|invalid (params|transaction|request)|too large|failed to deserialize|account not found|user (rejected|declined|denied|cancell?ed|canceled) (the )?(request|transaction|signature|approval)|rejected by the user|user closed (the )?(wallet|popup|pop-up|window|modal)|user_exited|not approved by (the )?user/i;
+export function atomicSendMayHaveBroadcast(err: unknown, extractedMsg: string = errorText(err)): boolean {
+  const msg = `${extractedMsg} ${errorText(err)}`;
+  if (/already been processed|upstream rpc request failed/i.test(msg)) return true; // the proxy's -32603 may have forwarded it, even inside "Simulation failed. Message: ..."
+  if (ATOMIC_REFUSAL.test(msg)) return false;
+  // A decline by CODE or NAME (EIP-1193 4001, Privy exited_*), which can carry no wording. Never by loose words: "aborted",
+  // "cancelled" and "rejected" also read in a fetch abort, a socket hang-up or an RPC timeout, where the tx may have gone.
+  if (isUserDeclineByCode(err)) return false;
+  // Privy 3.41 rejects a closed modal with Error("User exited the modal before submitting the transaction") as the CAUSE of a
+  // PrivyClientError("Failed to connect to wallet", ..., "transaction_failure"); it only throws that before submit. Solflare's
+  // "Transaction cancelled" is a decline or an expired popup, which cannot land. Both are matched exactly, along the cause chain.
+  for (let cur: unknown = err, depth = 0; cur && typeof cur === "object" && depth < 5; cur = (cur as { cause?: unknown; error?: unknown }).cause ?? (cur as { error?: unknown }).error, depth++) {
+    const m = String((cur as { message?: unknown }).message ?? "").trim();
+    if (/^user exited the modal before submitting the transaction\.?$/i.test(m) || /^transaction cancell?ed\.?$/i.test(m)) return false;
+  }
+  if (/^\s*4(?!08)\d\d\b/.test(extractedMsg)) return false;
+  return true;
 }
 
 /** Test seam for {@link awaitAmbiguousOutcome}'s cadence. */
@@ -1342,7 +1425,7 @@ export function isBlockhashExpiredError(err: unknown): boolean {
 
 /**
  * True if `err` is `pollConfirmation`'s "Confirmation timeout" — the tx WAS
- * submitted (it has a signature) but didn't confirm within MAX_POLL_TIME_MS
+ * submitted (it has a signature) but didn't confirm within CONFIRMATION_POLL.maxMs
  * (~= the blockhash validity window). Distinct from `isBlockhashExpiredError`:
  * an expiry error means the send was REJECTED (never accepted, no signature),
  * whereas a timeout means the tx may have landed and MUST be status-checked
@@ -1510,15 +1593,20 @@ export async function broadcastSignedTx(
   opts: { skipPreflight?: boolean; onProgress?: (elapsedMs: number) => void } = {},
 ): Promise<string> {
   let signature: string;
+  const wire = signedTx.serialize(); // a serialize error never left the browser
   try {
-    signature = await connection.sendRawTransaction(signedTx.serialize(), {
+    signature = await connection.sendRawTransaction(wire, {
       skipPreflight: opts.skipPreflight ?? false,
       maxRetries: 5,
     });
   } catch (sendErr) {
-    // Same semantics as sendTx's legacy send path: filtered extracted message
-    // (single deduped source of log lines), original error kept as `cause`.
-    throw new Error(await buildSendErrorMessage(connection, sendErr), { cause: sendErr });
+    // Same semantics as sendTx's legacy send path: a send that may be on the wire is confirmed (the poll below
+    // attaches the signature to any failure); a definite refusal throws the filtered extracted message, original
+    // error kept as `cause`.
+    if (!(signedTx.signature && sendMayHaveBroadcast(sendErr))) {
+      throw new Error(await buildSendErrorMessage(connection, sendErr), { cause: sendErr });
+    }
+    signature = bs58.encode(signedTx.signature);
   }
   try {
     await pollConfirmation(connection, signature, opts.onProgress); // already broadcast: never aborted
