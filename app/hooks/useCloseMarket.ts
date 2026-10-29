@@ -28,11 +28,18 @@ import { closeInOneApproval, closeSlabState, PRESIGNED_CLOSE_RESENDS, type Close
 import type { Connection } from "@solana/web3.js";
 import { COPY } from "@/lib/limits/copy";
 import { CLEANUP_CU, planOwnCleanupForOneApproval } from "@/lib/limits/own-portfolio-cleanup";
-import { broadcastSignedTx, buildBatchTx, getFreshBlockhash, getPriorityFee, signAllCompat, simulateForGate, SimulationRefusal } from "@/lib/tx";
+import { broadcastSignedTx, buildBatchTx, getFreshBlockhash, getPriorityFee, sendTx, signAllCompat, simulateForGate, SimulationRefusal } from "@/lib/tx";
 
 import { WRAPPER_ERR } from "@/lib/wrapper-errors";
 import { plainMessage } from "@/lib/limits/user-message";
 import { isWrapperAccount } from "@/lib/v22/layout";
+import { EARN_FLOOR_COPY, earnDeadShareFloorPresent, othersWithPositions } from "@/lib/v22/resolved-claims";
+import { staleResolveStatusV22 } from "@/lib/v22/stale-resolve";
+import { decodeResolvedPortfolio } from "@/lib/limits/decode";
+import { looksEmpty } from "@/lib/limits/resolved-exit";
+import { KIND_PORTFOLIO } from "@/lib/limits/constants";
+import { deriveLpVaultRegistry } from "@percolatorct/sdk";
+import { readAssetControlSeqs, readMarketGroupHeader } from "@/lib/v18-wire";
 /** Slab state after `sig`, read at (at least) the tx's slot so a cached pre-close read can't answer. */
 export async function readCloseSlabStateAfter(
   connection: { getSignatureStatuses: Connection["getSignatureStatuses"]; getAccountInfo: Connection["getAccountInfo"] },
@@ -175,6 +182,13 @@ export function useCloseMarket() {
         // v18: a Live market (every half-created one) must be resolved before
         // CloseSlab will accept it — see lib/close-market-plan.ts. v12 slabs have
         // no such lifecycle (and no authority-epoch lane: 0n).
+        // v2.2 Earn market (FC-B5): CloseSlab refuses with Custom 21 for ever while the Earn vault's dead-share-floor bucket is funded,
+        // on every Earn market. Say so BEFORE anything is signed, and point at the settle flow instead of a close that cannot land.
+        if (earnDeadShareFloorPresent(data) === true) {
+          setError(EARN_FLOOR_COPY.line);
+          setLoading(false);
+          return null;
+        }
         let authorityEpoch = 0n;
         let resolveIx: ReturnType<typeof buildIx> | null = null;
         let preResolveCranks: TransactionInstruction[] = [];
@@ -317,9 +331,8 @@ export function useCloseMarket() {
           // caught before sending, so what remains is the LP-vault backing floor a
           // market gets once its Earn vault exists — CloseSlab refuses that by design.
           setError(
-            "Cannot reclaim: this market got far enough to create its Earn vault, and the " +
-            "program permanently blocks closing a market once that exists. Resume creation " +
-            "to finish it instead."
+            "Cannot close this market: the program refuses while it is live, still holds accounts, or has an Earn vault. " +
+            "A v2.2 Earn market can never be closed, so its rent is not reclaimable."
           );
         } else {
           // Any other custom-program-error code: reuse the same decoder the create-market
@@ -343,5 +356,107 @@ export function useCloseMarket() {
     [walletCompat, connection],
   );
 
-  return { closeSlab, loading, error };
+  /**
+   * Settle (resolve) a market the connected wallet administers, without closing it: the first half of "settle and withdraw everything".
+   * Pre-resolve cranks (the Live-only LP and staker fee legs) and ResolveMarket (tag 19) go in ONE approval, simulated first; a
+   * Resolved market is left alone. Everything after that (positions, Earn, stake) is claimed from the market page. Used for v2.2
+   * Earn markets, where CloseSlab can never run (FC-B5), so there is no rent to reclaim and settling is the way out.
+   */
+  const settleMarket = useCallback(
+    async (slabAddress: string): Promise<{ signature: string | null; route?: "stale" } | null> => {
+      if (!walletCompat.publicKey || !walletCompat.signTransaction) {
+        setError("Wallet not connected");
+        return null;
+      }
+      setLoading(true);
+      setError(null);
+      try {
+        const slabPk = new PublicKey(slabAddress);
+        const info = await connection.getAccountInfo(slabPk, "confirmed");
+        if (!info) {
+          setError("This market no longer exists.");
+          return null;
+        }
+        const data = new Uint8Array(info.data);
+        if (!isWrapperAccount(data)) {
+          setError("This is not a v2.2 market, so it can't be settled from here.");
+          return null;
+        }
+        const cfg = parseWrapperConfigV17(data, V17_HEADER_LEN);
+        if (!cfg.marketauth.equals(walletCompat.publicKey)) {
+          setError("Only the market admin can settle this market while its price is live. If its price has stopped, anyone can settle it from the market page.");
+          return null;
+        }
+        const hdr = readMarketGroupHeader(data);
+        if (hdr.mode === 1) return { signature: null }; // already Resolved: nothing to send
+        if (hdr.mode !== 0) {
+          // Recovery (2) is not settled: its own crank reaches Resolved. Nothing for the admin to send.
+          setError(EARN_FLOOR_COPY.refuse.recovery);
+          return null;
+        }
+        const programId = info.owner;
+        // A matured stale window means anyone can settle it with tag 39 (the market page's Settle): the admin path is not for that.
+        const slot = BigInt(await connection.getSlot("confirmed"));
+        const st = staleResolveStatusV22(data, slot);
+        if (st?.canResolve) {
+          return { signature: null, route: "stale" }; // the caller sends the admin to the market page (tag 39)
+        }
+        // Admin resolve is for a market nobody else is trading in: refuse while anyone but this wallet and the Earn vault holds anything.
+        let rows: { owner: string; empty: boolean }[];
+        try {
+          const accts = await connection.getProgramAccounts(programId, { commitment: "confirmed", filters: [{ memcmp: { offset: 16, bytes: slabPk.toBase58() } }] });
+          rows = [];
+          for (const { account } of accts) {
+            const d = new Uint8Array(account.data);
+            if (d[10] !== KIND_PORTFOLIO) continue;
+            const v = decodeResolvedPortfolio(d);
+            if (!v) throw new Error("unreadable portfolio");
+            rows.push({ owner: new PublicKey(v.owner).toBase58(), empty: looksEmpty(v) });
+          }
+        } catch {
+          setError(EARN_FLOOR_COPY.refuse.unreadable);
+          return null;
+        }
+        const [registry] = deriveLpVaultRegistry(programId, slabPk);
+        if (othersWithPositions(rows, walletCompat.publicKey.toBase58(), registry.toBase58()) > 0) {
+          setError(EARN_FLOOR_COPY.refuse.others);
+          return null;
+        }
+        const gate = await readAndPlanPreResolve(connection, {
+          programId,
+          stakeProgramId: new PublicKey((getConfig() as { vaultProgramId?: string }).vaultProgramId ?? DEVNET_PROGRAM_IDS.stake),
+          cranker: walletCompat.publicKey,
+          market: slabPk,
+          marketData: data,
+        });
+        if (gate.blockers.length > 0) {
+          setError(`Can't settle yet: ${gate.blockers.join(" ")}`);
+          return null;
+        }
+        const resolveIx = buildIx({
+          programId,
+          keys: buildAccountMetas(ACCOUNTS_RESOLVE_MARKET, { admin: walletCompat.publicKey, market: slabPk }),
+          data: encodeResolveMarket({ assetGenerationFrontier: hdr.nextMarketId, authorityEpoch: readAssetControlSeqs(data, 0).authorityEpoch }),
+        });
+        const instructions = [...gate.cranks, resolveIx];
+        const g = await simulateForGate(connection, walletCompat.publicKey, instructions);
+        if (g.err) throw new SimulationRefusal(g.err, g.logs, g.simulated);
+        const signature = await sendTx({ connection, wallet: walletCompat, instructions, computeUnits: 1_400_000 });
+        return { signature };
+      } catch (err: unknown) {
+        const msg = errorText(err);
+        setError(
+          /User rejected|WalletSign|reject|declin|cancel/i.test(msg)
+            ? "Transaction cancelled."
+            : plainMessage(err, { surface: "close-market" }, () => "Something went wrong and nothing was sent."),
+        );
+        return null;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [walletCompat, connection],
+  );
+
+  return { closeSlab, settleMarket, loading, error };
 }

@@ -34,6 +34,10 @@ import { detectOracleMode, sanitizePriceE6, applyInvert, priceE6ToUsd } from "@/
 import { CreatorTranchePanel } from "@/components/limits/CreatorLimits";
 import { ADMIN_BURN_COPY } from "@/lib/admin-burn-copy";
 import { sanitizeDecimalInput } from "@/lib/decimal-input";
+import { EARN_FLOOR_COPY, earnDeadShareFloorPresent } from "@/lib/v22/resolved-claims";
+import { staleMinutes, staleResolveStatusV22 } from "@/lib/v22/stale-resolve";
+import { useClusterSlot } from "@/hooks/useClusterSlot";
+import { isDevnetV22Enabled } from "@/lib/v22/flag";
 
 /** Same accrue-cliff threshold as useCreatedMarkets/CrankHealthCard — the
  *  asset's accrue slot (advances only via crank/trade) vs the current
@@ -202,6 +206,43 @@ export const InsuranceAuthorityReader: FC<{ onRead: (b58: string | null) => void
   useEffect(() => onRead(b58), [b58, onRead]);
   return null;
 };
+
+/**
+ * Reports whether the drawer's market carries the Earn dead-share-floor backing bucket (lib/v22/resolved-claims.ts): then CloseSlab
+ * refuses with Custom 21 for ever (FC-B5) and the row offers settle instead of close. Null until the market bytes are read.
+ */
+export interface EarnFloorRead {
+  floor: boolean | null;
+  /** Minutes since the last good price (for the settle dialog); null when unknown. */
+  priceAgeMinutes: number | null;
+}
+export const EarnFloorReader: FC<{ onRead: (r: EarnFloorRead) => void }> = ({ onRead }) => {
+  const { raw } = useSlabState();
+  const clusterSlot = useClusterSlot(isDevnetV22Enabled());
+  const floor = raw ? earnDeadShareFloorPresent(raw) : null;
+  const st = raw ? staleResolveStatusV22(raw, clusterSlot) : null;
+  const priceAgeMinutes = st ? staleMinutes(st.ageSlots) : null;
+  useEffect(() => onRead({ floor, priceAgeMinutes }), [floor, priceAgeMinutes, onRead]);
+  return null;
+};
+
+/** The one honest line for a v2.2 Earn market, and (for the wallet that administers it) the way out: settle, then withdraw from the market page. */
+export const EarnFloorNote: FC<{ canSettle: boolean; busy: boolean; onSettle: () => void }> = ({ canSettle, busy, onSettle }) => (
+  <div data-testid="earn-floor-note" className="mt-2 text-[10px] text-[var(--text-secondary)]">
+    <p data-testid="earn-floor-line">{EARN_FLOOR_COPY.line}</p>
+    {canSettle && (
+      <button
+        type="button"
+        data-testid="settle-and-withdraw-button"
+        onClick={onSettle}
+        disabled={busy}
+        className="mt-1 border border-[var(--border)] px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.1em] text-[var(--text)] hover:border-[var(--accent)] disabled:opacity-50"
+      >
+        {busy ? "settling…" : EARN_FLOOR_COPY.action}
+      </button>
+    )}
+  </div>
+);
 
 export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, identity, chainCurrentSlot, expanded, onToggleExpand, onClaimed }) => {
   const { toast } = useToast();
@@ -385,6 +426,10 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
   const insuranceAuthorityKnown = insuranceAuthority !== null;
   const canTopUpInsurance = insuranceAuthorityKnown && insuranceAuthority === (wallet.publicKey?.toBase58() ?? "");
   const [showCloseConfirm, setShowCloseConfirm] = useState(false);
+  // v2.2 Earn market: CloseSlab can never run (Earn dead-share floor), so no close / reclaim is offered; settle is.
+  const [earnRead, setEarnRead] = useState<EarnFloorRead>({ floor: null, priceAgeMinutes: null });
+  const earnFloor = earnRead.floor;
+  const [showSettleConfirm, setShowSettleConfirm] = useState(false);
 
   async function handleAction(name: string, fn: () => Promise<string>) {
     try {
@@ -414,6 +459,17 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
       toast(err instanceof Error ? err.message : "Burn admin key failed", "error");
     }
   }, [actions, market, toast]);
+
+  const handleSettleEverything = useCallback(async () => {
+    setShowSettleConfirm(false);
+    const result = await closeMarket.settleMarket(slab);
+    if (result?.route === "stale") {
+      window.location.assign(`/trade/${slab}`); // the market page's Settle (tag 39) is the right door
+    } else if (result) {
+      toast(EARN_FLOOR_COPY.settledToast, "success");
+      window.location.assign(`/trade/${slab}`); // the market page owns the claims; a full load re-reads the settled market
+    }
+  }, [closeMarket, slab, toast]);
 
   const handleClose = useCallback(async () => {
     setShowCloseConfirm(false);
@@ -555,6 +611,7 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
               <CreatorTranchePanel slab={slab} decimals={decimals} collateralSymbol="USDC" />
               <CreatorClaimPanel slabAddress={slab} />
               <InsuranceAuthorityReader onRead={setInsuranceAuthority} />
+              {isDevnetV22Enabled() && <EarnFloorReader onRead={setEarnRead} />}
             </SlabProvider>
           </div>
 
@@ -564,7 +621,7 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
               continueHref={`/create?resume=${slab}`}
               onReclaim={() => setShowCloseConfirm(true)}
               reclaiming={closeMarket.loading}
-              reclaimBlockedReason={!isMarketAuth ? "Connect the wallet that launched this market to reclaim its rent." : closeBlocker?.unmetLine ?? null}
+              reclaimBlockedReason={earnFloor === true ? EARN_FLOOR_COPY.line : !isMarketAuth ? "Connect the wallet that launched this market to reclaim its rent." : closeBlocker?.unmetLine ?? null}
               error={closeMarket.error}
             />
           )}
@@ -603,7 +660,7 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
             {/* An unfinished launch that already holds a portfolio or funds can never be closed
                 (CloseSlab refuses it), so it gets no close button; the panel above says why and
                 offers Continue (#3266). */}
-            {!removalImpossible && (
+            {!removalImpossible && earnFloor !== true && (
               <button
                 data-testid="close-market-button"
                 onClick={() => setShowCloseConfirm(true)}
@@ -618,7 +675,8 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
           {/* UX WP-9 (§3.11): the preconditions BEFORE the button, never "closeSlab will tell you".
               Only for a wallet that can close it: without marketauth (every finished market) the note
               below says it can't be closed, and a checklist would list steps that lead nowhere (#43). */}
-          {!removalImpossible && isMarketAuth && <CloseMarketChecklistView checks={closeChecks} />}
+          {earnFloor === true && <EarnFloorNote canSettle={isMarketAuth} busy={closeMarket.loading} onSettle={() => setShowSettleConfirm(true)} />}
+          {!removalImpossible && isMarketAuth && earnFloor !== true && <CloseMarketChecklistView checks={closeChecks} />}
           {!isMarketAuth && (
             <p className="mt-2 text-[10px] text-[var(--text-secondary)]">
               This market is autonomous — admin control was permanently renounced to the stake-pool
@@ -703,6 +761,18 @@ export const CreatorMarketRow: FC<CreatorMarketRowProps> = ({ market, detail, id
           </div>
         </div>
       )}
+
+      {/* Settle (v2.2 Earn market): irreversible, stops trading; the rent stays locked. */}
+      <ConfirmDialog
+        open={showSettleConfirm}
+        title={EARN_FLOOR_COPY.confirmTitle}
+        description={EARN_FLOOR_COPY.confirmBody(earnRead.priceAgeMinutes)}
+        confirmLabel={EARN_FLOOR_COPY.confirm}
+        danger
+        onConfirm={handleSettleEverything}
+        onCancel={() => setShowSettleConfirm(false)}
+        errorText={closeMarket.error}
+      />
 
       {/* Close market (CloseSlab) — irreversible + rent-reclaiming. */}
       <ConfirmDialog
